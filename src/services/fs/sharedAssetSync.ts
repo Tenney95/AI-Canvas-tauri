@@ -20,6 +20,7 @@ import { sha256BytesHex } from '../mediaDataUrl';
 import { localMediaUrlToPath } from '../../utils/mediaUrl';
 import { preferDramaLibraryReferences } from '../dramaAssetPrompt';
 import { copyAssetFileToFolder, listProjectFiles } from '../fileService';
+import { isNativeMediaPendingFile } from '../../utils/nativeMediaPendingFile';
 import { getAssetUrlFromPath, getFileCategory, getNativeProjectOwner, getProjectDataDir, joinPath, stripVerbatimPrefix,
   type AssetFileEntry } from './core';
 import { getRelativeAssetPath } from './assetIndex';
@@ -231,19 +232,20 @@ export async function sharedAssetSyncExcludedPaths(projectId: string): Promise<s
 /** 原生下载目录不参加扫描；只有已原子接受的当前文件版本进入资源列表。 */
 export async function projectSharedFileView(projectId: string, files: AssetFileEntry[], options: AssetScanOptions = {}): Promise<AssetFileEntry[]> {
   options.signal?.throwIfAborted();
+  const userFiles = files.filter((file) => !isNativeMediaPendingFile(file.path));
   const { state, projectIds } = await ownerState(projectId);
   const root = await getProjectDataDir(projectId);
   options.signal?.throwIfAborted();
-  if (!root) return files;
+  if (!root) return userFiles;
   const history = new Set(state.mappings.flatMap((mapping) => mapping.previousFileAssetIds ?? []));
   const historyPaths = new Set((await sharedAssetSyncExcludedPaths(projectId)).map(pathKey));
   const current = state.mappings.filter((mapping) => mapping.kind === 'file' && mapping.currentFileAssetId);
   const visible = (file: AssetFileEntry) => (!file.assetId || !history.has(file.assetId)) && !historyPaths.has(pathKey(file.path));
-  const projected = new Map(files.filter(visible).map((file) => [pathKey(file.path), file]));
+  const projected = new Map(userFiles.filter(visible).map((file) => [pathKey(file.path), file]));
   for (const mapping of current) {
     options.signal?.throwIfAborted();
     const index = await getAssetIndexById(mapping.currentFileAssetId!);
-    if (!index || index.source !== 'project' || (getNativeProjectOwner(projectId)
+    if (!index || isNativeMediaPendingFile(index.path) || index.source !== 'project' || (getNativeProjectOwner(projectId)
       ? !index.projectId || !projectIds.includes(index.projectId) : index.projectId !== projectId) || index.status !== 'online'
       || !getRelativeAssetPath(index.path, root)) continue;
     try {

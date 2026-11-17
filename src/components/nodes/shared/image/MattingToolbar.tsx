@@ -20,6 +20,7 @@ export interface MattingToolbarProps {
   onClear: () => void;
   canUndo: boolean;
   canRedo: boolean;
+  canSave?: boolean;
 }
 
 function MattingToolbar({
@@ -33,6 +34,7 @@ function MattingToolbar({
   onClear,
   canUndo,
   canRedo,
+  canSave = true,
 }: MattingToolbarProps) {
   const t = useT();
   const [activeTool, setActiveTool] = useState<MattingTool>('brush');
@@ -211,6 +213,7 @@ function MattingToolbar({
         data-tooltip={t('保存')}
         aria-label={t('保存')}
         onClick={handleSave}
+        disabled={!canSave}
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
           <path d="M19 21H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h11l5 5v9a2 2 0 0 1-2 2Z" />

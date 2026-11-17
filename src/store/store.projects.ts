@@ -397,6 +397,42 @@ const projectInitializations: WeakMap<() => AppState, Promise<void>> = import.me
 if (import.meta.hot) import.meta.hot.data.projectInitializations = projectInitializations;
 const pendingProjectSaves: Map<string, Set<Promise<string | undefined>>> = import.meta.hot?.data.pendingProjectSaves ?? new Map();
 if (import.meta.hot) import.meta.hot.data.pendingProjectSaves = pendingProjectSaves;
+interface ProjectSaveOutcomeRuntime {
+  session: object;
+  sequence: number;
+  acceptedSequence: number;
+}
+interface ProjectSaveAttempt {
+  projectId: string | null;
+  session: object;
+  sequence: number;
+}
+const projectSaveOutcomes: WeakMap<ProjectSliceGet, ProjectSaveOutcomeRuntime> = import.meta.hot?.data.projectSaveOutcomes ?? new WeakMap();
+if (import.meta.hot) import.meta.hot.data.projectSaveOutcomes = projectSaveOutcomes;
+
+function beginProjectSaveAttempt(get: ProjectSliceGet, projectId: string | null): ProjectSaveAttempt {
+  const runtime = projectSaveOutcomes.get(get)!;
+  return { projectId, session: runtime.session, sequence: ++runtime.sequence };
+}
+
+function isProjectSaveAttemptCurrent(get: ProjectSliceGet, attempt: ProjectSaveAttempt): boolean {
+  return get().currentProjectId === attempt.projectId && projectSaveOutcomes.get(get)?.session === attempt.session;
+}
+
+function acceptProjectSaveOutcome(get: ProjectSliceGet, attempt: ProjectSaveAttempt): boolean {
+  const runtime = projectSaveOutcomes.get(get);
+  if (!runtime || !isProjectSaveAttemptCurrent(get, attempt) || attempt.sequence < runtime.acceptedSequence) return false;
+  runtime.acceptedSequence = attempt.sequence;
+  return true;
+}
+const manualSaveSuccessListeners: Set<(projectId: string) => void> = import.meta.hot?.data.manualSaveSuccessListeners ?? new Set();
+if (import.meta.hot) import.meta.hot.data.manualSaveSuccessListeners = manualSaveSuccessListeners;
+
+/** 自动保存暂停只由明确成功的手动保存解除，不把旧自动请求的成功当作用户重试。 */
+export function subscribeManualProjectSaveSuccess(listener: (projectId: string) => void): () => void {
+  manualSaveSuccessListeners.add(listener);
+  return () => { manualSaveSuccessListeners.delete(listener); };
+}
 const episodeCreativeWrites: Map<string, Promise<unknown>> = import.meta.hot?.data.episodeCreativeWrites ?? new Map();
 if (import.meta.hot) import.meta.hot.data.episodeCreativeWrites = episodeCreativeWrites;
 
@@ -896,7 +932,9 @@ function noteSaveFailure(
   set: ProjectSliceSet,
   get: ProjectSliceGet,
   params: { kind: AutoSaveFailureState['kind']; reason: string; notify: boolean },
-): AutoSaveFailureState {
+  attempt: ProjectSaveAttempt,
+): AutoSaveFailureState | undefined {
+  if (!acceptProjectSaveOutcome(get, attempt)) return undefined;
   const now = Date.now();
   const prev = get().autoSaveFailure;
   const count = (prev?.count ?? 0) + 1;
@@ -918,8 +956,16 @@ function noteSaveFailure(
   return next;
 }
 
-function clearSaveFailure(set: ProjectSliceSet, get: ProjectSliceGet) {
-  if (get().autoSaveFailure) set({ autoSaveFailure: null });
+function applyProjectSaveSuccess(set: ProjectSliceSet, get: ProjectSliceGet, attempt: ProjectSaveAttempt, record: ProjectSaveData): boolean {
+  if (!acceptProjectSaveOutcome(get, attempt)) return false;
+  set((state) => ({
+    // A completed old snapshot must not roll back a newer displayed name or timestamp.
+    projects: state.projects.map((project) => project.id === record.id
+      ? { ...project, updatedAt: Math.max(project.updatedAt, record.updatedAt), name: state.projectName } : project),
+    autoSaveFailure: null,
+  }));
+  return isProjectSaveAttemptCurrent(get, attempt)
+    && projectSaveOutcomes.get(get)?.acceptedSequence === attempt.sequence;
 }
 
 /** 保存异常 → 结构化失败状态（含配额/磁盘归因） */
@@ -928,9 +974,10 @@ async function noteSaveError(
   get: ProjectSliceGet,
   error: unknown,
   notify: boolean,
-): Promise<AutoSaveFailureState> {
+  attempt: ProjectSaveAttempt,
+): Promise<AutoSaveFailureState | undefined> {
   const { kind, reason } = await describeStorageError(error);
-  return noteSaveFailure(set, get, { kind, reason, notify });
+  return noteSaveFailure(set, get, { kind, reason, notify }, attempt);
 }
 
 export interface SharedProjectAssetSyncApplyInput {
@@ -1247,6 +1294,19 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   // 首次应用这次热更新时，旧 Store 还没有标记；已就绪的画布要沿用内存。
   const initialized = live?.projectInitialized
     ?? (live?.projectLoadStatus === 'ready' && typeof live?.initFromDb === 'function');
+  if (!projectSaveOutcomes.has(get)) {
+    const runtime: ProjectSaveOutcomeRuntime = { session: {}, sequence: 0, acceptedSequence: 0 };
+    projectSaveOutcomes.set(get, runtime);
+    // One subscription per Store survives action rebinding without duplicating observers.
+    api.subscribe((state, previous) => {
+      if (state.currentProjectId !== previous.currentProjectId
+        || state.projectLoadStatus === 'loading' && previous.projectLoadStatus !== 'loading'
+        || state.projectExecutionContext?.runtimeEpoch !== previous.projectExecutionContext?.runtimeEpoch) {
+        runtime.session = {};
+        runtime.acceptedSequence = 0;
+      }
+    });
+  }
   return {
   projects: [
     { id: 'default', name: '默认画布', createdAt: Date.now(), updatedAt: Date.now() },
@@ -3358,10 +3418,11 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   },
 
   saveCurrentProject: () => trackProjectSave(get().currentProjectId, async (projectId) => {
+    const attempt = beginProjectSaveAttempt(get, projectId);
     const syncPending = waitForProjectAssetSync(get);
     if (syncPending) await syncPending;
     const state = get();
-    if (state.currentProjectId !== projectId) return undefined;
+    if (!isProjectSaveAttemptCurrent(get, attempt)) return undefined;
     if (state.currentProjectId && state.projectLoadStatus !== 'ready') {
       // 加载中只是还没就绪，不算故障；加载失败才记进退出拦截状态
       if (state.projectLoadStatus === 'error') {
@@ -3369,7 +3430,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           kind: 'load-error',
           reason: '项目加载失败，已阻止空画布覆盖原数据',
           notify: false,
-        });
+        }, attempt);
       }
       state.showToast('项目尚未成功加载，已阻止覆盖保存', 'error');
       return undefined;
@@ -3379,38 +3440,38 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     try {
       if (nativeBinding(state.projects.find((item) => item.id === record.id))) await saveNativeCurrentProject(get, state, record);
       else await saveCurrentProjectRecord(state, record);
-      set((state) => ({
-        projects: state.projects.map((p) =>
-          p.id === record.id ? { ...p, updatedAt: record.updatedAt, name: record.name } : p
-        ),
-      }));
-      clearSaveFailure(set, get);
-      get().showToast('项目已保存');
+      if (applyProjectSaveSuccess(set, get, attempt, record)) {
+        for (const listener of [...manualSaveSuccessListeners]) {
+          try { listener(record.id); } catch { console.warn('[自动保存] 手动保存完成通知未能处理'); }
+        }
+        get().showToast('项目已保存');
+      }
       return record.id;
     } catch (error) {
       console.error('Save failed:', error);
       // 手动保存本来就每次都给反馈，交给 toast 自己说，不走去重逻辑
-      const failure = await noteSaveError(set, get, error, false);
-      get().showToast(t('保存失败：{reason}', { reason: failure.reason }), 'error');
+      const failure = await noteSaveError(set, get, error, false, attempt);
+      if (failure) get().showToast(t('保存失败：{reason}', { reason: failure.reason }), 'error');
       return undefined;
     }
   }),
 
   /** 静默保存（不弹 toast），用于自动保存 */
   saveCurrentProjectSilent: (assertCurrent) => trackProjectSave(get().currentProjectId, async (projectId) => {
+    const attempt = beginProjectSaveAttempt(get, projectId);
     assertCurrent?.();
     const syncPending = waitForProjectAssetSync(get);
     if (syncPending) await syncPending;
     assertCurrent?.();
     const state = get();
-    if (state.currentProjectId !== projectId) return undefined;
+    if (!isProjectSaveAttemptCurrent(get, attempt)) return undefined;
     if (state.currentProjectId && state.projectLoadStatus !== 'ready') {
       if (state.projectLoadStatus === 'error') {
         noteSaveFailure(set, get, {
           kind: 'load-error',
           reason: '项目加载失败，已阻止空画布覆盖原数据',
           notify: true,
-        });
+        }, attempt);
       }
       return undefined;
     }
@@ -3420,16 +3481,11 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       if (nativeBinding(state.projects.find((item) => item.id === record.id))) await saveNativeCurrentProject(get, state, record, assertCurrent);
       else await saveCurrentProjectRecord(state, record, assertCurrent);
       assertCurrent?.();
-      set((state) => ({
-        projects: state.projects.map((p) =>
-          p.id === record.id ? { ...p, updatedAt: record.updatedAt, name: record.name } : p
-        ),
-      }));
-      clearSaveFailure(set, get);
+      applyProjectSaveSuccess(set, get, attempt, record);
       return record.id;
     } catch (error) {
       console.warn('[自动保存] 保存失败:', error);
-      await noteSaveError(set, get, error, true);
+      await noteSaveError(set, get, error, true, attempt);
       return undefined;
     }
   }),

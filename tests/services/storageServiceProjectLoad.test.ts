@@ -154,7 +154,7 @@ describe('project loading tolerates asset recovery failures', () => {
     expect(record).toEqual(before);
     const saved = await saveNativeProjectView({ projectId: initial.project.id, expectedProjectEpoch: initial.project.epoch,
       canvasId: initial.canvas!.id, episodeId: null, expectedCanvasEpoch: initial.canvas!.epoch,
-      expectedCanvasRevision: initial.canvas!.revision, document: { nodes: serialized.nodes, edges: serialized.edges, groups: serialized.groups ?? [] },
+      expectedCanvasRevision: initial.canvas!.revision, document: { nodes: serialized.nodes as unknown[], edges: serialized.edges as unknown[], groups: (serialized.groups ?? []) as unknown[] },
       shared: { expectedRevisions: { assets: 0 }, patch: { dramaAssets: serialized.dramaAssets } } }, { factory });
 
     const loaded = await readNativeProjectCapture(initial.project.id, { factory });
@@ -182,7 +182,7 @@ describe('project loading tolerates asset recovery failures', () => {
       expect(serialized.dramaAssets!.characters[0].refmods).toBe(refmods);
       await expect(saveNativeProjectView({ projectId: initial.project.id, expectedProjectEpoch: initial.project.epoch,
         canvasId: initial.canvas!.id, episodeId: null, expectedCanvasEpoch: initial.canvas!.epoch,
-        expectedCanvasRevision: initial.canvas!.revision, document: { nodes: serialized.nodes, edges: serialized.edges, groups: serialized.groups ?? [] },
+        expectedCanvasRevision: initial.canvas!.revision, document: { nodes: serialized.nodes as unknown[], edges: serialized.edges as unknown[], groups: (serialized.groups ?? []) as unknown[] },
         shared: { expectedRevisions: { assets: 0 }, patch: { dramaAssets: serialized.dramaAssets } } }, { factory }))
         .rejects.toThrow('invalid-drama-assets');
       expect(await readNativeProjectCapture(initial.project.id, { factory })).toEqual(before);
@@ -1208,6 +1208,23 @@ describe('project loading tolerates asset recovery failures', () => {
     expect(JSON.stringify(record.nodes[0])).not.toContain('data:image');
   });
 
+  it.each(['native', 'legacy'] as const)('marks %s inline-mask materialization for directory refresh without making a new autosave input', async (kind) => {
+    const sha256 = '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81';
+    mocks.notifyProjectDiskChanged.mockClear();
+    mocks.getNativeProjectOwner.mockReturnValue(kind === 'native' ? 'native-owner' : undefined);
+    mocks.invoke.mockResolvedValue({ relativePath: `media/${sha256}.png`, sha256, bytes: 3, mimeType: 'image/png' });
+    mocks.exists.mockResolvedValue(false);
+    const record: ProjectSaveData = { id: 'mask-project', name: '遮罩物化', createdAt: 1, updatedAt: 2, edges: [],
+      nodes: [{ id: 'source', data: { type: 'ai-image', imageUrl: 'https://example.invalid/source.png', mattingMask: 'data:image/png;base64,AQID' } }] };
+    await serializeProjectRecord(record);
+    mocks.exists.mockResolvedValue(true);
+    await serializeProjectRecord(record);
+    expect(mocks.notifyProjectDiskChanged.mock.calls).toEqual(Array.from({ length: kind === 'native' ? 2 : 1 }, () => [
+      { source: 'save-materialization', projectId: record.id },
+    ]));
+    expect(record.nodes).toMatchObject([{ data: { mattingMask: 'data:image/png;base64,AQID' } }]);
+  });
+
   it('新项目扩图垫图独立落盘并可保存重开，不替换结果媒体或增加素材节点', async () => {
     const factory = new IDBFactory();
     const initial = await createNativeProject({ name: '扩图垫图',
@@ -1237,7 +1254,7 @@ describe('project loading tolerates asset recovery failures', () => {
     await saveNativeProjectView({ projectId: initial.project.id, expectedProjectEpoch: initial.project.epoch,
       canvasId: initial.canvas!.id, episodeId: null, expectedCanvasEpoch: initial.canvas!.epoch,
       expectedCanvasRevision: initial.canvas!.revision,
-      document: { nodes: serialized.nodes, edges: serialized.edges, groups: serialized.groups ?? [] } }, { factory });
+      document: { nodes: serialized.nodes as unknown[], edges: serialized.edges as unknown[], groups: (serialized.groups ?? []) as unknown[] } }, { factory });
     const capture = await readNativeProjectCapture(initial.project.id, { factory });
     const restored = await restoreProjectRecord({ ...serialized, nodes: capture!.aggregate.canvases[0].nodes });
     expect(restored.nodes).toHaveLength(1);

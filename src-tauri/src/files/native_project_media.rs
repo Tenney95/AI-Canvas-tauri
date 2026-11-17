@@ -59,6 +59,23 @@ fn validate_media_reference(reference: &NativeMediaReference) -> Result<String, 
     Ok(name)
 }
 
+#[cfg(any(windows, target_os = "macos", all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))))]
+fn resume_media_staging_file(file: &mut fs::File, reference: &NativeMediaReference, data: &[u8],
+    regular_metadata: impl Fn(&fs::File, u64) -> Result<fs::Metadata, String>) -> Result<(), String> {
+    use std::io::{Seek, SeekFrom};
+    let before = regular_metadata(file, reference.bytes)?;
+    file.rewind().map_err(|_| ERROR)?;
+    let mut prefix = Vec::new();
+    (&mut *file).take(reference.bytes + 1).read_to_end(&mut prefix).map_err(|_| ERROR)?;
+    if prefix.len() as u64 != before.len() || regular_metadata(file, reference.bytes)?.len() != before.len()
+        || !data.starts_with(&prefix) { return Err(ERROR.into()); }
+    // Never truncate or replace recovery material: only append a verified missing suffix.
+    file.seek(SeekFrom::Start(prefix.len() as u64)).map_err(|_| ERROR)?;
+    file.write_all(&data[prefix.len()..]).and_then(|_| file.sync_all()).map_err(|_| ERROR)?;
+    if regular_metadata(file, reference.bytes)?.len() != reference.bytes { return Err(ERROR.into()); }
+    file.rewind().map_err(|_| ERROR.into())
+}
+
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Binding {
@@ -464,6 +481,19 @@ fn verify_windows_media_file(file: &File, reference: &NativeMediaReference) -> R
 }
 
 #[cfg(windows)]
+fn windows_staging_metadata(file: &File, limit: u64) -> Result<fs::Metadata, String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::{Foundation::HANDLE, Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION}};
+    let metadata = file.metadata().map_err(|_| ERROR)?;
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut information) }.map_err(|_| ERROR)?;
+    if is_link(&metadata) || !metadata.is_file() || metadata.len() > limit || information.nNumberOfLinks != 1 {
+        return Err(ERROR.into());
+    }
+    Ok(metadata)
+}
+
+#[cfg(windows)]
 fn rename_windows_media_file(file: &File, destination: &Path) -> Result<(), String> {
     use std::{mem::{offset_of, size_of}, os::windows::{ffi::OsStrExt, io::AsRawHandle}, ptr};
     use windows::Win32::{Foundation::HANDLE, Storage::FileSystem::{
@@ -515,18 +545,23 @@ fn isolate_windows_media_partial(target: &Path, data: &[u8]) -> Result<bool, Str
 #[cfg(windows)]
 fn write_windows_media_file(media: &Path, media_lease: &mut File, name: &str, reference: &NativeMediaReference, data: &[u8],
     verify_binding: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
-    use std::{io::Seek, os::windows::fs::OpenOptionsExt};
+    use std::os::windows::fs::OpenOptionsExt;
     use windows::Win32::Storage::FileSystem::{
         DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
     };
     let target = media.join(name);
     if read_media_file(&target, reference).is_ok_and(|bytes| bytes == data) { return Ok(()); }
-    let temporary = media.join(format!(".native-media-{}.pending", crate::comfyui::media_source::new_id().map_err(|_| ERROR)?));
-    let mut file = OpenOptions::new().read(true).write(true).create_new(true)
+    let temporary = media.join(format!(".native-media-{}.pending", validate_media_reference(reference)?));
+    let open_staging = |create_new| OpenOptions::new().read(true).write(true).create_new(create_new)
         .access_mode(FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0 | DELETE.0)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0 | FILE_FLAG_WRITE_THROUGH.0)
-        .share_mode(0).open(&temporary).map_err(|_| ERROR)?;
-    file.write_all(data).and_then(|_| file.sync_all()).and_then(|_| file.rewind()).map_err(|_| ERROR)?;
+        .share_mode(0).open(&temporary);
+    let mut file = match open_staging(true) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => open_staging(false).map_err(|_| ERROR)?,
+        Err(_) => return Err(ERROR.into()),
+    };
+    resume_media_staging_file(&mut file, reference, data, windows_staging_metadata)?;
     if verify_windows_media_file(&file, reference)? != data { return Err(ERROR.into()); }
     verify_binding()?;
 
@@ -717,13 +752,21 @@ mod unix_io {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
                 Err(_) => return Err(ERROR.into()),
             }
-            // Hidden, unique and never removed on a failed operation: interruption preserves
-            // recovery material without publishing a half-written content-addressed filename.
-            let temporary = format!(".native-media-{}.pending", crate::comfyui::media_source::new_id().map_err(|_| ERROR)?);
+            // One stage per content identity survives failures and is resumed without
+            // allocating another file. Old random stages remain untouched.
+            let temporary = format!(".native-media-{}.pending", validate_media_reference(reference)?);
             let temporary_name = OsStr::new(&temporary);
-            let mut file = open_at(&self.media, temporary_name, 2 | CREATE | EXCLUSIVE, true).map_err(|_| ERROR)?;
+            let mut file = match open_at(&self.media, temporary_name, 2 | CREATE | EXCLUSIVE, true) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => open_at(&self.media, temporary_name, 2, false).map_err(|_| ERROR)?,
+                Err(_) => return Err(ERROR.into()),
+            };
             regular_metadata(&file, reference.bytes)?;
-            file.write_all(data).and_then(|_| file.sync_all()).map_err(|_| ERROR)?;
+            FileExt::try_lock_exclusive(&file).map_err(|_| ERROR)?;
+            let current = open_at(&self.media, temporary_name, 0, false).map_err(|_| ERROR)?;
+            if !same_file(&file, &current)? { return Err(ERROR.into()); }
+            self.verify()?;
+            resume_media_staging_file(&mut file, reference, data, regular_metadata)?;
             if self.read_opened(temporary_name, &mut file, reference)? != data { return Err(ERROR.into()); }
             let from = component(temporary_name)?;
             let to = component(OsStr::new(name))?;
@@ -937,6 +980,61 @@ mod tests {
         assert_eq!(fs::read(&target).unwrap().as_slice(), &bytes[..4]);
         drop(media_lease);
         fs::remove_dir_all(media).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_media_reuses_one_verified_stage_after_repeated_failures_and_resumes_a_prefix() {
+        let media = fixture();
+        let bytes = b"resumable native image bytes";
+        let (name, reference) = windows_media_reference(bytes);
+        let staging = media.join(format!(".native-media-{name}.pending"));
+        let legacy = media.join(format!(".native-media-{}.pending", "a".repeat(64)));
+        fs::write(&staging, &bytes[..6]).unwrap();
+        fs::write(&legacy, b"legacy recovery material").unwrap();
+        let mut media_lease = lease_directory(&media, false).unwrap();
+        for _ in 0..3 {
+            assert!(write_windows_media_file(&media, &mut media_lease, &name, &reference, bytes, || Err(ERROR.into())).is_err());
+            assert_eq!(fs::read(&staging).unwrap().as_slice(), bytes);
+            assert_eq!(fs::read_dir(&media).unwrap().count(), 2);
+        }
+        write_windows_media_file(&media, &mut media_lease, &name, &reference, bytes, || Ok(())).unwrap();
+        assert_eq!(fs::read(media.join(&name)).unwrap().as_slice(), bytes);
+        assert!(!staging.exists());
+        assert_eq!(fs::read(&legacy).unwrap(), b"legacy recovery material");
+        assert_eq!(fs::read_dir(&media).unwrap().count(), 2);
+        drop(media_lease); fs::remove_dir_all(media).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_media_never_replaces_unrelated_long_locked_or_hard_link_staging_files() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = fixture();
+        let bytes = b"expected native media";
+        let (name, reference) = windows_media_reference(bytes);
+        for scenario in ["unrelated", "long", "locked", "hard-link"] {
+            let media = root.join(scenario); fs::create_dir(&media).unwrap();
+            let staging = media.join(format!(".native-media-{name}.pending"));
+            let original = match scenario {
+                "unrelated" => b"different".to_vec(), "long" => vec![1; bytes.len() + 1], _ => bytes[..4].to_vec(),
+            };
+            fs::write(&staging, &original).unwrap();
+            let outside = root.join("source-original");
+            if scenario == "hard-link" { fs::hard_link(&staging, &outside).unwrap(); }
+            let locked = (scenario == "locked").then(|| OpenOptions::new().read(true).write(true).share_mode(0).open(&staging).unwrap());
+            let mut media_lease = lease_directory(&media, false).unwrap();
+            for _ in 0..2 {
+                assert!(write_windows_media_file(&media, &mut media_lease, &name, &reference, bytes, || Ok(())).is_err());
+                assert_eq!(fs::read_dir(&media).unwrap().count(), 1);
+            }
+            drop(locked);
+            assert_eq!(fs::read(&staging).unwrap(), original);
+            assert!(!media.join(&name).exists());
+            if scenario == "hard-link" { assert_eq!(fs::read(&outside).unwrap(), original); fs::remove_file(outside).unwrap(); }
+            drop(media_lease);
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1234,7 +1332,7 @@ mod tests {
         }
 
         #[test]
-        fn incomplete_staging_is_retained_without_poisoning_the_final_content_filename() {
+        fn incomplete_staging_is_reused_without_poisoning_the_final_content_filename() {
             let (root, project) = setup();
             let (bytes, reference, name) = mask();
             let directory = unix_io::Directory::open(&project, true).unwrap();
@@ -1243,9 +1341,60 @@ mod tests {
             let staging = fs::read_dir(project.join("media")).unwrap().next().unwrap().unwrap().path();
             assert!(staging.file_name().unwrap().to_str().unwrap().starts_with(".native-media-"));
             assert_eq!(fs::read(&staging).unwrap(), bytes[..8]);
+            assert!(directory.write(&name, &reference, &bytes[..8]).is_err());
+            assert_eq!(fs::read_dir(project.join("media")).unwrap().count(), 1);
             directory.write(&name, &reference, &bytes).unwrap();
             assert_eq!(directory.read(&name, &reference).unwrap(), bytes);
-            assert_eq!(fs::read(staging).unwrap(), bytes[..8]);
+            assert!(!staging.exists());
+            assert_eq!(fs::read_dir(project.join("media")).unwrap().count(), 1);
+            drop(directory); fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn complete_staging_survives_reopen_and_legacy_random_material_is_retained() {
+            let (root, project) = setup();
+            let (bytes, reference, name) = mask();
+            let directory = unix_io::Directory::open(&project, true).unwrap();
+            let staging = project.join("media").join(format!(".native-media-{name}.pending"));
+            let legacy = project.join("media").join(format!(".native-media-{}.pending", "a".repeat(64)));
+            fs::write(&staging, &bytes).unwrap(); fs::write(&legacy, b"legacy recovery").unwrap();
+            drop(directory);
+            let reopened = unix_io::Directory::open(&project, false).unwrap();
+            reopened.write(&name, &reference, &bytes).unwrap();
+            assert_eq!(reopened.read(&name, &reference).unwrap(), bytes);
+            assert!(!staging.exists());
+            assert_eq!(fs::read(&legacy).unwrap(), b"legacy recovery");
+            assert_eq!(fs::read_dir(project.join("media")).unwrap().count(), 2);
+            drop(reopened); fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn unrelated_long_locked_and_linked_stages_are_preserved_without_new_files() {
+            let (root, project) = setup();
+            let (bytes, reference, name) = mask();
+            let directory = unix_io::Directory::open(&project, true).unwrap();
+            let staging = project.join("media").join(format!(".native-media-{name}.pending"));
+            for invalid in [b"unrelated".to_vec(), vec![0; bytes.len() + 1]] {
+                fs::write(&staging, &invalid).unwrap();
+                for _ in 0..2 { assert!(directory.write(&name, &reference, &bytes).is_err()); }
+                assert_eq!(fs::read(&staging).unwrap(), invalid);
+                assert_eq!(fs::read_dir(project.join("media")).unwrap().count(), 1);
+            }
+            fs::write(&staging, &bytes[..8]).unwrap();
+            let locked = OpenOptions::new().read(true).write(true).open(&staging).unwrap();
+            FileExt::try_lock_exclusive(&locked).unwrap();
+            assert!(directory.write(&name, &reference, &bytes).is_err());
+            assert_eq!(fs::read(&staging).unwrap(), bytes[..8]);
+            drop(locked); fs::remove_file(&staging).unwrap();
+            let outside = root.join("original.png"); fs::write(&outside, &bytes[..8]).unwrap();
+            for hard_link in [false, true] {
+                if hard_link { fs::hard_link(&outside, &staging).unwrap(); } else { symlink(&outside, &staging).unwrap(); }
+                assert!(directory.write(&name, &reference, &bytes).is_err());
+                assert_eq!(fs::read(&outside).unwrap(), bytes[..8]);
+                assert_eq!(fs::read_dir(project.join("media")).unwrap().count(), 1);
+                fs::remove_file(&staging).unwrap();
+            }
+            assert!(!project.join("media").join(name).exists());
             drop(directory); fs::remove_dir_all(root).unwrap();
         }
 

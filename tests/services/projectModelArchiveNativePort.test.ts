@@ -64,7 +64,7 @@ describe('P5 native file projection', () => {
   it('扩图垫图按自身主根进入归档闭包，不沿结果画布子根定位', async () => {
     const { capture } = await setup();
     capture.aggregate.canvases = [{ id: 'canvas-pad', projectId: capture.aggregate.project.id, episodeId: null,
-      epoch: 0, revision: 0, storageRootRef: 'legacy-root:B', edges: [], groups: [], nodes: [{ id: 'expanded',
+      epoch: 0, revision: 0, revisionScope: 'project', storageRootRef: 'legacy-root:B', edges: [], groups: [], nodes: [{ id: 'expanded',
         data: { outpaintInput: { relativePath: 'media/padding.png', storageRootRef: 'legacy-root:A', width: 1024, height: 768 } } }] }];
     const paths = currentStoragePaths(capture, new Map([['legacy-root:A', 'fixture/primary'], ['legacy-root:B', 'fixture/secondary']]));
     expect(paths.get('legacy-root:A')).toContain('media/padding.png');

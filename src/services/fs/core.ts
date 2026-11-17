@@ -21,6 +21,7 @@ import {
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { appDataDir, executableDir } from '@tauri-apps/api/path';
 import { mediaFileAllocationKey, retiredMediaPaths } from '../indexedDb/mediaRelocations';
+import { isNativeMediaPendingFile } from '../../utils/nativeMediaPendingFile';
 
 /** 检测是否运行在 Tauri 桌面环境中 */
 export function isTauriEnv(): boolean {
@@ -63,10 +64,16 @@ export function browserOpenFile(accept: string): Promise<File | null> {
 /** 项目目录磁盘内容发生增删改时派发的事件名（由 useAutoSave 监听，触发静默保存） */
 export const PROJECT_DISK_CHANGED_EVENT = 'project-disk-changed';
 
+export interface ProjectDiskChangedDetail {
+  /** 内部物化已被当前保存或规范化结果覆盖，只需刷新目录展示。 */
+  source: 'save-materialization';
+  projectId: string;
+}
+
 /** 通知监听方：当前项目的磁盘内容发生了增删改 */
-export function notifyProjectDiskChanged(): void {
+export function notifyProjectDiskChanged(detail?: ProjectDiskChangedDetail): void {
   if (typeof window === 'undefined') return;
-  window.dispatchEvent(new CustomEvent(PROJECT_DISK_CHANGED_EVENT));
+  window.dispatchEvent(new CustomEvent(PROJECT_DISK_CHANGED_EVENT, detail ? { detail } : undefined));
 }
 
 export function getMimeType(ext: string): string {
@@ -946,7 +953,7 @@ export async function listDirectoryFiles(dirPath: string): Promise<AssetFileEntr
     const files: AssetFileEntry[] = [];
 
     for (const entry of entries) {
-      if (!entry.isFile) continue;
+      if (!entry.isFile || isNativeMediaPendingFile(entry.name)) continue;
       try {
         const filePath = joinPath(dirPath, entry.name);
         const fileStat = await stat(filePath);

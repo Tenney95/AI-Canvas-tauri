@@ -241,7 +241,7 @@ async function persistTransientMedia(
         throw new Error('新项目素材写入回执不匹配');
       }
       const filePath = joinPath(context.projectDir, reference.relativePath);
-      notifyProjectDiskChanged();
+      notifyProjectDiskChanged({ source: 'save-materialization', projectId: context.projectId });
       return { filePath, assetUrl: await getAssetUrlFromPath(filePath) };
     }
     const fileName = `${inlineMediaPrefix(kind)}-${digest.slice(0, 20)}${inlineMediaExtension(source, kind)}`;
@@ -253,7 +253,7 @@ async function persistTransientMedia(
     if (!await projectFileExists(filePath, context)) {
       await writeFile(filePath, bytes);
       context.existsByPath.set(projectFileLookupKey(filePath), Promise.resolve(true));
-      notifyProjectDiskChanged();
+      notifyProjectDiskChanged({ source: 'save-materialization', projectId: context.projectId });
     }
     return { filePath, assetUrl: await getAssetUrlFromPath(filePath) };
   })();
@@ -872,6 +872,7 @@ async function restoreProjectNodes(nodes: unknown, projectId: string, lookup: Pr
       }
     }
     if (data.outpaintInput) {
+      const outpaintInput = data.outpaintInput;
       if (getNativeProjectOwner(projectId)) {
         try {
           const display = await nativeMediaDisplayContext(projectId, lookup);
@@ -879,7 +880,7 @@ async function restoreProjectNodes(nodes: unknown, projectId: string, lookup: Pr
           const directory = await display.resolve.directory(storageRootRef);
           data = { ...data, outpaintInput: { ...await restoreAssetReferenceSafely(data.outpaintInput, projectId, directory, lookup, 'url'), storageRootRef } };
         } catch {
-          data = { ...data, outpaintInput: { ...data.outpaintInput, url: undefined } };
+          data = { ...data, outpaintInput: { ...outpaintInput, url: undefined } };
         }
       } else data = { ...data, outpaintInput: await restoreAssetReferenceSafely(data.outpaintInput, projectId, projectDir, lookup, 'url') };
     }

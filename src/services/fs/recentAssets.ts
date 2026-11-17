@@ -6,6 +6,7 @@ import { getAssetIndexById, getAssetIndexByPath, getRecentAssetUsage, recordRece
 import { getConvertFileSrc, getFileCategory, getProjectDataDir, isTauriEnv, type AssetFileEntry } from './core';
 import { getGlobalFilesDir } from './assetLibrary';
 import { getRelativeAssetPath } from './assetIndex';
+import { isNativeMediaPendingFile } from '../../utils/nativeMediaPendingFile';
 
 export interface RecentAssetEntry {
   file: AssetFileEntry;
@@ -37,7 +38,7 @@ export async function loadRecentAssets(scope: RecentAssetsScope, signal?: AbortS
     if (signal?.aborted) return [];
     try {
       const index = await getAssetIndexById(record.assetId);
-      if (!index) continue;
+      if (!index || isNativeMediaPendingFile(index.path)) continue;
       let root: string | null | undefined;
       if (index.source === 'folder') {
         root = scope.folderRoots.find((candidate) => getRelativeAssetPath(index.path, candidate) !== undefined);

@@ -121,7 +121,7 @@ vi.mock('../../src/services/indexedDbService', async () => {
 });
 
 import { useAppStore } from '../../src/store/useAppStore';
-import { createProjectSlice, waitForPendingProjectSaves } from '../../src/store/store.projects';
+import { createProjectSlice, subscribeManualProjectSaveSuccess, waitForPendingProjectSaves } from '../../src/store/store.projects';
 import { createOrRefreshHotStore } from '../../src/store/store.hotReload';
 import type { AppState } from '../../src/store/useAppStore';
 
@@ -532,6 +532,149 @@ describe('pending project save commit barrier', () => {
       expect(await barrier).toBe(false);
       expect(useAppStore.getState().autoSaveFailure?.kind).toBe('quota');
     } finally { vi.unstubAllGlobals(); }
+  });
+
+  it.each(['saveCurrentProject', 'saveCurrentProjectSilent'] as const)('does not let a late classified %s failure replace a newer manual success without another edit', async (action) => {
+    openSaveProject();
+    const showToast = vi.fn(), manualSuccess = vi.fn();
+    useAppStore.setState({ showToast });
+    const unsubscribe = subscribeManualProjectSaveSuccess(manualSuccess);
+    let finishEstimate!: (estimate: { usage: number; quota: number }) => void;
+    const estimate = vi.fn(() => new Promise<{ usage: number; quota: number }>((resolve) => { finishEstimate = resolve; }));
+    vi.stubGlobal('navigator', { storage: { estimate } });
+    fileMocks.saveProject.mockRejectedValueOnce(new DOMException('old quota error', 'QuotaExceededError'));
+    const oldSaving = useAppStore.getState()[action]();
+    let barrierSettled = false;
+    const barrier = waitForPendingProjectSaves('save-project').then((saved) => { barrierSettled = true; return saved; });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(estimate).toHaveBeenCalledOnce();
+      expect(barrierSettled).toBe(false);
+      expect(await useAppStore.getState().saveCurrentProject()).toBe('save-project');
+      const savedProjects = useAppStore.getState().projects;
+      expect(manualSuccess).toHaveBeenCalledExactlyOnceWith('save-project');
+      expect(useAppStore.getState().autoSaveFailure).toBeNull();
+      expect(barrierSettled).toBe(false);
+      finishEstimate({ usage: 1, quota: 1 });
+      expect(await oldSaving).toBeUndefined();
+      expect(await barrier).toBe(false);
+      expect(useAppStore.getState().autoSaveFailure).toBeNull();
+      expect(useAppStore.getState().projects).toBe(savedProjects);
+      expect(showToast).toHaveBeenCalledExactlyOnceWith('项目已保存');
+    } finally { unsubscribe(); vi.unstubAllGlobals(); }
+  });
+
+  it.each(['other-project', 'reopened-project'] as const)('does not apply an old classified error to the %s session', async (navigation) => {
+    openSaveProject('project-p');
+    const showToast = vi.fn(); useAppStore.setState({ showToast });
+    let finishEstimate!: (estimate: { usage: number; quota: number }) => void;
+    const estimate = vi.fn(() => new Promise<{ usage: number; quota: number }>((resolve) => { finishEstimate = resolve; }));
+    vi.stubGlobal('navigator', { storage: { estimate } });
+    fileMocks.saveProject.mockRejectedValueOnce(new DOMException('old session quota error', 'QuotaExceededError'));
+    const oldSaving = useAppStore.getState().saveCurrentProjectSilent();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(estimate).toHaveBeenCalledOnce();
+      openSaveProject('project-q');
+      if (navigation === 'reopened-project') openSaveProject('project-p');
+      fileMocks.saveProject.mockRejectedValueOnce(new Error('当前会话写入失败'));
+      expect(await useAppStore.getState().saveCurrentProjectSilent()).toBeUndefined();
+      const currentFailure = useAppStore.getState().autoSaveFailure;
+      const currentProjects = useAppStore.getState().projects;
+      expect(currentFailure).toMatchObject({ reason: '当前会话写入失败', count: 1 });
+      showToast.mockClear();
+      finishEstimate({ usage: 1, quota: 1 });
+      expect(await oldSaving).toBeUndefined();
+      expect(useAppStore.getState().autoSaveFailure).toBe(currentFailure);
+      expect(useAppStore.getState().projects).toBe(currentProjects);
+      expect(showToast).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it.each(['saveCurrentProject', 'saveCurrentProjectSilent'] as const)('does not let an older successful %s clear a newer failure or refresh its metadata', async (action) => {
+    openSaveProject();
+    const manualSuccess = vi.fn(), showToast = vi.fn();
+    useAppStore.setState({ showToast });
+    const unsubscribe = subscribeManualProjectSaveSuccess(manualSuccess);
+    let newerSaving: Promise<string | undefined> | undefined;
+    let newerFailure: AppState['autoSaveFailure'] = null;
+    let newerProjects: AppState['projects'] = [];
+    fileMocks.saveProject.mockImplementationOnce(async (record: { id: string }) => {
+      useAppStore.setState({ projectLoadStatus: 'error', projectName: '较新的项目名称' });
+      newerSaving = useAppStore.getState().saveCurrentProjectSilent();
+      newerFailure = useAppStore.getState().autoSaveFailure;
+      newerProjects = useAppStore.getState().projects;
+      return record.id;
+    });
+    try {
+      expect(await useAppStore.getState()[action]()).toBe('save-project');
+      expect(await newerSaving).toBeUndefined();
+      expect(newerFailure!).toMatchObject({ kind: 'load-error', count: 1 });
+      expect(useAppStore.getState().autoSaveFailure).toBe(newerFailure!);
+      expect(useAppStore.getState().projects).toBe(newerProjects!);
+      expect(manualSuccess).not.toHaveBeenCalled();
+      expect(showToast).not.toHaveBeenCalledWith('项目已保存');
+    } finally { unsubscribe(); }
+  });
+
+  it.each(['saveCurrentProject', 'saveCurrentProjectSilent'] as const)('%s keeps existing name synchronization and does not restore an older captured name', async (action) => {
+    openSaveProject();
+    useAppStore.setState({ projectName: '待保存的新名称' });
+    expect(await useAppStore.getState()[action]()).toBe('save-project');
+    expect(useAppStore.getState().projects[0].name).toBe('待保存的新名称');
+    let finish!: (id: string) => void;
+    fileMocks.saveProject.mockImplementationOnce(() => new Promise<string>((resolve) => { finish = resolve; }));
+    const saving = useAppStore.getState()[action]();
+    const updatedAt = Date.now() + 100;
+    useAppStore.setState((state) => ({ projectName: '保存期间改过的名称',
+      projects: state.projects.map((project) => ({ ...project, name: '保存期间改过的名称', updatedAt })) }));
+    finish('save-project');
+    expect(await saving).toBe('save-project');
+    expect(useAppStore.getState().projects[0]).toMatchObject({ name: '保存期间改过的名称', updatedAt });
+  });
+
+  it.each(['other-project', 'reopened-project'] as const)('does not clear the %s failure or broadcast recovery when an old save succeeds', async (navigation) => {
+    openSaveProject('project-p');
+    const manualSuccess = vi.fn(), showToast = vi.fn();
+    useAppStore.setState({ showToast });
+    const unsubscribe = subscribeManualProjectSaveSuccess(manualSuccess);
+    let finish!: (id: string) => void;
+    fileMocks.saveProject.mockImplementationOnce(() => new Promise<string>((resolve) => { finish = resolve; }));
+    const oldSaving = useAppStore.getState().saveCurrentProject();
+    openSaveProject('project-q');
+    if (navigation === 'reopened-project') openSaveProject('project-p');
+    useAppStore.setState({ projectLoadStatus: 'error' });
+    expect(await useAppStore.getState().saveCurrentProjectSilent()).toBeUndefined();
+    const currentFailure = useAppStore.getState().autoSaveFailure;
+    const currentProjects = useAppStore.getState().projects;
+    showToast.mockClear();
+    try {
+      finish('project-p');
+      expect(await oldSaving).toBe('project-p');
+      expect(useAppStore.getState().autoSaveFailure).toBe(currentFailure);
+      expect(useAppStore.getState().projects).toBe(currentProjects);
+      expect(manualSuccess).not.toHaveBeenCalled();
+      expect(showToast).not.toHaveBeenCalled();
+    } finally { unsubscribe(); }
+  });
+
+  it('keeps outcome ordering and one session observer when project actions are rebound during classification', async () => {
+    openSaveProject();
+    let finishEstimate!: (estimate: { usage: number; quota: number }) => void;
+    vi.stubGlobal('navigator', { storage: { estimate: vi.fn(() => new Promise<{ usage: number; quota: number }>((resolve) => { finishEstimate = resolve; })) } });
+    fileMocks.saveProject.mockRejectedValueOnce(new DOMException('before hot reload', 'QuotaExceededError'));
+    const oldSaving = useAppStore.getState().saveCurrentProjectSilent();
+    const subscribe = vi.spyOn(useAppStore, 'subscribe');
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      const fresh = createProjectSlice(useAppStore.setState, useAppStore.getState, useAppStore);
+      useAppStore.setState({ saveCurrentProject: fresh.saveCurrentProject, saveCurrentProjectSilent: fresh.saveCurrentProjectSilent });
+      expect(subscribe).not.toHaveBeenCalled();
+      expect(await useAppStore.getState().saveCurrentProject()).toBe('save-project');
+      finishEstimate({ usage: 1, quota: 1 });
+      expect(await oldSaving).toBeUndefined();
+      expect(useAppStore.getState().autoSaveFailure).toBeNull();
+    } finally { subscribe.mockRestore(); vi.unstubAllGlobals(); }
   });
 
   it('reports an unexpected rejection and leaves another project independent', async () => {
@@ -1473,6 +1616,25 @@ describe('project switching', () => {
       'error',
     );
     expect(showToast).toHaveBeenCalledWith('项目尚未成功加载，已阻止覆盖保存', 'error');
+  });
+
+  it('only a successful manual save notifies the automatic-save recovery host', async () => {
+    useAppStore.setState({ projects: [{ id: 'project-a', name: 'A', createdAt: 1, updatedAt: 1 }],
+      currentProjectId: 'project-a', projectName: 'A', projectLoadStatus: 'ready', nodes: [], edges: [], groups: [], showToast: vi.fn() });
+    const saved = vi.fn();
+    const unsubscribe = subscribeManualProjectSaveSuccess(saved);
+    try {
+      fileMocks.saveProject.mockRejectedValueOnce(new Error('disk full'));
+      expect(await useAppStore.getState().saveCurrentProject()).toBeUndefined();
+      expect(saved).not.toHaveBeenCalled();
+      expect(await useAppStore.getState().saveCurrentProjectSilent()).toBe('project-a');
+      expect(saved).not.toHaveBeenCalled();
+      expect(await useAppStore.getState().saveCurrentProject()).toBe('project-a');
+      expect(saved).toHaveBeenCalledExactlyOnceWith('project-a');
+      unsubscribe();
+      await useAppStore.getState().saveCurrentProject();
+      expect(saved).toHaveBeenCalledOnce();
+    } finally { unsubscribe(); }
   });
 
   it('keeps warning while auto-save stays broken, and clears the failure after a success', async () => {

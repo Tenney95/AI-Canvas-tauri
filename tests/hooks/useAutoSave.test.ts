@@ -17,6 +17,13 @@ const driver = vi.hoisted(() => ({
   }),
   finish: vi.fn(async () => undefined),
   waitForSaves: vi.fn(async (_projectId: string) => true),
+  invoke: vi.fn(async (_command: string, _args?: unknown): Promise<unknown> => undefined),
+  manualSaveListeners: new Set<(projectId: string) => void>(),
+}));
+
+vi.mock('@tauri-apps/api/core', async (original) => ({
+  ...await original<typeof import('@tauri-apps/api/core')>(),
+  invoke: driver.invoke,
 }));
 
 // 在 Node 环境驱动 effect 生命周期；Hook 和分组 Store 使用生产实现。
@@ -43,6 +50,10 @@ vi.mock('../../src/services/indexedDb/mediaRelocations', async (original) => ({
 vi.mock('../../src/store/store.projects', async (original) => ({
   ...await original<typeof import('../../src/store/store.projects')>(),
   waitForPendingProjectSaves: driver.waitForSaves,
+  subscribeManualProjectSaveSuccess: (listener: (projectId: string) => void) => {
+    driver.manualSaveListeners.add(listener);
+    return () => { driver.manualSaveListeners.delete(listener); };
+  },
 }));
 
 import {
@@ -70,8 +81,10 @@ beforeEach(() => {
   vi.stubGlobal('window', new EventTarget());
   vi.clearAllMocks();
   driver.effects = [];
+  driver.manualSaveListeners.clear();
   driver.pending.mockReset().mockResolvedValue([]);
   driver.waitForSaves.mockReset().mockResolvedValue(true);
+  driver.invoke.mockReset().mockResolvedValue(undefined);
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({ currentProjectId: 'p1', projectLoadStatus: 'ready',
     projects: [{ id: 'p1', name: '项目一', createdAt: 1, updatedAt: 1 }, { id: 'p2', name: '项目二', createdAt: 1, updatedAt: 1 }], nodes: [mediaNode()],
@@ -82,6 +95,7 @@ afterEach(async () => {
   cleanup = undefined;
   await vi.advanceTimersByTimeAsync(0);
   vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -212,29 +226,81 @@ describe('useAutoSave with the group file Store', () => {
     expect(useAppStore.getState().saveCurrentProjectSilent).not.toHaveBeenCalled();
   });
 
-  it.each([[1, 5000], [2, 10000], [3, 20000], [4, 40000], [5, 60000], [6, 60000]])(
-    'keeps failure %s on its %s ms retry deadline despite clicks and disk updates', async (count, delay) => {
-      const save = vi.mocked(useAppStore.getState().saveCurrentProjectSilent).mockImplementation(async () => {
-        useAppStore.setState({ autoSaveFailure: { kind: 'disk-full', reason: '磁盘已满', count,
-          firstAt: 0, lastAt: Date.now(), lastNotifiedAt: 0 } });
-        return undefined;
-      });
-      mount();
-      await vi.advanceTimersByTimeAsync(0);
-      useAppStore.getState().updateNodeDataTransient('a', { output: '待重试的正文' });
-      await vi.advanceTimersByTimeAsync(2000);
-      expect(save).toHaveBeenCalledOnce();
-      for (let elapsed = 1000; elapsed < delay; elapsed += 1000) {
-        await vi.advanceTimersByTimeAsync(1000);
-        useAppStore.setState({ nodes: [{ ...useAppStore.getState().nodes[0], selected: elapsed % 2000 === 0 }] });
-        window.dispatchEvent(new Event(PROJECT_DISK_CHANGED_EVENT));
-      }
-      await vi.advanceTimersByTimeAsync(999);
-      expect(save).toHaveBeenCalledOnce();
-      await vi.advanceTimersByTimeAsync(1);
-      expect(save).toHaveBeenCalledTimes(2);
-    },
-  );
+  it('pauses after three consecutive automatic failures despite new node data and disk events', async () => {
+    const toast = vi.fn();
+    useAppStore.setState({ showToast: toast });
+    let count = 0;
+    const save = vi.mocked(useAppStore.getState().saveCurrentProjectSilent).mockImplementation(async () => {
+      useAppStore.setState({ autoSaveFailure: { kind: 'unknown', reason: '临时写入失败', count: ++count,
+        firstAt: 0, lastAt: Date.now(), lastNotifiedAt: 0 } });
+      window.dispatchEvent(new Event(PROJECT_DISK_CHANGED_EVENT));
+      return undefined;
+    });
+    mount();
+    await vi.advanceTimersByTimeAsync(0);
+    useAppStore.getState().updateNodeDataTransient('a', { output: '待重试的正文' });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(save).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(4999);
+    useAppStore.getState().updateNodeDataTransient('a', { output: '生成进度变化' });
+    window.dispatchEvent(new Event(PROJECT_DISK_CHANGED_EVENT));
+    expect(save).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(save).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(9999);
+    useAppStore.getState().updateNodeDataTransient('a', { output: '又一次内容变化' });
+    expect(save).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(save).toHaveBeenCalledTimes(3);
+    for (let index = 0; index < 5; index++) {
+      useAppStore.getState().updateNodeDataTransient('a', { output: `暂停后新编辑 ${index}` });
+      useAppStore.setState({ nodes: [{ ...useAppStore.getState().nodes[0], selected: true, position: { x: index, y: index } }] });
+      window.dispatchEvent(new Event(PROJECT_DISK_CHANGED_EVENT));
+      await vi.advanceTimersByTimeAsync(60_000);
+    }
+    expect(save).toHaveBeenCalledTimes(3);
+    expect(toast).toHaveBeenCalledExactlyOnceWith('自动保存已暂停，未保存内容已保留。请修复保存问题后按 Ctrl+S 重试', 'error');
+    expect(await flushPendingAutoSave('p1')).toBe(false);
+  });
+
+  it.each([
+    ['quota', '浏览器存储配额已用尽'], ['disk-full', '磁盘已满'], ['load-error', '项目加载失败'],
+    ['unknown', '新项目素材目录不可用或归属未能确认，原有文件已保留'],
+  ] as const)('immediately pauses %s failures and retains edits until a manual save succeeds', async (kind, reason) => {
+    const save = vi.mocked(useAppStore.getState().saveCurrentProjectSilent).mockImplementation(async () => {
+      useAppStore.setState({ autoSaveFailure: { kind, reason, count: 39, firstAt: 0, lastAt: Date.now(), lastNotifiedAt: 0 } });
+      window.dispatchEvent(new Event(PROJECT_DISK_CHANGED_EVENT));
+      return undefined;
+    });
+    mount();
+    await vi.advanceTimersByTimeAsync(0);
+    useAppStore.getState().updateNodeDataTransient('a', { output: '第一次保存的正文' });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(save).toHaveBeenCalledOnce();
+    useAppStore.getState().updateNodeDataTransient('a', { output: '手动保存期间又新增的正文' });
+    window.dispatchEvent(new Event(PROJECT_DISK_CHANGED_EVENT));
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(save).toHaveBeenCalledOnce();
+    expect(await flushPendingAutoSave('p1')).toBe(false);
+    // 普通成功状态变化本身不能冒充手动保存成功。
+    useAppStore.setState({ autoSaveFailure: null });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(save).toHaveBeenCalledOnce();
+    const saved: Array<string | undefined> = [];
+    save.mockImplementation(async () => {
+      saved.push(useAppStore.getState().nodes[0].data.output);
+      return 'p1';
+    });
+    driver.manualSaveListeners.forEach((listener) => listener('other-project'));
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(save).toHaveBeenCalledOnce();
+    driver.manualSaveListeners.forEach((listener) => listener('p1'));
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(save).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(saved).toEqual(['手动保存期间又新增的正文']);
+    expect(await flushPendingAutoSave('p1')).toBe(true);
+  });
 
   it('archives a parentId change even when the group member array is unchanged', async () => {
     useAppStore.setState({ groups: [{ id: 'g', name: '镜头', nodeIds: [], color: '#888', createdAt: 0 }] });
@@ -352,9 +418,10 @@ describe('flushPendingAutoSave', () => {
     let settled = false;
     void flushing.then(() => { settled = true; });
     await vi.advanceTimersByTimeAsync(0);
-    expect(save).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenCalledOnce();
     finishOld('p1');
     await vi.advanceTimersByTimeAsync(0);
+    expect(save).toHaveBeenCalledTimes(2);
     expect(settled).toBe(false);
     finishNew('p1');
     expect(await flushing).toBe(true);
@@ -380,7 +447,7 @@ describe('flushPendingAutoSave', () => {
     mount();
     await vi.advanceTimersByTimeAsync(0);
     const save = vi.mocked(useAppStore.getState().saveCurrentProjectSilent).mockImplementationOnce(async () => {
-      useAppStore.setState({ autoSaveFailure: { kind: 'disk-full', reason: '磁盘已满', count: 1,
+      useAppStore.setState({ autoSaveFailure: { kind: 'unknown', reason: '临时写入失败', count: 1,
         firstAt: Date.now(), lastAt: Date.now(), lastNotifiedAt: Date.now() } });
       return undefined;
     });
@@ -437,6 +504,185 @@ describe('flushPendingAutoSave', () => {
     cleanup = effect() || undefined;
     expect(await flushPendingAutoSave('p1')).toBe(true);
     expect(useAppStore.getState().saveCurrentProjectSilent).toHaveBeenCalledOnce();
+  });
+
+  it('coalesces disk events and newer data behind one in-flight automatic save', async () => {
+    let finish!: (id: string) => void;
+    const save = vi.mocked(useAppStore.getState().saveCurrentProjectSilent)
+      .mockImplementationOnce(() => new Promise<string>((resolve) => { finish = resolve; }));
+    mount();
+    await vi.advanceTimersByTimeAsync(0);
+    useAppStore.getState().updateNodeDataTransient('a', { output: '旧正文' });
+    await vi.advanceTimersByTimeAsync(2000);
+    for (let version = 0; version < 4; version++) {
+      useAppStore.getState().updateNodeDataTransient('a', { output: `新正文 ${version}` });
+      window.dispatchEvent(new Event(PROJECT_DISK_CHANGED_EVENT));
+      await vi.advanceTimersByTimeAsync(2000);
+    }
+    expect(save).toHaveBeenCalledOnce();
+    finish('p1');
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(save).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(useAppStore.getState().nodes[0].data.output).toBe('新正文 3');
+  });
+
+  it.each(['none', 'body', 'disk'] as const)('does not loop on real inline-mask materialization and retains concurrent %s input', async (change) => {
+    const core = await import('../../src/services/fs/core');
+    const { serializeProjectRecord } = await import('../../src/services/storageService');
+    const sha256 = '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81';
+    vi.spyOn(core, 'getNativeProjectOwner').mockReturnValue('native-owner');
+    vi.spyOn(core, 'getProjectDataDir').mockResolvedValue('D:/data/p1');
+    vi.spyOn(core, 'getAssetUrlFromPath').mockImplementation(async (path) => `asset://localhost/${path}`);
+    const write = driver.invoke.mockResolvedValue({ relativePath: `media/${sha256}.png`, sha256, bytes: 3, mimeType: 'image/png' });
+    useAppStore.setState({ nodes: [{ id: 'a', type: 'ai-image', position: { x: 0, y: 0 },
+      data: { type: 'ai-image', label: '真实序列化遮罩', imageUrl: 'https://example.invalid/source.png', output: '原正文' } }] });
+    const directoryRefreshes: unknown[] = [];
+    window.addEventListener(PROJECT_DISK_CHANGED_EVENT, (event) => {
+      directoryRefreshes.push((event as CustomEvent).detail);
+    });
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let completedSerializations = 0;
+    let serializationFailure: { error: unknown } | undefined;
+    const savedInputs: Array<{ mask: string | undefined; output: string | undefined }> = [];
+    const save = vi.mocked(useAppStore.getState().saveCurrentProjectSilent).mockImplementation(async () => {
+      const state = useAppStore.getState();
+      savedInputs.push({ mask: state.nodes[0].data.mattingMask, output: state.nodes[0].data.output });
+      // Only the native write is a fixture: serialization, notification and Hook are production code.
+      try {
+        await serializeProjectRecord({ id: 'p1', name: '遮罩保存', createdAt: 1, updatedAt: 2,
+          nodes: state.nodes, edges: state.edges, groups: state.groups });
+      } catch (error) { serializationFailure = { error }; throw error; }
+      completedSerializations += 1;
+      if (completedSerializations === 1) await firstGate;
+      return 'p1';
+    });
+    mount();
+    try {
+      useAppStore.getState().updateNodeDataTransient('a', { mattingMask: 'data:image/png;base64,AQID' });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(save, 'the original merge timer must start the first save').toHaveBeenCalledOnce();
+      // The real decoder yields through setTimeout(0); bounded polling must also drive that fake timer.
+      await vi.waitFor(() => {
+        if (serializationFailure) throw serializationFailure.error;
+        expect(write, 'inline decoding and hashing must reach the native write').toHaveBeenCalledOnce();
+        expect(completedSerializations, 'the first real serializer must complete before opening its gate').toBe(1);
+      });
+      if (change === 'body') useAppStore.getState().updateNodeDataTransient('a', { output: '在途新正文' });
+      else if (change === 'disk') core.notifyProjectDiskChanged();
+      releaseFirst();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(2000);
+      if (change !== 'none') {
+        await vi.waitFor(() => {
+          if (serializationFailure) throw serializationFailure.error;
+          expect(write, 'the retained concurrent input must reach a second native write').toHaveBeenCalledTimes(2);
+          expect(completedSerializations, 'the second real serializer must finish').toBe(2);
+        });
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      const expectedSaves = change === 'none' ? 1 : 2;
+      await vi.advanceTimersByTimeAsync(60_000);
+      if (serializationFailure) throw serializationFailure.error;
+      expect(save).toHaveBeenCalledTimes(expectedSaves);
+      expect(write).toHaveBeenCalledTimes(expectedSaves);
+      expect(directoryRefreshes.filter((detail) => detail !== null)).toEqual(
+        Array.from({ length: expectedSaves }, () => ({ source: 'save-materialization', projectId: 'p1' })),
+      );
+      expect(savedInputs.every((input) => input.mask === 'data:image/png;base64,AQID')).toBe(true);
+      if (change === 'body') expect(savedInputs[1].output).toBe('在途新正文');
+      expect(useAppStore.getState().nodes[0].data.mattingMask).toBe('data:image/png;base64,AQID');
+    } finally { releaseFirst(); }
+  });
+
+  it('replays a failure settled without an owner and keeps its pause and dirty data across effect replays', async () => {
+    let finish!: () => void;
+    const save = vi.mocked(useAppStore.getState().saveCurrentProjectSilent).mockImplementationOnce(() => new Promise<undefined>((resolve) => {
+      finish = () => {
+        useAppStore.setState({ autoSaveFailure: { kind: 'unknown', reason: '新项目素材目录不可用或归属未能确认，原有文件已保留',
+          count: 1, firstAt: 0, lastAt: Date.now(), lastNotifiedAt: 0 } });
+        resolve(undefined);
+      };
+    }));
+    mountAutoSave();
+    const effect = driver.effects.pop()!;
+    cleanup = effect() || undefined;
+    await vi.advanceTimersByTimeAsync(0);
+    useAppStore.getState().updateNodeDataTransient('a', { output: '保存开始时的正文' });
+    await vi.advanceTimersByTimeAsync(2000);
+    useAppStore.getState().updateNodeDataTransient('a', { output: '在途保存后新增的正文' });
+    cleanup?.(); cleanup = undefined;
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
+    cleanup = effect() || undefined;
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(save).toHaveBeenCalledOnce();
+    expect(await flushPendingAutoSave('p1')).toBe(false);
+    cleanup?.();
+    cleanup = effect() || undefined;
+    window.dispatchEvent(new Event(PROJECT_DISK_CHANGED_EVENT));
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(save).toHaveBeenCalledOnce();
+    useAppStore.setState({ autoSaveFailure: null });
+    driver.manualSaveListeners.forEach((listener) => listener('p1'));
+    expect(await flushPendingAutoSave('p1')).toBe(true);
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(useAppStore.getState().nodes[0].data.output).toBe('在途保存后新增的正文');
+  });
+
+  it('does not carry an old project failure or pause into the next project', async () => {
+    let finish!: () => void;
+    const save = vi.mocked(useAppStore.getState().saveCurrentProjectSilent).mockImplementationOnce(() => new Promise<undefined>((resolve) => {
+      finish = () => {
+        useAppStore.setState({ autoSaveFailure: { kind: 'disk-full', reason: '旧项目写入失败', count: 1,
+          firstAt: 0, lastAt: Date.now(), lastNotifiedAt: 0 } });
+        resolve(undefined);
+      };
+    })).mockImplementation(async () => {
+      useAppStore.setState({ autoSaveFailure: null });
+      return useAppStore.getState().currentProjectId ?? undefined;
+    });
+    mount();
+    await vi.advanceTimersByTimeAsync(0);
+    useAppStore.getState().updateNodeDataTransient('a', { output: '旧项目正文' });
+    await vi.advanceTimersByTimeAsync(2000);
+    useAppStore.setState({ currentProjectId: 'p2', nodes: [{ id: 'b', type: 'ai-text', position: { x: 0, y: 0 },
+      data: { label: 'b', type: 'ai-text', output: '新项目原文' } }] });
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
+    useAppStore.getState().updateNodeDataTransient('b', { output: '新项目编辑' });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(await flushPendingAutoSave('p2')).toBe(true);
+  });
+
+  it('ignores an old in-flight automatic failure after a newer manual save succeeds', async () => {
+    let finish!: () => void;
+    const save = vi.mocked(useAppStore.getState().saveCurrentProjectSilent).mockImplementationOnce(() => new Promise<undefined>((resolve) => {
+      finish = () => {
+        useAppStore.setState({ autoSaveFailure: { kind: 'disk-full', reason: '旧自动保存的迟到失败', count: 1,
+          firstAt: 0, lastAt: Date.now(), lastNotifiedAt: 0 } });
+        resolve(undefined);
+      };
+    })).mockImplementation(async () => {
+      useAppStore.setState({ autoSaveFailure: null });
+      return 'p1';
+    });
+    mount();
+    await vi.advanceTimersByTimeAsync(0);
+    useAppStore.getState().updateNodeDataTransient('a', { output: '旧自动保存的正文' });
+    await vi.advanceTimersByTimeAsync(2000);
+    useAppStore.getState().updateNodeDataTransient('a', { output: '手动保存后又编辑的正文' });
+    driver.manualSaveListeners.forEach((listener) => listener('p1'));
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(useAppStore.getState().nodes[0].data.output).toBe('手动保存后又编辑的正文');
+    expect(await flushPendingAutoSave('p1')).toBe(true);
   });
 
   it('keeps the current flush owner when an older effect cleans up later', async () => {

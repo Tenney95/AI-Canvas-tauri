@@ -44,6 +44,7 @@ vi.mock('../../src/services/indexedDb/mediaRelocations', async (importOriginal) 
 
 import { listExternalFolderContents, listExternalFolderFiles, selectAssetFolderFiles, listGlobalFolderContents, createAssetSubfolder, resolveAssetFolderDirectory, addAssetFilesToGlobal, saveToPermanent, saveAssetToPermanent, walkDirectoryFiles } from '../../src/services/fs/assetLibrary';
 import type { AssetFileEntry } from '../../src/services/fs/core';
+import { isNativeMediaPendingFile } from '../../src/utils/nativeMediaPendingFile';
 
 function directory(path: string, names: string[]) {
   mocks.directories.set(path, names.map((name) => ({
@@ -73,6 +74,46 @@ beforeEach(() => {
 });
 
 describe('global asset folder browsing', () => {
+  it('只识别原生媒体的完整暂存命名，保留普通 pending、点文件和最终素材', () => {
+    const hash = 'a'.repeat(64);
+    for (const extension of ['', ...['png', 'jpg', 'webp', 'gif', 'mp4', 'webm', 'mov', 'mp3', 'wav', 'ogg', 'opus', 'aac', 'flac', 'pcm', 'json'].map((value) => `.${value}`)]) {
+      const name = `.native-media-${hash}${extension}.pending`;
+      expect(isNativeMediaPendingFile(name)).toBe(true);
+      expect(isNativeMediaPendingFile(`D:\\作品\\media\\${name.toUpperCase()}`)).toBe(true);
+    }
+    for (const name of ['ordinary.pending', '.notes', `${hash}.png`, `.native-media-${hash}.png`,
+      `.native-media-${hash.slice(1)}.png.pending`, `.native-media-${hash}a.png.pending`,
+      `.native-media-${hash.slice(1)}z.png.pending`, `.native-media-${hash}.jpeg.pending`,
+      `.native-media-${hash}.txt.pending`, `.native-media-${hash}.png.pending.bak`]) {
+      expect(isNativeMediaPendingFile(`/素材/${name}`)).toBe(false);
+    }
+  });
+
+  it.each(['project', 'global', 'folder'] as const)('扫描 %s 在 stat、计数和流式展示前排除旧、新原生暂存件', async (source) => {
+    const hash = 'a'.repeat(64);
+    const pending = [`.native-media-${hash}.pending`, `.native-media-${hash}.png.pending`];
+    const visible = ['photo.png', 'ordinary.pending', '.notes'];
+    directory('/scan', [...pending, ...visible]);
+    const batches: AssetFileEntry[] = [];
+    const files = await walkDirectoryFiles('/scan', { source, projectId: source === 'project' ? 'project' : undefined,
+      maxFiles: visible.length, onFiles: (batch) => batches.push(...batch) });
+    expect(files.map((file) => file.name)).toEqual(visible);
+    expect(batches).toEqual(files);
+    for (const name of pending) expect(mocks.stat).not.toHaveBeenCalledWith(`/scan/${name}`);
+    expect(mocks.directories.get('/scan')).toHaveLength(pending.length + visible.length);
+  });
+
+  it('全局、外部和聚合目录选择同时过滤旧内存列表中的原生暂存项', () => {
+    const hash = 'a'.repeat(64);
+    const files: AssetFileEntry[] = [`.native-media-${hash}.pending`, `.native-media-${hash}.webp.pending`, 'ordinary.pending', '.notes']
+      .map((name) => ({ name, path: `/global/file/${name}`, source: 'global', relativePath: name, size: 1, category: 'other' }));
+    for (const selection of [{ kind: 'all' as const }, { kind: 'global' as const },
+      { kind: 'folder' as const, rootPath: '/global/file', relativePath: '' }]) {
+      expect(selectAssetFolderFiles(files, selection).map((file) => file.name)).toEqual(['ordinary.pending', '.notes']);
+    }
+    expect(files).toHaveLength(4);
+  });
+
   it.each([
     { label: '真实零点创建时间', birthtime: new Date(0), mtime: new Date(20), createdAt: 0, modifiedAt: 20 },
     { label: '不支持创建时间', birthtime: null, mtime: new Date(20), createdAt: undefined, modifiedAt: 20 },

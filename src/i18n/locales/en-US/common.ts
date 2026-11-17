@@ -381,6 +381,7 @@ const common = {
   "已更新插件「{name}」": "Updated plugin “{name}”",
   "已安装插件「{name}」": "Installed plugin “{name}”",
   "自动保存已连续失败 {count} 次": "Auto-save failed {count} times in a row",
+  "自动保存已暂停，未保存内容已保留。请修复保存问题后按 Ctrl+S 重试": "Auto-save is paused. Unsaved changes are retained. Fix the save problem, then press Ctrl+S to retry.",
   "{prefix}：{reason}。请手动保存 (Ctrl+S) 或导出项目备份": "{prefix}: {reason}. Save manually (Ctrl+S) or export a project backup.",
   "{count} 个分集、": "{count} episodes and ",
   "已导出「{name}」，含 {episodes}{count} 个素材": "Exported “{name}” with {episodes}{count} assets",

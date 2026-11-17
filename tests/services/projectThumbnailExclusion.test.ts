@@ -139,6 +139,21 @@ describe('project thumbnail directories stay outside asset scans', () => {
       && options.projectId === 'project' && options.mtimeMs === 0)).toBe(true);
   });
 
+  it('单层目录列举也在 stat 前隐藏原生暂存件，原件与普通 pending 保留', async () => {
+    const hash = 'a'.repeat(64);
+    const pending = [`.native-media-${hash}.pending`, `.native-media-${hash}.png.pending`];
+    addDirectory('/single', [...pending, 'photo.png', 'ordinary.pending', '.notes']);
+    const core = await vi.importActual<typeof import('../../src/services/fs/core')>('../../src/services/fs/core');
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: { convertFileSrc: (path: string) => `asset://${path}` } });
+    try {
+      const files = await core.listDirectoryFiles('/single');
+      expect(files.map((file) => file.name).sort()).toEqual(['.notes', 'ordinary.pending', 'photo.png']);
+      for (const name of pending) expect(mocks.stat).not.toHaveBeenCalledWith(`/single/${name}`);
+      expect(mocks.directories.get('/single')).toHaveLength(5);
+      expect(mocks.remove).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it('publishes the first stable project asset before later assets are identified', async () => {
     const batches: AssetFileEntry[][] = [];
     const identifiedCounts: number[] = [];

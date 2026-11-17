@@ -12,6 +12,7 @@ import { fingerprintAssetImage } from './assetImageMetadata';
 import { getGlobalFilesDir } from './assetLibrary';
 import { getRelativeAssetPath } from './assetIndex';
 import { getAssetUrlFromPath, getFileCategory, getProjectDataDir, isTauriEnv, joinPath, notifyProjectDiskChanged, stripVerbatimPrefix } from './core';
+import { isNativeMediaPendingFile } from '../../utils/nativeMediaPendingFile';
 
 export type AssetRepairTarget = { kind: 'file'; assetId?: string; path: string; name: string } | { kind: 'folder'; path: string; name: string } | { kind: 'all' };
 export interface AssetRepairCandidate {
@@ -47,6 +48,7 @@ async function inspect(path: string, options: DramaAssetWriteOptions) {
 export async function listUnavailableAssetIndexes(target: AssetRepairTarget, options: DramaAssetWriteOptions = {}): Promise<AssetRepairScan> {
   const indexes = await guarded(getAllAssetIndexes, options);
   const selected = indexes.filter((entry) => {
+    if (isNativeMediaPendingFile(entry.path)) return false;
     if (target.kind === 'all') return true;
     if (target.kind === 'file') return target.assetId ? entry.assetId === target.assetId : key(entry.path) === key(target.path);
     return getRelativeAssetPath(entry.path, target.path) !== undefined;

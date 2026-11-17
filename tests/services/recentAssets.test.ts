@@ -210,6 +210,20 @@ describe('最近使用持久化与资产解析', () => {
     expect((await loadRecentAssets(scope)).map((entry) => entry.file.assetId)).toContain('missing');
   });
 
+  it('旧最近使用索引不再展示内部暂存件，普通 pending 与原索引记录保留', async () => {
+    const db = await import('../../src/services/indexedDbService');
+    const { loadRecentAssets } = await import('../../src/services/fs/recentAssets');
+    const hash = 'a'.repeat(64);
+    const records = [index('old-pending', `/global/file/.native-media-${hash}.pending`),
+      index('new-pending', `/global/file/.native-media-${hash}.png.pending`), index('user-pending', '/global/file/ordinary.pending')];
+    for (const record of records) { await db.putAssetIndex(record); await db.recordRecentAssetUsage(record.assetId, 1); }
+
+    expect((await loadRecentAssets(scope)).map((entry) => entry.file.name)).toEqual(['ordinary.pending']);
+    for (const record of records.slice(0, 2)) expect(driver.stat).not.toHaveBeenCalledWith(record.path);
+    expect(await db.getRecentAssetUsage()).toHaveLength(3);
+    for (const record of records) expect(await db.getAssetIndexById(record.assetId)).toBeDefined();
+  });
+
   it('索引重命名后跟随稳定 ID 的新位置，展示最多 12 项且取消读取不回写', async () => {
     const db = await import('../../src/services/indexedDbService');
     const { loadRecentAssets } = await import('../../src/services/fs/recentAssets');

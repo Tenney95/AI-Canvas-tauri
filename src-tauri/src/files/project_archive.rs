@@ -360,7 +360,7 @@ fn excluded_asset_directory(name: &str, project_root: bool) -> bool {
     EXCLUDED_DIR_NAMES.iter().any(|expected| matches(expected)) || project_root && matches(".thumbnail")
 }
 
-/// 固定原生发布器留下的恢复材料不是附件；仅保留 media 直接子项的 32-byte 随机 ID 暂存名。
+/// 原生发布器的恢复材料不是附件；仅识别 media 直接子项的旧随机名与新内容摘要暂存名。
 fn native_media_staging_path(relative: &Path) -> bool {
     let mut parts = relative.components();
     let (Some(Component::Normal(parent)), Some(Component::Normal(file)), None) = (parts.next(), parts.next(), parts.next()) else { return false; };
@@ -368,7 +368,13 @@ fn native_media_staging_path(relative: &Path) -> bool {
     let case_aliases = cfg!(windows) || cfg!(target_os = "macos");
     if parent != "media" && !(case_aliases && parent.eq_ignore_ascii_case("media")) { return false; }
     let name = if case_aliases { file.to_ascii_lowercase() } else { file.to_string() };
-    let Some(id) = name.strip_prefix(".native-media-").and_then(|name| name.strip_suffix(".pending")) else { return false; };
+    let Some(identity) = name.strip_prefix(".native-media-").and_then(|name| name.strip_suffix(".pending")) else { return false; };
+    let id = match identity.split_once('.') {
+        Some((id, extension)) if matches!(extension, "png" | "jpg" | "webp" | "gif" | "mp4" | "webm" | "mov"
+            | "mp3" | "wav" | "ogg" | "opus" | "aac" | "flac" | "pcm" | "json") => id,
+        Some(_) => return false,
+        None => identity,
+    };
     id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
@@ -1701,31 +1707,37 @@ mod tests {
         let fixture = Fixture::new();
         let pending = format!("media/.native-media-{}.pending", "a".repeat(64));
         fixture.write(&pending, b"unpublished recovery bytes exceeding the ordinary attachment budget");
+        let resumable = format!("media/.native-media-{}.png.pending", "b".repeat(64));
+        fixture.write(&resumable, b"resumable recovery material is not an attachment either");
         let ordinary = ["media/finished.png".to_owned(), "media/.ordinary.pending".to_owned(),
             "media/.native-media-short.pending".to_owned(), format!(".native-media-{}.pending", "a".repeat(64)),
-            format!("media/sub/.native-media-{}.pending", "a".repeat(64))];
+            format!("media/sub/.native-media-{}.pending", "a".repeat(64)),
+            format!("media/.native-media-{}.txt.pending", "a".repeat(64))];
         for path in &ordinary { fixture.write(path, b"img"); }
         let rows = inspect_assets_scoped(&fixture.0, None, None, ordinary.len(), ordinary.len() as u64 * 3).unwrap();
         let actual: HashSet<_> = rows.iter().map(|row| row.path.as_str()).collect();
         let expected: HashSet<_> = ordinary.iter().map(String::as_str).collect();
         assert_eq!(actual, expected);
         assert_eq!(fs::read(fixture.0.join(&pending)).unwrap(), b"unpublished recovery bytes exceeding the ordinary attachment budget");
+        assert_eq!(fs::read(fixture.0.join(&resumable)).unwrap(), b"resumable recovery material is not an attachment either");
     }
 
     #[test]
     fn explicit_selection_and_pack_cannot_include_native_media_pending_files() {
-        let fixture = Fixture::new();
-        let pending = format!("media/.native-media-{}.pending", "b".repeat(64));
-        fixture.write(&pending, b"pending");
-        let selected = vec![pending.clone()];
-        assert!(selected_asset_file(&fixture.0, Path::new(&pending)).unwrap_err().contains("暂存文件"));
-        assert!(inspect_assets_scoped(&fixture.0, None, Some(&selected), 1, 7).err().unwrap().contains("暂存文件"));
-        let (bytes, sha256) = hash_file(&fixture.0.join(&pending), &mut Vec::new()).unwrap();
-        let output = fixture.0.with_extension("aicanvas");
-        assert!(pack_archive(vec![], Some(fixture.0.clone()), output.clone(),
-            Some(vec![ArchiveAssetDigest { path: pending.clone(), bytes, sha256, source_root_ref: None, source_relative_path: None }]), MAX_ARCHIVE_ENTRIES)
-            .err().unwrap().contains("暂存文件"));
-        assert!(!output.exists()); assert_eq!(fs::read(fixture.0.join(&pending)).unwrap(), b"pending");
+        for suffix in ["", ".png", ".json"] {
+            let fixture = Fixture::new();
+            let pending = format!("media/.native-media-{}{suffix}.pending", "b".repeat(64));
+            fixture.write(&pending, b"pending");
+            let selected = vec![pending.clone()];
+            assert!(selected_asset_file(&fixture.0, Path::new(&pending)).unwrap_err().contains("暂存文件"));
+            assert!(inspect_assets_scoped(&fixture.0, None, Some(&selected), 1, 7).err().unwrap().contains("暂存文件"));
+            let (bytes, sha256) = hash_file(&fixture.0.join(&pending), &mut Vec::new()).unwrap();
+            let output = fixture.0.with_extension("aicanvas");
+            assert!(pack_archive(vec![], Some(fixture.0.clone()), output.clone(),
+                Some(vec![ArchiveAssetDigest { path: pending.clone(), bytes, sha256, source_root_ref: None, source_relative_path: None }]), MAX_ARCHIVE_ENTRIES)
+                .err().unwrap().contains("暂存文件"));
+            assert!(!output.exists()); assert_eq!(fs::read(fixture.0.join(&pending)).unwrap(), b"pending");
+        }
     }
 
     #[test]

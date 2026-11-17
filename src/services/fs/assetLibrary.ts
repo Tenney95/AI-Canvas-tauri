@@ -21,6 +21,7 @@ import { getRelativeAssetPath, identifyAsset, identifyAssetBatch } from './asset
 import { getAllAssetIndexes, getAssetIndexByPath, putAssetIndex, type AssetIndexRecord } from '../indexedDbService';
 import { mediaFileAllocationKey, retiredMediaPaths } from '../indexedDb/mediaRelocations';
 import { decodeDataUrlBytesAsync } from '../mediaDataUrl';
+import { isNativeMediaPendingFile } from '../../utils/nativeMediaPendingFile';
 
 /** 仅用于目录浏览的运行时条目，不写入资产索引或持久化配置。 */
 export interface AssetFolderEntry {
@@ -70,10 +71,11 @@ function comparablePath(path: string): string {
 
 /** 按实际父目录筛选，兼容 Windows 分隔符和重复登记的父/子目录。 */
 export function selectAssetFolderFiles(files: AssetFileEntry[], selection: AssetFolderSelection): AssetFileEntry[] {
-  if (selection.kind === 'all') return files;
-  if (selection.kind === 'global') return files.filter((file) => file.source === 'global' && !file.relativePath?.includes('/'));
+  const visible = files.filter((file) => !isNativeMediaPendingFile(file.path));
+  if (selection.kind === 'all') return visible;
+  if (selection.kind === 'global') return visible.filter((file) => file.source === 'global' && !file.relativePath?.includes('/'));
   const directory = comparablePath(`${selection.rootPath.replace(/[\\/]+$/, '')}/${selection.relativePath}`);
-  return files.filter((file) => {
+  return visible.filter((file) => {
     const path = comparablePath(file.path);
     return path.slice(0, path.lastIndexOf('/')) === directory;
   });
@@ -221,7 +223,7 @@ export async function scanDirectoryFiles(
     // 不跟随符号链接扩大外部目录授权或形成遍历环。
     const fileEntries: typeof entries = [];
     for (const entry of entries) {
-      if (!entry.isFile || entry.isSymlink) continue;
+      if (!entry.isFile || entry.isSymlink || isNativeMediaPendingFile(entry.name)) continue;
       // 原生归属标记不是用户素材；删除它会让整个作品根无法验证。
       if (depth === 0 && entry.name === '.ai-canvas-native-project.json'
         && opts.projectId && getNativeProjectOwner(opts.projectId)) continue;

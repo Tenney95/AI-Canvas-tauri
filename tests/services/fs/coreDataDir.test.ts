@@ -16,6 +16,19 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
+describe('project disk notifications', () => {
+  it('keeps default notifications compatible and exposes materialization details to directory listeners', async () => {
+    const events = new EventTarget();
+    vi.stubGlobal('window', events);
+    const core = await import('../../../src/services/fs/core');
+    const received: unknown[] = [];
+    events.addEventListener(core.PROJECT_DISK_CHANGED_EVENT, (event) => received.push((event as CustomEvent).detail));
+    core.notifyProjectDiskChanged();
+    core.notifyProjectDiskChanged({ source: 'save-materialization', projectId: 'p1' });
+    expect(received).toEqual([null, { source: 'save-materialization', projectId: 'p1' }]);
+  });
+});
+
 describe('default storage directory', () => {
   it('coalesces concurrent path queries and reuses a successful system directory', async () => {
     let resolve!: (directory: string) => void;

@@ -28,6 +28,20 @@ beforeEach(() => {
   io.persist.mockResolvedValue(undefined); io.mkdir.mockResolvedValue(undefined);
 });
 describe('asset repair validation and commit boundary', () => {
+  it('失效索引隐藏原生暂存件，不掩盖普通 pending 和真实素材缺失', async () => {
+    const hash = 'a'.repeat(64);
+    const records = [`.native-media-${hash}.pending`, `.native-media-${hash}.mp4.pending`, 'ordinary.pending', '.notes', 'image.png']
+      .map((name, ordinal) => ({ ...index, assetId: `asset-${ordinal}`, path: `/old/${name}`, relativePath: name }));
+    io.indexes.mockResolvedValue(records);
+    const result = await listUnavailableAssetIndexes({ kind: 'all' });
+    expect(result.candidates.map((candidate) => candidate.index.relativePath)).toEqual(['ordinary.pending', '.notes', 'image.png']);
+    expect(result.candidates.every((candidate) => candidate.status === 'missing')).toBe(true);
+    expect(result.truncated).toBe(false);
+    for (const record of records.slice(0, 2)) expect(io.lstat).not.toHaveBeenCalledWith(record.path);
+    expect(records).toHaveLength(5);
+    expect(io.persist).not.toHaveBeenCalled();
+  });
+
   it('does not turn permission failures into missing files', async () => {
     io.lstat.mockRejectedValue(new Error('Permission denied'));
     expect((await listUnavailableAssetIndexes({ kind: 'all' })).candidates[0]).toMatchObject({ status: 'error' });

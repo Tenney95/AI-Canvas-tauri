@@ -2,12 +2,13 @@
  * MattingEditor — 图像遮罩编辑全屏覆盖层（portal 到 body）
  * 封装抠图画布、笔画追踪、历史管理、键盘快捷键
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ImageEditorZoomControls from './ImageEditorZoomControls';
 import MattingToolbar from './MattingToolbar';
 import { MAX_MATTING_CANVAS_EDGE, MAX_MATTING_HISTORY_BYTES } from './imageResourceBudget';
 import { floodFillImageData, trimImageDataHistory } from './mattingUtils';
+import { loadSafeImage } from './imageUtils';
 import { useDialogFocus } from '../../../../hooks/useDialogFocus';
 import { useT } from '../../../../i18n';
 
@@ -46,7 +47,12 @@ export default function MattingEditor({
   const strokePoints = useRef<{ x: number; y: number }[]>([]);
   const isDrawing = useRef(false);
   const historyRef = useRef<ImageData[]>([]);
-  const disposedRef = useRef(false);
+  const loadEpochRef = useRef(0);
+  const canvasReadyRef = useRef(false);
+  const loadIdentity = useMemo(() => ({ isOpen, imageUrl, initialMask }), [isOpen, imageUrl, initialMask]);
+  const [canvasState, setCanvasState] = useState<{ identity: object; failed: boolean } | null>(null);
+  const canvasReady = isOpen && canvasState !== null && canvasState.identity === loadIdentity && !canvasState.failed;
+  const loadFailed = canvasState !== null && canvasState.identity === loadIdentity && canvasState.failed;
 
   const [tool, setTool] = useState<MattingTool>('brush');
   const [brushMode, setBrushMode] = useState<BrushMode>('normal');
@@ -78,10 +84,8 @@ export default function MattingEditor({
   useEffect(() => { offsetRef.current = offset; }, [offset]);
 
   useEffect(() => {
-    disposedRef.current = false;
     const canvas = canvasRef.current;
     return () => {
-      disposedRef.current = true;
       historyRef.current = [];
       strokeBaseline.current = null;
       strokePoints.current = [];
@@ -92,6 +96,18 @@ export default function MattingEditor({
       }
     };
   }, []);
+
+  useLayoutEffect(() => {
+    loadEpochRef.current += 1;
+    canvasReadyRef.current = false;
+    isDrawing.current = false;
+    strokeBaseline.current = null;
+    strokePoints.current = [];
+    return () => {
+      loadEpochRef.current += 1;
+      canvasReadyRef.current = false;
+    };
+  }, [isOpen, imageUrl, initialMask]);
 
   const resetView = useCallback(() => {
     setScale(1);
@@ -105,42 +121,39 @@ export default function MattingEditor({
   }, []);
 
   // ── Initialize canvas ──
-  const initCanvas = useCallback(() => {
+  useEffect(() => {
     const canvas = canvasRef.current;
     const image = imageRef.current;
-    if (!canvas || !image) return;
-
-    // 后备尺寸用图片自然分辨率（封顶防爆内存），与图片严格等比；
-    // 显示尺寸交给 .matting-canvas 的 100%/100% 拉伸贴合，从而全图可涂、且不受缩放变换影响。
-    let w = image.naturalWidth;
-    let h = image.naturalHeight;
-    if (!w || !h) {
-      const rect = image.getBoundingClientRect();
-      w = Math.round(rect.width);
-      h = Math.round(rect.height);
-    }
-    const longest = Math.max(w, h);
-    if (longest > MAX_MATTING_CANVAS_EDGE) {
-      const k = MAX_MATTING_CANVAS_EDGE / longest;
-      w = Math.round(w * k);
-      h = Math.round(h * k);
-    }
-    canvas.width = w;
-    canvas.height = h;
-    requestAnimationFrame(recomputeDispScale);
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    if (initialMask) {
-      const maskImg = new Image();
-      maskImg.onload = () => {
-        if (disposedRef.current) return;
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(maskImg, 0, 0, canvas.width, canvas.height);
+    if (!isOpen || !canvas || !image) return;
+    const epoch = loadEpochRef.current;
+    let active = true;
+    const isCurrent = () => active && epoch === loadEpochRef.current && canvasRef.current === canvas;
+    // 主图只作展示；遮罩复用受预算约束的同源 Blob 解码，不能直接把 asset URL 画入可导出的画布。
+    void Promise.all([image.decode(), initialMask ? loadSafeImage(initialMask, { label: '画笔蒙版' }) : null]).then(([, maskImage]) => {
+      if (!isCurrent()) return;
+      // 后备尺寸使用主图自然分辨率，封顶后仍与主图严格等比。
+      let w = image.naturalWidth;
+      let h = image.naturalHeight;
+      if (!w || !h) {
+        const rect = image.getBoundingClientRect();
+        w = Math.round(rect.width);
+        h = Math.round(rect.height);
+      }
+      const longest = Math.max(w, h);
+      if (longest > MAX_MATTING_CANVAS_EDGE) {
+        const k = MAX_MATTING_CANVAS_EDGE / longest;
+        w = Math.round(w * k);
+        h = Math.round(h * k);
+      }
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Canvas unavailable');
+      ctx.clearRect(0, 0, w, h);
+      if (maskImage) {
+        ctx.drawImage(maskImage, 0, 0, w, h);
         // 归一化：已保存的蒙版是半透明的，统一拉回满 alpha，保证后续涂抹不累加、显示不二次衰减
-        const initial = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const initial = ctx.getImageData(0, 0, w, h);
         const d = initial.data;
         for (let i = 0; i < d.length; i += 4) {
           if (d[i + 3] > 10) {
@@ -153,22 +166,24 @@ export default function MattingEditor({
           }
         }
         ctx.putImageData(initial, 0, 0);
-        historyRef.current = [initial];
-        setHistory({ idx: 0, len: 1 });
-      };
-      maskImg.src = initialMask;
-      return;
-    }
-
-    const initial = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    historyRef.current = [initial];
-    setHistory({ idx: 0, len: 1 });
-  }, [initialMask, recomputeDispScale]);
+      }
+      historyRef.current = [ctx.getImageData(0, 0, w, h)];
+      canvasReadyRef.current = true;
+      setHistory({ idx: 0, len: 1 });
+      setCanvasState({ identity: loadIdentity, failed: false });
+      requestAnimationFrame(recomputeDispScale);
+    }).catch(() => {
+      if (!isCurrent()) return;
+      canvasReadyRef.current = false;
+      setCanvasState({ identity: loadIdentity, failed: true });
+    });
+    return () => { active = false; };
+  }, [isOpen, imageUrl, initialMask, loadIdentity, recomputeDispScale]);
 
   // ── History management ──
   const pushHistory = useCallback(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || !canvasReadyRef.current) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -185,7 +200,7 @@ export default function MattingEditor({
 
   const restoreHistory = useCallback((idx: number) => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || !canvasReadyRef.current) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     const imageData = historyRef.current[idx];
@@ -211,7 +226,7 @@ export default function MattingEditor({
     (e: React.PointerEvent<HTMLCanvasElement>) => {
       e.preventDefault();
       const canvas = canvasRef.current;
-      if (!canvas) return;
+      if (!canvas || !canvasReadyRef.current) return;
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
@@ -256,7 +271,7 @@ export default function MattingEditor({
         setOffset({ x: panStart.current.ox + dx, y: panStart.current.oy + dy });
         return;
       }
-      if (!isDrawing.current || tool === 'bucket') return;
+      if (!canvasReadyRef.current || !isDrawing.current || tool === 'bucket') return;
       e.preventDefault();
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -317,6 +332,7 @@ export default function MattingEditor({
 
   // ── Undo / Redo / Clear ──
   const handleUndo = useCallback(() => {
+    if (!canvasReadyRef.current) return;
     setHistory((current) => {
       const newIdx = current.idx - 1;
       if (newIdx < 0) return current;
@@ -326,6 +342,7 @@ export default function MattingEditor({
   }, [restoreHistory]);
 
   const handleRedo = useCallback(() => {
+    if (!canvasReadyRef.current) return;
     setHistory((current) => {
       const newIdx = current.idx + 1;
       if (newIdx >= historyRef.current.length) return current;
@@ -336,7 +353,7 @@ export default function MattingEditor({
 
   const handleClear = useCallback(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || !canvasReadyRef.current) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -346,7 +363,7 @@ export default function MattingEditor({
   // ── Save ──
   const handleSave = useCallback(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || !canvasReadyRef.current) return;
     // 画布内部是满 alpha；导出时统一乘以显示透明度，得到处处一致的半透明蒙版
     const out = document.createElement('canvas');
     try {
@@ -473,8 +490,9 @@ export default function MattingEditor({
           onUndo={handleUndo}
           onRedo={handleRedo}
           onClear={handleClear}
-          canUndo={history.idx > 0}
-          canRedo={history.idx < history.len - 1}
+          canUndo={canvasReady && history.idx > 0}
+          canRedo={canvasReady && history.idx < history.len - 1}
+          canSave={canvasReady}
         />
         <ImageEditorZoomControls
           scale={scale}
@@ -497,7 +515,6 @@ export default function MattingEditor({
               alt="Editing"
               className="matting-image"
               draggable={false}
-              onLoad={initCanvas}
             />
             <canvas
               ref={canvasRef}
@@ -520,6 +537,7 @@ export default function MattingEditor({
         </div>
 
       </div>
+      {loadFailed && <p role="alert" className="ui-alert ui-alert--danger absolute bottom-3 left-3">{t('{label}加载失败', { label: t('画笔蒙版') })}</p>}
     </div>,
     document.body,
   );
