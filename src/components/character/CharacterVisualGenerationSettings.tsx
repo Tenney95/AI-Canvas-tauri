@@ -6,6 +6,7 @@ import { useAppStore } from '../../store/useAppStore';
 import type { CharacterVisualGenerationParameters } from '../../types/media';
 import type { CharacterVisualModel } from '../../services/characterVisualWorkbenchService';
 import { resolveImageParameterCapability } from '../../services/ai/mediaModelCapabilities';
+import { pickImageOutputParameters, resolveImageOutputCapability } from '../../services/ai/imageOutputParameters';
 import { getProviderDefinition } from '../../services/ai/providerCatalogService';
 import { getRunningHubModel } from '../../services/ai/providers/runninghubModelManifest';
 import { getConfiguredModelGroups } from '../nodes/shared/defaultModels';
@@ -33,7 +34,9 @@ export default function CharacterVisualGenerationSettings({ models, model, value
     models.some((item) => item.id === `general/${option.id}` && item.provider === 'general')), [config.generalModels, models]);
   const availableWorkflows = workflows.filter((workflow) => models.some((item) => item.workflowId === workflow.id));
   const workflow = availableWorkflows.find((item) => item.id === model?.workflowId);
-  const capability = model && !workflow ? resolveImageParameterCapability(model.id, model.provider, config) : undefined;
+  const baseCapability = model && !workflow ? resolveImageParameterCapability(model.id, model.provider, config) : undefined;
+  const outputFormat = baseCapability?.outputFormats?.find((format) => format === values.imageOutputFormat) ?? baseCapability?.defaultOutputFormat ?? baseCapability?.outputFormats?.[0];
+  const capability = resolveImageOutputCapability(baseCapability, outputFormat);
   const runninghub = model?.provider === 'runninghub' ? getRunningHubModel(model.id) : undefined;
   const general = model?.provider === 'general' ? config.generalModels?.find((item) => `general/${item.id}` === model.id) : undefined;
   const connectionId = general?.providerConfigId ?? model?.connectionId ?? model?.provider;
@@ -45,14 +48,20 @@ export default function CharacterVisualGenerationSettings({ models, model, value
     || capability?.hasResolutionField !== false && !capability?.resolutions?.length);
   const select = (next?: CharacterVisualModel) => {
     if (!next || disabled) return;
-    const nextCapability = resolveImageParameterCapability(next.id, next.provider, config);
+    const nextBaseCapability = resolveImageParameterCapability(next.id, next.provider, config);
+    const nextFormat = nextBaseCapability?.outputFormats?.find((format) => format === values.imageOutputFormat) ?? nextBaseCapability?.defaultOutputFormat ?? nextBaseCapability?.outputFormats?.[0];
+    const nextCapability = resolveImageOutputCapability(nextBaseCapability, nextFormat);
     onSelect(next);
     onChange({
-      aspectRatio: next.ratios.includes(values.aspectRatio ?? '') ? values.aspectRatio : next.defaultRatio ?? next.ratios[0],
+      aspectRatio: nextCapability?.ratios?.includes(values.aspectRatio ?? '') ? values.aspectRatio : nextCapability?.defaultRatio ?? next.defaultRatio ?? next.ratios[0],
       imageSize: next.resolutions.find((value) => value.toLowerCase() === values.imageSize?.toLowerCase()) ?? next.defaultResolution ?? next.resolutions[0],
       imageQuality: nextCapability?.qualities?.find((value) => value.toLowerCase() === values.imageQuality?.toLowerCase()) ?? nextCapability?.defaultQuality,
       imageBackground: nextCapability?.backgroundIsFixed ? nextCapability.defaultBackground : values.imageBackground === '' ? ''
         : nextCapability?.backgrounds?.find((value) => value.toLowerCase() === values.imageBackground?.toLowerCase()) ?? nextCapability?.defaultBackground,
+      imageOutputFormat: nextFormat,
+      imageFrameCount: nextFormat === 'gif' ? values.imageFrameCount : undefined,
+      imageFrameDurationMs: nextFormat === 'gif' ? values.imageFrameDurationMs : undefined,
+      imageTransparent: nextFormat === 'gif' ? values.imageTransparent : undefined,
       workflowInputs: {}, runninghubModelParameters: {},
     });
   };
@@ -75,10 +84,12 @@ export default function CharacterVisualGenerationSettings({ models, model, value
             aspectRatio={(values.aspectRatio ?? model.defaultRatio ?? model.ratios[0]) === 'auto' ? '自适应' : values.aspectRatio ?? model.defaultRatio ?? model.ratios[0]}
             imageSize={values.imageSize ?? model.defaultResolution ?? model.resolutions[0]}
             showAdaptive={model.ratios.includes('auto') || model.defaultRatio === 'auto'}
-            ratios={model.ratios.filter((value) => value !== 'auto')} showImageSize={model.resolutions.length > 0} imageSizes={model.resolutions}
+            ratios={(capability?.ratios ?? model.ratios).filter((value) => value !== 'auto')} showImageSize={model.resolutions.length > 0} imageSizes={capability?.resolutions ?? model.resolutions}
             imageQuality={values.imageQuality} imageQualities={capability?.qualities} defaultImageQuality={capability?.defaultQuality}
             imageBackground={values.imageBackground} imageBackgrounds={capability?.backgrounds}
             defaultImageBackground={capability?.defaultBackground} imageBackgroundIsFixed={capability?.backgroundIsFixed}
+            imageOutputParameters={pickImageOutputParameters(values)} imageOutputCapability={capability}
+            onChangeImageOutputParameters={onChange}
             onChangeAspectRatio={(value) => onChange({ aspectRatio: value === '自适应' ? 'auto' : value })}
             onChangeImageSize={(imageSize) => onChange({ imageSize })}
             onChangeImageQuality={(imageQuality) => onChange({ imageQuality })}

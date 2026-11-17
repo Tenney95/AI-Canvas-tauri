@@ -338,20 +338,49 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
     } finally { image.mockRestore(); }
   });
 
-  it('2.5 C1 按文档顶层参数提交 30 秒／21:9 并保持当前连接身份', async () => {
-    const params = configure('sd-2.5-c1');
-    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ id: 'sd25-c1-original' })))
+  it.each(['sd-2.5-c1', 'sd-2.5-c2', 'sd-2.5-c3'])('%s 沿用 2.5 C1 顶层参数提交 30 秒／21:9 并保持当前连接身份', async (modelId) => {
+    const params = configure(modelId);
+    const taskId = `${modelId}-original`;
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ id: taskId })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'completed' })))
       .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { headers: { 'Content-Type': 'video/mp4' } }));
     vi.stubGlobal('fetch', fetchMock);
     const result = await generateVideo({ ...params, seedanceDuration: 30, seedanceResolution: '720p', seedanceRatio: '21:9' });
     expect(result.url).toBe('data:video/mp4;base64,AQID');
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({ model: 'sd-2.5-c1', prompt: params.prompt,
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({ model: modelId, prompt: params.prompt,
       seconds: '30', resolution: '720p', aspect_ratio: '21:9', references: [] });
     expect(fetchMock.mock.calls[0][1].headers).toMatchObject({ Authorization: 'Bearer relayon-video-fixture' });
-    expect(fetchMock.mock.calls[1][0]).toBe('https://relayonapi.com/v1/videos/sd25-c1-original');
-    expect(fetchMock.mock.calls[2][0]).toBe('https://relayonapi.com/v1/videos/sd25-c1-original/content');
+    expect(fetchMock.mock.calls[1][0]).toBe(`https://relayonapi.com/v1/videos/${taskId}`);
+    expect(fetchMock.mock.calls[2][0]).toBe(`https://relayonapi.com/v1/videos/${taskId}/content`);
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(['sd-2.5-c2', 'sd-2.5-c3'])('%s 接收 7 秒及音视频参考，不套用 2.0 C2／C3 的限制', async (modelId) => {
+    const params = configure(modelId);
+    const image = vi.spyOn(imageUtils, 'resolveImageUrlArray').mockImplementation(async (urls) => urls);
+    const media = vi.spyOn(uploadService, 'resolveMediaReferenceUrl').mockImplementation(async (url) => url);
+    const constraints = vi.spyOn(videoInputValidation, 'assertVideoInputConstraints').mockResolvedValue(undefined);
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ id: 'sd25-reference-task' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'completed' })))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { headers: { 'Content-Type': 'video/mp4' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const result = await generateVideo({ ...params, prompt: '图片1参考视频1与音频1', seedanceDuration: 7,
+        seedanceResolution: '720p', seedanceRatio: '21:9', referenceMedia: [
+          { kind: 'image', role: 'reference', origin: 'connection', url: 'https://cdn.example/i.png' },
+          { kind: 'video', role: 'reference', origin: 'connection', url: 'https://cdn.example/v.mp4' },
+          { kind: 'audio', role: 'reference_audio', origin: 'connection', url: 'https://cdn.example/a.mp3' },
+        ] });
+      expect(result.url).toBe('data:video/mp4;base64,AQID');
+      expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({ model: modelId,
+        prompt: '@图1参考@视频1与@音频1', seconds: '7', resolution: '720p', aspect_ratio: '21:9', references: [
+          { type: 'image', url: 'https://cdn.example/i.png', role: 'reference' },
+          { type: 'video', url: 'https://cdn.example/v.mp4' }, { type: 'audio', url: 'https://cdn.example/a.mp3' },
+        ] });
+      expect(fetchMock.mock.calls[0][1].headers).toMatchObject({ Authorization: 'Bearer relayon-video-fixture' });
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['https://relayonapi.com/v1/videos',
+        'https://relayonapi.com/v1/videos/sd25-reference-task', 'https://relayonapi.com/v1/videos/sd25-reference-task/content']);
+    } finally { image.mockRestore(); media.mockRestore(); constraints.mockRestore(); }
   });
 
   it('官转文生视频使用 metadata 和字符串时长，完成后保留原任务直到回填确认', async () => {

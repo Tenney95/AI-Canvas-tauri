@@ -297,6 +297,10 @@ export interface BaseNodeData {
   imageSize?: string;         // 分辨率选择：'1K' | '2K' | '4K'
   imageQuality?: string;      // 厂商声明的生成质量，与分辨率独立
   imageBackground?: string;   // 厂商声明的图片背景；空字符串显式使用接口默认
+  imageOutputFormat?: import('./aiTypes').ImageOutputFormat;
+  imageFrameCount?: number;
+  imageFrameDurationMs?: number;
+  imageTransparent?: boolean;
   aspectRatio?: string;       // 图片比例：'1:1' | '16:9' | ...
   batchCount?: number;        // 单次批量生成图片数量，默认 1
   batchGroupId?: string;      // 同一次批量生成的结果分组 ID

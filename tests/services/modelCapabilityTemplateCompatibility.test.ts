@@ -12,6 +12,7 @@ import { getProviderDefinition } from '../../src/services/ai/providerCatalogServ
 import { getGrsaiImageCapability, getGrsaiVideoCapability } from '../../src/services/ai/grsaiModels';
 import { IMAGE_QUICK_ADAPT_OPTIONS, createImageQuickAdaptTemplate } from '../../src/services/ai/imageModelTemplates';
 import { getImageCapability } from '../../src/services/ai/mediaModelCapabilities';
+import { getImageSizePresets } from '../../src/services/ai/modelSizeProfiles';
 
 const IMAGE_SAMPLE_IDS = [
   'gpt-image-1', 'gpt-image-1.5', 'gpt-image-2', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst',
@@ -48,9 +49,20 @@ function withoutDimensionPresets(value: ReturnType<typeof getGrsaiImageCapabilit
 }
 
 // 用户补充的 SD 文档及 H3 30 秒要求有意更新了七款视频合同；只还原这些明确差异，
-// 继续用原摘要锁住全部其它字段、图片/文本目录和保留的旧协议。新合同另由逐字段用例验证。
+// 普通2.6独立尺寸同样只还原已确认的像素差异，原摘要继续锁住其余字段和旧协议。
+// 新合同另由逐字段用例验证，不用重新生成摘要掩盖未声明的变化。
 function relayonBeforeDocumentCorrection() {
-  return RELAYON_MODEL_MANIFEST.map((entry) => {
+  // 后续新增的2.5视频C2/C3及两款2.6格式变体没有历史合同，不进入原三十款摘要。
+  return RELAYON_MODEL_MANIFEST.filter((entry) => !['sd-2.5-c2', 'sd-2.5-c3',
+    'image-2.6-flare-01', 'image-2.6-sunburst-01'].includes(entry.id)).map((entry) => {
+    if (entry.id === 'image-2.6-01') {
+      const model = structuredClone(entry);
+      const pixels = getImageSizePresets('relayon-image-2.5');
+      model.imageCapability!.resolutions = Object.keys(pixels);
+      model.imageCapability!.ratios = Object.keys(pixels['1K']);
+      model.imageCapability!.dimensionPresets = pixels;
+      return model;
+    }
     if (entry.category !== 'video' || (!entry.id.startsWith('sd-') && entry.id !== 'minimax-h3')) return entry;
     const model = structuredClone(entry);
     const capability = model.videoCapability!;

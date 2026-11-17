@@ -18,7 +18,7 @@ import { MAX_IMAGE_BATCH_COUNT, type MediaTaskReceipt, type TextGenerationResult
 import { generateText, generateTextResult, generateImage, generateImagesBatch, generateAudio, buildPanoramaPrompt } from '../../services/aiService';
 import { removeAudioSpeechReference } from '../../services/ai/audioSpeechSettings';
 import { persistAudioGenerationResult } from '../../services/ai/generateAudio';
-import { persistMediaUrlToProjectData } from '../../services/fileService';
+import { persistMediaUrlToProjectData, type PersistedProjectMedia } from '../../services/fileService';
 import {
   applyImageBatchResults,
   failImageBatchNodes,
@@ -53,6 +53,8 @@ import {
 import { resolveAudioParameterCapability, resolveImageOutputsPerJob, resolveImageParameterCapability } from '../../services/ai/mediaModelCapabilities';
 import { DREAMINA_IMAGE_RATIOS, getDreaminaImageModel } from '../../services/ai/dreaminaModels';
 import { resolveConfiguredImageBackground, resolveConfiguredImageQuality } from '../../services/ai/modelCapabilityValidation';
+import type { ImageOutputParameters } from '../../types/aiTypes';
+import { pickImageOutputParameters, resolveConfiguredImageOutput, resolveImageOutputCapability } from '../../services/ai/imageOutputParameters';
 import { applyGenerationCameraPrompt } from '../../services/shotlistPromptService';
 import { cancelComfyUINodeTask } from '../../services/comfyWorkflowService';
 import { COMFY_OUTPUT_UNAVAILABLE_MESSAGE, getComfyQueryAuthorizationMessage } from '../../services/comfyPolling';
@@ -545,6 +547,7 @@ function AINodeDialog() {
         ? resolveImageParameterCapability(nodeModel, nodeProvider, store.config) : undefined;
       const imageQuality = resolveConfiguredImageQuality(imageCapability, latestData.imageQuality);
       const imageBackground = resolveConfiguredImageBackground(imageCapability, latestData.imageBackground);
+      const imageOutput = nodeType === 'ai-image' ? resolveConfiguredImageOutput(imageCapability, latestData) : {};
       const batchCount = cloudWorkflow ? 1 : Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(Number(latestData.batchCount) || 1)));
       if (nodeType === 'ai-image' && batchCount > 1) {
         if (postProcess) throw new Error(t('批量生成暂不支持图片后处理，请将数量设为 1'));
@@ -565,6 +568,7 @@ function AINodeDialog() {
           imageSize,
           imageQuality,
           imageBackground: latestData.imageBackground === '' ? '' : imageBackground,
+          ...imageOutput,
           aspectRatio,
           workflowId: latestData.workflowId,
           workflowInputs: latestData.workflowInputs, runninghubModelParameters: latestData.runninghubModelParameters,
@@ -585,6 +589,7 @@ function AINodeDialog() {
           imageSize,
           imageQuality,
           imageBackground,
+          ...imageOutput,
           aspectRatio,
         });
         return;
@@ -608,6 +613,7 @@ function AINodeDialog() {
           imageSize,
           imageQuality,
           imageBackground: latestData.imageBackground === '' ? '' : imageBackground,
+          ...imageOutput,
           aspectRatio,
           workflowId: latestData.workflowId,
           workflowInputs: latestData.workflowInputs, runninghubModelParameters: latestData.runninghubModelParameters,
@@ -620,7 +626,7 @@ function AINodeDialog() {
         // 下载远程 URL 到本地项目目录
         if (taskReceipt) updateNodeDataTransient(submittingNodeId, { mediaTaskStage: 'saving' });
         const signal = beginMediaSaving();
-        const persisted = getCloudWorkflowPersistedOutput(result.workflowApiOutputs ?? result.runninghubOutputs, result.url) ?? (currentProjectId
+        const persisted: PersistedProjectMedia = getCloudWorkflowPersistedOutput(result.workflowApiOutputs ?? result.runninghubOutputs, result.url) ?? (currentProjectId
           ? await persistMediaUrlToProjectData(result.url, currentProjectId, 'ai-image', nodeLabel, { mediaDownloadAccess: result.mediaDownloadAccess, signal })
           : { mediaUrl: result.url, sourceUrl: result.url });
         if (!isStillCurrentSubmission()) return;
@@ -632,8 +638,8 @@ function AINodeDialog() {
           thumbnailUrl: mediaUrl,
           output: persisted.sourceUrl,
           status: 'success',
-          imageWidth: result.width,
-          imageHeight: result.height,
+          imageWidth: persisted.width ?? result.width,
+          imageHeight: persisted.height ?? result.height,
           ...(isAnimation ? { aspectRatio, ...animationResultPatch(latestData) } : {}),
         });
         confirmMediaDelivery();
@@ -654,7 +660,7 @@ function AINodeDialog() {
           filePath: persisted.filePath,
           params: isAnimation
             ? { imageSize, aspectRatio, animationAction, animationFrames, grid: ANIMATION_FRAME_GRIDS[animationFrames], animationProcessing: spriteProcessing, animationPromptVersion: 1 }
-            : { imageSize, imageQuality, imageBackground, aspectRatio, cameraSettings: latestData.cameraSettings },
+            : { imageSize, imageQuality, imageBackground, ...imageOutput, aspectRatio, cameraSettings: latestData.cameraSettings },
         });
         if (postProcess === 'character-8-direction-grid') {
           if (!persisted.filePath) {
@@ -988,8 +994,11 @@ function AINodeDialog() {
       const current = state.nodes.find((item) => item.id === activeNodeId)?.data;
       if (!activeNodeId || !current) return;
       const modelChanged = current.model !== model.value || current.provider !== model.provider || !!current.workflowId;
-      const imageCapability = nodeType === 'ai-image' && modelChanged
+      const baseImageCapability = nodeType === 'ai-image' && modelChanged
         ? resolveImageParameterCapability(model.value, model.provider, state.config) : undefined;
+      const outputFormat = baseImageCapability?.outputFormats?.find((format) => format === current.imageOutputFormat)
+        ?? baseImageCapability?.defaultOutputFormat ?? baseImageCapability?.outputFormats?.[0];
+      const imageCapability = resolveImageOutputCapability(baseImageCapability, outputFormat);
       const dreaminaImage = nodeType === 'ai-image' && modelChanged && model.provider === 'dreamina'
         ? getDreaminaImageModel(model.value) : undefined;
       const imageResolutions = dreaminaImage?.resolutions ?? imageCapability?.resolutions;
@@ -1018,6 +1027,10 @@ function AINodeDialog() {
         workflowId: undefined, workflowInputs: undefined, workflowApiOutputs: undefined, workflowApiStage: undefined,
         ...(modelChanged ? { comfyRefmods: undefined } : {}),
         ...(nodeType === 'ai-image' && modelChanged ? {
+          imageOutputFormat: outputFormat,
+          imageFrameCount: outputFormat === 'gif' ? current.imageFrameCount : undefined,
+          imageFrameDurationMs: outputFormat === 'gif' ? current.imageFrameDurationMs : undefined,
+          imageTransparent: outputFormat === 'gif' ? current.imageTransparent : undefined,
           imageSize: imageResolutions?.length
             ? keepSupportedImageValue(current.imageSize, imageResolutions, imageCapability?.defaultResolution
               ?? imageResolutions.find((value) => value.toLowerCase() === '2k') ?? imageResolutions[0])
@@ -1060,7 +1073,8 @@ function AINodeDialog() {
         ...(previousWorkflowId !== workflowId ? { comfyRefmods: undefined } : {}),
         workflowInputs: undefined, runninghubModelParameters: undefined, runninghubOutputs: undefined, runninghubStage: undefined,
         workflowApiOutputs: undefined, workflowApiStage: undefined,
-        ...(nodeType === 'ai-image' ? { imageQuality: undefined, imageBackground: undefined } : {}),
+        ...(nodeType === 'ai-image' ? { imageQuality: undefined, imageBackground: undefined,
+          imageOutputFormat: undefined, imageFrameCount: undefined, imageFrameDurationMs: undefined, imageTransparent: undefined } : {}),
         ...(workflow ? { ...workflowExecution(workflow, previousWorkflowId), batchCount: 1, audioPurpose: undefined } : {}),
       });
     },
@@ -1081,7 +1095,8 @@ function AINodeDialog() {
       runninghubStage: undefined,
       workflowApiOutputs: undefined,
       workflowApiStage: undefined,
-      ...(nodeType === 'ai-image' ? { imageQuality: undefined, imageBackground: undefined } : {}),
+      ...(nodeType === 'ai-image' ? { imageQuality: undefined, imageBackground: undefined,
+        imageOutputFormat: undefined, imageFrameCount: undefined, imageFrameDurationMs: undefined, imageTransparent: undefined } : {}),
       ...(nodeType === 'ai-director' ? { directorPrevisModel: '', directorPrevisProvider: undefined } : {}),
     });
   }, [activeNodeId, nodeType, updateNodeData]);
@@ -1098,6 +1113,11 @@ function AINodeDialog() {
 
   const onChangeImageBackground = useCallback(
     (value: string | undefined) => updateNodeData(activeNodeId!, { imageBackground: value }),
+    [activeNodeId, updateNodeData]
+  );
+
+  const onChangeImageOutputParameters = useCallback(
+    (parameters: ImageOutputParameters) => updateNodeData(activeNodeId!, parameters),
     [activeNodeId, updateNodeData]
   );
 
@@ -1449,10 +1469,12 @@ function AINodeDialog() {
             imageSize={(data.imageSize as string) || '2K'}
             imageQuality={data.imageQuality}
             imageBackground={data.imageBackground}
+            imageOutputParameters={pickImageOutputParameters(data)}
             aspectRatio={(data.aspectRatio as string) || (nodeType === 'ai-panorama' ? '2:1' : '1:1')}
             onChangeImageSize={onChangeImageSize}
             onChangeImageQuality={onChangeImageQuality}
             onChangeImageBackground={onChangeImageBackground}
+            onChangeImageOutputParameters={onChangeImageOutputParameters}
             onChangeAspectRatio={onChangeAspectRatio}
             batchCount={(data.batchCount as number) || 1}
             onChangeBatchCount={onChangeBatchCount}

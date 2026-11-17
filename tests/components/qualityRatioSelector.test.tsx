@@ -3,6 +3,14 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPortal } from 'react-dom';
+import type { ImageModelCapability } from '../../src/types/aiTypes';
+
+const outputCapability: ImageModelCapability = {
+  outputFormats: ['png', 'gif', 'svg'], defaultOutputFormat: 'png',
+  squareOnlyOutputFormats: ['gif', 'svg'], textOnlyOutputFormats: ['gif', 'svg'],
+  gifFrameCount: { min: 2, max: 16, default: 9 },
+  gifFrameDurationMs: { min: 20, max: 655350, step: 10, default: 200 }, supportsGifTransparency: true,
+};
 
 const driver = vi.hoisted(() => ({ open: false }));
 vi.mock('react', async () => ({
@@ -194,5 +202,52 @@ describe('image resolution and quality selector', () => {
     const omitted = render({ ...props, imageBackground: '' });
     expect(backgroundOptions(omitted).filter((element) => element.props['aria-pressed']).map((element) => element.props.children)).toEqual(['接口默认']);
     expect(summary(omitted)['aria-label']).toBe('16:9 · 2K');
+  });
+});
+
+
+describe('declared image output formats', () => {
+  it('changes format, clears GIF-only fields and selects the required square ratio', () => {
+    driver.open = true;
+    const onChangeImageOutputParameters = vi.fn(), onChangeAspectRatio = vi.fn();
+    const tree = render({ imageOutputCapability: outputCapability,
+      imageOutputParameters: { imageOutputFormat: 'gif', imageFrameCount: 8, imageFrameDurationMs: 300, imageTransparent: true },
+      onChangeImageOutputParameters, onChangeAspectRatio });
+    const area = tree.find((element) => element.props['data-ui-schema-field'] === 'imageOutputFormat');
+    const options = elements(area).filter((element) => 'data-ui-schema-value' in element.props);
+    expect(options.map((element) => element.props['data-ui-schema-value'])).toEqual(['png', 'gif', 'svg']);
+    (options[0].props.onClick as () => void)();
+    expect(onChangeImageOutputParameters).toHaveBeenLastCalledWith({ imageOutputFormat: 'png',
+      imageFrameCount: undefined, imageFrameDurationMs: undefined, imageTransparent: undefined });
+    (options[2].props.onClick as () => void)();
+    expect(onChangeAspectRatio).toHaveBeenLastCalledWith('1:1');
+  });
+
+  it('shows capability GIF defaults, keeps false and never persists a non-number', () => {
+    driver.open = true;
+    const onChangeImageOutputParameters = vi.fn();
+    const tree = render({ imageOutputCapability: outputCapability,
+      imageOutputParameters: { imageOutputFormat: 'gif' }, onChangeImageOutputParameters });
+    const numbers = tree.filter((element) => element.props.type === 'number');
+    expect(numbers.map((element) => element.props.value)).toEqual([9, 200]);
+    (numbers[0].props.onChange as (event: unknown) => void)({ target: { value: '8', valueAsNumber: 8 } });
+    expect(onChangeImageOutputParameters).toHaveBeenLastCalledWith({ imageFrameCount: 8 });
+    onChangeImageOutputParameters.mockClear();
+    (numbers[0].props.onChange as (event: unknown) => void)({ target: { value: '-', valueAsNumber: NaN } });
+    expect(onChangeImageOutputParameters).not.toHaveBeenCalled();
+    const checkbox = tree.find((element) => element.props.type === 'checkbox')!;
+    expect(checkbox.props.checked).toBe(false);
+    (checkbox.props.onChange as (event: unknown) => void)({ target: { checked: false } });
+    expect(onChangeImageOutputParameters).toHaveBeenLastCalledWith({ imageTransparent: false });
+  });
+
+  it('limits SVG to square and omits GIF controls and undeclared format controls', () => {
+    driver.open = true;
+    const tree = render({ imageOutputCapability: outputCapability, imageOutputParameters: { imageOutputFormat: 'svg' }, showAdaptive: true });
+    const area = tree.find((element) => element.props['data-ui-schema-field'] === 'aspectRatio');
+    expect(elements(area).filter((element) => 'data-ui-schema-value' in element.props)
+      .map((element) => element.props['data-ui-schema-value'])).toEqual(['1:1']);
+    expect(tree.some((element) => element.props.type === 'number' || element.props.type === 'checkbox')).toBe(false);
+    expect(render().some((element) => element.props['data-ui-schema-field'] === 'imageOutputFormat')).toBe(false);
   });
 });

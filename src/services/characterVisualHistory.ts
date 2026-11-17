@@ -29,7 +29,7 @@ export interface StoredCharacterVisualRun extends Omit<CharacterVisualRun, 'id' 
 
 const HISTORY_PREFIX = 'character-visual-run-v1:';
 const operationIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
-const legacyCandidateName = /^Library\/character-visual-[0-9a-f-]{36}-\d+\.(?:png|jpg|webp)$/;
+const legacyCandidateName = /^Library\/character-visual-[0-9a-f-]{36}-\d+\.(?:png|jpg|webp|gif|svg)$/;
 
 export const characterVisualOperations = new Set<CharacterVisualRun['operation']>(['appearance', 'turnaround', 'edit']);
 export const isSafeCharacterVisualId = (id: string | undefined) => Boolean(id && /^[A-Za-z0-9_.-]{1,256}$/.test(id));
@@ -68,7 +68,7 @@ export function matchesOriginalCharacterVisualCandidatePath(row: StoredCharacter
   const folder = characterVisualCandidateFolder(row);
   const stem = row.target.scope === 'global' ? candidate.id : `character-visual-${candidate.id}`;
   const extension = candidate.relativePath.split('.').at(-1);
-  return !!extension && ['png', 'jpg', 'webp'].includes(extension) && /^\d+$/.test(candidate.id.slice(row.operationId.length + 1))
+  return !!extension && ['png', 'jpg', 'webp', 'gif', 'svg'].includes(extension) && /^\d+$/.test(candidate.id.slice(row.operationId.length + 1))
     && candidate.id.startsWith(`${row.operationId}-`) && candidate.relativePath === `${folder}/${stem}.${extension}`;
 }
 

@@ -2,7 +2,7 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { ProtocolJsonValue } from '../../src/types/aiTypes';
 const transport = vi.hoisted(() => ({ fetch: vi.fn() }));
-vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: transport.fetch }));
+vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: transport.fetch, logAiResponse: vi.fn() }));
 import { buildModelProtocolRequest, submitModelProtocol } from '../../src/services/ai/modelProtocol';
 import { apimartEditorTaskIds, APIMART_EDITOR_PROTOCOL, DREAMINA_EDITOR_PROTOCOL, RUNNINGHUB_EDITOR_PROTOCOL, VOLCENGINE_EDITOR_PROTOCOL } from '../../src/services/nativeEditorProtocols';
 import { captureNativeProtocolContext, resolveNativeProtocolContext } from '../../src/services/nativeModelProtocolTask';

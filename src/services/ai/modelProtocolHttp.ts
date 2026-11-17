@@ -5,7 +5,8 @@
  * Base64 / PCM 结果在前端转成 data URL，避免把二进制处理散落到各调用方。
  */
 import type { ModelProtocolAuthConfig, ModelProtocolResultConfig, ProtocolJsonValue } from '../../types/aiTypes';
-import { corsSafeFetch } from './httpTransport';
+import { corsSafeFetch, logAiResponse } from './httpTransport';
+import type { AiResponseLogContext } from './httpTransport';
 import { readModelProtocolFirstScalar } from './modelProtocolResponse';
 import { MIME_TYPE_RE, isRecord, resolveAuthentication, validateHeaderName } from './modelProtocolShared';
 import { applyQueryAuthentication } from './modelProtocolRequest';
@@ -101,6 +102,7 @@ export async function readJsonResponse(
   label: string,
   errorPath?: string,
   apiKey = '',
+  debug?: AiResponseLogContext,
 ): Promise<ProtocolJsonValue> {
   if (!response.ok) {
     const rawText = await response.text().catch(() => '');
@@ -110,6 +112,7 @@ export async function readJsonResponse(
     } catch {
       payload = null;
     }
+    if (debug) logAiResponse(response, payload ?? rawText, debug);
     const configuredMessage = errorPath && (isRecord(payload) || Array.isArray(payload))
       ? readModelProtocolFirstScalar(payload, errorPath)
       : undefined;
@@ -131,7 +134,14 @@ export async function readJsonResponse(
       classifyHttpResponseFailure(response.status, payload),
     );
   }
-  const payload = await response.json().catch(() => null) as unknown;
+  const rawText = await response.text().catch(() => '');
+  let payload: unknown;
+  try {
+    payload = rawText ? JSON.parse(rawText) : null;
+  } catch {
+    payload = null;
+  }
+  if (debug) logAiResponse(response, payload ?? rawText, debug);
   if (!isRecord(payload) && !Array.isArray(payload)) {
     throw new Error(`${label}：响应必须是 JSON 对象或数组`);
   }
@@ -143,9 +153,10 @@ export async function ensureSuccessfulRawResponse(
   label: string,
   errorPath?: string,
   apiKey = '',
+  debug?: AiResponseLogContext,
 ): Promise<Response> {
   if (response.ok) return response;
-  await readJsonResponse(response, label, errorPath, apiKey);
+  await readJsonResponse(response, label, errorPath, apiKey, debug);
   return response;
 }
 
@@ -403,7 +414,9 @@ export async function fetchSameOriginResultUrls(
           downloadSignal.throwIfAborted();
           await ensureSuccessfulRawResponse(new Response(bytes.length ? Uint8Array.from(bytes) : null, {
             status: response.status, headers: response.headers,
-          }), '模型结果下载失败', undefined, apiKey);
+          }), '模型结果下载失败', undefined, apiKey, {
+            url: resultUrls[index], method: 'GET', source: 'Model Protocol', apiKey, sensitive,
+          });
         } else results[index] = await readBinaryModelProtocolResult(response, fallbackMimeType, downloadSignal, budget);
       } catch (error) {
         if (!failed) {

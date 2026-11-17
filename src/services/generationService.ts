@@ -4,6 +4,7 @@
  * 供 Toolbar 快捷指令直接调用，也供 AINodeDialog 复用。
  */
 import { ANIMATION_FRAME_GRIDS } from '../types';
+import { pickImageOutputParameters, resolveConfiguredImageOutput } from './ai/imageOutputParameters';
 import { buildAnimationSpritePrompt, resolveAnimationSheetAspectRatio } from './ai/animationPrompt';
 import { animationProcessing, animationResultPatch } from './animationService';
 import { resolveGenerationSelection } from './generationInput';
@@ -11,7 +12,7 @@ import type { AppConfig, BaseNodeData, ImagePostProcess } from '../types';
 import { MAX_IMAGE_BATCH_COUNT, type GenerationRecovery, type MediaTaskReceipt, type TextGenerationResult } from '../types/aiTypes';
 import { generateText, generateTextResult, generateImage, generateImagesBatch, generateVideo, generateAudio, buildPanoramaPrompt } from './aiService';
 import { persistAudioGenerationResult } from './ai/generateAudio';
-import { persistMediaUrlToProjectData } from './fileService';
+import { persistMediaUrlToProjectData, type PersistedProjectMedia } from './fileService';
 import {
   applyImageBatchResults,
   failImageBatchNodes,
@@ -130,11 +131,13 @@ function settleUnstartedImages(owner: SequentialImageBatch): void {
 }
 
 function imageBatchInputSignature(data: BaseNodeData): string {
+  const imageOutput = pickImageOutputParameters(data);
   return JSON.stringify([
     data.type, data.prompt, data.provider, data.model, data.workflowId, data.workflowInputs,
     data.imageSize, data.imageQuality, data.imageBackground, data.aspectRatio,
     data.cameraSettings, data.runninghubModelParameters, data.batchCount,
     ...(data.outpaintInput ? [data.outpaintInput] : []),
+    ...(Object.keys(imageOutput).length ? [['imageOutput', imageOutput]] : []),
   ]);
 }
 
@@ -465,6 +468,7 @@ export async function executeGeneration(
       const imageCapability = isAnimation || workflowId ? undefined : resolveImageParameterCapability(nodeModel, nodeProvider, store.config);
       const imageQuality = resolveConfiguredImageQuality(imageCapability, data.imageQuality);
       const imageBackground = resolveConfiguredImageBackground(imageCapability, data.imageBackground);
+      const imageOutput = isAnimation ? {} : resolveConfiguredImageOutput(imageCapability, data);
       const animationAction = data.animationAction ?? 'idle';
       const animationFrames = data.animationFrames ?? 8;
       const aspectRatio = isAnimation ? resolveAnimationSheetAspectRatio(animationFrames, nodeProvider)
@@ -477,7 +481,7 @@ export async function executeGeneration(
       if (nativeMediaGuard) {
         if (postProcess) throw new Error('请先生成原媒体，再执行图片后处理，避免将后处理误记为生成回执');
         await generateImagesBatch({ prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
-          imageSize, imageQuality, imageBackground: data.imageBackground === '' ? '' : imageBackground, aspectRatio, nodeId,
+          imageSize, imageQuality, imageBackground: data.imageBackground === '' ? '' : imageBackground, ...imageOutput, aspectRatio, nodeId,
           workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
           ...outpaintReferences,
           ...(outputsPerJob > 1 ? { collectCandidates: true } : {}) },
@@ -500,7 +504,7 @@ export async function executeGeneration(
         notify(`正在批量生成 ${outputCount} 张图片`);
         const imageOptions = {
           prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
-          imageSize, imageQuality, imageBackground: data.imageBackground === '' ? '' : imageBackground, aspectRatio, nodeId,
+          imageSize, imageQuality, imageBackground: data.imageBackground === '' ? '' : imageBackground, ...imageOutput, aspectRatio, nodeId,
           workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
           ...outpaintReferences,
           ...(outputsPerJob > 1 ? { collectCandidates: true } : {}),
@@ -527,6 +531,7 @@ export async function executeGeneration(
           imageSize,
           imageQuality,
           imageBackground,
+          ...imageOutput,
           aspectRatio,
         });
         return mediaDelivered ? { success: true } : { success: false, message: taskReceipt
@@ -534,7 +539,7 @@ export async function executeGeneration(
       }
       const imageOptions = {
         prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
-        imageSize, imageQuality, imageBackground: data.imageBackground === '' ? '' : imageBackground, aspectRatio, nodeId,
+        imageSize, imageQuality, imageBackground: data.imageBackground === '' ? '' : imageBackground, ...imageOutput, aspectRatio, nodeId,
         workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
         ...outpaintReferences,
       };
@@ -549,7 +554,7 @@ export async function executeGeneration(
 
       if (taskReceipt) store.updateNodeDataTransient(nodeId, { mediaTaskStage: 'saving' });
       const signal = beginMediaSaving();
-      const persisted = getCloudWorkflowPersistedOutput(result.workflowApiOutputs ?? result.runninghubOutputs, result.url) ?? (submittingProjectId
+      const persisted: PersistedProjectMedia = getCloudWorkflowPersistedOutput(result.workflowApiOutputs ?? result.runninghubOutputs, result.url) ?? (submittingProjectId
         ? await persistMediaUrlToProjectData(result.url, submittingProjectId, 'ai-image', data.label, { mediaDownloadAccess: result.mediaDownloadAccess, signal })
         : { mediaUrl: result.url, sourceUrl: result.url });
       if (lease) await assertLease();
@@ -559,7 +564,7 @@ export async function executeGeneration(
       applyImageData(nodeId, {
         imageUrl: mediaUrl, sourceUrl: persisted.sourceUrl, filePath: persisted.filePath,
         thumbnailUrl: mediaUrl, output: persisted.sourceUrl, status: 'success',
-        imageWidth: result.width, imageHeight: result.height,
+        imageWidth: persisted.width ?? result.width, imageHeight: persisted.height ?? result.height,
         ...(isAnimation ? { aspectRatio, ...animationResultPatch(data) } : {}),
       });
       confirmMediaDelivery();
@@ -572,7 +577,7 @@ export async function executeGeneration(
         status: 'success', mediaUrl, filePath: persisted.filePath,
         params: isAnimation ? { imageSize, aspectRatio, animationAction, animationFrames,
           grid: ANIMATION_FRAME_GRIDS[animationFrames], animationProcessing: spriteProcessing, animationPromptVersion: 1 }
-          : { imageSize, imageQuality, imageBackground, aspectRatio },
+          : { imageSize, imageQuality, imageBackground, ...imageOutput, aspectRatio },
       });
 
       if (postProcess === 'character-8-direction-grid' && persisted.filePath) {

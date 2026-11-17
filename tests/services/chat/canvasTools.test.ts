@@ -552,6 +552,37 @@ describe('canvas agent tools', () => {
     expect(executeGeneration).not.toHaveBeenCalled();
   });
 
+  it('MCP 创建和更新 GIF 参数保留 false，切换 SVG 或未声明模型清除失效参数', async () => {
+    useAppStore.setState((state) => ({ config: { ...state.config,
+      providers: { ...state.config.providers, output: { name: '图片连接', catalogId: 'custom-openai', apiKey: 'fixture' } },
+      generalModels: [
+        { id: 'image-output', name: '图片模型', modelId: 'image-output', category: 'image', providerConfigId: 'output',
+          imageCapability: { ratios: ['1:1'], resolutions: ['2K'], outputFormats: ['png', 'gif', 'svg'], defaultOutputFormat: 'png',
+            squareOnlyOutputFormats: ['gif', 'svg'], textOnlyOutputFormats: ['gif', 'svg'],
+            gifFrameCount: { min: 2, max: 16, default: 9 }, gifFrameDurationMs: { min: 20, max: 655350, step: 10, default: 200 },
+            supportsGifTransparency: true } },
+        { id: 'plain-image', name: '普通图片', modelId: 'plain-image', category: 'image', providerConfigId: 'output' },
+      ],
+    } }));
+    const create = getAgentTool('canvas_create_nodes')!, update = getAgentTool('canvas_update_nodes')!;
+    const output = { imageOutputFormat: 'gif', imageFrameCount: 8, imageFrameDurationMs: 300, imageTransparent: false };
+    const input = { nodes: [{ type: 'ai-image', label: '动图', model: 'general/image-output', aspectRatio: '1:1', ...output }] };
+    expect(validateAgentToolInput(create.inputSchema, input).valid).toBe(true);
+    expect((await create.execute(context(), input)).status).toBe('success');
+    const node = useAppStore.getState().nodes.find((item) => item.data.label === '动图')!;
+    expect(node.data).toMatchObject(output);
+    expect((await update.execute(context(), { nodeIds: [node.id], aspectRatio: '16:9' })).status).toBe('error');
+    expect((await update.execute(context(), { nodeIds: [node.id], model: 'general/image-output', imageSize: '4K' })).status).toBe('success');
+    expect(useAppStore.getState().nodes.find((item) => item.id === node.id)?.data).toMatchObject({ ...output, imageSize: '4K' });
+    expect((await update.execute(context(), { nodeIds: [node.id], imageFrameCount: 17 })).status).toBe('error');
+    expect((await update.execute(context(), { nodeIds: [node.id], imageOutputFormat: 'svg' })).status).toBe('success');
+    expect(useAppStore.getState().nodes.find((item) => item.id === node.id)?.data).toMatchObject({ imageOutputFormat: 'svg',
+      imageFrameCount: undefined, imageFrameDurationMs: undefined, imageTransparent: undefined });
+    expect((await update.execute(context(), { nodeIds: [node.id], model: 'general/plain-image' })).status).toBe('success');
+    expect(useAppStore.getState().nodes.find((item) => item.id === node.id)?.data.imageOutputFormat).toBeUndefined();
+    expect((await update.execute(context(), { nodeIds: [node.id], imageOutputFormat: 'gif' })).status).toBe('error');
+  });
+
   it('拒绝未声明的自动时长及跨类型参数，不写入画布', async () => {
     const before = useAppStore.getState().nodes;
     const tool = getAgentTool('canvas_create_nodes')!;

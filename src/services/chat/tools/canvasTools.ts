@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getLastCanvasPointerPosition } from '../../canvasPointerService';
 import { workflowExecution } from '../../workflowExecutionService';
 import { useAppStore } from '../../../store/useAppStore';
+import { assertImageOutputInput, pickImageOutputParameters, resolveConfiguredImageOutput } from '../../ai/imageOutputParameters';
 import { isBatchConnectableNode } from '../../../store/store.nodes';
 import { generateId } from '../../../store/store.utils';
 import type { BaseNodeData, NodeType } from '../../../types';
@@ -13,7 +14,7 @@ import type { DramaAsset } from '../../../types/dramaAssets';
 import { parseDramaMentionId } from '../../../types/dramaAssets';
 import { parseShotlistRowMentionId, resolveShotVideoDuration } from '../../../types/shotlist';
 import { resolveSingleShotlistRowReference } from '../../shotlistPromptService';
-import type { AudioOutputFormat, AudioSpeechSettings, AudioTtsVoice } from '../../../types/aiTypes';
+import type { AudioOutputFormat, AudioSpeechSettings, AudioTtsVoice, ImageOutputParameters } from '../../../types/aiTypes';
 import type { AudioGenerationPurpose } from '../../../types/media';
 import type {
   AgentToolDisplayChange,
@@ -133,6 +134,12 @@ function visibleVideoResolution(data: BaseNodeData): string | undefined {
     : data.seedanceResolution;
 }
 
+function imageOutputNodePatch(input: ImageOutputParameters): ImageOutputParameters {
+  return { ...(input.imageOutputFormat !== undefined && input.imageOutputFormat !== 'gif'
+    ? { imageFrameCount: undefined, imageFrameDurationMs: undefined, imageTransparent: undefined } : {}),
+    ...pickImageOutputParameters(input) };
+}
+
 /** 创建和更新共用校验；错误必须在任何 Store 写入前返回，避免半批节点。 */
 function mediaSettingsIssue(type: NodeType, input: CreateNodeInput | UpdateNodesInput, currentData?: BaseNodeData): string | undefined {
   const store = useAppStore.getState();
@@ -143,9 +150,14 @@ function mediaSettingsIssue(type: NodeType, input: CreateNodeInput | UpdateNodes
   const modelRef = originalModelRef && modelProvider && !originalModelRef.includes('/')
     ? `${modelProvider}/${originalModelRef}` : originalModelRef;
   const existingWorkflowId = input.model === undefined ? currentData?.workflowId : undefined;
+  const currentModelRef = currentData?.model && currentData.provider && !currentData.model.includes('/')
+    ? `${currentData.provider}/${currentData.model}` : currentData?.model;
+  const modelChanged = input.model !== undefined && (modelRef !== currentModelRef || modelProvider !== currentData?.provider);
+  const checkImageOutput = Object.keys(pickImageOutputParameters(input)).length > 0
+    || input.aspectRatio !== undefined && Object.keys(pickImageOutputParameters(currentData ?? {})).length > 0;
   if (input.aspectRatio !== undefined && !VISUAL_NODE_TYPES.has(type)) return 'aspectRatio 只能用于图片或视频节点';
   if (input.imageSize !== undefined || input.batchCount !== undefined
-    || input.imageQuality !== undefined || input.imageBackground !== undefined) {
+    || input.imageQuality !== undefined || input.imageBackground !== undefined || checkImageOutput) {
     if (type !== 'ai-image') return '图片参数只能用于生图节点';
     if (input.imageSize !== undefined && !PROJECT_IMAGE_SIZES.includes(input.imageSize as typeof PROJECT_IMAGE_SIZES[number]))
       return 'imageSize 不在支持的图片尺寸档位中';
@@ -155,7 +167,7 @@ function mediaSettingsIssue(type: NodeType, input: CreateNodeInput | UpdateNodes
       return 'imageQuality 格式无效，请使用模型声明的质量选项';
     if (input.imageBackground !== undefined && !isSafeMediaParameterText(input.imageBackground, 'imageBackground'))
       return 'imageBackground 格式无效，请使用模型声明的背景选项或接口默认';
-    if (input.imageQuality !== undefined || input.imageBackground !== undefined) {
+    if (input.imageQuality !== undefined || input.imageBackground !== undefined || checkImageOutput) {
       if (!modelRef || !modelProvider) return '设置图片质量或背景前请先选择模型';
       if (existingWorkflowId || ['comfyui', 'runninghub', 'runninghubwf', 'workflow-api'].includes(modelProvider))
         return '工作流与 RunningHub 请使用专属参数设置质量和背景';
@@ -167,6 +179,11 @@ function mediaSettingsIssue(type: NodeType, input: CreateNodeInput | UpdateNodes
       try {
         resolveConfiguredImageQuality(capability, input.imageQuality);
         resolveConfiguredImageBackground(capability, input.imageBackground);
+        const output = { ...(modelChanged || input.imageOutputFormat !== undefined && input.imageOutputFormat !== currentData?.imageOutputFormat
+          ? {} : pickImageOutputParameters(currentData ?? {})), ...pickImageOutputParameters(input) };
+        resolveConfiguredImageOutput(capability, output);
+        assertImageOutputInput(capability, output, { aspectRatio: input.aspectRatio ?? currentData?.aspectRatio
+          ?? store.projects.find((project) => project.id === store.currentProjectId)?.settings?.generation?.imageAspectRatio });
       } catch (error) { return error instanceof Error ? error.message : '图片参数无效'; }
     }
   }
@@ -278,6 +295,10 @@ interface CreateNodesInput {
     imageSize?: string;
     imageQuality?: string;
     imageBackground?: string;
+    imageOutputFormat?: ImageOutputParameters['imageOutputFormat'];
+    imageFrameCount?: number;
+    imageFrameDurationMs?: number;
+    imageTransparent?: boolean;
     batchCount?: number;
     videoResolution?: string;
     videoLongSide?: number;
@@ -345,6 +366,10 @@ interface NodeUpdatePatch {
   imageSize?: string;
   imageQuality?: string;
   imageBackground?: string;
+  imageOutputFormat?: ImageOutputParameters['imageOutputFormat'];
+  imageFrameCount?: number;
+  imageFrameDurationMs?: number;
+  imageTransparent?: boolean;
   batchCount?: number;
   /** 统一视频参数名；节点内部继续兼容 seedanceResolution。 */
   videoResolution?: string;
@@ -395,6 +420,10 @@ interface NodeAuditSnapshot {
   imageSize?: string;
   imageQuality?: string;
   imageBackground?: string;
+  imageOutputFormat?: ImageOutputParameters['imageOutputFormat'];
+  imageFrameCount?: number;
+  imageFrameDurationMs?: number;
+  imageTransparent?: boolean;
   batchCount?: number;
   videoResolution?: string;
   videoDuration?: number;
@@ -429,6 +458,10 @@ function createNodesInputDisplay(input: CreateNodesInput): AgentToolDisplaySnaps
           ? [{ label: '生成时长（秒）', value: nodeInput.videoDuration < 0 ? '自动' : Math.ceil(nodeInput.videoDuration) }] : []),
         ...(nodeInput.imageQuality !== undefined ? [{ label: '生成质量', value: nodeInput.imageQuality }] : []),
         ...(nodeInput.imageBackground !== undefined ? [{ label: '生成背景', value: nodeInput.imageBackground || '接口默认' }] : []),
+        ...(nodeInput.imageOutputFormat !== undefined ? [{ label: '输出格式', value: nodeInput.imageOutputFormat.toUpperCase() }] : []),
+        ...(nodeInput.imageFrameCount !== undefined ? [{ label: 'GIF 帧数', value: String(nodeInput.imageFrameCount) }] : []),
+        ...(nodeInput.imageFrameDurationMs !== undefined ? [{ label: '每帧时长（毫秒）', value: String(nodeInput.imageFrameDurationMs) }] : []),
+        ...(nodeInput.imageTransparent !== undefined ? [{ label: 'GIF 透明背景', value: nodeInput.imageTransparent ? '开启' : '关闭' }] : []),
         ...(nodeInput.videoFps !== undefined ? [{ label: '视频帧率', value: nodeInput.videoFps }] : []),
         ...(nodeInput.generateAudio !== undefined ? [{ label: '生成音轨', value: nodeInput.generateAudio }] : []),
         ...(nodeInput.aspectRatio
@@ -465,6 +498,7 @@ function captureNodeAudit(node: Node<BaseNodeData>): NodeAuditSnapshot {
     imageSize: typeof data.imageSize === 'string' ? data.imageSize : undefined,
     imageQuality: data.imageQuality,
     imageBackground: data.imageBackground,
+    ...pickImageOutputParameters(data),
     batchCount: typeof data.batchCount === 'number' ? data.batchCount : undefined,
     videoResolution: visibleVideoResolution(data),
     videoDuration: typeof data.seedanceDuration === 'number' ? data.seedanceDuration : undefined,
@@ -504,6 +538,10 @@ const UPDATE_DISPLAY_FIELDS: Array<{
   { inputKey: 'imageSize', auditKey: 'imageSize', label: '图片尺寸' },
   { inputKey: 'imageQuality', auditKey: 'imageQuality', label: '生成质量' },
   { inputKey: 'imageBackground', auditKey: 'imageBackground', label: '生成背景' },
+  { inputKey: 'imageOutputFormat', auditKey: 'imageOutputFormat', label: '输出格式' },
+  { inputKey: 'imageFrameCount', auditKey: 'imageFrameCount', label: 'GIF 帧数' },
+  { inputKey: 'imageFrameDurationMs', auditKey: 'imageFrameDurationMs', label: '每帧时长（毫秒）' },
+  { inputKey: 'imageTransparent', auditKey: 'imageTransparent', label: 'GIF 透明背景' },
   { inputKey: 'batchCount', auditKey: 'batchCount', label: '批量数量' },
   { inputKey: 'videoResolution', auditKey: 'videoResolution', label: '视频分辨率' },
   { inputKey: 'videoDuration', auditKey: 'videoDuration', label: '视频时长' },
@@ -585,6 +623,10 @@ const nodeUpdateProperties: Record<string, AgentToolSchema> = {
   imageSize: { type: 'string', enum: [...PROJECT_IMAGE_SIZES] },
   imageQuality: { type: 'string', minLength: 1, maxLength: 40 },
   imageBackground: { type: 'string', maxLength: 40, description: '空字符串表示接口默认。' },
+  imageOutputFormat: { type: 'string', enum: ['png', 'gif', 'svg'], description: '仅所选图片模型声明的格式；GIF/SVG须符合其方图和文生限制。' },
+  imageFrameCount: { type: 'integer', minimum: 1 },
+  imageFrameDurationMs: { type: 'integer', minimum: 1 },
+  imageTransparent: { type: 'boolean' },
   batchCount: { type: 'integer', minimum: 1, maximum: MAX_IMAGE_BATCH_COUNT },
   videoResolution: { type: 'string', minLength: 1, maxLength: 40 },
   videoLongSide: { type: 'integer', minimum: 128, maximum: 4096 },
@@ -1059,6 +1101,7 @@ function describeNode(node: Node<BaseNodeData>, globalAssets?: readonly DramaAss
     imageSize: data.imageSize,
     imageQuality: data.imageQuality,
     imageBackground: data.imageBackground,
+    ...pickImageOutputParameters(data),
     batchCount: data.batchCount,
     videoResolution: visibleVideoResolution(data),
     videoLongSide: data.videoResolution,
@@ -1471,6 +1514,7 @@ function createCanvasNode(
       ...(input.imageSize !== undefined ? { imageSize: input.imageSize } : {}),
       ...(input.imageQuality !== undefined ? { imageQuality: input.imageQuality } : {}),
       ...(input.imageBackground !== undefined ? { imageBackground: input.imageBackground } : {}),
+      ...imageOutputNodePatch(input),
       ...(input.batchCount !== undefined ? { batchCount: input.batchCount } : {}),
       ...(type === 'ai-video' ? videoResolutionPatch(input) : {}),
       ...(type === 'ai-video' && input.videoDuration !== undefined
@@ -1636,6 +1680,7 @@ async function prepareNodeUpdate(
     ...(input.imageSize !== undefined ? { imageSize: input.imageSize } : {}),
     ...(input.imageQuality !== undefined ? { imageQuality: input.imageQuality } : {}),
     ...(input.imageBackground !== undefined ? { imageBackground: input.imageBackground } : {}),
+    ...imageOutputNodePatch(input),
     ...(input.batchCount !== undefined ? { batchCount: input.batchCount } : {}),
     ...videoResolutionPatch(input),
     ...(input.videoDuration !== undefined ? { seedanceDuration: input.videoDuration < 0
@@ -1714,6 +1759,12 @@ function applyPreparedNodeUpdates(groups: PreparedNodeUpdate[], batch: boolean):
   for (const group of groups) {
     for (const node of group.targets) {
       const patch: Partial<BaseNodeData> = batch ? { ...group.patch } : {};
+      if (group.input.model !== undefined && node.data.type === 'ai-image'
+        && (node.data.model !== group.patch.model || node.data.provider !== group.patch.provider
+          || node.data.workflowId !== group.patch.workflowId)) {
+        Object.assign(patch, { imageOutputFormat: undefined, imageFrameCount: undefined,
+          imageFrameDurationMs: undefined, imageTransparent: undefined }, imageOutputNodePatch(group.input));
+      }
       const edited = group.promptEdits.get(node.id);
       if (edited) patch.prompt = edited.after;
       if (group.input.aspectRatio !== undefined && node.data.type === 'ai-video') patch.seedanceRatio = group.input.aspectRatio;
@@ -1883,6 +1934,10 @@ export function registerCanvasAgentTools(): Array<() => void> {
                 imageSize: { type: 'string', enum: [...PROJECT_IMAGE_SIZES] },
                 imageQuality: { type: 'string', minLength: 1, maxLength: 40, description: '仅图片模型声明支持的质量档位。' },
                 imageBackground: { type: 'string', maxLength: 40, description: '仅图片模型声明支持的背景；空字符串表示接口默认。' },
+                imageOutputFormat: { type: 'string', enum: ['png', 'gif', 'svg'], description: '仅所选图片模型声明的格式；GIF/SVG须符合其方图和文生限制。' },
+                imageFrameCount: { type: 'integer', minimum: 1 },
+                imageFrameDurationMs: { type: 'integer', minimum: 1 },
+                imageTransparent: { type: 'boolean' },
                 batchCount: { type: 'integer', minimum: 1, maximum: MAX_IMAGE_BATCH_COUNT },
                 videoResolution: { type: 'string', minLength: 1, maxLength: 40,
                   description: 'API 画质档位，如 720p；兼容旧客户端传入数字字符串 832 并映射为长边像素。' },
@@ -2012,6 +2067,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
         const explicitKeys = [
           'model', 'provider', 'workflowId', 'workflowInputs', 'aspectRatio', 'imageSize',
           'imageQuality', 'imageBackground', 'batchCount', 'seedanceRatio', 'seedanceResolution', 'videoResolution', 'seedanceDuration',
+          'imageOutputFormat', 'imageFrameCount', 'imageFrameDurationMs', 'imageTransparent',
           'videoFps', 'generateAudio',
           'audioPurpose', 'audioVoice', 'audioFormat', 'audioSpeed', 'audioSpeechSettings',
           'musicDuration', 'musicBpm', 'musicTitle', 'musicLyrics', 'autoGenerateLyrics',
@@ -2634,7 +2690,8 @@ export function registerCanvasAgentTools(): Array<() => void> {
               ?.settings?.defaultModels?.[kind];
             const provider = parseProjectModelRef((data.model || projectModel) ?? undefined)?.provider ?? data.provider;
             const usesWorkflow = Boolean(data.workflowId) || ['comfyui', 'runninghub', 'runninghubwf', 'workflow-api'].includes(provider ?? '');
-            const parameters = data.type === 'ai-image' ? { imageQuality: data.imageQuality, imageBackground: data.imageBackground }
+            const parameters = data.type === 'ai-image' ? { imageQuality: data.imageQuality, imageBackground: data.imageBackground,
+              ...pickImageOutputParameters(data) }
               : data.type === 'ai-video' ? { videoFps: data.videoFps, generateAudio: data.generateAudio,
                 ...(data.seedanceDuration !== undefined && data.seedanceDuration < 0 ? { videoDuration: data.seedanceDuration } : {}) }
                 : undefined;

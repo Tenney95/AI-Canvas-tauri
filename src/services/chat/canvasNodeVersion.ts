@@ -2,11 +2,13 @@
 import type { Node } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
 import { sha256BytesHex } from '../mediaDataUrl';
+import { pickImageOutputParameters } from '../ai/imageOutputParameters';
 
 const TEXT_OUTPUT_NODE_TYPES = new Set(['ai-text', 'ai-markdown', 'source-text', 'comment']);
 
 /** 保持生成租约原有快照语义：状态、顶层产物和批次分组不参与。 */
 export function generationInputSnapshot(data: BaseNodeData, projectSettings: unknown): string {
+  const imageOutput = pickImageOutputParameters(data);
   return JSON.stringify([
     data.type, data.prompt, TEXT_OUTPUT_NODE_TYPES.has(data.type) ? data.output : undefined,
     data.model, data.provider, data.workflowId, data.workflowInputs, data.runninghubModelParameters,
@@ -20,6 +22,7 @@ export function generationInputSnapshot(data: BaseNodeData, projectSettings: unk
     data.directorRuntimeKind, data.directorInstanceId, data.directorPrevisPrompt, data.directorPrevisModel,
     data.directorPrevisProvider, projectSettings,
     ...(data.outpaintInput ? [['outpaintInput', data.outpaintInput]] : []),
+    ...(Object.keys(imageOutput).length ? [['imageOutput', imageOutput]] : []),
   ]);
 }
 

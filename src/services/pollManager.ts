@@ -12,7 +12,8 @@ import { derivedNodePlacement, generateId, getNextDisplayId } from '../store/sto
 import { corsSafeFetch } from './ai/httpTransport';
 import { pollVolcengineVideoTask } from './ai/providers/volcengineVideoQuery';
 import { useAppStore } from '../store/useAppStore';
-import { MediaPersistenceError, persistMediaUrlToProjectData, type MediaPersistenceFailureKind } from './fileService';
+import { pickImageOutputParameters } from './ai/imageOutputParameters';
+import { MediaPersistenceError, persistMediaUrlToProjectData, type MediaPersistenceFailureKind, type PersistedProjectMedia } from './fileService';
 import { applyImageBatchResults, imageBatchArtifactId } from './imageBatchService';
 import { mapImageDimensions } from './aiDimensions';
 import { parseMultiPathResponse } from './ai/helpers';
@@ -1276,7 +1277,7 @@ async function applyNodeResult(
   resultUrl: string,
   nodeLabel: string,
   isCurrent?: () => boolean,
-  savedOutput?: { mediaUrl: string; sourceUrl: string; filePath?: string },
+  savedOutput?: PersistedProjectMedia,
   generation?: PendingTask['videoGeneration'],
   mediaDownloadAccess?: MediaDownloadAccess,
   signal?: AbortSignal,
@@ -1293,7 +1294,7 @@ async function applyNodeResult(
 
   // 下载远程 URL 到本地
   const guard = isCurrent ? registerCanvasDerivation(store, nodeId) : null;
-  let persisted;
+  let persisted: PersistedProjectMedia;
   try {
     persisted = savedOutput ?? (currentProjectId
       ? await persistMediaUrlToProjectData(resultUrl, currentProjectId, nodeType, nodeLabel, { mediaDownloadAccess, signal })
@@ -1321,6 +1322,8 @@ async function applyNodeResult(
 
   if (nodeType === 'ai-image' || nodeType === 'ai-panorama' || nodeType === 'ai-animation') {
     updateData.imageUrl = mediaUrl;
+    if (persisted.width !== undefined) updateData.imageWidth = persisted.width;
+    if (persisted.height !== undefined) updateData.imageHeight = persisted.height;
   } else if (nodeType === 'ai-video') {
     updateData.videoUrl = mediaUrl;
   } else if (nodeType === 'ai-audio') {
@@ -1344,6 +1347,8 @@ async function applyNodeResult(
     status: 'success',
     mediaUrl,
     filePath: persisted.filePath,
+    ...(nodeType === 'ai-image' ? { params: { imageSize: data.imageSize, imageQuality: data.imageQuality,
+      imageBackground: data.imageBackground, aspectRatio: data.aspectRatio, ...pickImageOutputParameters(data) } } : {}),
   }, false, historyReceipt);
   const historyOutcome = currentProjectId ? mediaResumeOutcomes.get(JSON.stringify([currentProjectId, nodeId])) : undefined;
   if (historyReceipt && historyOutcome && historyOutcome.receipt.taskId === historyReceipt.taskId
@@ -2076,6 +2081,7 @@ async function resumeCustomProtocol(task: PendingTask, parentSignal?: AbortSigna
         imageSize,
         imageQuality: nodeData.imageQuality,
         imageBackground: nodeData.imageBackground,
+        ...pickImageOutputParameters(nodeData),
         aspectRatio,
         isCurrent: query.isCurrent,
         commitHistory: false,

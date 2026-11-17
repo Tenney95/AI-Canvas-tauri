@@ -33,6 +33,7 @@ const req = <T>(request: IDBRequest<T>) => new Promise<T>((resolve, reject) => {
   request.onerror = () => reject(request.error ?? new Error('新项目输出历史读取失败'));
 });
 const parameterKeys = ['aspectRatio', 'imageSize', 'imageQuality', 'imageBackground', 'style', 'animationAction', 'animationFrames',
+  'imageOutputFormat', 'imageFrameCount', 'imageFrameDurationMs', 'imageTransparent',
   'videoResolution', 'videoFps', 'videoFrames', 'seedanceResolution', 'seedanceRatio', 'seedanceDuration',
   'audioVoice', 'audioSpeed', 'originalInputUnavailable', 'originalTimestampUnavailable'] as const;
 const historyId = (canvasId: string, operationId: string, ordinal: number) => `hist-native-${canvasId}-${operationId}-${ordinal}`;

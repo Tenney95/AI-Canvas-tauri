@@ -64,8 +64,11 @@ export function CccGroupConnectionsForm({ providerConfigs, presetModels, onSave,
       const bananaGroup = !isRelay && isCccBananaGroup(group);
       const presets = groupPresetModels(group);
       const cachedModels = config.catalogModels?.length ? config.catalogModels : presets;
+      const existingModelIds = new Set([...cachedModels, ...savedModels].map((model) => model.id));
+      // 新版内置型号只补入本组候选，不把模板字段合并进已保存的模型合同。
+      const addedPresets = isRelay ? presets.filter((model) => !existingModelIds.has(model.id)) : [];
       const options = { preferIncomingConfiguration: isRelay || bananaGroup };
-      const merged = mergeModels(bananaGroup ? mergeModels(presets, cachedModels, options) : cachedModels, savedModels, options);
+      const merged = mergeModels(bananaGroup ? mergeModels(presets, cachedModels, options) : [...cachedModels, ...addedPresets], savedModels, options);
       const savedById = new Map(savedModels.map((model) => [model.id, model]));
       const cachedCustomById = new Map(cachedModels.filter((model) => model.executionProfile?.preset === 'custom')
         .map((model) => [model.id, model]));
@@ -75,7 +78,8 @@ export function CccGroupConnectionsForm({ providerConfigs, presetModels, onSave,
       return { id, config, models, selectedIds: new Set(config.selectedModels?.map((model) => model.id) || []),
         ...(bananaGroup ? { currentModelIds: new Set(presets.map((model) => model.id)) } : {}),
         selectionEdited: false, catalogEdited: false, existing: !!saved,
-        status: 'idle', message: config.catalogModels?.length ? t('已加载该分组保存的模型目录')
+        status: 'idle', message: addedPresets.length ? t('分组预置模型，拉取后以该 Key 返回为准。')
+          : config.catalogModels?.length ? t('已加载该分组保存的模型目录')
           : isRelay && group === 'default' && !models.length ? t('该分组暂无已核对的预置模型，可填写 Key 后拉取。')
           : t('分组预置模型，拉取后以该 Key 返回为准。') };
     };

@@ -6,7 +6,7 @@ type PixelPair = readonly [number, number];
 type PixelTiers = readonly [PixelPair, PixelPair, PixelPair];
 
 export type ImageSizeProfile = 'openai-gpt' | 'apimart-gpt-2.5' | 'toapis-gpt-2.5'
-  | 'relayon-image-2' | 'relayon-image-2.5'
+  | 'relayon-image-2' | 'relayon-image-2.5' | 'relayon-image-2.6' | 'relayon-image-2.6-variant'
   | 'relayon-nano-banana' | 'relayon-seedream-5-pro' | 'relayon-midjourney' | 'relayon-midjourney-8'
   | 'grsai-gpt' | 'grsai-gpt-base'
   | 'volcengine-seedream-5-pro' | 'apimart-seedream-5'
@@ -95,6 +95,20 @@ function imagePixelTiers(rows: Record<string, PixelTiers>): ImageDimensions {
   ]));
 }
 
+// 普通2.6与两个格式变体仅4K方图不同，其他逐档像素共用同一源表。
+const RELAYON_IMAGE_26_PIXELS: Record<string, PixelTiers> = {
+  '1:1': [[1024, 1024], [2048, 2048], [3840, 3840]],
+  '16:9': [[1280, 720], [2560, 1440], [3840, 2160]],
+  '9:16': [[720, 1280], [1440, 2560], [2160, 3840]],
+  '3:2': [[1248, 832], [2496, 1664], [3504, 2336]],
+  '2:3': [[832, 1248], [1664, 2496], [2336, 3504]],
+  '4:3': [[1152, 864], [2304, 1728], [3264, 2448]],
+  '3:4': [[864, 1152], [1728, 2304], [2448, 3264]],
+  '5:4': [[1120, 896], [2240, 1792], [3200, 2560]],
+  '4:5': [[896, 1120], [1792, 2240], [2560, 3200]],
+  '21:9': [[1456, 624], [3024, 1296], [3696, 1584]],
+};
+
 const RELAYON_NANO_PIXELS: Record<string, PixelPair> = {
   '1:1': [1024, 1024], '2:3': [832, 1248], '3:2': [1248, 832], '3:4': [864, 1152],
   '4:3': [1152, 864], '4:5': [1024, 1280], '5:4': [1280, 1024], '9:16': [720, 1280],
@@ -146,6 +160,11 @@ const IMAGE_SIZE_PROFILES: Record<ImageSizeProfile, ImageDimensions> = {
   'relayon-image-2.5': imagePixelTiers({ ...RELAYON_COMMON_PIXELS,
     '4:5': [[1024, 1280], [1600, 2048], [2304, 2880]],
     '5:4': [[1280, 1024], [2048, 1600], [2880, 2304]],
+  }),
+  // 普通 image-2.6-01 的独立表；Flare/Sunburst 变体的 4K 方图不属于此合同。
+  'relayon-image-2.6': imagePixelTiers(RELAYON_IMAGE_26_PIXELS),
+  'relayon-image-2.6-variant': imagePixelTiers({ ...RELAYON_IMAGE_26_PIXELS,
+    '1:1': [[1024, 1024], [2048, 2048], [4096, 4096]],
   }),
   'relayon-nano-banana': googlePixelScales(RELAYON_NANO_PIXELS),
   'relayon-seedream-5-pro': {

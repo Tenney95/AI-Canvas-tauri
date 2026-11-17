@@ -41,6 +41,7 @@ fn media_format(mime: &str) -> Option<(&'static str, u64)> {
     match mime {
         "image/png" => Some(("png", IMAGE)), "image/jpeg" => Some(("jpg", IMAGE)),
         "image/webp" => Some(("webp", IMAGE)), "image/gif" => Some(("gif", IMAGE)),
+        "image/svg+xml" => Some(("svg", IMAGE)),
         "video/mp4" => Some(("mp4", VIDEO)), "video/webm" => Some(("webm", VIDEO)),
         "video/quicktime" => Some(("mov", VIDEO)), "audio/mpeg" => Some(("mp3", IMAGE)),
         "audio/wav" => Some(("wav", IMAGE)), "audio/ogg" => Some(("ogg", IMAGE)),
@@ -806,6 +807,7 @@ pub fn write_native_project_media<R: Runtime>(webview: Webview<R>, project_id: S
     let (extension, limit) = media_format(&mime_type).ok_or(ERROR)?;
     if data.is_empty() || data.len() as u64 > limit { return Err(ERROR.into()); }
     if mime_type == "application/json" { serde_json::from_slice::<serde_json::Value>(&data).map_err(|_| ERROR)?; }
+    if mime_type == "image/svg+xml" { crate::file_transfer::validate_svg_image_bytes(&data).map_err(|_| ERROR)?; }
     let sha256 = format!("{:x}", Sha256::digest(&data));
     let reference = NativeMediaReference { relative_path: format!("media/{sha256}.{extension}"), sha256, bytes: data.len() as u64, mime_type };
     let name = validate_media_reference(&reference)?;
@@ -847,6 +849,22 @@ pub fn read_native_project_media<R: Runtime>(webview: Webview<R>, project_id: St
 mod tests {
     use super::*;
     const PROJECT: &str = "p2-12345678-1234-4123-8123-123456789abc";
+
+    #[test]
+    fn svg_native_media_uses_original_digest_extension_and_existing_image_budget() {
+        let bytes = b"<svg width='320' height='200'><path d='M0 0h1'/></svg>";
+        assert_eq!(media_format("image/svg+xml"), Some(("svg", 32 * 1024 * 1024)));
+        assert_eq!(crate::file_transfer::validate_svg_image_bytes(bytes).unwrap(), (320, 200));
+        let sha256 = format!("{:x}", Sha256::digest(bytes));
+        let mut reference = NativeMediaReference { relative_path: format!("media/{sha256}.svg"), sha256,
+            bytes: bytes.len() as u64, mime_type: "image/svg+xml".into() };
+        assert!(validate_media_reference(&reference).unwrap().ends_with(".svg"));
+        reference.relative_path = reference.relative_path.replace(".svg", ".png");
+        assert!(validate_media_reference(&reference).is_err());
+        reference.relative_path = format!("media/{}.svg", reference.sha256);
+        reference.bytes = 32 * 1024 * 1024 + 1;
+        assert!(validate_media_reference(&reference).is_err());
+    }
 
     #[test]
     fn search_roots_require_main_registration_and_exact_window() {

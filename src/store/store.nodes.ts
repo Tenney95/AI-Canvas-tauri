@@ -42,6 +42,7 @@ import { copyNodeMedia, needsNodeMediaCopy, discardCopiedNodeMedia } from '../se
 import { registerCanvasDerivation, isCanvasDerivationFresh, completeCanvasDerivation } from '../services/canvasDerivationGuard';
 import { AI_APP_COPY_MESSAGE, AI_APP_CREATION_MESSAGE, assertAiAppNodeInsertion, isAiAppNode } from '../services/aiApps/aiAppCreation';
 import { getGenerationNodeType } from '../utils/nodeGeneration';
+import { pickImageOutputParameters } from '../services/ai/imageOutputParameters';
 import { collectCanvasDescendantIds } from '../utils/canvasHierarchy';
 import { normalizeShotlistPromptReferences, resolveSingleShotlistRowReference } from '../services/shotlistPromptService';
 import { pickWorkflowSizeInputs, readNodeModelPreference, saveWorkflowModelPreference } from '../services/modelPreferenceService';
@@ -55,6 +56,7 @@ function mediaParametersToNodeData(kind: MediaKind, parameters?: MediaGeneration
     ...(parameters.resolution !== undefined ? { imageSize: parameters.resolution } : {}),
     ...(parameters.imageQuality !== undefined ? { imageQuality: parameters.imageQuality } : {}),
     ...(parameters.imageBackground !== undefined ? { imageBackground: parameters.imageBackground } : {}),
+    ...pickImageOutputParameters(parameters),
   };
   if (kind === 'video') return {
     ...(parameters.aspectRatio !== undefined ? { seedanceRatio: parameters.aspectRatio } : {}),
@@ -401,7 +403,8 @@ function insertNodeInGroup(state: Pick<AppState, 'nodes' | 'groups'>, node: Node
 
 const MEDIA_PARAMETER_PREF_KEY = 'canvas-media-parameter-prefs';
 const MEDIA_PARAMETER_TYPES = {
-  'ai-image': { imageSize: 'string', imageQuality: 'string', imageBackground: 'string', aspectRatio: 'string' },
+  'ai-image': { imageSize: 'string', imageQuality: 'string', imageBackground: 'string', aspectRatio: 'string',
+    imageOutputFormat: 'string', imageFrameCount: 'number', imageFrameDurationMs: 'number', imageTransparent: 'boolean' },
   'ai-video': {
     videoResolution: 'number', videoFps: 'number', videoFrames: 'number',
     seedanceResolution: 'string', seedanceRatio: 'string', seedanceDuration: 'number',

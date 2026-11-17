@@ -683,6 +683,48 @@ describe('图片生成质量按渠道隔离', () => {
     expect(resolveImageParameterCapability('general/saved', 'general', config)).toMatchObject({ qualities: ['low', 'high'], defaultQuality: 'low' });
   });
 
+  it('输出格式只展示实际接线的能力，未映射的GIF控件不继承', () => {
+    const model = RELAYON_MODEL_MANIFEST.find((item) => item.id === 'image-2.6-flare-01')!;
+    const config: Pick<AppConfig, 'providers' | 'generalModels'> = {
+      providers: { custom: { name: 'Custom', apiKey: '', catalogId: 'custom-openai' } },
+      generalModels: [{ id: 'formats', name: 'Formats', modelId: 'private-image', category: 'image',
+        providerConfigId: 'custom', imageCapability: structuredClone(model.imageCapability),
+        executionProfile: structuredClone(model.executionProfile) }],
+    };
+    const resolve = () => resolveImageParameterCapability('general/formats', 'general', config);
+    expect(resolve()).toMatchObject({ outputFormats: ['png', 'gif', 'svg'],
+      gifFrameCount: { default: 9 }, gifFrameDurationMs: { default: 200 }, supportsGifTransparency: true });
+    config.generalModels![0].executionProfile!.protocol!.submit.body = { output_format: 'png' };
+    expect(resolve()?.outputFormats).toBeUndefined();
+    expect(resolve()?.gifFrameCount).toBeUndefined();
+    expect(resolve()?.gifFrameDurationMs).toBeUndefined();
+    expect(resolve()?.supportsGifTransparency).toBeUndefined();
+    expect(config.generalModels![0].imageCapability?.outputFormats).toEqual(['png', 'gif', 'svg']);
+    for (const profile of [{ preset: 'openai-gpt-image' as const }, undefined]) {
+      config.generalModels![0].executionProfile = profile;
+      expect(resolve()?.outputFormats).toBeUndefined();
+      expect(resolve()?.gifFrameCount).toBeUndefined();
+      expect(() => assertModelCapabilityProtocol({ ...model, executionProfile: profile })).toThrow('格式');
+    }
+  });
+
+  it('单一固定GIF格式保留声明，但帧数等控件仍须有对应变量', () => {
+    const config: Pick<AppConfig, 'providers' | 'generalModels'> = {
+      providers: { custom: { name: 'Custom', apiKey: '', catalogId: 'custom-openai' } },
+      generalModels: [{ id: 'gif', name: 'GIF', modelId: 'private-gif', category: 'image', providerConfigId: 'custom',
+        imageCapability: { outputFormats: ['gif'], defaultOutputFormat: 'gif',
+          gifFrameCount: { min: 2, max: 16, default: 9 },
+          gifFrameDurationMs: { min: 20, max: 655350, step: 10, default: 200 }, supportsGifTransparency: true },
+        executionProfile: { preset: 'custom', protocol: { version: 2, mode: 'sync',
+          submit: { method: 'POST', path: '/images', body: { output_format: 'gif', frame_count: '{{imageFrameCount}}' } },
+          response: { type: 'json', result: { urlPath: 'url' } } } } }],
+    };
+    const capability = resolveImageParameterCapability('general/gif', 'general', config);
+    expect(capability).toMatchObject({ outputFormats: ['gif'], defaultOutputFormat: 'gif', gifFrameCount: { default: 9 } });
+    expect(capability?.gifFrameDurationMs).toBeUndefined();
+    expect(capability?.supportsGifTransparency).toBeUndefined();
+  });
+
   it('已保存的 ToAPIs 完整旧合同与当前节点目录使用相同质量能力', () => {
     const current = TOAPIS_MODEL_MANIFEST.find((model) => model.id === 'gpt-image-2.5-sunburst-vip')!;
     const previous = structuredClone(current.executionProfile!);

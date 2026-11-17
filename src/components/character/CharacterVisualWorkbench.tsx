@@ -5,6 +5,7 @@ import { useAppStore } from '../../store/useAppStore';
 import type { CharacterLibraryScope } from '../../store/store.dramaAssets';
 import type { DramaCharacter } from '../../types/dramaAssets';
 import type { CharacterVisualGenerationParameters } from '../../types/media';
+import { pickImageOutputParameters } from '../../services/ai/imageOutputParameters';
 import { canonicalXiaohongshuReferenceUrl } from '../../utils/xiaohongshuReferenceUrl';
 import { polishCharacterVisualPrompt } from '../../services/characterVisualPromptPolish';
 import {
@@ -741,6 +742,7 @@ export default function CharacterVisualWorkbench({
                     setAspectRatio(activeRun.aspectRatio ?? '');
                     setImageSize(activeRun.imageSize ?? '');
                     setGenerationParameters({ imageQuality: activeRun.imageQuality, imageBackground: activeRun.imageBackground,
+                      ...pickImageOutputParameters(activeRun),
                       workflowInputs: activeRun.workflowInputs, runninghubModelParameters: activeRun.runninghubModelParameters });
                     const knownIds = activeRun.references.map((reference) => reference.id)
                       .filter((id) => referenceOptions.some((reference) => reference.id === id));

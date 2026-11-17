@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({ transport: vi.fn(), invoke: vi.fn(), readSecret: vi.fn(), native: false, optimizerNative: true }));
-vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: mocks.transport }));
+vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: mocks.transport, logAiResponse: vi.fn() }));
 vi.mock('../../src/services/providerSecretService', async (original) => ({
   ...await original<object>(), readAppSecret: mocks.readSecret,
 }));
@@ -26,6 +26,8 @@ import { generateImageStandard } from '../../src/services/ai/providers/standardI
 import { uploadRunningHubMedia } from '../../src/services/ai/providers/runninghubClient';
 import { resolveMediaReferenceUrl, uploadToRemote } from '../../src/services/uploadService';
 import { previewModelProtocolRequest } from '../../src/services/ai/modelProtocol';
+import { getProviderDefinition } from '../../src/services/ai/providerCatalogService';
+import { registerCharacterImageTaskContext } from '../../src/services/characterImageTaskContext';
 import { useAppStore } from '../../src/store/useAppStore';
 import type { ImageHostingConfig, PublicImageHostingProvider } from '../../src/types/imageHosting';
 import type { VolcengineTosConfig } from '../../src/types/volcengineTos';
@@ -92,6 +94,122 @@ beforeEach(() => {
   vi.stubGlobal('OffscreenCanvas', encode);
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+describe('万象参考图片直接文件提交', () => {
+  function configure(route: 'general' | 'direct' = 'general', modelId = 'image-2-01') {
+    const selected = structuredClone(getProviderDefinition('relayonapi')!.models!.find((item) => item.id === modelId)!);
+    // 旧连接保存过 URL 偏好，不能盖过已核实的内置文件编辑合同。
+    selected.imageReferenceRequestMode = 'generation-json-image-urls';
+    useAppStore.getState().saveProviderConfig('my-relayon-files', {
+      name: '万象文件直传', catalogId: 'relayonapi', relayonGroup: 'image', apiKey: 'relayon-file-fixture',
+      baseUrl: 'https://relayonapi.com/v1', selectedModels: [selected],
+    });
+    const model = useAppStore.getState().config.generalModels!.find((item) => item.providerConfigId === 'my-relayon-files')!;
+    useAppStore.setState((state) => ({ config: { ...state.config,
+      imageHosting: { provider: 'imagekit', configs: {} },
+      generalModels: state.config.generalModels!.map((item) => item.id === model.id
+        ? { ...item, imageReferenceRequestMode: 'generation-json-image-urls' as const } : item),
+    } }));
+    return { provider: route === 'general' ? 'general' : 'my-relayon-files',
+      model: route === 'general' ? `general/${model.id}` : `my-relayon-files/${modelId}`,
+      prompt: '参考图片生成角色', imageSize: '2K', aspectRatio: '16:9' };
+  }
+
+  it.each(['image-2-01', 'image-2.6-01', 'image-2.6-flare-01', 'image-2.6-sunburst-01'].flatMap((modelId) =>
+    (['general', 'direct'] as const).map((route) => ({ modelId, route }))))(
+    '$modelId 的$route入口将本地及远端参考按序提交真实文件，旧URL偏好不调用图床', async ({ modelId, route }) => {
+    const params = configure(route, modelId);
+    const before = structuredClone(useAppStore.getState().config);
+    const remote = new Blob([Uint8Array.from([82, 73, 70, 70, 5, 0, 0, 0, 87, 69, 66, 80, 9])], { type: 'image/webp' });
+    localFetch.mockResolvedValueOnce(new Response(png(1)));
+    mocks.transport.mockImplementation(async (url, init) => {
+      if (url === 'https://media.example/reference.webp') {
+        expect(init?.method).toBeUndefined();
+        expect(init?.headers).toBeUndefined();
+        return new Response(remote);
+      }
+      if (url === 'https://api.relayonapi.com/v1/images/edits' && init?.method === 'POST') {
+        return json({ data: [{ url: 'https://output.example/file-edited.png' }] });
+      }
+      throw new Error('不应上传至图床或其他地址');
+    });
+    await expect(generateImagesBatch({ ...params,
+      image_urls: ['asset://localhost/reference.png', 'https://media.example/reference.webp'],
+    }, 1)).resolves.toMatchObject({ failedCount: 0, results: [{ url: 'https://output.example/file-edited.png' }] });
+    expect(localFetch).toHaveBeenCalledExactlyOnceWith('asset://localhost/reference.png', expect.anything());
+    expect(mocks.transport.mock.calls.map(([url]) => url)).toEqual([
+      'https://media.example/reference.webp', 'https://api.relayonapi.com/v1/images/edits',
+    ]);
+    const init = mocks.transport.mock.calls[1][1] as RequestInit;
+    const headers = new Headers(init.headers);
+    expect(headers.get('Content-Type')).toMatch(/^multipart\/form-data; boundary=/);
+    expect(headers.get('Authorization')).toBe('Bearer relayon-file-fixture');
+    expect(headers.get('Idempotency-Key')).toMatch(/^[a-f0-9-]{36}$/i);
+    const form = await new Response(init.body, { headers: init.headers }).formData();
+    const files = form.getAll('image[]') as File[];
+    expect(form.has('image')).toBe(false);
+    expect(files.map((file) => file.type)).toEqual(['image/png', 'image/webp']);
+    const indexedFiles = modelId !== 'image-2-01';
+    expect(files.map((file) => file.name)).toEqual(indexedFiles ? ['reference-1.png', 'reference-2.webp'] : ['upload.png', 'upload.webp']);
+    await assertPreparedPng(files[0], 1);
+    expect(Buffer.from(await files[1].arrayBuffer())).toEqual(Buffer.from(await remote.arrayBuffer()));
+    expect(form.get('model')).toBe(modelId);
+    expect(form.get('n')).toBe('1');
+    expect(form.get('size')).toBe(indexedFiles ? '2560x1440' : '2048x1152');
+    if (indexedFiles) {
+      for (const key of ['resolution', 'aspect_ratio', 'output_format']) expect(form.has(key)).toBe(false);
+    } else {
+      expect(form.get('resolution')).toBe('2K');
+      expect(form.get('aspect_ratio')).toBe('16:9');
+    }
+    expect(form.has('mask')).toBe(false);
+    expect(form.has('quality')).toBe(false);
+    expect(mocks.readSecret).not.toHaveBeenCalled();
+    expect(useAppStore.getState().config).toEqual(before);
+  });
+
+  it('角色工作台沿受信目的地发送文件，不退回标准 JSON 或图床', async () => {
+    const params = configure();
+    const completed = new Error('角色任务已执行完成');
+    const assertCurrent = vi.fn();
+    let delivered: unknown;
+    const destination = registerCharacterImageTaskContext({ assertCurrent, execute: async (plan) => {
+      delivered = await plan.execute(async () => { assertCurrent(); }, async () => {}, 'role-file-fixture');
+      throw completed;
+    } });
+    mocks.transport.mockResolvedValueOnce(json({ data: [{ url: 'https://output.example/role-file.png' }] }));
+    try {
+      await expect(generateImagesBatch({ ...params, characterWorkbench: 'global', image_urls: [await asDataUrl(png(3, 0))] },
+        1, undefined, destination.beforeSubmit)).rejects.toBe(completed);
+      expect(delivered).toEqual([{ url: 'https://output.example/role-file.png' }]);
+      expect(assertCurrent).toHaveBeenCalled();
+      expect(mocks.transport).toHaveBeenCalledOnce();
+      const [url, init] = mocks.transport.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('https://api.relayonapi.com/v1/images/edits');
+      expect(new Headers(init.headers).get('Idempotency-Key')).toMatch(/^[a-f0-9-]{36}$/i);
+      const form = await new Response(init.body, { headers: init.headers }).formData();
+      expect(form.getAll('image')).toHaveLength(1);
+      await assertPreparedPng(form.get('image') as File, 3);
+      expect(localFetch).not.toHaveBeenCalled();
+      expect(mocks.readSecret).not.toHaveBeenCalled();
+    } finally { destination.release(); }
+  });
+
+  it.each(['missing', 'cancel'] as const)('参考图 %s 时停止，不上传图床或继续提交生成', async (failure) => {
+    const params = configure();
+    const controller = new AbortController();
+    localFetch.mockImplementationOnce(async () => {
+      if (failure === 'cancel') controller.abort(new DOMException('Cancelled', 'AbortError'));
+      return failure === 'missing' ? new Response('', { status: 404 }) : new Response(png(1));
+    });
+    await expect(generateImagesBatch({ ...params, image_urls: ['asset://localhost/unavailable.png'] }, 1, controller.signal))
+      .rejects.toThrow(failure === 'missing' ? '参考图 1' : /取消|Cancelled/);
+    expect(localFetch).toHaveBeenCalledOnce();
+    expect(mocks.transport).not.toHaveBeenCalled();
+    expect(mocks.readSecret).not.toHaveBeenCalled();
+  });
+
+});
 
 describe('方舟全部参考素材的私有 TOS 路由', () => {
   const initialTos: VolcengineTosConfig = { bucket: 'reference-bucket', region: 'cn-beijing',

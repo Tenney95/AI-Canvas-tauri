@@ -10,6 +10,8 @@ import { completeWorkflowApiNodeTask, workflowApiConnection } from '../../workfl
 import { getRunningHubModel, parseRunningHubModelParameter } from '../../ai/providers/runninghubModelManifest';
 import { resolveImageParameterCapability } from '../../ai/mediaModelCapabilities';
 import { assertSafeMediaParameterStrings } from '../../ai/modelCapabilityValidation';
+import type { ImageOutputParameters } from '../../../types/aiTypes';
+import { pickImageOutputParameters, resolveConfiguredImageOutput } from '../../ai/imageOutputParameters';
 import { resolveVideoModelCapability } from '../../ai/videoModelCapabilityResolver';
 import { resolveRunningHubParameters, runningHubParameterKey } from '../../runninghubWorkflowService';
 import { completeRunningHubNodeTask } from '../../ai/providers/runninghubWorkflow';
@@ -58,7 +60,7 @@ import {
 } from '../mediaPlaceholderLifecycle';
 
 interface GenerateMediaInput extends Pick<MediaGenerationIntent, 'audioVoice' | 'audioFormat' | 'audioSpeed' | 'musicTitle' | 'musicLyrics'
-  | 'imageQuality' | 'imageBackground' | 'videoFps' | 'generateAudio'> {
+  | 'imageQuality' | 'imageBackground' | 'videoFps' | 'generateAudio'>, ImageOutputParameters {
   kind: MediaKind;
   prompt: string;
   modelRef?: string;
@@ -89,6 +91,7 @@ function assertSafeMediaToolParameters(input: GenerateMediaInput, projectId: str
   const option = input.modelRef ? findMediaModelOption(input.modelRef, store.config.generalModels ?? [], store.config, store.workflows) : undefined;
   const capability = option && !option.workflowId && option.provider !== 'runninghub'
     ? resolveImageParameterCapability(option.value, option.provider, store.config) : undefined;
+  if (option) resolveConfiguredImageOutput(capability, input);
   assertSafeMediaParameterStrings({
     resolution: settings?.imageSize || undefined,
     aspectRatio: settings?.imageAspectRatio || undefined,
@@ -216,6 +219,10 @@ function buildMediaInputDisplay(input: GenerateMediaInput): AgentToolDisplaySnap
     if (input.generateAudio !== undefined) fields.push({ label: '生成音轨', value: input.generateAudio ? '开启' : '关闭' });
   }
   if (input.kind === 'image') {
+    if (input.imageOutputFormat !== undefined) fields.push({ label: '输出格式', value: input.imageOutputFormat.toUpperCase() });
+    if (input.imageFrameCount !== undefined) fields.push({ label: 'GIF 帧数', value: String(input.imageFrameCount) });
+    if (input.imageFrameDurationMs !== undefined) fields.push({ label: '每帧时长（毫秒）', value: String(input.imageFrameDurationMs) });
+    if (input.imageTransparent !== undefined) fields.push({ label: 'GIF 透明背景', value: input.imageTransparent ? '开启' : '关闭' });
     if (input.imageQuality !== undefined) fields.push({ label: '生成质量', value: input.imageQuality });
     if (input.imageBackground !== undefined) fields.push({ label: '生成背景', value: input.imageBackground || '接口默认' });
   }
@@ -396,6 +403,10 @@ export function registerMediaAgentTools(): Array<() => void> {
           qualities: image.qualities, defaultQuality: image.defaultQuality,
           backgrounds: image.backgrounds, defaultBackground: image.defaultBackground,
           backgroundIsFixed: image.backgroundIsFixed,
+          outputFormats: image.outputFormats, defaultOutputFormat: image.defaultOutputFormat,
+          textOnlyOutputFormats: image.textOnlyOutputFormats, squareOnlyOutputFormats: image.squareOnlyOutputFormats,
+          gifFrameCount: image.gifFrameCount, gifFrameDurationMs: image.gifFrameDurationMs,
+          supportsGifTransparency: image.supportsGifTransparency,
           supportsBatch: image.supportsBatch, maxBatchCount: image.maxBatchCount,
           supportsImageReference: image.supportsImageReference, maxImageReferences: image.maxImageReferences,
         } : video;
@@ -486,6 +497,10 @@ export function registerMediaAgentTools(): Array<() => void> {
           musicLyrics: { type: 'string', maxLength: 8000 },
           imageQuality: { type: 'string', minLength: 1, maxLength: 64, description: '图片生成质量，必须由所选模型明确声明。' },
           imageBackground: { type: 'string', maxLength: 64, description: '图片背景；空字符串表示接口默认。' },
+          imageOutputFormat: { type: 'string', enum: ['png', 'gif', 'svg'], description: '仅所选图片模型声明的输出格式。GIF/SVG的方图及文生限制在提交前校验。' },
+          imageFrameCount: { type: 'integer', minimum: 1, description: 'GIF帧数；仅所选模型声明GIF时可用。' },
+          imageFrameDurationMs: { type: 'integer', minimum: 1, description: 'GIF每帧毫秒数，须符合模型步进。' },
+          imageTransparent: { type: 'boolean', description: 'GIF透明背景；false也会明确传递。' },
           videoFps: { type: 'number', minimum: 1, maximum: 240, description: '视频帧率，必须由所选模型明确声明。' },
           generateAudio: { type: 'boolean', description: '是否生成视频音轨；仅用于明确支持开关的模型。' },
           aspectRatio: {
@@ -523,7 +538,7 @@ export function registerMediaAgentTools(): Array<() => void> {
         if (hasAudioSettings(input) && input.kind !== 'audio') {
           return { allowed: false, reason: '音频参数只能用于音频生成' };
         }
-        if (input.kind !== 'image' && (input.imageQuality !== undefined || input.imageBackground !== undefined)) {
+        if (input.kind !== 'image' && (input.imageQuality !== undefined || input.imageBackground !== undefined || Object.keys(pickImageOutputParameters(input)).length > 0)) {
           return { allowed: false, reason: '图片质量和背景只能用于图片生成' };
         }
         if (input.kind !== 'video' && (input.videoFps !== undefined || input.generateAudio !== undefined)) {
@@ -565,7 +580,7 @@ export function registerMediaAgentTools(): Array<() => void> {
             return { allowed: false, reason: 'RunningHub 和工作流使用自己的参数，请通过 modelParameters 或 workflowInputs 设置音频参数' };
           }
           if ((option.workflowId || option.provider === 'runninghub')
-            && [input.imageQuality, input.imageBackground, input.videoFps, input.generateAudio].some((value) => value !== undefined)) {
+            && (Object.keys(pickImageOutputParameters(input)).length > 0 || [input.imageQuality, input.imageBackground, input.videoFps, input.generateAudio].some((value) => value !== undefined))) {
             return { allowed: false, reason: 'RunningHub 和工作流使用自己的参数定义，请通过 modelParameters 或 workflowInputs 设置参数' };
           }
           if (input.audioVoice !== undefined && option.provider !== 'general' && !LEGACY_AUDIO_VOICES.includes(input.audioVoice)) {
@@ -719,6 +734,7 @@ export function registerMediaAgentTools(): Array<() => void> {
           duration: input.duration,
           imageQuality: input.imageQuality,
           imageBackground: input.imageBackground,
+          ...pickImageOutputParameters(input),
           videoFps: input.videoFps,
           generateAudio: input.generateAudio,
           runninghubModelParameters: input.modelParameters ? Object.fromEntries(input.modelParameters.map((field) => [field.name, field.value])) : undefined,

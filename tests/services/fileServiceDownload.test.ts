@@ -10,8 +10,10 @@ const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   isTauriEnv: vi.fn(() => true),
   notifyProjectDiskChanged: vi.fn(),
+  open: vi.fn(),
   readDir: vi.fn(),
   readFile: vi.fn(),
+  remove: vi.fn(),
   lstat: vi.fn(),
   retired: vi.fn(),
   resolveUniqueDestPath: vi.fn(),
@@ -19,13 +21,16 @@ const mocks = vi.hoisted(() => ({
   save: vi.fn(),
   shouldLoadNativeComfyImage: vi.fn(() => false),
   resolveMediaDownloadRequest: vi.fn(),
+  requiresImageContainerValidation: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/plugin-fs', () => ({
   exists: mocks.exists,
   mkdir: vi.fn(),
+  open: mocks.open,
   readDir: mocks.readDir,
   readFile: mocks.readFile,
+  remove: mocks.remove,
   lstat: mocks.lstat,
   rename: vi.fn(),
   stat: vi.fn(),
@@ -39,7 +44,8 @@ vi.mock('@tauri-apps/api/core', () => ({
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
 vi.mock('@tauri-apps/api/path', () => ({ appDataDir: mocks.appDataDir, localDataDir: vi.fn() }));
 vi.mock('../../src/services/comfyImageSource', () => ({ shouldLoadNativeComfyImage: mocks.shouldLoadNativeComfyImage }));
-vi.mock('../../src/services/ai/mediaDownloadAccess', () => ({ resolveMediaDownloadRequest: mocks.resolveMediaDownloadRequest }));
+vi.mock('../../src/services/ai/mediaDownloadAccess', () => ({ resolveMediaDownloadRequest: mocks.resolveMediaDownloadRequest,
+  requiresImageContainerValidation: mocks.requiresImageContainerValidation }));
 vi.mock('../../src/services/indexedDb/mediaRelocations', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/services/indexedDb/mediaRelocations')>(),
   retiredMediaPaths: mocks.retired,
@@ -83,6 +89,21 @@ function mockMediaDisk(initial: Record<string, Uint8Array> = {}) {
     .map((path) => ({ name: path.slice(path.lastIndexOf('/') + 1), isFile: true, isSymlink: false })));
   mocks.lstat.mockImplementation(async (path: string) => ({ isFile: true, isSymlink: false, size: files.get(path)?.byteLength }));
   mocks.readFile.mockImplementation(async (path: string) => files.get(path));
+  mocks.open.mockImplementation(async (path: string) => {
+    const bytes = files.get(path);
+    if (!bytes) throw new Error('missing file');
+    let position = 0;
+    return {
+      read: async (buffer: Uint8Array) => {
+        const count = Math.min(buffer.length, bytes.length - position);
+        buffer.set(bytes.subarray(position, position + count));
+        position += count;
+        return count || null;
+      },
+      close: vi.fn(),
+    };
+  });
+  mocks.remove.mockImplementation(async (path: string) => { files.delete(path); });
   mocks.writeFile.mockImplementation(async (path: string, bytes: Uint8Array) => {
     if (files.has(path)) throw new Error('destination exists');
     files.set(path, bytes);
@@ -186,6 +207,7 @@ describe('GitHub 文件另存为', () => {
 });
 
 describe('downloadUrlAndSave', () => {
+  const officialImageAccess = { providerConfigId: 'relayon-image', origin: 'https://api.relayonapi.com' };
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.isTauriEnv.mockReturnValue(true);
@@ -193,10 +215,13 @@ describe('downloadUrlAndSave', () => {
     mocks.exists.mockResolvedValue(false);
     mocks.readDir.mockReset().mockResolvedValue([]);
     mocks.readFile.mockReset();
+    mocks.open.mockReset();
+    mocks.remove.mockReset().mockResolvedValue(undefined);
     mocks.lstat.mockReset();
     mocks.retired.mockReset().mockResolvedValue(new Set());
     mocks.writeFile.mockReset();
     mocks.resolveMediaDownloadRequest.mockReset().mockImplementation(async (url: string) => ({ url }));
+    mocks.requiresImageContainerValidation.mockReset().mockImplementation((access?: { origin: string }) => access?.origin === officialImageAccess.origin);
     mocks.resolveUniqueDestPath.mockImplementation(async (dataDir: string, fileName: string) => (
       `${dataDir}/${fileName}`
     ));
@@ -311,6 +336,76 @@ describe('downloadUrlAndSave', () => {
       { filePath: '/project/data/AI 图片_1.png', assetUrl: 'asset:///project/data/AI 图片_1.png' },
     ]);
     expect(mocks.resolveUniqueDestPath).toHaveBeenCalledTimes(2);
+  });
+
+  it.each<[string, string, Uint8Array]>([
+    ['image/gif', 'gif', new Uint8Array([71, 73, 70, 56, 57, 97, 64, 1, 200, 0, 128, 0, 0, 0, 0, 0, 255, 255, 255, 33, 249, 4, 1, 0, 0, 0, 0, 44, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 68, 1, 0, 59])],
+    ['image/svg+xml', 'svg', new TextEncoder().encode('<?xml version="1.0"?>\n<!-- original -->\n<svg width="320" height="200"><path d="M0 0h1"/></svg>')],
+  ])('saves extensionless controlled image URLs with the detected %s format and unchanged bytes', async (mime, extension, bytes) => {
+    const files = mockMediaDisk({ [`/project/data/原件.${extension}`]: new Uint8Array([9]) });
+    mocks.invoke.mockImplementation(async (command: string, args: Record<string, string>) => {
+      if (command === 'download_file_streamed') {
+        expect(args.expectedMediaKind).toBe('image');
+        files.set(args.destinationPath, bytes);
+        return { path: args.destinationPath, totalBytes: bytes.length, contentType: mime };
+      }
+      if (command === 'copy_file_streamed') {
+        if (files.has(args.destinationPath)) throw new Error('destination exists');
+        files.set(args.destinationPath, files.get(args.sourcePath)!);
+        return { path: args.destinationPath, totalBytes: bytes.length, contentType: null };
+      }
+      throw new Error(`unexpected command ${command}`);
+    });
+    const result = await persistMediaUrlToProjectData('https://api.relayonapi.com/v1/files/result/content', 'project', 'ai-image', '原件', {
+      mediaDownloadAccess: officialImageAccess, throwOnError: true,
+    });
+    expect(result).toMatchObject({ filePath: `/project/data/原件_1.${extension}`, assetUrl: `asset:///project/data/原件_1.${extension}`, width: 320, height: 200 });
+    expect(files.get(result.filePath!)).toEqual(bytes);
+    expect(files.get(`/project/data/原件.${extension}`)).toEqual(new Uint8Array([9]));
+    expect(files.has('/project/data/原件.png')).toBe(false);
+    expect(mocks.remove).toHaveBeenCalledExactlyOnceWith('/project/data/原件.png');
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('keeps the downloaded original when exclusive publication with the detected suffix fails', async () => {
+    mocks.invoke.mockImplementation(async (command: string, args: Record<string, string>) => {
+      if (command === 'download_file_streamed') return { path: args.destinationPath, totalBytes: 40, contentType: 'image/svg+xml' };
+      throw new Error('目标文件已存在，已拒绝覆盖');
+    });
+    await expect(downloadUrlAndSave('https://api.relayonapi.com/content/opaque', 'project', 'ai-image', '原件', {
+      mediaDownloadAccess: officialImageAccess, throwOnError: true,
+    }))
+      .rejects.toThrow('目标文件已存在，已拒绝覆盖');
+    expect(mocks.remove).not.toHaveBeenCalled();
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('keeps the verified original if cancelled before publishing its detected suffix', async () => {
+    const controller = new AbortController();
+    const files = mockMediaDisk();
+    const bytes = new TextEncoder().encode('<svg width="1" height="1"/>');
+    mocks.invoke.mockImplementation(async (command: string, args: Record<string, string>) => {
+      if (command === 'cancel_file_transfer') return undefined;
+      files.set(args.destinationPath, bytes);
+      controller.abort();
+      return { path: args.destinationPath, totalBytes: bytes.length, contentType: 'image/svg+xml' };
+    });
+    await expect(downloadUrlAndSave('https://api.relayonapi.com/content/opaque', 'project', 'ai-image', '原件', {
+      signal: controller.signal, throwOnError: true,
+      mediaDownloadAccess: officialImageAccess,
+    })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(files.get('/project/data/原件.png')).toEqual(bytes);
+    expect(mocks.invoke.mock.calls.some(([command]) => command === 'copy_file_streamed')).toBe(false);
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
+
+  it('keeps other providers AVIF downloads on the existing path without new image validation', async () => {
+    const url = 'https://provider.example/result.avif', access = { providerConfigId: 'other-image', origin: 'https://provider.example' };
+    mocks.invoke.mockResolvedValue({ path: '/project/data/原件.avif', totalBytes: 20, contentType: 'image/avif' });
+    await expect(downloadUrlAndSave(url, 'project', 'ai-image', '原件', { mediaDownloadAccess: access }))
+      .resolves.toEqual({ filePath: '/project/data/原件.avif', assetUrl: 'asset:///project/data/原件.avif' });
+    expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith('download_file_streamed', expect.not.objectContaining({ expectedMediaKind: expect.anything() }));
+    expect(mocks.remove).not.toHaveBeenCalled();
   });
 
   it('requires native video validation when downloading a Windows ComfyUI result to a Mac project', async () => {

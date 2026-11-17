@@ -111,6 +111,10 @@ export const PROTOCOL_VARIABLES: readonly ProtocolVariableSpec[] = [
   },
   { name: 'imageQuality', supplied: IMAGE, fields: ['quality', 'imagequality'] },
   { name: 'imageBackground', supplied: IMAGE, fields: ['background', 'imagebackground'] },
+  { name: 'imageOutputFormat', supplied: IMAGE, fields: ['outputformat', 'imageoutputformat'] },
+  { name: 'imageFrameCount', supplied: IMAGE, fields: ['framecount', 'imageframecount'] },
+  { name: 'imageFrameDurationMs', supplied: IMAGE, fields: ['framedurationms', 'imageframedurationms'] },
+  { name: 'imageTransparent', supplied: IMAGE, fields: ['transparent', 'imagetransparent'] },
   // 非图片模型的 resolution 走视频档位（'720p' 这类），图片模型由上面的规则先接走
   {
     name: 'seedanceResolution', supplied: VIDEO,
@@ -273,6 +277,10 @@ const PROTOCOL_VARIABLE_DESCRIPTIONS: Readonly<Record<string, string>> = {
   imageSize: '图片分辨率档位，如 2K',
   imageQuality: '已声明的图片生成质量，如 auto、medium；未选择且未声明默认值时省略',
   imageBackground: '已声明的图片背景模式，如 transparent；接口默认时省略，与图片格式支持一同按渠道文档配置',
+  imageOutputFormat: '已声明的图片原文件格式，如 png、gif、svg',
+  imageFrameCount: 'GIF动画帧数，仅在所选模型和格式明确支持时提交',
+  imageFrameDurationMs: 'GIF单帧时长，单位毫秒，须符合所选模型声明的步进',
+  imageTransparent: 'GIF透明背景布尔值，false也会明确传递，仅适用于GIF',
   seedanceResolution: '视频分辨率档位，如 720p',
   width: '输出宽度（像素）',
   height: '输出高度（像素）',

@@ -4,6 +4,10 @@
 const common = {
   // ── 通用 ──
   '设置': 'Settings',
+  '输出格式': 'Output format',
+  'GIF 帧数': 'GIF frame count',
+  '每帧时长（毫秒）': 'Frame duration (ms)',
+  'GIF 透明背景': 'Transparent GIF background',
   '关闭设置': 'Close settings',
   '帮助': 'Help',
   '关于': 'About',

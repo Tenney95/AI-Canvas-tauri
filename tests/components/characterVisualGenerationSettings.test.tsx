@@ -1,12 +1,13 @@
 import type { ComponentProps } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ModelGroup, WorkflowDefinition } from '../../src/types';
+import type { ImageModelCapability } from '../../src/types/aiTypes';
 import type { CharacterVisualModel } from '../../src/services/characterVisualWorkbenchService';
 
 const driver = vi.hoisted(() => ({
   state: { config: { providers: {}, generalModels: [] }, workflows: [] as WorkflowDefinition[] },
   groups: [] as ModelGroup[],
-  capability: { qualities: ['low', 'high'], defaultQuality: 'low', backgrounds: ['auto', 'transparent'], defaultBackground: 'auto' },
+  capability: { qualities: ['low', 'high'], defaultQuality: 'low', backgrounds: ['auto', 'transparent'], defaultBackground: 'auto' } as ImageModelCapability,
 }));
 vi.mock('react', async () => ({ ...await vi.importActual<typeof import('react')>('react'), useMemo: <T,>(factory: () => T) => factory() }));
 vi.mock('zustand/react/shallow', () => ({ useShallow: <T,>(selector: T) => selector }));
@@ -35,7 +36,8 @@ const image = (provider: string): CharacterVisualModel => ({ id: `${provider}/im
   supportsReferences: true, supportsMask: false, channel: 'standard', maxReferences: 2 });
 const render = (props: ComponentProps<typeof CharacterVisualGenerationSettings>) => elements(CharacterVisualGenerationSettings(props));
 
-beforeEach(() => { driver.state.workflows = []; driver.groups = []; });
+beforeEach(() => { driver.state.workflows = []; driver.groups = [];
+  driver.capability = { qualities: ['low', 'high'], defaultQuality: 'low', backgrounds: ['auto', 'transparent'], defaultBackground: 'auto' }; });
 describe('shared character generation controls', () => {
   it('passes configured provider models and workflows to the image-node selector without changing node preferences', () => {
     const models = [image('apimart'), image('cccapi'), { ...image('comfyui'), workflowId: 'workflow' }];
@@ -51,6 +53,24 @@ describe('shared character generation controls', () => {
     selector.onWorkflowSelect?.('workflow');
     expect(onSelect).toHaveBeenCalledWith(models[2]);
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ workflowInputs: {}, runninghubModelParameters: {} }));
+  });
+
+  it('passes declared GIF parameters to shared controls and clears them on model or workflow changes', () => {
+    const model = image('cccapi'), workflowModel = { ...image('comfyui'), workflowId: 'workflow' }, onChange = vi.fn();
+    driver.state.workflows = [{ id: 'workflow', name: 'Workflow', category: 'ai-image' } as WorkflowDefinition];
+    Object.assign(driver.capability, { outputFormats: ['png', 'gif', 'svg'], defaultOutputFormat: 'png',
+      squareOnlyOutputFormats: ['gif', 'svg'], textOnlyOutputFormats: ['gif', 'svg'] });
+    const values = { imageOutputFormat: 'gif' as const, imageFrameCount: 9, imageFrameDurationMs: 200, imageTransparent: false };
+    const tree = render({ models: [model, workflowModel], model, values, onSelect: vi.fn(), onChange });
+    const control = tree.find((element) => element.type === QualityRatioSelector)!.props as unknown as ComponentProps<typeof QualityRatioSelector>;
+    expect(control.ratios).toEqual(['1:1']); expect(control.imageOutputParameters).toEqual(values);
+    control.onChangeImageOutputParameters?.({ imageTransparent: false });
+    expect(onChange).toHaveBeenLastCalledWith({ imageTransparent: false });
+    driver.capability = {};
+    const selector = tree.find((element) => element.type === ModelSelector)!.props as unknown as ComponentProps<typeof ModelSelector>;
+    selector.onWorkflowSelect?.('workflow');
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ imageOutputFormat: undefined,
+      imageFrameCount: undefined, imageFrameDurationMs: undefined, imageTransparent: undefined }));
   });
 
   it('uses the shared ratio and resolution panel and independently preserves an explicit API background default', () => {

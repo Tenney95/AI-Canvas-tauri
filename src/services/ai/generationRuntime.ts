@@ -12,6 +12,7 @@
  * 产物落盘失败后可通过 retryMediaArtifactPersist 重新写盘。
  */
 import { useAppStore } from '../../store/useAppStore';
+import { pickImageOutputParameters, resolveConfiguredImageOutput } from './imageOutputParameters';
 import { supportsNativeMediaProtocol } from '../nativeMediaCapabilities';
 import {
   isTauriEnv,
@@ -207,6 +208,8 @@ interface MediaPersistOutcome {
   filePath?: string;
   assetUrl?: string;
   sourceUrl?: string;
+  width?: number;
+  height?: number;
   error?: string;
 }
 
@@ -232,6 +235,8 @@ async function persistGeneratedMedia(
       filePath: saved.filePath,
       assetUrl: saved.mediaUrl,
       sourceUrl: saved.sourceUrl,
+      width: saved.width,
+      height: saved.height,
     };
   } catch (error) {
     return {
@@ -268,6 +273,7 @@ function mediaParameters(intent: MediaGenerationIntent, model: ResolvedMediaMode
     ...resolveImageGenerationParameters(projectSettings, intent),
     ...(imageQuality !== undefined ? { imageQuality } : {}),
     ...(imageBackground !== undefined ? { imageBackground } : {}),
+    ...resolveConfiguredImageOutput(imageCapability, intent),
   } : intent.kind === 'video' ? {
     ...(ratio !== undefined ? { aspectRatio: ratio } : {}),
     ...(resolution !== undefined ? { resolution } : {}),
@@ -280,6 +286,8 @@ function mediaParameters(intent: MediaGenerationIntent, model: ResolvedMediaMode
 
 /** 显式参数必须属于当前模型，不能被底层缺省逻辑静默丢弃。 */
 function assertExplicitMediaParameters(intent: MediaGenerationIntent, model: ResolvedMediaModel): void {
+  const imageOutput = pickImageOutputParameters(intent);
+  if (intent.kind !== 'image' && Object.keys(imageOutput).length) throw new Error('图片输出格式和动画参数只能用于图片生成');
   if (intent.kind !== 'image' && (intent.imageQuality !== undefined || intent.imageBackground !== undefined)) {
     throw new Error('图片质量和背景只能用于图片生成');
   }
@@ -287,10 +295,13 @@ function assertExplicitMediaParameters(intent: MediaGenerationIntent, model: Res
     throw new Error('帧率和生成音轨只能用于视频生成');
   }
   if ((model.workflowId || model.provider === 'runninghub')
-    && [intent.imageQuality, intent.imageBackground, intent.videoFps, intent.generateAudio].some((value) => value !== undefined)) {
+    && (Object.keys(imageOutput).length || [intent.imageQuality, intent.imageBackground, intent.videoFps, intent.generateAudio].some((value) => value !== undefined))) {
     throw new Error('RunningHub 和工作流使用自己的参数定义，请使用模型或工作流专属参数');
   }
   const config = useAppStore.getState().config;
+  if (intent.kind === 'image' && Object.keys(imageOutput).length) {
+    resolveConfiguredImageOutput(resolveImageParameterCapability(model.requestModel, model.provider, config), intent);
+  }
   if (intent.kind === 'image' && (intent.imageQuality !== undefined || intent.imageBackground !== undefined)) {
     const capability = resolveImageParameterCapability(model.requestModel, model.provider, config);
     if (intent.imageQuality !== undefined && !capability?.qualities?.length) throw new Error('所选模型未声明图片质量参数');
@@ -484,6 +495,7 @@ async function generateMediaArtifact(
       aspectRatio: parameters?.aspectRatio ?? '1:1',
       ...(parameters?.imageQuality !== undefined ? { imageQuality: parameters.imageQuality } : {}),
       ...(parameters?.imageBackground !== undefined ? { imageBackground: parameters.imageBackground } : {}),
+      ...pickImageOutputParameters(parameters ?? {}),
       workflowId: model.workflowId,
       workflowInputs: intent.workflowInputs, runninghubModelParameters: model.provider === 'runninghub' ? runninghubModelParameters : undefined,
       nodeId: targetNodeId,
@@ -517,7 +529,7 @@ async function generateMediaArtifact(
         deliveryMode: intent.deliveryMode, url: persisted.assetUrl || candidate.url,
         sourceUrl: persisted.sourceUrl || candidate.url, filePath: persisted.filePath,
         persistence: persisted.status, persistError: persisted.error,
-        width: candidate.width, height: candidate.height, prompt,
+        width: persisted.width ?? candidate.width, height: persisted.height ?? candidate.height, prompt,
         modelId: model.configId, provider: model.provider, createdAt: Date.now(),
       });
     }
@@ -657,6 +669,8 @@ export async function retryMediaArtifactPersist(
     url: persisted.assetUrl || artifact.url,
     sourceUrl: persisted.sourceUrl || artifact.sourceUrl,
     filePath: persisted.filePath,
+    width: persisted.width ?? artifact.width,
+    height: persisted.height ?? artifact.height,
     persistence: 'saved',
     persistError: undefined,
   };
@@ -791,6 +805,7 @@ export async function deliverMediaMessageGroup(
         projectId, prompt: delivery.prompt, imageSize: delivery.parameters?.resolution ?? '1K',
         aspectRatio: delivery.parameters?.aspectRatio ?? '1:1', model: delivery.modelId, provider: delivery.provider,
         imageQuality: delivery.parameters?.imageQuality, imageBackground: delivery.parameters?.imageBackground,
+        ...pickImageOutputParameters(delivery.parameters ?? {}),
         isCurrent: () => isCurrent() && (!options.guard || isCanvasDerivationFresh(options.guard, useAppStore.getState())),
         signal: options.signal, silent: true,
       });
@@ -878,6 +893,8 @@ async function recoverMediaMessage(task: PendingTask, urls: string[], signal?: A
       url: persisted.assetUrl || sourceUrl,
       sourceUrl: persisted.sourceUrl || sourceUrl,
       filePath: persisted.filePath,
+      width: persisted.width ?? previous?.width,
+      height: persisted.height ?? previous?.height,
       persistence: persisted.status,
       persistError: undefined,
       prompt: previous?.prompt ?? '',
@@ -959,6 +976,7 @@ async function recoverMediaMessageGroup(task: PendingTask, urls: string[], signa
         deliveryMode: recoveryContext.deliveryMode === 'message' ? 'chat' : previous?.deliveryMode ?? 'both',
         url: persisted.assetUrl || sourceUrl, sourceUrl: persisted.sourceUrl || sourceUrl,
         filePath: persisted.filePath, persistence: persisted.status, persistError: persisted.error,
+        width: persisted.width ?? previous?.width, height: persisted.height ?? previous?.height,
         prompt: previous?.prompt ?? (appendRecovered ? '' : original.mediaResult?.prompt) ?? '',
         modelId: previous?.modelId ?? context.modelId ?? task.provider, provider: previous?.provider ?? task.provider,
         createdAt: previous?.createdAt ?? Date.now(),

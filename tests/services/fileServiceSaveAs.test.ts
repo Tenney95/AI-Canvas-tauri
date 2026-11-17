@@ -19,6 +19,7 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   mkdir: vi.fn(),
   readDir: vi.fn(),
   readFile: mocks.readFile,
+  remove: vi.fn(),
   rename: vi.fn(),
   stat: vi.fn(),
   writeFile: mocks.writeFile,
@@ -82,6 +83,22 @@ describe('saveNodeOutputToFile', () => {
     }));
     expect(onProgress).toHaveBeenCalledWith({ transferredBytes: 0, totalBytes: null, phase: 'saving' });
     expect(onProgress).toHaveBeenLastCalledWith({ transferredBytes: 900_000_000, totalBytes: 900_000_000, phase: 'saving' });
+    expect(mocks.readFile).not.toHaveBeenCalled();
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(['gif', 'svg'])('keeps a generated %s original and its suffix in the save dialog', async (extension) => {
+    const source = `/project/原件.${extension}`, destination = `/Users/me/Desktop/原件.${extension}`;
+    mocks.save.mockResolvedValue(destination);
+    mocks.exists.mockImplementation(async (path: string) => path === source);
+    mocks.invoke.mockResolvedValue({ path: destination, totalBytes: 43, contentType: null });
+    await expect(saveNodeOutputToFile({ filePath: source, fileName: '原件', nodeType: 'ai-image' })).resolves.toBe(destination);
+    expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({
+      defaultPath: `原件.${extension}`,
+      filters: expect.arrayContaining([expect.objectContaining({ extensions: expect.arrayContaining(['gif', 'svg']) })]),
+    }));
+    expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith('copy_file_streamed', expect.objectContaining({ sourcePath: source, destinationPath: destination }));
     expect(mocks.readFile).not.toHaveBeenCalled();
     expect(mocks.writeFile).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();

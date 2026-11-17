@@ -25,7 +25,7 @@ import type {
   ProviderModelSelection,
   WebSearchProviderId,
 } from '../../types';
-import type { ModelExecutionProfile, NormalizedModelExecutionProtocol } from '../../types/aiTypes';
+import type { ImageOutputFormat, ImageParameterRange, ModelExecutionProfile, NormalizedModelExecutionProtocol } from '../../types/aiTypes';
 import { corsSafeFetch } from './httpTransport';
 import { baseUrlCandidates } from './providerBaseUrl';
 import { getProviderPolicy, resolveProviderCatalogId, type ProviderPolicy } from './providerPolicies';
@@ -756,7 +756,21 @@ function parseImageCapability(record: Record<string, unknown>, category: General
   const declared = readRecord(record.imageCapability ?? record.image_capability) ?? record;
   const limit = readRecord(declared.reference_limits ?? declared.referenceLimits);
   const boolean = (value: unknown) => typeof value === 'boolean' ? value : undefined;
+  const outputFormats = (value: unknown) => readStringArray(value) as ImageOutputFormat[] | undefined;
+  const range = (value: unknown): ImageParameterRange | undefined => {
+    const item = readRecord(value);
+    return item ? { min: readFiniteNumber(item.min) ?? NaN, max: readFiniteNumber(item.max) ?? NaN,
+      default: readFiniteNumber(item.default) ?? NaN,
+      ...(item.step !== undefined ? { step: readFiniteNumber(item.step) ?? NaN } : {}) } : undefined;
+  };
   const capability: NonNullable<ProviderModelSelection['imageCapability']> = {
+    outputFormats: outputFormats(declared.outputFormats ?? declared.output_formats),
+    defaultOutputFormat: (declared.defaultOutputFormat ?? declared.default_output_format) as ImageOutputFormat | undefined,
+    textOnlyOutputFormats: outputFormats(declared.textOnlyOutputFormats ?? declared.text_only_output_formats),
+    squareOnlyOutputFormats: outputFormats(declared.squareOnlyOutputFormats ?? declared.square_only_output_formats),
+    gifFrameCount: range(declared.gifFrameCount ?? declared.gif_frame_count),
+    gifFrameDurationMs: range(declared.gifFrameDurationMs ?? declared.gif_frame_duration_ms),
+    supportsGifTransparency: boolean(declared.supportsGifTransparency ?? declared.supports_gif_transparency),
     resolutions: readStringArray(declared.resolutions),
     defaultResolution: typeof (declared.defaultResolution ?? declared.default_resolution) === 'string'
       ? String(declared.defaultResolution ?? declared.default_resolution) : undefined,

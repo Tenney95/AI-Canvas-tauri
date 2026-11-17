@@ -473,3 +473,33 @@ describe('imageBatchService', () => {
     expect(JSON.stringify(store.recordOutputHistory.mock.calls[0][1])).not.toContain('data:image');
   });
 });
+
+
+it('批量交付保留 GIF 参数和 false，节点画布尺寸优先使用已保存原件', async () => {
+  const { applyImageBatchResults } = await import('../../src/services/imageBatchService');
+  persistMediaUrlToProjectData.mockResolvedValue({ mediaUrl: 'asset://animation.gif', sourceUrl: 'https://example.com/animation.gif',
+    filePath: 'animation.gif', width: 768, height: 512 });
+  const output = { imageOutputFormat: 'gif' as const, imageFrameCount: 9, imageFrameDurationMs: 200, imageTransparent: false };
+  store.updateNodeDataTransient('source', output);
+  const batch: BatchImageResult = { requestedCount: 1, failedCount: 0, results: [
+    { url: 'https://example.com/animation.gif', width: 2048, height: 2048 },
+  ] };
+  expect(await applyImageBatchResults({ nodeId: 'source', batch, projectId: 'project-a', prompt: 'cat',
+    imageSize: '2K', aspectRatio: '1:1', ...output })).toBe(true);
+  expect(store.nodes[0].data).toMatchObject({ ...output, imageWidth: 768, imageHeight: 512, imageUrl: 'asset://animation.gif' });
+  expect(store.recordOutputHistory).toHaveBeenCalledWith('source', expect.objectContaining({ params: expect.objectContaining(output) }));
+});
+
+
+it('批量结果默认 PNG 仅进入历史参数，不改写源节点的缺省输入', async () => {
+  const { applyImageBatchResults } = await import('../../src/services/imageBatchService');
+  const batch: BatchImageResult = { requestedCount: 1, failedCount: 0, results: [
+    { url: 'https://example.com/result.png', width: 2048, height: 2048 },
+  ] };
+  expect(await applyImageBatchResults({ nodeId: 'source', batch, projectId: 'project-a', prompt: 'cat',
+    imageSize: '2K', aspectRatio: '1:1', imageOutputFormat: 'png' })).toBe(true);
+  expect(store.nodes[0].data.imageOutputFormat).toBeUndefined();
+  expect(store.recordOutputHistory).toHaveBeenCalledWith('source', expect.objectContaining({
+    params: expect.objectContaining({ imageOutputFormat: 'png' }),
+  }));
+});

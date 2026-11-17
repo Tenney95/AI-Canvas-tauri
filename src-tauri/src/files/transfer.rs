@@ -822,18 +822,106 @@ fn validate_downloaded_video(path: &Path, _metadata: &DownloadMetadata) -> Resul
     if iso_video || matroska || avi { Ok(()) } else { Err("下载结果不是有效视频".into()) }
 }
 
-fn validate_downloaded_image(path: &Path) -> Result<(), String> {
+/// SVG 原件只按图片上下文检查根、尺寸和预算，不执行、净化或重写 XML。
+pub(crate) fn validate_svg_image_bytes(bytes: &[u8]) -> Result<(u32, u32), String> {
     let invalid = || "下载结果不是受支持的图片或超出尺寸限制".to_string();
-    let reader = image::ImageReader::open(path).map_err(|_| invalid())?
-        .with_guessed_format().map_err(|_| invalid())?;
-    if !matches!(reader.format(), Some(image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::WebP)) {
+    if bytes.is_empty() || bytes.len() as u64 > GENERATED_IMAGE_MAX_BYTES { return Err(invalid()); }
+    let source = std::str::from_utf8(bytes).map_err(|_| invalid())?;
+    let lower = source.to_ascii_lowercase();
+    if lower.contains("<!doctype") || lower.contains("<!entity") || lower.contains("<html") || lower.contains("</html") {
         return Err(invalid());
     }
+    let mut root = source.trim_start_matches('\u{feff}').trim();
+    // 只跳过文档前后的声明/注释，不接受 HTML 外壳；其余 XML 语法由图片加载器处理。
+    loop {
+        if root.starts_with("<?xml") {
+            root = root.split_once("?>").ok_or_else(invalid)?.1.trim_start();
+        } else if root.starts_with("<!--") {
+            root = root.split_once("-->").ok_or_else(invalid)?.1.trim_start();
+        } else { break; }
+    }
+    while root.ends_with("-->") {
+        let start = root.rfind("<!--").ok_or_else(invalid)?;
+        root = root[..start].trim_end();
+    }
+    let rest = root.strip_prefix("<svg").ok_or_else(invalid)?;
+    if !rest.starts_with(|character: char| character.is_ascii_whitespace() || matches!(character, '>' | '/')) {
+        return Err(invalid());
+    }
+    let mut quote = None;
+    let mut head_end = None;
+    for (index, byte) in rest.bytes().enumerate() {
+        match (quote, byte) {
+            (Some(delimiter), value) if value == delimiter => quote = None,
+            (None, b'\'' | b'"') => quote = Some(byte),
+            (None, b'>') => { head_end = Some(index); break; }
+            _ => {}
+        }
+        if index >= 256 * 1024 { return Err(invalid()); }
+    }
+    let head_end = head_end.ok_or_else(invalid)?;
+    let mut attributes = rest[..head_end].trim();
+    let self_closing = attributes.ends_with('/');
+    if self_closing { attributes = attributes[..attributes.len() - 1].trim_end(); }
+    if (self_closing && !rest[head_end + 1..].trim().is_empty()) || (!self_closing && !root.ends_with("</svg>")) {
+        return Err(invalid());
+    }
+    let mut values = HashMap::new();
+    while !attributes.is_empty() {
+        let name_end = attributes.find(|character: char| !(character.is_ascii_alphanumeric() || matches!(character, ':' | '_' | '-' | '.')))
+            .ok_or_else(invalid)?;
+        if name_end == 0 { return Err(invalid()); }
+        let name = &attributes[..name_end];
+        let value = attributes[name_end..].trim_start().strip_prefix('=').ok_or_else(invalid)?.trim_start();
+        let delimiter = value.as_bytes().first().copied().filter(|value| matches!(*value, b'\'' | b'"')).ok_or_else(invalid)?;
+        let value_end = value[1..].find(char::from(delimiter)).ok_or_else(invalid)? + 1;
+        if values.insert(name, &value[1..value_end]).is_some() { return Err(invalid()); }
+        attributes = &value[value_end + 1..];
+        if !attributes.is_empty() && !attributes.starts_with(|character: char| character.is_ascii_whitespace()) { return Err(invalid()); }
+        attributes = attributes.trim_start();
+    }
+    let length = |name: &str| values.get(name).and_then(|raw: &&str| {
+        raw.trim().strip_suffix("px").unwrap_or(raw.trim()).trim().parse::<f64>().ok()
+    });
+    let (width, height) = match (length("width"), length("height")) {
+        (Some(width), Some(height)) => (width, height),
+        _ => {
+            let view_box = values.get("viewBox").ok_or_else(invalid)?.split(|character: char| character.is_ascii_whitespace() || character == ',')
+                .filter(|part| !part.is_empty()).map(str::parse::<f64>).collect::<Result<Vec<_>, _>>().map_err(|_| invalid())?;
+            if view_box.len() != 4 || view_box.iter().any(|value| !value.is_finite()) { return Err(invalid()); }
+            (view_box[2], view_box[3])
+        }
+    };
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0
+        || width.ceil() > f64::from(u32::MAX) || height.ceil() > f64::from(u32::MAX) { return Err(invalid()); }
+    let dimensions = (width.ceil() as u32, height.ceil() as u32);
+    if u64::from(dimensions.0) * u64::from(dimensions.1) > GENERATED_IMAGE_MAX_PIXELS { return Err(invalid()); }
+    Ok(dimensions)
+}
+
+fn validate_downloaded_image(path: &Path) -> Result<&'static str, String> {
+    let invalid = || "下载结果不是受支持的图片或超出尺寸限制".to_string();
+    // 不从目标文件名预设格式：受控下载可能没有后缀，或尚以 PNG 名称暂存 SVG。
+    let reader = image::ImageReader::new(io::BufReader::new(File::open(path).map_err(|_| invalid())?))
+        .with_guessed_format().map_err(|_| invalid())?;
+    let mime = match reader.format() {
+        Some(image::ImageFormat::Png) => "image/png",
+        Some(image::ImageFormat::Jpeg) => "image/jpeg",
+        Some(image::ImageFormat::WebP) => "image/webp",
+        Some(image::ImageFormat::Gif) => "image/gif",
+        _ => {
+            let mut bytes = Vec::new();
+            File::open(path).map_err(|_| invalid())?.take(GENERATED_IMAGE_MAX_BYTES + 1)
+                .read_to_end(&mut bytes).map_err(|_| invalid())?;
+            validate_svg_image_bytes(&bytes)?;
+            return Ok("image/svg+xml");
+        }
+    };
     let (width, height) = reader.into_dimensions().map_err(|_| invalid())?;
     if width == 0 || height == 0 || u64::from(width) * u64::from(height) > GENERATED_IMAGE_MAX_PIXELS {
         return Err(invalid());
     }
-    Ok(())
+    Ok(mime)
 }
 
 #[tauri::command]
@@ -854,7 +942,8 @@ pub async fn download_file_streamed(
 
     let task_id_for_worker = task_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        download_to_file_with_access(
+        let mut detected_image_type = None;
+        let mut result = download_to_file_with_access(
             &app,
             &task_id_for_worker,
             &url,
@@ -864,11 +953,14 @@ pub async fn download_file_streamed(
             |path, metadata| {
                 match expected_media_kind.as_deref() {
                     Some("video") => validate_downloaded_video(path, metadata),
-                    Some("image") => validate_downloaded_image(path),
+                    Some("image") => { detected_image_type = Some(validate_downloaded_image(path)?); Ok(()) },
                     _ => Ok(()),
                 }
             },
-        )
+        )?;
+        // 生成图片的类型来自临时文件真实容器，而不是响应头或 URL 后缀。
+        if let Some(mime) = detected_image_type { result.content_type = Some(mime.to_string()); }
+        Ok(result)
     })
     .await
     .map_err(|e| format!("文件下载任务执行失败: {e}"))?;
@@ -1306,6 +1398,49 @@ pub fn cancel_file_transfer(task_id: String) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn generated_image_format_uses_actual_gif_container_without_rewriting_animation() {
+        let directory = test_directory("gif-original");
+        let path = directory.join("opaque.png");
+        // GIF 逻辑画布可不同于单帧和生成请求的尺寸。
+        let bytes = b"GIF89a\x40\x01\xc8\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff\x21\xf9\x04\x01\x00\x00\x00\x00\x2c\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02\x44\x01\x00\x3b";
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(validate_downloaded_image(&path).unwrap(), "image/gif");
+        assert_eq!(image::ImageReader::open(&path).unwrap().with_guessed_format().unwrap().into_dimensions().unwrap(), (320, 200));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn generated_svg_checks_image_root_dimensions_and_keeps_original_bytes() {
+        let bytes = b"<?xml version=\"1.0\"?>\n<!-- original -->\n<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 320 200\"><path d=\"M0 0h1\"/></svg>";
+        assert_eq!(validate_svg_image_bytes(bytes).unwrap(), (320, 200));
+        let directory = test_directory("svg-original");
+        let path = directory.join("opaque.png");
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(validate_downloaded_image(&path).unwrap(), "image/svg+xml");
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn generated_svg_rejects_invalid_image_context_and_excessive_dimensions() {
+        for source in [
+            "<html><svg width=\"1\" height=\"1\"/></html>",
+            "<!DOCTYPE svg><svg width=\"1\" height=\"1\"/>",
+            "<!ENTITY value 'x'><svg width=\"1\" height=\"1\"/>",
+            "<svg-fake width=\"1\" height=\"1\"/>",
+            "<svg width=\"1\" height=\"1\"><path/>",
+            "<svg width=\"1\" height=\"1\"/><svg width=\"1\" height=\"1\"/>",
+            "<svg width=\"0\" height=\"1\"/>",
+            "<svg width=\"100000\" height=\"100000\"/>",
+            "<svg viewBox=\"0 0 NaN 1\"/>",
+            "<svg width=\"1\" width=\"2\" height=\"1\"/>",
+        ] { assert!(validate_svg_image_bytes(source.as_bytes()).is_err(), "{source}"); }
+        assert!(validate_svg_image_bytes(b"<svg width='1' height='1'>\xff</svg>").is_err());
+        assert_eq!(validate_svg_image_bytes(b"<svg width='1.5px' height='2.5px'/>").unwrap(), (2, 3));
+    }
 
     fn serve_media_responses(listener: std::net::TcpListener, responses: Vec<String>) -> std::thread::JoinHandle<Vec<String>> {
         std::thread::spawn(move || {

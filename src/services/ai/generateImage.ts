@@ -43,7 +43,8 @@ import { resolveBuiltInImageRequestContract, validateBuiltInImageResponse } from
 import { buildGoogleImageParts, resolveImageTemplateDimensions } from './imageModelTemplates';
 import { assertToapisImageInput, resolveToapisImageModelContract, toapisImageReferences } from './providers/toapisModelManifest';
 import { assertLibapiImageInput, libapiImageExecutionProfile, libapiImageVariables, usesLibapiModelProtocol } from './providers/libapiModelManifest';
-import { relayonImageVariables, resolveRelayonImageExecutionProfile, resolveRelayonImageModelContract, usesRelayonModelProtocol } from './providers/relayonModelManifest';
+import { RELAYON_IMAGE_REFERENCE_LIMIT, relayonImageVariables, resolveRelayonImageExecutionProfile, resolveRelayonImageModelContract, usesRelayonImageFileUpload, usesRelayonModelProtocol } from './providers/relayonModelManifest';
+import { resolveRelayonImageBaseUrl } from './relayonProviderGroups';
 import { aigcsiImageExecutionProfile, usesAigcsiModelProtocol } from './providers/aigcsiModelManifest';
 import { resolveImageOutputsPerJob, resolveImageExecutionCapability } from './mediaModelCapabilities';
 import { DREAMINA_IMAGE_RATIOS } from './dreaminaModels';
@@ -51,7 +52,14 @@ import { compileVideoReferencePrompt } from './referencePrompt';
 import { isNativeVideoSubmissionGuard } from '../nativeVideoSubmission';
 import { isNativeCharacterImageSubmissionGuard, runNativeCharacterImageTask } from '../nativeCharacterImageTask';
 import { isCharacterImageTaskContext } from '../characterImageTaskContext';
+import { assertImageOutputInput, resolveConfiguredImageOutput, resolveImageOutputCapability } from './imageOutputParameters';
 import { isOpenAIPaintMaskContract } from './characterImageMask';
+
+const RELAYON_FILE_IMAGE_BUDGET = {
+  maxImages: RELAYON_IMAGE_REFERENCE_LIMIT,
+  maxImageBytes: 20 * 1024 * 1024,
+  maxTotalBytes: 48 * 1024 * 1024,
+};
 
 function hasReferenceImageFile(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false;
@@ -316,6 +324,15 @@ export async function generateImagesBatch(
     category: 'image', providerConfigId: connectionId,
   } : undefined);
   const parameterCapability = params.workflowId ? undefined : resolveImageExecutionCapability(model, provider, config);
+  const imageOutput = resolveConfiguredImageOutput(parameterCapability, params);
+  const outputCapability = resolveImageOutputCapability(parameterCapability, imageOutput.imageOutputFormat);
+  const styleMasterUrl = characterWorkbench ? null : getProjectStyleMasterUrl();
+  // 先拒绝调用参数、连线及风格母图；@图片沿用原解析器，汇总后在上传/POST前再次校验。
+  const textOnlyFormat = imageOutput.imageOutputFormat && parameterCapability?.textOnlyOutputFormats?.includes(imageOutput.imageOutputFormat);
+  const hasAdditionalImage = textOnlyFormat && (styleMasterUrl
+    || collectConnectedReferenceMedia(params.nodeId).references.some((reference) => reference.kind === 'image'));
+  assertImageOutputInput(parameterCapability, imageOutput, { aspectRatio: params.aspectRatio,
+    imageCount: (params.image_urls?.length ?? 0) + (hasAdditionalImage ? 1 : 0), hasMask: Boolean(params.characterPaintMask) });
   const imageQuality = resolveConfiguredImageQuality(parameterCapability, params.imageQuality);
   const imageBackground = resolveConfiguredImageBackground(parameterCapability, params.imageBackground);
   if (!params.workflowId && provider === 'dreamina' && params.aspectRatio !== undefined
@@ -328,7 +345,7 @@ export async function generateImagesBatch(
   const declaredCapability = !params.workflowId && !builtInContract
     ? toapisContract?.imageCapability ?? relayonContract?.imageCapability ?? generalModel?.imageCapability
       ?? (isCccImage ? selectedModel?.imageCapability : undefined) : undefined;
-  const configuredCapability = !params.workflowId && !builtInContract ? parameterCapability ?? declaredCapability : undefined;
+  const configuredCapability = !params.workflowId && !builtInContract ? outputCapability ?? declaredCapability : undefined;
   if (!builtInContract && generalModel) {
     // 显式声明仍接受完整协议校验；目录派生的布局/选项不冒充用户对全部协议字段的承诺。
     assertModelCapabilityProtocol({ id: generalModel.modelId, name: generalModel.name, category: 'image',
@@ -343,6 +360,8 @@ export async function generateImagesBatch(
   const usesLibapiProtocol = isLibapi && usesLibapiModelProtocol(modelName, executionProfile);
   const usesRelayonProtocol = providerDefinition?.id === 'relayonapi'
     && usesRelayonModelProtocol(modelName, executionProfile);
+  const usesRelayonImageFiles = providerDefinition?.id === 'relayonapi'
+    && usesRelayonImageFileUpload(modelName, executionProfile);
   const outputsPerJob = !params.workflowId && usesRelayonProtocol
     ? resolveImageOutputsPerJob(model, provider, config) : 1;
   const usesAigcsiProtocol = providerDefinition?.id === 'aigc-si'
@@ -362,7 +381,7 @@ export async function generateImagesBatch(
     : undefined;
   const usesGoogleImageParts = !!customProtocol && modelProtocolUsesVariable(JSON.stringify(customProtocol.submit), 'googleImageParts');
   const usesImageDataUrls = !params.workflowId
-    && (provider === 'muse' || characterMidjourney || usesGoogleImageParts || usesAigcsiProtocol || builtInContract?.kind === 'protocol' && builtInContract.referenceInput === 'data-url'
+    && (provider === 'muse' || characterMidjourney || usesGoogleImageParts || usesAigcsiProtocol || usesRelayonProtocol || builtInContract?.kind === 'protocol' && builtInContract.referenceInput === 'data-url'
       || imageReferenceRequestMode === 'generation-json-image-data-urls');
   const usesImageMultipart = !params.workflowId
     && usesStandardImageRequest
@@ -401,7 +420,6 @@ export async function generateImagesBatch(
     : mergeImageUrls(params.image_urls ?? [], imageUrls);
 
   // 项目风格母图：自动插到最前，无需用户每次 @
-  const styleMasterUrl = characterWorkbench ? null : getProjectStyleMasterUrl();
   let allImageUrls = contentImageUrls;
   let styleAsFirst = false;
   if (styleMasterUrl && !isComfyWorkflow) {
@@ -474,18 +492,21 @@ export async function generateImagesBatch(
 
 
   // 参考图传输格式由模型显式配置或已确认的厂商目录决定。
+  assertImageOutputInput(parameterCapability, imageOutput, { aspectRatio, imageCount: allImageUrls.length,
+    hasMask: Boolean(params.characterPaintMask) });
   if (configuredCapability) assertConfiguredImageReferences(configuredCapability, allImageUrls.length);
   if (providerDefinition?.id === 'toapis') assertToapisImageInput(modelName, allImageUrls.length, requestedCount);
   if (usesLibapiProtocol) assertLibapiImageInput(modelName, allImageUrls.length, requestedCount);
   const libapiExecutionProfile = usesLibapiProtocol ? libapiImageExecutionProfile(modelName, allImageUrls.length) : undefined;
   const relayonExecutionProfile = usesRelayonProtocol
-    ? resolveRelayonImageExecutionProfile(modelName, executionProfile, allImageUrls.length, imageBackground) : undefined;
+    ? resolveRelayonImageExecutionProfile(modelName, executionProfile, allImageUrls.length, imageBackground, imageOutput) : undefined;
   const aigcsiExecutionProfile = usesAigcsiProtocol ? aigcsiImageExecutionProfile(allImageUrls.length) : undefined;
   // 方舟固定接收 URL；历史模型的 Base64/multipart 偏好不能绕过专用 TOS 上传。
   // multipart 直接读取原始参考图，避免本地图片先上传图床再下载回来的额外网络依赖。
   allImageUrls = usesVolcengineTos ? await resolveImageUrlArray(allImageUrls, connectionId, signal)
     : provider === 'runninghub' || usesImageMultipart ? allImageUrls : usesImageDataUrls || usesCustomImageFiles
-    ? await resolveImageDataUrlArray(allImageUrls, signal, usesGoogleImageParts || characterWorkbench ? IMAGE_GENERATION_DATA_URL_BUDGET : undefined)
+    ? await resolveImageDataUrlArray(allImageUrls, signal, usesRelayonImageFiles ? RELAYON_FILE_IMAGE_BUDGET
+      : usesGoogleImageParts || characterWorkbench ? IMAGE_GENERATION_DATA_URL_BUDGET : undefined)
     : await resolveImageUrlArray(allImageUrls, providerDefinition?.id === 'toapis' || isLibapi || providerDefinition?.id === 'custom-openai' ? connectionId : provider, signal);
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
 
@@ -493,12 +514,12 @@ export async function generateImagesBatch(
 
   if (characterMidjourney) {
     const protocol = resolveModelExecutionProfile(relayonExecutionProfile);
-    const baseUrl = providerConfig?.baseUrl?.trim() || providerDefinition?.defaultBaseUrl || '';
+    const baseUrl = resolveRelayonImageBaseUrl(providerConfig?.baseUrl?.trim() || providerDefinition?.defaultBaseUrl || '');
     const apiKey = providerConfig?.apiKey;
     if (!protocol || protocol.mode !== 'sync' || outputsPerJob !== 4 || !baseUrl || !apiKey) {
       throw new Error('原 Midjourney 通道未配置完整的同步图片协议');
     }
-    const dimensions = resolveImageTemplateDimensions(parameterCapability ?? configuredCapability, imageSize, aspectRatio);
+    const dimensions = resolveImageTemplateDimensions(outputCapability ?? configuredCapability, imageSize, aspectRatio);
     const variables = relayonImageVariables(modelName, { model: modelName, prompt, imageSize, aspectRatio,
       n: 1, batchCount: 1, imageUrls: allImageUrls, size: `${dimensions.width}x${dimensions.height}` });
     const mediaDownloadAccess = createMediaDownloadAccess(connectionId, baseUrl, protocol.auth);
@@ -579,7 +600,7 @@ export async function generateImagesBatch(
   const registeredAdapter = mediaProviderRegistry.getImageAdapter(provider);
   if (registeredAdapter) {
     return registeredAdapter.generateImage({
-      params: { ...params, imageSize, aspectRatio, imageQuality, imageBackground },
+      params: { ...params, ...imageOutput, imageSize, aspectRatio, imageQuality, imageBackground },
       prompt,
       imageUrls: allImageUrls,
       referenceMedia,
@@ -592,17 +613,18 @@ export async function generateImagesBatch(
   // 通用模型与已适配直连节点共用声明式执行，不能因 provider 形态丢失协议或额外候选。
   if (declarativeModel && executionProfile) {
     const gm = declarativeModel;
-    const dimensions = resolveImageTemplateDimensions(parameterCapability ?? configuredCapability, imageSize, aspectRatio);
+    const dimensions = resolveImageTemplateDimensions(outputCapability ?? configuredCapability, imageSize, aspectRatio);
     const hasExplicitStandardRequestMode = allImageUrls.length > 0
       && imageReferenceRequestMode !== undefined
       && usesStandardImageRequest;
-    if (!hasExplicitStandardRequestMode && !characterWorkbench) {
+    if (!hasExplicitStandardRequestMode && (!characterWorkbench || usesRelayonImageFiles)) {
       const variables = {
         model: gm.modelId,
         prompt,
         imageSize,
         imageQuality,
         imageBackground,
+        ...imageOutput,
         aspectRatio,
         size: `${dimensions.width}x${dimensions.height}`,
         width: dimensions.width,
@@ -622,6 +644,7 @@ export async function generateImagesBatch(
         signal,
         beforeSubmit,
         ...(outputsPerJob > 1 ? { expectedImageOutputs: outputsPerJob } : {}),
+        ...(usesRelayonProtocol ? { useRelayonImageApi: true } : {}),
         variables: usesLibapiProtocol ? libapiImageVariables(modelName, variables)
           : usesRelayonProtocol ? relayonImageVariables(modelName, variables) : variables,
       });

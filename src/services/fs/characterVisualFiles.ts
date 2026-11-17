@@ -12,7 +12,21 @@ export class CharacterVisualResultConflictError extends Error {
 }
 
 export function isCharacterVisualInputUrl(value: string | undefined): value is string {
-  return !!value && (isTauriAssetUrl(value) || /^(?:blob:|data:image\/(?:png|jpeg|webp|gif|avif);base64,)/i.test(value));
+  return !!value && (isTauriAssetUrl(value) || /^(?:blob:|data:image\/(?:png|jpeg|webp|gif|avif|svg\+xml);base64,)/i.test(value));
+}
+
+/** 这里只读取图片元数据，原始 SVG 仍按字节保存，预览由 img 的图片上下文处理。 */
+function characterVisualSvgRoot(bytes: Uint8Array): string | undefined {
+  if (!bytes.length || bytes.length > 32 * 1024 * 1024) return undefined;
+  let source: string;
+  try { source = new TextDecoder('utf-8', { fatal: true }).decode(bytes).trim(); } catch { return undefined; }
+  if (/<!doctype|<!entity|<\/?html/i.test(source)) return undefined;
+  source = source.replace(/^(?:(?:<\?xml\b[^>]*\?>|<!--[\s\S]*?-->)\s*)+/, '');
+  source = source.replace(/(?:\s*<!--[\s\S]*?-->)+\s*$/, '').trimEnd();
+  const head = /^<svg(?=\s|\/?>)(?:[^'">]|'[^']*'|"[^"]*")*>/.exec(source)?.[0];
+  if (!head || head.length > 256 * 1024
+    || (head.endsWith('/>') ? source !== head : !source.endsWith('</svg>'))) return undefined;
+  return source;
 }
 
 export function characterVisualImageFormat(bytes: Uint8Array): { mime: string; extension: string } {
@@ -23,6 +37,7 @@ export function characterVisualImageFormat(bytes: Uint8Array): { mime: string; e
   if (header(0, 'RIFF') && header(8, 'WEBP')) return { mime: 'image/webp', extension: 'webp' };
   if (header(0, 'GIF87a') || header(0, 'GIF89a')) return { mime: 'image/gif', extension: 'gif' };
   if (header(4, 'ftypavif') || header(4, 'ftypavis')) return { mime: 'image/avif', extension: 'avif' };
+  if (characterVisualSvgRoot(bytes)) return { mime: 'image/svg+xml', extension: 'svg' };
   throw new Error(t('不支持此图片格式'));
 }
 
@@ -40,8 +55,11 @@ export async function saveCharacterVisualResult(
     if (!isCharacterVisualInputUrl(source)) throw new Error(t('原候选图片文件不可用'));
     const bytes = new Uint8Array(await (await readImageSourceBlob(source, signal)).arrayBuffer());
     const format = characterVisualImageFormat(bytes);
-    const dimensions = parseRasterImageDimensions(bytes.subarray(0, 256 * 1024));
-    if (!['png', 'jpg', 'webp'].includes(format.extension)
+    const svgRoot = format.extension === 'svg' ? characterVisualSvgRoot(bytes) : undefined;
+    const dimensions = parseRasterImageDimensions(svgRoot
+      ? new TextEncoder().encode(svgRoot.slice(0, 256 * 1024))
+      : bytes.subarray(0, 256 * 1024));
+    if (!['png', 'jpg', 'webp', 'gif', 'svg'].includes(format.extension)
       || !dimensions || dimensions.width * dimensions.height > 64 * 1024 * 1024) {
       throw new Error(t('原候选图片文件不可用'));
     }

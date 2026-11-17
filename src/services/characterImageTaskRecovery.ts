@@ -167,17 +167,20 @@ export async function executeCharacterProtocol(guard: unknown, input: {
   expectedCount?: number; mediaDownloadAccess?: MediaDownloadAccess; signal?: AbortSignal;
 }): Promise<never> {
   const connectionId = input.mediaDownloadAccess?.providerConfigId;
-  const sensitive = !!connectionId && getProviderPolicy(resolveProviderCatalogId(connectionId,
-    useAppStore.getState().config.providers[connectionId])).upload === 'volcengine-tos';
+  const policy = connectionId ? getProviderPolicy(resolveProviderCatalogId(connectionId,
+    useAppStore.getState().config.providers[connectionId])) : undefined;
+  const sensitive = policy?.upload === 'volcengine-tos';
+  const idempotencyKey = policy?.submitIdempotency ? crypto.randomUUID() : undefined;
   const modelId = String(input.variables.model ?? '');
   const query = input.protocol.mode === 'async' && input.protocol.poll && input.protocol.response.taskIdPath
     ? { modelId, digest: await nativeProtocolQueryDigest(modelId, input.protocol) } : undefined;
   if (query) nativeProtocolQueryPaths(input.protocol);
   return executeCharacterImageTask(guard, { expectedCount: input.expectedCount,
-    recovery: { kind: query ? 'protocol' : 'builtin', ...(query ? { query } : { builtinMode: 'protocol' }) },
+    recovery: { kind: query ? 'protocol' : 'builtin', providerBase: input.baseUrl, ...(query ? { query } : { builtinMode: 'protocol' }) },
     mediaDownloadAccess: input.mediaDownloadAccess,
     execute: async (beforeSubmit, received) => {
       const submitted = await submitModelProtocol({ ...input, beforeSubmit, sensitive: true,
+        ...(idempotencyKey ? { idempotencyKey } : {}),
         ...(query ? { captureRecoveryContext: (payload: unknown) => captureNativeProtocolContext(input.protocol, payload, input.variables, [input.apiKey]) } : {}) })
         .catch((error: unknown) => { throw sensitive ? redactVolcengineError(error, input.apiKey) : error; });
       if (submitted.urls?.length) return submitted.urls.map((url) => ({ url }));

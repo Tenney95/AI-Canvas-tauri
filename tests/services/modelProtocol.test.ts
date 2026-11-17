@@ -30,7 +30,7 @@ import { isRecord } from '../../src/services/ai/modelProtocolShared';
 import { serializeModelProtocolBody } from '../../src/services/ai/modelProtocolBody';
 import {
   fetchSameOriginResultUrls, ModelProtocolHttpError, pcmS16LeToWav,
-  readBinaryModelProtocolResult, redactModelProtocolError, throwIfDefinitiveModelResponseFailure,
+  readBinaryModelProtocolResult, readJsonResponse, redactModelProtocolError, throwIfDefinitiveModelResponseFailure,
 } from '../../src/services/ai/modelProtocolHttp';
 import { PollTaskFailedError, PollTimeoutError } from '../../src/services/pollTask';
 import { buildGeneralVideoProtocolVariables } from '../../src/services/ai/generateVideo';
@@ -70,6 +70,159 @@ const pngResult = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1
 const wavResult = Uint8Array.from(pcmS16LeToWav(new Uint8Array([0, 0]), 24000, 1));
 const encodedResult = (bytes: Uint8Array, mime: string) => `data:${mime};base64,${btoa(String.fromCharCode(...bytes))}`;
 
+describe('声明式协议的请求响应调试关联', () => {
+  it.each([200, 400])('HTTP %s 在既有消费点记录原JSON且只读取一次，不clone响应', async (status) => {
+    const payload = status === 200 ? { data: [{ url: 'https://cdn.example/original.png' }], usage: { input_tokens: 7 } }
+      : { error: { code: 'source_fetch_failed', message: '参考素材无法读取' } };
+    const response = jsonResponse(payload, status);
+    const json = vi.spyOn(response, 'json'); const text = vi.spyOn(response, 'text');
+    const clone = vi.spyOn(response, 'clone').mockImplementation(() => { throw new Error('调试日志不能克隆响应'); });
+    const log = vi.spyOn(httpTransport, 'logAiResponse').mockImplementation(() => undefined);
+    const debug = { url: 'https://gateway.example/v1/images/edits', method: 'POST', source: 'Model Protocol',
+      traceId: 'read-response-fixture', apiKey: 'fixture-response-key', sensitive: false };
+    try {
+      const pending = readJsonResponse(response, '模型请求失败', 'error.message', debug.apiKey, debug);
+      if (status === 200) await expect(pending).resolves.toEqual(payload);
+      else await expect(pending).rejects.toMatchObject({ status: 400, message: expect.stringContaining('参考素材无法读取') });
+      expect(log).toHaveBeenCalledExactlyOnceWith(response, payload, debug);
+      expect(text).toHaveBeenCalledOnce(); expect(json).not.toHaveBeenCalled();
+      expect(clone).not.toHaveBeenCalled(); expect(response.bodyUsed).toBe(true);
+    } finally { log.mockRestore(); clone.mockRestore(); text.mockRestore(); json.mockRestore(); }
+  });
+
+  it.each(['<!doctype html><html>upstream gateway returned HTML</html>', '{"unfinished":'])(
+    'HTTP200非JSON原文进入调试日志且保留原结构错误：%s', async (rawText) => {
+      const response = new Response(rawText, { headers: { 'Content-Type': 'text/html' } });
+      const text = vi.spyOn(response, 'text'); const json = vi.spyOn(response, 'json'); const clone = vi.spyOn(response, 'clone');
+      const log = vi.spyOn(httpTransport, 'logAiResponse').mockImplementation(() => undefined);
+      const debug = { url: 'https://gateway.example/v1/images/edits', method: 'POST', source: 'Model Protocol', traceId: 'invalid-json-fixture' };
+      try {
+        await expect(readJsonResponse(response, '模型请求失败', undefined, '', debug))
+          .rejects.toThrow('模型请求失败：响应必须是 JSON 对象或数组');
+        expect(log).toHaveBeenCalledExactlyOnceWith(response, rawText, debug);
+        expect(text).toHaveBeenCalledOnce(); expect(json).not.toHaveBeenCalled(); expect(clone).not.toHaveBeenCalled();
+        expect(response.bodyUsed).toBe(true);
+      } finally { log.mockRestore(); clone.mockRestore(); json.mockRestore(); text.mockRestore(); }
+    },
+  );
+
+  it('HTTP200业务失败在验证器抛错前记录完整原始返回，不进行第二次请求', async () => {
+    const payload = { status: 'failed', error: { code: 'upstream_failed', message: '上游业务拒绝' }, usage: { output_tokens: 0 } };
+    const response = jsonResponse(payload);
+    const fetchMock = vi.fn().mockResolvedValue(response); vi.stubGlobal('fetch', fetchMock);
+    const log = vi.spyOn(httpTransport, 'logAiResponse').mockImplementation(() => undefined);
+    const validateResponse = vi.fn(() => {
+      expect(log).toHaveBeenCalledWith(response, payload, expect.objectContaining({ source: 'Model Protocol' }));
+      throw new Error('保留原业务失败');
+    });
+    try {
+      await expect(submitModelProtocol({ apiKey: 'business-key-fixture', baseUrl: 'https://gateway.example/v1', variables: {},
+        protocol: { version: 2, mode: 'sync', submit: { method: 'POST', path: '/render', body: { model: 'image-fixture' } },
+          response: { type: 'json', result: { urlPath: 'url' } } }, validateResponse })).rejects.toThrow('保留原业务失败');
+      expect(validateResponse).toHaveBeenCalledOnce(); expect(fetchMock).toHaveBeenCalledOnce();
+    } finally { log.mockRestore(); }
+  });
+
+  it('文本提交分支沿原读取记录返回文本，不clone或再次请求', async () => {
+    const text = 'model-text-output-fixture';
+    const response = new Response(text, { headers: { 'Content-Type': 'text/plain' } });
+    const fetchMock = vi.fn().mockResolvedValue(response); vi.stubGlobal('fetch', fetchMock);
+    const read = vi.spyOn(response, 'text'); const clone = vi.spyOn(response, 'clone');
+    const log = vi.spyOn(httpTransport, 'logAiResponse').mockImplementation(() => undefined);
+    try {
+      await expect(submitModelProtocol({ apiKey: 'text-key-fixture', baseUrl: 'https://gateway.example/v1', variables: {},
+        protocol: { version: 2, mode: 'sync', submit: { method: 'POST', path: '/text', body: { model: 'text-fixture' } },
+          response: { type: 'text' } } })).resolves.toEqual({ text });
+      expect(log).toHaveBeenCalledExactlyOnceWith(response, text, expect.objectContaining({
+        url: 'https://gateway.example/v1/text', method: 'POST', source: 'Model Protocol',
+        apiKey: 'text-key-fixture', traceId: expect.any(String),
+      }));
+      expect(read).toHaveBeenCalledOnce(); expect(clone).not.toHaveBeenCalled();
+      expect(response.bodyUsed).toBe(true); expect(fetchMock).toHaveBeenCalledOnce();
+    } finally { log.mockRestore(); clone.mockRestore(); read.mockRestore(); }
+  });
+
+  it('二进制提交分支只记录安全摘要，原结果和单次流读取保持不变', async () => {
+    const response = new Response(pngResult, { headers: { 'Content-Type': 'image/png' } });
+    const fetchMock = vi.fn().mockResolvedValue(response); vi.stubGlobal('fetch', fetchMock);
+    const read = vi.spyOn(response.body!, 'getReader'); const clone = vi.spyOn(response, 'clone');
+    const log = vi.spyOn(httpTransport, 'logAiResponse').mockImplementation(() => undefined);
+    const url = encodedResult(pngResult, 'image/png');
+    try {
+      await expect(submitModelProtocol({ apiKey: 'binary-key-fixture', baseUrl: 'https://gateway.example/v1', variables: {},
+        protocol: { version: 2, mode: 'sync', submit: { method: 'POST', path: '/binary', body: { model: 'image-fixture' } },
+          response: { type: 'binary', result: { mimeType: 'image/png' } } } })).resolves.toEqual({ urls: [url] });
+      expect(log).toHaveBeenCalledExactlyOnceWith(response, { type: 'binary', mimeType: 'image/png', encodedLength: url.length },
+        expect.objectContaining({ url: 'https://gateway.example/v1/binary', method: 'POST', source: 'Model Protocol',
+          apiKey: 'binary-key-fixture', traceId: expect.any(String) }));
+      expect(JSON.stringify(log.mock.calls.map((call) => call[1]))).not.toContain(url);
+      expect(read).toHaveBeenCalledOnce(); expect(clone).not.toHaveBeenCalled();
+      expect(response.bodyUsed).toBe(true); expect(fetchMock).toHaveBeenCalledOnce();
+    } finally { log.mockRestore(); clone.mockRestore(); read.mockRestore(); }
+  });
+
+  it.each([false, true])('每次轮询关联自己的请求响应，保留POST标量及隐私标记：sensitive=%s', async (sensitive) => {
+    const payloads = [{ status: 'running', progress: 25 }, { status: 'completed', url: 'https://cdn.example/query-result.mp4' }];
+    const responses = payloads.map((payload) => jsonResponse(payload));
+    const fetchMock = vi.fn().mockResolvedValueOnce(responses[0]).mockResolvedValueOnce(responses[1]);
+    vi.stubGlobal('fetch', fetchMock);
+    const transport = vi.spyOn(httpTransport, 'corsSafeFetch');
+    const log = vi.spyOn(httpTransport, 'logAiResponse').mockImplementation(() => undefined);
+    const body = { task_id: 'existing-task', transparent: false, frame_count: 9 };
+    try {
+      await expect(pollResolvedModelProtocol({ method: 'POST', url: 'https://gateway.example/v1/tasks/query',
+        bodyEncoding: 'json', body, statusPath: 'status', successValues: ['completed'], failureValues: ['failed'],
+        resultUrlPath: 'url', intervalMs: 1, maxAttempts: 2, retry: { maxRetries: 0 }, sensitive,
+      }, 'poll-key-fixture', undefined, 'https://gateway.example/v1')).resolves.toMatchObject({ urls: [payloads[1].url] });
+      expect(fetchMock).toHaveBeenCalledTimes(2); expect(log).toHaveBeenCalledTimes(2);
+      const traces = transport.mock.calls.map(([, , options]) => options?.debug?.traceId);
+      if (!sensitive) {
+        expect(traces.every((id) => typeof id === 'string' && id.length > 0)).toBe(true);
+        expect(new Set(traces).size).toBe(2);
+      } else expect(traces).toEqual([undefined, undefined]);
+      for (const [index, call] of transport.mock.calls.entries()) {
+        expect(call[2]?.sensitive === true).toBe(sensitive);
+        if (!sensitive) expect(call[2]?.debug).toMatchObject({ body, bodyEncoding: 'json', traceId: traces[index], stage: 'poll', apiKey: 'poll-key-fixture' });
+        else expect(call[2]).toEqual({ sensitive: true });
+        expect(JSON.parse(String(call[1]?.body))).toEqual(body);
+        expect(log.mock.calls[index]).toEqual([responses[index], payloads[index], {
+          url: 'https://gateway.example/v1/tasks/query', method: 'POST', source: 'Model Protocol',
+          traceId: traces[index], apiKey: 'poll-key-fixture', sensitive,
+        }]);
+      }
+    } finally { log.mockRestore(); transport.mockRestore(); }
+  });
+
+  it('缺少crypto.randomUUID时日志标识使用后备值，不阻断原轮询', async () => {
+    vi.stubGlobal('crypto', {});
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ status: 'completed', url: 'https://cdn.example/fallback.mp4' })));
+    const transport = vi.spyOn(httpTransport, 'corsSafeFetch');
+    const log = vi.spyOn(httpTransport, 'logAiResponse').mockImplementation(() => undefined);
+    try {
+      await expect(pollResolvedModelProtocol({ method: 'GET', url: 'https://gateway.example/v1/tasks/original',
+        statusPath: 'status', successValues: ['completed'], failureValues: ['failed'], resultUrlPath: 'url',
+      }, 'fallback-key', undefined, 'https://gateway.example/v1')).resolves.toMatchObject({ urls: ['https://cdn.example/fallback.mp4'] });
+      expect(transport).toHaveBeenCalledOnce();
+      expect(transport.mock.calls[0][2]?.debug).toMatchObject({ traceId: expect.stringMatching(/^ai-/), stage: 'poll' });
+    } finally { log.mockRestore(); transport.mockRestore(); }
+  });
+
+  it.each([false, true])('同源结果下载失败把敏感标记交给响应日志，保留错误语义：sensitive=%s', async (sensitive) => {
+    const payload = { error: { message: 'download-key-fixture refused result' } };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(payload, 403)));
+    const log = vi.spyOn(httpTransport, 'logAiResponse').mockImplementation(() => undefined);
+    try {
+      await expect(fetchSameOriginResultUrls(['https://gateway.example/content/original'], 'https://gateway.example/v1',
+        undefined, 'download-key-fixture', 'image/png', undefined, undefined, sensitive))
+        .rejects.toMatchObject({ status: 403, message: expect.stringContaining('[REDACTED]') });
+      expect(log).toHaveBeenCalledOnce();
+      expect(log.mock.calls[0][1]).toEqual(payload);
+      expect(log.mock.calls[0][2]).toEqual({ url: 'https://gateway.example/content/original', method: 'GET',
+        source: 'Model Protocol', apiKey: 'download-key-fixture', sensitive });
+    } finally { log.mockRestore(); }
+  });
+});
+
 describe('火山声明式协议的 TOS 隐私边界', () => {
   const signed = 'https://reference-bucket.tos-cn-beijing.ivolces.com/ai-canvas/ark-reference/input.png?X-Tos-Signature=private-fixture-signature';
   const asyncProtocol = (): ModelExecutionProtocol => ({ version: 2, mode: 'async',
@@ -100,7 +253,9 @@ describe('火山声明式协议的 TOS 隐私边界', () => {
     try {
       await runConfiguredModelProtocol({ category: 'image', model: model(protocol, 'volcengine'), variables: { imageUrls: [signed] } });
       expect(transport).toHaveBeenCalledOnce();
-      expect(transport.mock.calls[0][2]).toEqual(official ? { sensitive: true } : undefined);
+      expect(transport.mock.calls[0][2]?.sensitive === true).toBe(official);
+      if (!official) expect(transport.mock.calls[0][2]?.debug).toMatchObject({ stage: 'submit', bodyEncoding: 'json',
+        body: { image: [signed] }, traceId: expect.any(String) });
       expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).image).toEqual([signed]);
     } finally { transport.mockRestore(); restore(); }
   });

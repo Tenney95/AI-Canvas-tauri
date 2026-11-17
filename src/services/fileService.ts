@@ -3,7 +3,7 @@
  * 节点输出另存为、系统文件管理器定位。基础设施见 ./fs/core，删除域见 ./fs/trash，
  * 全局资产库见 ./fs/assetLibrary（均通过本模块统一对外导出）。
  */
-import { exists, writeFile, readFile as tauriReadFile, open as fsOpen, readDir, stat, lstat, rename, mkdir } from '@tauri-apps/plugin-fs';
+import { exists, writeFile, readFile as tauriReadFile, open as fsOpen, readDir, stat, lstat, rename, mkdir, remove } from '@tauri-apps/plugin-fs';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -969,6 +969,7 @@ function extractFileNameFromUrl(url: string, fallbackPrefix: string): string {
 /** MIME → 扩展名（带点），用于无法从 URL 推断扩展名时兜底 */
 const MIME_TO_EXT: Record<string, string> = {
   'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif',
+  'image/svg+xml': '.svg',
   'video/mp4': '.mp4', 'video/webm': '.webm', 'video/quicktime': '.mov',
   'audio/mpeg': '.mp3', 'audio/mp3': '.mp3',
   'audio/wav': '.wav', 'audio/x-wav': '.wav', 'audio/wave': '.wav',
@@ -1000,10 +1001,42 @@ export function isTransientMediaUrl(url: string | undefined): boolean {
 export interface PersistedProjectMedia {
   filePath?: string;
   assetUrl?: string;
+  /** GIF/SVG 原件的实际逻辑画布尺寸，不以请求尺寸覆盖。 */
+  width?: number;
+  height?: number;
   /** 展示用 URL；落盘成功时指向项目文件。 */
   mediaUrl: string;
   /** 可持久化的来源 URL；内嵌/临时 URL 会被本地 asset URL 替换。 */
   sourceUrl: string;
+}
+
+async function readPersistedImageDimensions(path: string, options?: FileTransferOptions): Promise<{ width: number; height: number }> {
+  throwIfMediaReadAborted(options?.signal);
+  const file = await fsOpen(path, { read: true });
+  try {
+    const header = new Uint8Array(256 * 1024);
+    let size = 0;
+    while (size < header.length) {
+      throwIfMediaReadAborted(options?.signal);
+      const count = await file.read(header.subarray(size));
+      if (count === null || count === 0) break;
+      if (!Number.isSafeInteger(count) || count < 0 || count > header.length - size) throw new Error('图片文件头读取失败');
+      size += count;
+    }
+    throwIfMediaReadAborted(options?.signal);
+    const bytes = header.subarray(0, size);
+    // 只整理用于读取元数据的头部；落盘原件始终不经过编码或净化。
+    const metadataBytes = /\.svg$/i.test(path)
+      ? new TextEncoder().encode(new TextDecoder().decode(bytes).trimStart()
+        .replace(/^(?:(?:<\?xml\b[^>]*\?>|<!--[\s\S]*?-->)\s*)+/, ''))
+      : bytes;
+    const { parseRasterImageDimensions } = await import('./rasterImageDimensions');
+    const dimensions = parseRasterImageDimensions(metadataBytes);
+    if (!dimensions || dimensions.width * dimensions.height > 64 * 1024 * 1024) throw new Error('图片文件头或实际尺寸无效');
+    await options?.assertCurrent?.();
+    throwIfMediaReadAborted(options?.signal);
+    return dimensions;
+  } finally { await file.close(); }
 }
 
 export type MediaPersistenceFailureKind = 'http' | 'timeout' | 'network' | 'path_access' | 'permission'
@@ -1020,6 +1053,9 @@ function describeMediaPersistenceFailure(error: unknown): MediaPersistenceFailur
   const message = typeof error === 'string' ? error : error instanceof Error ? error.message : '';
   if (/视频下载返回空文件/.test(message)) return { kind: 'invalid_media', message: '视频下载返回空文件，可重试下载原任务' };
   if (/下载结果不是有效视频/.test(message)) return { kind: 'invalid_media', message: '下载结果不是有效视频，请检查输出格式或下载服务' };
+  if (/下载结果不是受支持的图片|图片文件头或实际尺寸无效|图片文件头读取失败/.test(message)) {
+    return { kind: 'invalid_media', message: '图片原件格式或实际尺寸无效，请检查输出格式或下载服务' };
+  }
   if (/下载返回不完整的分段内容/.test(message)) return { kind: 'invalid_media', message: '下载返回了不完整的视频或媒体，可重试下载原任务' };
   if (message === '项目目录或本地媒体地址不可用') return { kind: 'missing_file', message };
   if (/原(?:媒体)?连接.*(?:不存在|已变化)|接口地址已变化|媒体下载地址与厂商连接不同源/.test(message)) {
@@ -1088,8 +1124,12 @@ export async function persistMediaUrlToProjectData(
     return { mediaUrl: url, sourceUrl: url };
   }
   let saved: Awaited<ReturnType<typeof downloadUrlAndSave>>;
+  let dimensions: { width: number; height: number } | undefined;
   try {
     saved = await downloadUrlAndSave(url, projectId, fallbackPrefix, baseName, { ...options, throwOnError: true });
+    if (saved?.filePath && /\.(?:gif|svg)$/i.test(saved.filePath)) {
+      dimensions = await readPersistedImageDimensions(saved.filePath, options);
+    }
   } catch (error) {
     if (isAbortError(error) || options?.signal?.aborted) {
       throw new DOMException('媒体保存已取消', 'AbortError');
@@ -1101,10 +1141,11 @@ export async function persistMediaUrlToProjectData(
     throw new MediaPersistenceError('项目目录或本地媒体地址不可用');
   }
   if (isLocalMediaUrl(url)) {
-    return { ...saved, mediaUrl: saved.assetUrl, sourceUrl: saved.assetUrl };
+    return { ...saved, ...dimensions, mediaUrl: saved.assetUrl, sourceUrl: saved.assetUrl };
   }
   return {
     ...saved,
+    ...dimensions,
     mediaUrl: saved.assetUrl,
     sourceUrl: url,
   };
@@ -1165,8 +1206,10 @@ export async function downloadUrlAndSave(
 
     const sourcePath = localMediaUrlToPath(url);
     if (!sourcePath && !isRemoteMediaUrl(url)) throw new Error('不支持的媒体地址');
-    const remoteRequest = !sourcePath && options?.mediaDownloadAccess
-      ? await (await import('./ai/mediaDownloadAccess')).resolveMediaDownloadRequest(url, options.mediaDownloadAccess)
+    const downloadAccessService = !sourcePath && options?.mediaDownloadAccess
+      ? await import('./ai/mediaDownloadAccess') : undefined;
+    const remoteRequest = downloadAccessService
+      ? await downloadAccessService.resolveMediaDownloadRequest(url, options?.mediaDownloadAccess)
       : { url };
     throwIfMediaReadAborted(options?.signal);
     // 本地 URL 还原为授权文件路径，保留原生流式复制的取消与进度。
@@ -1176,19 +1219,37 @@ export async function downloadUrlAndSave(
       : sourceName ? sanitizeFileName(sourceName) : extractFileNameFromUrl(url, fallbackPrefix);
     const dataDir = await ensureProjectDataDir(projectId, { throwOnError: options?.throwOnError });
     if (!dataDir) return null;
+    const generatedImage = /image|panorama/i.test(fallbackPrefix)
+      && downloadAccessService?.requiresImageContainerValidation(options?.mediaDownloadAccess) === true;
     const result = await withDownloadDestinationLock(
       dataDir,
-      fileName,
+      // 真实格式可能不同于 URL：同一显示名的各图片后缀共用分配锁。
+      generatedImage ? fileName.replace(/\.[^.]+$/, '') : fileName,
       async () => {
         const destPath = await resolveUniqueDestPath(dataDir, fileName, true);
-        return runNativeFileTransfer(
+        const downloaded = await runNativeFileTransfer(
           sourcePath ? 'copy_file_streamed' : 'download_file_streamed',
           sourcePath ? { sourcePath, destinationPath: destPath } : {
             ...remoteRequest, destinationPath: destPath,
             ...(fallbackPrefix.includes('video') ? { expectedMediaKind: 'video' } : {}),
+            ...(generatedImage ? { expectedMediaKind: 'image' } : {}),
           },
           options,
         );
+        const actualExtension = generatedImage && downloaded.contentType ? MIME_TO_EXT[downloaded.contentType] : undefined;
+        const currentExtension = /\.[^./\\]+$/.exec(downloaded.path)?.[0].toLowerCase();
+        if (!actualExtension || currentExtension === actualExtension
+          || (actualExtension === '.jpg' && currentExtension === '.jpeg')) return downloaded;
+        throwIfMediaReadAborted(options?.signal);
+        const actualFileName = `${fileName.replace(/\.[^.]+$/, '')}${actualExtension}`;
+        const actualPath = await resolveUniqueDestPath(dataDir, actualFileName, true);
+        // 独占复制保留原字节；失败保留下载副本，不能 rename 覆盖另一个调用的文件。
+        const published = await runNativeFileTransfer('copy_file_streamed', {
+          sourcePath: downloaded.path, destinationPath: actualPath,
+        }, options);
+        throwIfMediaReadAborted(options?.signal);
+        await remove(downloaded.path).catch(() => undefined);
+        return { ...published, contentType: downloaded.contentType };
       },
     );
     notifyProjectDiskChanged();
@@ -1672,6 +1733,16 @@ function getAudioSaveExtension(filePath?: string, fileName?: string, mediaUrl?: 
   return guessExtension(mediaUrl || '', mime, 'audio');
 }
 
+/** 图片保存原文件，不因图片节点的默认值把 GIF/SVG 改成 PNG 后缀。 */
+function getImageSaveExtension(filePath?: string, fileName?: string, mediaUrl?: string): string {
+  for (const source of [filePath, fileName, localMediaUrlToPath(mediaUrl)]) {
+    const extension = source?.split(/[\\/]/).pop()?.match(/\.[^.]+$/)?.[0].toLowerCase();
+    if (extension && ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.avif', '.bmp'].includes(extension)) return extension;
+  }
+  const mime = /^data:([^;,]+)/i.exec(mediaUrl || '')?.[1]?.toLowerCase();
+  return guessExtension(mediaUrl || '', mime, 'image');
+}
+
 /** 根据节点类型和默认扩展名生成文件过滤器 */
 function getSaveFilter(nodeType: string, defaultExtension: string): { name: string; extensions: string[] }[] {
   switch (nodeType) {
@@ -1679,7 +1750,7 @@ function getSaveFilter(nodeType: string, defaultExtension: string): { name: stri
     case 'ai-markdown':  return [{ name: 'Markdown 文件', extensions: ['md'] }, { name: '所有文件', extensions: ['*'] }];
     case 'ai-image':
     case 'source-image':
-    case 'ai-panorama':  return [{ name: '图片文件', extensions: ['png', 'jpg', 'jpeg', 'webp'] }, { name: '所有文件', extensions: ['*'] }];
+    case 'ai-panorama':  return [{ name: '图片文件', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'] }, { name: '所有文件', extensions: ['*'] }];
     case 'ai-video':
     case 'source-video': return [{ name: '视频文件', extensions: ['mp4', 'webm', 'mov'] }, { name: '所有文件', extensions: ['*'] }];
     case 'ai-audio':
@@ -1710,7 +1781,9 @@ export async function saveNodeOutputToFile(opts: {
   throwIfMediaReadAborted(signal);
   const defExt = nodeType === 'ai-audio' || nodeType === 'source-audio'
     ? getAudioSaveExtension(filePath, fileName, mediaUrl)
-    : getDefaultExtension(nodeType);
+    : ['ai-image', 'source-image', 'ai-panorama'].includes(nodeType)
+      ? getImageSaveExtension(filePath, fileName, mediaUrl)
+      : getDefaultExtension(nodeType);
 
   if (!isTauriEnv()) {
     console.warn('[fileService] saveNodeOutputToFile: 仅 Tauri 桌面环境支持');

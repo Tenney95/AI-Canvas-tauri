@@ -76,6 +76,10 @@ export interface MediaGenerationParameters {
   duration?: number;
   imageQuality?: string;
   imageBackground?: string;
+  imageOutputFormat?: import('./aiTypes').ImageOutputFormat;
+  imageFrameCount?: number;
+  imageFrameDurationMs?: number;
+  imageTransparent?: boolean;
   videoFps?: number;
   generateAudio?: boolean;
 }
@@ -164,7 +168,8 @@ export interface ResolvedMediaModel {
 }
 /** 角色图片任务只保存原查询身份；提交正文与运行时对象不进入回执。 */
 export type CharacterVisualGenerationParameters = Pick<import('./aiTypes').AIImageGenParams,
-  'aspectRatio' | 'imageSize' | 'imageQuality' | 'imageBackground' | 'workflowInputs' | 'runninghubModelParameters'>;
+  'aspectRatio' | 'imageSize' | 'imageQuality' | 'imageBackground' | 'imageOutputFormat'
+  | 'imageFrameCount' | 'imageFrameDurationMs' | 'imageTransparent' | 'workflowInputs' | 'runninghubModelParameters'>;
 
 export interface CharacterImageTaskRecovery {
   version: 1;

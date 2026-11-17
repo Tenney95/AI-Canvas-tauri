@@ -125,3 +125,25 @@ describe('canvasNodeVersion', () => {
     expect(matchesCanvasNodeSnapshot(original, { ...original, position: { x: 100, y: 201 } })).toBe(false);
   });
 });
+
+
+it.each([
+  { imageOutputFormat: 'gif' as const }, { imageFrameCount: 9 }, { imageFrameDurationMs: 200 }, { imageTransparent: false },
+])('输出格式和 GIF 参数变化使生成租约与节点指纹失效：%j', async (patch) => {
+  const original = node();
+  const changed = withData(original, patch);
+  expect(generationInputSnapshot(changed.data, undefined)).not.toBe(generationInputSnapshot(original.data, undefined));
+  expect(await hash(changed)).not.toBe(await hash(original));
+});
+
+
+it('没有新输出参数时保留原冻结数组的 JSON 字节，包括显式 undefined', () => {
+  const settings = { generation: { imageSize: '2K' } };
+  const data = node({ imageOutputFormat: undefined, imageFrameCount: undefined,
+    imageFrameDurationMs: undefined, imageTransparent: undefined }).data;
+  // 既有合同固定48项：模型之后43个空位，最后是项目设置；不得插入新null改变旧回执指纹。
+  const frozenLegacy = JSON.stringify(['ai-image', '原始提示词', null, 'general/image', ...Array(43).fill(null), settings]);
+  expect(generationInputSnapshot(data, settings)).toBe(frozenLegacy);
+  expect(JSON.parse(generationInputSnapshot({ ...data, imageTransparent: false }, settings)).at(-1))
+    .toEqual(['imageOutput', { imageTransparent: false }]);
+});

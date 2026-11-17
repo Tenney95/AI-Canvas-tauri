@@ -3,7 +3,8 @@
  */
 import type { Node } from '@xyflow/react';
 import type { BaseNodeData } from '../types';
-import type { BatchImageResult, ImageGenerationResult, MediaTaskReceipt } from '../types/aiTypes';
+import type { BatchImageResult, ImageGenerationResult, ImageOutputParameters, MediaTaskReceipt } from '../types/aiTypes';
+import { pickImageOutputParameters } from './ai/imageOutputParameters';
 import type { MediaGenerationResult } from '../types/media';
 import { MAX_IMAGE_BATCH_COUNT } from '../types/aiTypes';
 import { generateId } from '../store/store.utils';
@@ -15,7 +16,7 @@ import { completeComfyNodeTask, completeMediaNodeTask, pauseMediaTask } from './
 import { getNodeHistoryEntries } from './indexedDbService';
 import { BATCH_NODE_GAP, BATCH_COLUMNS_RIGHT_OF_SOURCE } from './imageBatchLayout';
 
-interface ApplyImageBatchParams {
+interface ApplyImageBatchParams extends ImageOutputParameters {
   model?: string;
   provider?: string;
   silent?: boolean;
@@ -210,6 +211,10 @@ export async function applyImageBatchResults({
   imageSize,
   imageQuality,
   imageBackground,
+  imageOutputFormat,
+  imageFrameCount,
+  imageFrameDurationMs,
+  imageTransparent,
   aspectRatio,
   isCurrent,
   signal,
@@ -259,7 +264,7 @@ export async function applyImageBatchResults({
     const matches = node?.data.artifactId === artifactId;
     if (matches && node?.data.imageUrl) {
       reusable.set(index, { mediaUrl: node.data.imageUrl, sourceUrl: node.data.sourceUrl || node.data.imageUrl,
-        filePath: node.data.filePath });
+        filePath: node.data.filePath, width: node.data.imageWidth, height: node.data.imageHeight });
     }
     beforeSaving.updateNodeDataTransient(resolvedTargetNodeIds[index], { ...(!matches ? emptyImageOutput() : {}), artifactId });
   });
@@ -273,7 +278,7 @@ export async function applyImageBatchResults({
       const artifact = artifacts?.[index];
       if (artifact?.persistence === 'failed') throw new Error(artifact.persistError || '图片已生成，但尚未保存到项目');
       const persisted = reusable.get(index) ?? (artifact ? { mediaUrl: artifact.url, sourceUrl: artifact.sourceUrl,
-        filePath: artifact.filePath } : undefined) ?? getRunningHubPersistedOutput(result.runninghubOutputs, result.url) ?? (projectId
+        filePath: artifact.filePath, width: artifact.width, height: artifact.height } : undefined) ?? getRunningHubPersistedOutput(result.runninghubOutputs, result.url) ?? (projectId
         ? await persistMediaUrlToProjectData(
             result.url,
             projectId,
@@ -316,8 +321,8 @@ export async function applyImageBatchResults({
       output: item.persisted.sourceUrl,
       status: 'success',
       error: undefined,
-      imageWidth: item.result.width,
-      imageHeight: item.result.height,
+      imageWidth: item.persisted.width ?? item.result.width,
+      imageHeight: item.persisted.height ?? item.result.height,
     });
     deliveredIndexes.add(item.index);
   });
@@ -361,7 +366,9 @@ export async function applyImageBatchResults({
         status: 'success' as const,
         mediaUrl: item.persisted.mediaUrl,
         filePath: item.persisted.filePath,
-        params: { imageSize, imageQuality, imageBackground, aspectRatio, batchCount: outputCount, batchIndex: index + 1,
+        params: { imageSize, imageQuality, imageBackground,
+          ...pickImageOutputParameters({ imageOutputFormat, imageFrameCount, imageFrameDurationMs, imageTransparent }),
+          aspectRatio, batchCount: outputCount, batchIndex: index + 1,
           ...(artifactId ? { imageOutputId: artifactId } : {}) },
       };
       if (artifactId) await store.recordOutputHistory(targetNodeId, entry, true);

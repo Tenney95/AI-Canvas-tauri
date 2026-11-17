@@ -34,6 +34,7 @@ import { assertModelProtocolResult } from './modelCapabilityValidation';
 import { getProviderPolicy, resolveProviderCatalogId } from './providerPolicies';
 import { RELAYON_VIDEO_RESULT_URL_PATHS, usesRelayonModelProtocol, resolveRelayonVideoExecutionProfile } from './providers/relayonModelManifest';
 import { normalizeRelayonVideoSubmitResponse } from './providers/relayonTaskIdentity';
+import { resolveRelayonImageBaseUrl } from './relayonProviderGroups';
 import { createMediaDownloadAccess, sanitizeMediaResultUrls } from './mediaDownloadAccess';
 import { assertMinimaxQueryResponse, assertMinimaxResponse, getMinimaxMediaAccessHint, usesMinimaxModelProtocol } from './providers/minimaxModelManifest';
 import { ModelProtocolHttpError } from './modelProtocolHttp';
@@ -52,6 +53,8 @@ import { redactVolcengineError, redactVolcengineErrorText } from './providers/vo
 interface RunConfiguredModelProtocolOptions {
   model: GeneralModelConfig;
   variables: ModelProtocolVariables;
+  /** 仅由图片入口完整匹配内置万象协议后启用，新提交不沿旧网页代理。 */
+  useRelayonImageApi?: boolean;
   nodeId?: string;
   category: Exclude<GeneralModelCategory, 'text'>;
   signal?: AbortSignal;
@@ -396,7 +399,9 @@ export async function runConfiguredModelProtocol(
     options.model.videoCapability,
   );
   if (expansionConflicts.length > 0) throw new Error(expansionConflicts[0]);
-  const baseUrl = provider.baseUrl?.trim() || '';
+  const configuredBaseUrl = provider.baseUrl?.trim() || '';
+  const baseUrl = catalogId === 'relayonapi' && options.category === 'image' && options.useRelayonImageApi
+    ? resolveRelayonImageBaseUrl(configuredBaseUrl) : configuredBaseUrl;
   if (!baseUrl) throw new Error(`模型“${options.model.name}”未配置接口地址`);
   const assertPrivatePoll = (value: unknown) => {
     const serialized = JSON.stringify(value);

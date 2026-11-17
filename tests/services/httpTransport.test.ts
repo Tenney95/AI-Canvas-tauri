@@ -2,7 +2,7 @@
  * httpTransport — 回归测试：CORS-safe AI HTTP transport。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { corsSafeFetch, logAiRequest } from '../../src/services/ai/httpTransport';
+import { corsSafeFetch, logAiRequest, logAiResponse } from '../../src/services/ai/httpTransport';
 import { parseResponseError } from '../../src/services/ai/httpUtils';
 
 const invokeMock = vi.hoisted(() => vi.fn());
@@ -132,6 +132,21 @@ describe('CORS-safe AI HTTP transport', () => {
     }));
     expect(JSON.stringify(warn.mock.calls)).not.toContain('echoed-key');
     expect(JSON.stringify(warn.mock.calls)).not.toContain('response-secret');
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('redacts JSON-escaped credentials and lowercase URL escapes in native error logs', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const apiKey = 'fixture/key';
+    const body = JSON.stringify({ message: `echo ${apiKey}` }).replaceAll('/', '\\/');
+    mockNativeStream([Buffer.from(body)], { status: 400, headers: [['content-type', 'application/json']] });
+    const response = await corsSafeFetch('https://gateway.example/images?auth=fixture%2fkey', {
+      method: 'POST', headers: { 'X-Custom-Auth': apiKey },
+    }, { debug: { traceId: 'escaped', apiKey, body: { model: 'image' } } });
+    expect(await response.text()).toBe(body);
+    expect(warn).toHaveBeenCalledWith('[AI Response Error]', expect.objectContaining({ status: 400 }));
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('fixture');
     expect(invokeMock).toHaveBeenCalledTimes(1);
   });
 
@@ -293,6 +308,84 @@ describe('CORS-safe AI HTTP transport', () => {
         outputPath: '[REDACTED_TEXT_WITH_LOCAL_PATH]',
       },
     }));
+  });
+
+  it('shows the actual URL and multipart fields while preserving the sent bytes', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const request = { method: 'POST', headers: { 'Content-Type': 'multipart/form-data; boundary=actual-boundary' },
+      body: Uint8Array.from([1, 2, 3]).buffer };
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}'));
+    vi.stubGlobal('fetch', fetchMock);
+    const preview = { traceId: 'debug-1', stage: 'submit' as const, bodyEncoding: 'multipart',
+      body: { model: 'image-2.6-01', size: '2560x1440', n: 1,
+        'image[]': [{ $file: '[data URL image/png, 3 bytes]' }, { $file: '[data URL image/webp, 5 bytes]' }] } };
+    await corsSafeFetch('https://api.relayonapi.com/v1/images/edits', request, { debug: preview });
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith('https://api.relayonapi.com/v1/images/edits', request);
+    expect(new Uint8Array(request.body)).toEqual(Uint8Array.from([1, 2, 3]));
+    expect(info).toHaveBeenCalledWith('[AI Request]', expect.objectContaining({
+      url: 'https://api.relayonapi.com/v1/images/edits', method: 'POST', bodyEncoding: 'multipart',
+      traceId: 'debug-1', body: preview.body,
+    }));
+  });
+
+  it('redacts custom authentication names in request URL, headers and rendered fields', () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const apiKey = 'custom-secret';
+    logAiRequest(`https://api.example/images?auth=${apiKey}`, { method: 'POST', headers: { 'X-Custom-Auth': apiKey } }, 'test', {
+      traceId: 'custom-auth', apiKey, body: { model: 'image', message: `echo ${apiKey}` },
+    });
+    const output = JSON.stringify(info.mock.calls);
+    expect(output).not.toContain(apiKey);
+    expect(output).toContain('api.example/images');
+    expect(output).toContain('custom-auth');
+    expect(info.mock.calls[0][1]).not.toHaveProperty('apiKey');
+  });
+
+  it.each([200, 400])('logs response status %s and request id without consuming its body or leaking media', (status) => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const apiKey = 'CURRENT_PRIVATE_KEY', rawMedia = 'QUJD'.repeat(600);
+    const response = new Response('not read by logger', { status, headers: { 'x-request-id': 'server-42', 'Set-Cookie': 'session=private' } });
+    const payload = { request_id: 'server-42', [apiKey]: 'hidden-key', error: { code: 'source_fetch_failed',
+      message: `echo ${apiKey}; fetch https://cdn.test/ref.png?sig=AZURE_SAS&X-Tos-Signature=TOS_SIGNATURE` },
+      data: [{ b64_json: rawMedia }], imageBase64: rawMedia,
+      candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: rawMedia } }] } }],
+      file: 'failed file:///C:/Users/Alice/private/input.png', embedded: 'failed data:image/png;base64,QUJD',
+      path: 'failed /mnt/private/input.png' };
+    logAiResponse(response, payload, { url: 'https://api.relayonapi.com/v1/images/edits', method: 'POST', traceId: 'debug-1', apiKey });
+    expect(response.bodyUsed).toBe(false);
+    expect(info).toHaveBeenCalledWith('[AI Response]', expect.objectContaining({ status, ok: status < 400,
+      traceId: 'debug-1', requestId: 'server-42', body: expect.objectContaining({ error: expect.objectContaining({ code: 'source_fetch_failed' }) }) }));
+    const output = JSON.stringify(info.mock.calls);
+    for (const secret of [apiKey, 'AZURE_SAS', 'TOS_SIGNATURE', rawMedia.slice(0, 40), 'Alice', '/mnt/private', 'QUJD']) {
+      expect(output).not.toContain(secret);
+    }
+    expect(output).toContain('encodedLength');
+  });
+
+  it('suppresses response logs for sensitive and production calls', () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const response = new Response('{}');
+    logAiResponse(response, { private: 'hidden' }, { url: 'https://api.example/result', sensitive: true });
+    expect(info).not.toHaveBeenCalled();
+    vi.stubEnv('DEV', false);
+    try {
+      logAiRequest('https://api.example/images', {}, 'test', { traceId: 'quiet', body: { prompt: 'private' } });
+      logAiResponse(response, { private: 'hidden' }, { url: 'https://api.example/result' });
+      expect(info).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('redacts URL-decoded custom auth and userinfo even with lowercase percent escapes', () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const apiKey = 'fixture/a';
+    logAiResponse(new Response('{}'), { detail: 'https://user:private-password@host.test/result?auth=fixture%2fa',
+      message: 'fetch https://host.test/result?auth=fixture%2fa' }, {
+      url: 'https://host.test/images?auth=fixture%2fa', apiKey,
+    });
+    const output = JSON.stringify(info.mock.calls);
+    expect(output).not.toContain('fixture');
+    expect(output).not.toContain('private-password');
+    expect(output).toContain('host.test/images');
   });
 
   it('uses browser fetch outside Tauri', async () => {

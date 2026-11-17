@@ -6,6 +6,7 @@ import { safeExchangePath } from './projectExchangeDomain';
 
 const fields = ['id', 'archiveOriginId', 'projectId', 'nodeId', 'nodeLabel', 'timestamp', 'prompt', 'output', 'nodeType', 'model', 'provider', 'status', 'error', 'fileId', 'params'];
 const parameterFields = new Set(['aspectRatio', 'imageSize', 'imageQuality', 'imageBackground', 'resolution', 'duration', 'videoFps',
+  'imageOutputFormat', 'imageFrameCount', 'imageFrameDurationMs', 'imageTransparent',
   'generateAudio', 'audioVoice', 'audioFormat', 'audioSpeed', 'audioPurpose', 'musicTitle', 'musicLyrics', 'animationAction',
   'animationFrames', 'grid', 'animationPromptVersion', 'originalInputUnavailable', 'originalTimestampUnavailable']);
 const fail = (): never => { throw new Error('输出历史归档的身份、文件或字段无效'); };

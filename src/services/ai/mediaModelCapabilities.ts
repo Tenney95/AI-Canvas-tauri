@@ -13,7 +13,7 @@ import { getGrsaiImageCapability } from './grsaiModels';
 import { MUSE_IMAGE_CAPABILITY, MUSE_IMAGE_MODEL } from './museModels';
 import { getProviderDefinition } from './providerCatalogService';
 import { isCccBananaModelId } from './cccProviderGroups';
-import { comparableProtocol, modelProtocolUsesVariable } from './modelProtocol';
+import { comparableProtocol, modelProtocolUsesVariable, resolveModelExecutionProfile } from './modelProtocol';
 import { resolveToapisImageModelContract } from './providers/toapisModelManifest';
 import { getRelayonImageOutputsPerJob, resolveRelayonImageModelContract } from './providers/relayonModelManifest';
 import { getLibapiAudioCapability, usesLibapiModelProtocol } from './providers/libapiModelManifest';
@@ -605,10 +605,12 @@ function imageCapabilityForProtocol(
   profile: ModelExecutionProfile | undefined,
 ): ImageCapability {
   let effective: ImageCapability = { ...capability, backgroundIsFixed: undefined };
-  if (profile?.preset !== 'custom') return effective;
-  const source = JSON.stringify(profile.protocol?.submit) ?? '';
-  const body = profile.protocol?.submit.body;
-  for (const [variable, field, options, fallback] of [
+  if (profile?.preset !== 'custom' && !capability.outputFormats?.length) return effective;
+  const submit = profile?.preset === 'custom' ? profile.protocol?.submit
+    : capability.outputFormats?.length ? resolveModelExecutionProfile(profile)?.submit : undefined;
+  const source = JSON.stringify(submit) ?? '';
+  const body = submit?.body;
+  if (profile?.preset === 'custom') for (const [variable, field, options, fallback] of [
     ['imageQuality', 'quality', 'qualities', 'defaultQuality'],
     ['imageBackground', 'background', 'backgrounds', 'defaultBackground'],
   ] as const) {
@@ -619,6 +621,17 @@ function imageCapabilityForProtocol(
       ...(field === 'background' ? { backgroundIsFixed: fixed !== undefined } : {}),
     };
   }
+  const fixedFormat = body && typeof body === 'object' && !Array.isArray(body) ? body.output_format : undefined;
+  const supportedFixedFormat = effective.outputFormats?.length === 1 && fixedFormat === effective.outputFormats[0];
+  if (effective.outputFormats?.length && !modelProtocolUsesVariable(source, 'imageOutputFormat') && !supportedFixedFormat) {
+    // 固定/未接线的协议不能显示可变格式控件，也不能继承GIF专属选项。
+    effective = { ...effective, outputFormats: undefined, defaultOutputFormat: undefined,
+      textOnlyOutputFormats: undefined, squareOnlyOutputFormats: undefined,
+      gifFrameCount: undefined, gifFrameDurationMs: undefined, supportsGifTransparency: undefined };
+  }
+  if (!modelProtocolUsesVariable(source, 'imageFrameCount')) effective.gifFrameCount = undefined;
+  if (!modelProtocolUsesVariable(source, 'imageFrameDurationMs')) effective.gifFrameDurationMs = undefined;
+  if (!modelProtocolUsesVariable(source, 'imageTransparent')) effective.supportsGifTransparency = undefined;
   return effective;
 }
 

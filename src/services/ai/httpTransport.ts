@@ -8,9 +8,9 @@ type ProxyFetchStreamEvent =
   | { event: 'chunk'; body: string }
   | { event: 'done' };
 
-const SENSITIVE_KEY_RE = /(?:authorization|api[-_]?key|access[-_]?key|token|secret|password|credential|signature|cookie)/i;
+const SENSITIVE_KEY_RE = /(?:authorization|api[-_]?key|access[-_]?key|token|secret|password|credential|signature|cookie|^key$|(?:^|[-_])sig(?:$|[-_]))/i;
 const WINDOWS_ABSOLUTE_PATH_RE = /(?:^|[\s"'(=])[a-z]:[\\/]/i;
-const UNIX_ABSOLUTE_PATH_RE = /(?:^|[\s"'(=])\/(?:Users|home|root|private|var\/folders|tmp)\//;
+const UNIX_ABSOLUTE_PATH_RE = /(?:^|[\s"'(=])\/(?:Users|home|root|private|var|tmp|mnt|media|Volumes|opt|srv|data|workspace)\//;
 const MAX_LOGGED_STRING_LENGTH = 1000;
 // 给既有 64 MiB 视频上传留出 multipart 头部空间；按整份请求体计量。
 const MAX_NATIVE_REQUEST_BYTES = 65 * 1024 * 1024;
@@ -26,22 +26,57 @@ type SanitizedValue =
   | SanitizedValue[]
   | { [key: string]: SanitizedValue };
 
+export interface AiRequestLogPreview {
+  body: unknown;
+  bodyEncoding?: string;
+  traceId: string;
+  stage?: 'submit' | 'poll';
+  /** 仅用于本次日志脱敏，不打印。 */
+  apiKey?: string;
+}
+
+export interface AiResponseLogContext {
+  url: string;
+  method?: string;
+  source?: string;
+  traceId?: string;
+  /** 仅供调用期脱敏，不进入日志对象或持久化。 */
+  apiKey?: string;
+  sensitive?: boolean;
+}
+
+function redactLogSecrets(value: string, secrets: readonly string[]): string {
+  return secrets.filter(Boolean).sort((left, right) => right.length - left.length)
+    .reduce((text, secret) => text.replaceAll(secret, '[REDACTED]'), value);
+}
+
+function logSecretVariants(secret: string): string[] {
+  return secret ? [secret, encodeURIComponent(secret), new URLSearchParams({ key: secret }).toString().slice(4)] : [];
+}
+
 function mediaScheme(value: string): string {
   const scheme = /^([a-z][a-z\d+.-]*):/i.exec(value)?.[1]?.toLowerCase();
   return isTauriAssetUrl(value) ? 'asset' : scheme || 'local';
 }
 
-function sanitizeUrl(value: string): SanitizedValue {
+function sanitizeUrl(value: string, secrets: readonly string[] = []): SanitizedValue {
   if (isLocalMediaUrl(value)) {
     return { type: 'local-media', scheme: mediaScheme(value), length: value.length };
   }
   try {
     const url = new URL(value);
     if (!['http:', 'https:', 'tauri:'].includes(url.protocol)) return value;
+    if (url.username) url.username = '[REDACTED]';
+    if (url.password) url.password = '[REDACTED]';
+    try {
+      const decodedPath = decodeURIComponent(url.pathname);
+      const safePath = redactLogSecrets(decodedPath, secrets);
+      if (safePath !== decodedPath) url.pathname = safePath;
+    } catch { /* 非法百分号路径仍保留其无凭据的日志表示。 */ }
     for (const [name, queryValue] of url.searchParams.entries()) {
       url.searchParams.set(
         name,
-        SENSITIVE_KEY_RE.test(name) ? '[REDACTED]' : sanitizeString(queryValue),
+        SENSITIVE_KEY_RE.test(name) ? '[REDACTED]' : sanitizeString(queryValue, secrets),
       );
     }
     url.hash = '';
@@ -51,14 +86,18 @@ function sanitizeUrl(value: string): SanitizedValue {
   }
 }
 
-function sanitizeString(value: string): string {
+function sanitizeString(value: string, secrets: readonly string[] = []): string {
+  value = redactLogSecrets(value, secrets);
   // 日志中的嵌入地址也要脱敏；这条规则不参与素材上传或下载选路。
-  if (isLocalMediaUrl(value) || /(?:https?:\/\/asset\.localhost(?=[/:?#\s]|$)|asset:\/\/localhost)/i.test(value)) {
+  if (isLocalMediaUrl(value) || /(?:https?:\/\/asset\.localhost(?=[/:?#\s]|$)|\b(?:file|data|blob|asset|tauri-asset):)/i.test(value)) {
     return '[REDACTED_TEXT_WITH_LOCAL_MEDIA]';
   }
   if (WINDOWS_ABSOLUTE_PATH_RE.test(value) || UNIX_ABSOLUTE_PATH_RE.test(value)) {
     return '[REDACTED_TEXT_WITH_LOCAL_PATH]';
   }
+  value = value.replace(/https?:\/\/[^\s<>"'`]+/gi, (url) => String(sanitizeUrl(url, secrets)))
+    .replace(/\bBearer\s+[^\s"'<>]+/gi, 'Bearer [REDACTED]')
+    .replace(/((?:api[-_]?key|token|secret|password|authorization|signature)\s*[=:]\s*)[^\s"'<>]+/gi, '$1[REDACTED]');
   if (value.length > MAX_LOGGED_STRING_LENGTH) {
     return `${value.slice(0, MAX_LOGGED_STRING_LENGTH)}... [length=${value.length}]`;
   }
@@ -69,63 +108,70 @@ function sanitizeValue(
   value: unknown,
   key = '',
   seen = new WeakSet<object>(),
+  secrets: readonly string[] = [],
 ): SanitizedValue {
   if (SENSITIVE_KEY_RE.test(key)) return '[REDACTED]';
   if (value === null || typeof value === 'boolean' || typeof value === 'number') return value;
   if (typeof value === 'string') {
+    if (/(?:^b64_json$|base64(?:_?data)?$)/i.test(key)) return { type: 'base64', encodedLength: value.length };
+    value = redactLogSecrets(value, secrets);
     if (isLocalMediaUrl(value) || isRemoteMediaUrl(value)) {
-      return sanitizeUrl(value);
+      return sanitizeUrl(value, secrets);
     }
-    return sanitizeString(value);
+    return sanitizeString(value, secrets);
   }
   if (value instanceof Blob) {
     return {
       type: value instanceof File ? 'file' : 'blob',
-      mimeType: value.type || 'application/octet-stream',
+      mimeType: sanitizeString(value.type || 'application/octet-stream', secrets),
       size: value.size,
-      ...(value instanceof File ? { name: sanitizeString(value.name) } : {}),
+      ...(value instanceof File ? { name: sanitizeString(value.name, secrets) } : {}),
     };
   }
   if (value instanceof ArrayBuffer) return { type: 'array-buffer', byteLength: value.byteLength };
   if (ArrayBuffer.isView(value)) return { type: 'binary-view', byteLength: value.byteLength };
-  if (Array.isArray(value)) return value.map((item) => sanitizeValue(item, key, seen));
+  if (Array.isArray(value)) return value.map((item) => sanitizeValue(item, key, seen, secrets));
   if (typeof value === 'object') {
     if (seen.has(value)) return '[CIRCULAR]';
     seen.add(value);
     const sanitized: Record<string, SanitizedValue> = {};
+    const record = value as Record<string, unknown>;
+    const inlineMedia = /^\s*(?:image|audio|video)\//i.test(String(record.mimeType ?? record.mime_type ?? ''));
     for (const [entryKey, entryValue] of Object.entries(value)) {
-      sanitized[entryKey] = sanitizeValue(entryValue, entryKey, seen);
+      sanitized[sanitizeString(entryKey, secrets)] = inlineMedia && entryKey === 'data' && typeof entryValue === 'string'
+        ? { type: 'base64', encodedLength: entryValue.length }
+        : sanitizeValue(entryValue, entryKey, seen, secrets);
     }
     return sanitized;
   }
   return String(value);
 }
 
-function sanitizeHeaders(headers: HeadersInit | undefined): Record<string, string> {
+function sanitizeHeaders(headers: HeadersInit | undefined, secrets: readonly string[] = []): Record<string, string> {
   const result: Record<string, string> = {};
   const normalized = new Headers(headers);
   normalized.forEach((value, name) => {
-    result[name] = SENSITIVE_KEY_RE.test(name) ? '[REDACTED]' : sanitizeString(value);
+    result[name] = SENSITIVE_KEY_RE.test(name) ? '[REDACTED]' : sanitizeString(value, secrets);
   });
   return result;
 }
 
-function sanitizeBody(body: BodyInit | null | undefined): SanitizedValue | undefined {
+function sanitizeBody(body: BodyInit | null | undefined, secrets: readonly string[] = []): SanitizedValue | undefined {
   if (body === undefined || body === null) return undefined;
   if (typeof body === 'string') {
     try {
-      return sanitizeValue(JSON.parse(body));
+      return sanitizeValue(JSON.parse(body), '', new WeakSet(), secrets);
     } catch {
-      return sanitizeString(body);
+      return sanitizeString(body, secrets);
     }
   }
   if (body instanceof URLSearchParams) {
-    return sanitizeValue(Object.fromEntries(body.entries()));
+    return sanitizeValue(Object.fromEntries(body.entries()), '', new WeakSet(), secrets);
   }
   if (body instanceof FormData) {
     const entries: Record<string, SanitizedValue | SanitizedValue[]> = {};
     for (const [name, value] of body.entries()) {
-      const next = sanitizeValue(value, name);
+      const next = sanitizeValue(value, name, new WeakSet(), secrets);
       const current = entries[name];
       entries[name] = current === undefined
         ? next
@@ -133,21 +179,44 @@ function sanitizeBody(body: BodyInit | null | undefined): SanitizedValue | undef
     }
     return entries as Record<string, SanitizedValue>;
   }
-  return sanitizeValue(body);
+  return sanitizeValue(body, '', new WeakSet(), secrets);
 }
 
 export function logAiRequest(
   url: string,
   init: RequestInit = {},
   source = 'HTTP',
+  preview?: AiRequestLogPreview,
 ): void {
   if (!import.meta.env.DEV) return;
+  const secrets: string[] = logSecretVariants(preview?.apiKey ?? '');
+  new Headers(init.headers).forEach((value, name) => {
+    if (SENSITIVE_KEY_RE.test(name)) secrets.push(...logSecretVariants(value), ...logSecretVariants(value.replace(/^Bearer\s+/i, '')));
+  });
   console.info('[AI Request]', {
     source,
     method: (init.method || 'GET').toUpperCase(),
-    url: sanitizeUrl(url),
-    headers: sanitizeHeaders(init.headers),
-    body: sanitizeBody(init.body),
+    url: sanitizeUrl(redactLogSecrets(url, secrets), secrets),
+    headers: sanitizeHeaders(init.headers, secrets),
+    body: preview ? sanitizeValue(preview.body, '', new WeakSet(), secrets) : sanitizeBody(init.body, secrets),
+    ...(preview ? { bodyEncoding: preview.bodyEncoding, traceId: preview.traceId, stage: preview.stage } : {}),
+  });
+}
+
+/** 只记录调用方已经消费的返回值；不克隆响应、不读取或保留媒体流。 */
+export function logAiResponse(response: Response, body: unknown, context: AiResponseLogContext): void {
+  if (!import.meta.env.DEV || context.sensitive) return;
+  const secrets = logSecretVariants(context.apiKey ?? '');
+  const record = body && typeof body === 'object' ? body as Record<string, unknown> : undefined;
+  const requestId = response.headers.get('x-request-id') ?? response.headers.get('request-id')
+    ?? response.headers.get('x-tt-logid') ?? record?.request_id ?? record?.requestId;
+  console.info('[AI Response]', {
+    source: context.source ?? 'Model Protocol', traceId: context.traceId,
+    method: (context.method ?? 'POST').toUpperCase(), url: sanitizeUrl(redactLogSecrets(context.url, secrets), secrets),
+    status: response.status, ok: response.ok,
+    headers: sanitizeHeaders(response.headers, secrets),
+    ...(requestId != null ? { requestId: sanitizeValue(requestId, '', new WeakSet(), secrets) } : {}),
+    body: sanitizeValue(body, '', new WeakSet(), secrets),
   });
 }
 
@@ -293,8 +362,8 @@ function normalizeTransportError(error: unknown): Error {
   return new Error(typeof error === 'string' && error ? error : '原生 HTTP 请求失败');
 }
 
-export async function corsSafeFetch(url: string, init: RequestInit = {}, options: { sensitive?: boolean } = {}): Promise<Response> {
-  if (!options.sensitive) logAiRequest(url, init);
+export async function corsSafeFetch(url: string, init: RequestInit = {}, options: { sensitive?: boolean; debug?: AiRequestLogPreview } = {}): Promise<Response> {
+  if (!options.sensitive) logAiRequest(url, init, 'HTTP', options.debug);
   const signal = init.signal ?? undefined;
   if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) {
     return fetch(url, init);
@@ -327,10 +396,10 @@ export async function corsSafeFetch(url: string, init: RequestInit = {}, options
       if (!errorStatus) return;
       // Only retain a small error response; never consume or clone the caller's stream.
       let body = '[OMITTED: response exceeds 8192 bytes]';
+      const secrets: string[] = logSecretVariants(options.debug?.apiKey ?? '');
       if (errorBytes <= maxErrorBytes) {
         const decoder = new TextDecoder();
         body = errorChunks.map((chunk) => decoder.decode(chunk, { stream: true })).join('') + decoder.decode();
-        const secrets: string[] = [];
         requestHeaders.forEach((value, name) => {
           if (SENSITIVE_KEY_RE.test(name)) {
             secrets.push(value, value.replace(/^Bearer\s+/i, ''));
@@ -349,10 +418,10 @@ export async function corsSafeFetch(url: string, init: RequestInit = {}, options
         source: 'Tauri HTTP',
         requestId,
         method: method.toUpperCase(),
-        url: sanitizeUrl(url),
+        url: sanitizeUrl(redactLogSecrets(url, logSecretVariants(options.debug?.apiKey ?? '')), logSecretVariants(options.debug?.apiKey ?? '')),
         status: errorStatus,
         contentType: sanitizeString(errorContentType),
-        body: sanitizeString(JSON.stringify(sanitizeBody(body))),
+        body: sanitizeString(JSON.stringify(sanitizeBody(body, secrets)), secrets),
         bodyBytes: errorBytes,
         truncated: errorBytes > maxErrorBytes,
       });

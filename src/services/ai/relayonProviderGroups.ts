@@ -2,11 +2,17 @@
  * relayonProviderGroups — 维护 Relayon 分组目录与模型、价格筛选。
  */
 import type { ApiProviderConfig, ProviderModelSelection } from '../../types';
-import { RELAYON_BASE_URL, RELAYON_VIDEO_BASE_URL, RELAYON_IMAGE_MODEL_IDS } from './providers/relayonModelManifest';
+import { RELAYON_BASE_URL, RELAYON_IMAGE_BASE_URL, RELAYON_VIDEO_BASE_URL, RELAYON_IMAGE_MODEL_IDS, RELAYON_VIDEO_MODEL_IDS } from './providers/relayonModelManifest';
 
-/** 只给新视频分组使用文档确认的 API 域名，不改已有连接或其他分组的来源。 */
+/** 新图片／视频分组使用各自文档的 API 域名；已有连接不在此改写。 */
 export function relayonGroupBaseUrl(group?: string): string {
-  return group?.trim() === 'video' ? RELAYON_VIDEO_BASE_URL : RELAYON_BASE_URL;
+  return group?.trim() === 'image' ? RELAYON_IMAGE_BASE_URL
+    : group?.trim() === 'video' ? RELAYON_VIDEO_BASE_URL : RELAYON_BASE_URL;
+}
+
+/** 仅供已确认完整内置图片合同的新调用使用，不迁移配置或历史回执。 */
+export function resolveRelayonImageBaseUrl(value: string): string {
+  return isRelayonOfficialBaseUrl(value) ? RELAYON_IMAGE_BASE_URL : value;
 }
 
 /** 导入保留原官方来源；拒绝凭据、非标准端口和路径伪装。 */
@@ -36,9 +42,7 @@ const GROUP_PRESETS: Record<string, readonly string[]> = {
   'Gemini号池': ['gemini-3.8-flash', 'gemini-4-argon'],
   default: [],
   image: RELAYON_IMAGE_MODEL_IDS,
-  video: ['doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260128',
-    'doubao-seedance-2-0-mini-260615', 'doubao-seedance-2-5-260628',
-    'sd-2.0-A', 'sd-2.5-A', 'sd-2.0-c1', 'sd-2.0-c2', 'minimax-h3', 'sd-2.0-c3', 'sd-2.5-c1'],
+  video: RELAYON_VIDEO_MODEL_IDS,
 };
 
 export function getRelayonGroupPresetModels(models: readonly ProviderModelSelection[], group?: string): ProviderModelSelection[] {

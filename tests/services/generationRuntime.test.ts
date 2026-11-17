@@ -215,6 +215,36 @@ describe('media generation project settings', () => {
     }), expect.any(Function));
   });
 
+  it('GIF 默认参数随请求、原任务与结果保留，交付使用原件实际画布尺寸', async () => {
+    configureVisualModels();
+    Object.assign(mocks.storeState.config.generalModels[0].imageCapability!, {
+      outputFormats: ['png', 'gif', 'svg'], defaultOutputFormat: 'png',
+      squareOnlyOutputFormats: ['gif', 'svg'], textOnlyOutputFormats: ['gif', 'svg'],
+      gifFrameCount: { min: 2, max: 16, default: 9 },
+      gifFrameDurationMs: { min: 20, max: 655350, step: 10, default: 200 }, supportsGifTransparency: true,
+    });
+    mocks.generateImage.mockResolvedValue({ url: 'https://cdn.example/animation.gif', width: 2048, height: 2048 });
+    mocks.persistMediaUrlToProjectData.mockResolvedValue({ filePath: '/projects/project-1/animation.gif',
+      mediaUrl: 'asset://animation.gif', sourceUrl: 'https://cdn.example/animation.gif', width: 768, height: 512 });
+    const output = { imageOutputFormat: 'gif', imageFrameCount: 9, imageFrameDurationMs: 200, imageTransparent: false };
+    const result = await runMediaGeneration({ kind: 'image', prompt: '山谷', modelRef: 'general/image-model',
+      deliveryMode: 'chat', imageOutputFormat: 'gif' }, 'project-1', undefined, 'image-node');
+    expect(mocks.generateImage).toHaveBeenCalledWith(expect.objectContaining(output), undefined);
+    expect(result.parameters).toMatchObject(output);
+    expect(mocks.bindMediaTaskContext).toHaveBeenCalledWith('image-node', expect.objectContaining({
+      parameters: expect.objectContaining(output),
+    }), expect.any(Function));
+    expect(result).toMatchObject({ width: 768, height: 512, url: 'asset://animation.gif' });
+  });
+
+  it('未声明输出格式的模型拒绝显式 GIF，不绑定任务或调用厂商', async () => {
+    configureVisualModels();
+    await expect(runMediaGeneration({ kind: 'image', prompt: '山谷', modelRef: 'general/image-model',
+      deliveryMode: 'chat', imageOutputFormat: 'gif' }, 'project-1')).rejects.toThrow('未声明');
+    expect(mocks.generateImage).not.toHaveBeenCalled();
+    expect(mocks.bindMediaTaskContext).not.toHaveBeenCalled();
+  });
+
   it('锁定模型声明的默认质量和背景，显式接口默认仍能覆盖背景默认值', async () => {
     configureVisualModels();
     const capability = mocks.storeState.config.generalModels[0].imageCapability!;

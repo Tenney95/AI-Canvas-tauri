@@ -395,6 +395,34 @@ describe('节点视频生成的宿主任务租约', () => {
     expect(mocks.store.getCurrentRevision()).toBe(0);
   });
 
+  it('默认 PNG 不回写生成输入，连续两张图片沿用同一租约且历史保存有效格式', async () => {
+    const capabilities = await import('../../src/services/ai/mediaModelCapabilities');
+    const capability = vi.spyOn(capabilities, 'resolveImageParameterCapability').mockReturnValue({
+      modelId: 'image-output', resolutionStyle: 'K', resolutions: ['2K'], ratios: ['1:1'], supportsBatch: false, outputFormats: ['png', 'gif', 'svg'], defaultOutputFormat: 'png',
+    });
+    try {
+      const input: BaseNodeData = { type: 'ai-image', label: '连续图片', prompt: '山谷',
+        model: 'general/image-output', provider: 'general', batchCount: 2, aspectRatio: '1:1', imageSize: '2K' };
+      mocks.store.nodes = [{ id: 'video', data: input }];
+      mocks.store.updateNodeDataTransient.mockImplementation((nodeId: string, patch: Partial<BaseNodeData>) => {
+        mocks.store.nodes = mocks.store.nodes.map((node) => node.id === nodeId ? { ...node, data: { ...node.data, ...patch } } : node);
+      });
+      mocks.prepareBatch.mockImplementation(({ nodeId }: { nodeId: string }) => {
+        const source = mocks.store.nodes.find((node) => node.id === nodeId)!;
+        mocks.store.nodes = [...mocks.store.nodes, { id: 'second-image', data: { ...source.data, batchCount: 1 } }];
+        return { nodeIds: [nodeId, 'second-image'], batchGroupId: 'images' };
+      });
+      mocks.image.mockReset().mockResolvedValue({ url: 'https://cdn.example/result.png', width: 2048, height: 2048 });
+      mocks.persist.mockResolvedValue({ mediaUrl: 'asset://result.png', sourceUrl: 'https://cdn.example/result.png', filePath: 'result.png' });
+      expect(await run(undefined, input)).toEqual({ success: true });
+      expect(mocks.image).toHaveBeenCalledTimes(2);
+      expect(mocks.image.mock.calls.every(([options]) => options.imageOutputFormat === 'png')).toBe(true);
+      expect(mocks.store.nodes.every((node) => node.data.imageOutputFormat === undefined)).toBe(true);
+      expect(mocks.store.recordOutputHistory).toHaveBeenCalledTimes(2);
+      expect(mocks.store.recordOutputHistory.mock.calls.every(([, entry]) => entry.params.imageOutputFormat === 'png')).toBe(true);
+    } finally { capability.mockRestore(); }
+  });
+
   it('rejects image post-processing for a fixed multi-candidate model before a paid request', async () => {
     const input: BaseNodeData = { ...data(), type: 'ai-image', model: 'general/mj', batchCount: 1 };
     mocks.store.nodes = [{ id: 'video', data: input }];

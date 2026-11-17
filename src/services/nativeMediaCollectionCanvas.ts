@@ -35,7 +35,8 @@ export function buildNativeMediaCollectionCanvas(canvas: CanvasDocument, record:
     const sameCategory = file.category === record.category;
     const type = ordinal ? `${sameCategory ? 'ai' : 'source'}-${file.category}` : sourceType;
     const inherited = ordinal ? Object.fromEntries((sameCategory
-      ? ['prompt', 'model', 'provider', 'imageSize', 'imageQuality', 'imageBackground', 'aspectRatio', 'style', 'nodeWidth', 'nodeHeight'] : [])
+      ? ['prompt', 'model', 'provider', 'imageSize', 'imageQuality', 'imageBackground', 'imageOutputFormat',
+        'imageFrameCount', 'imageFrameDurationMs', 'imageTransparent', 'aspectRatio', 'style', 'nodeWidth', 'nodeHeight'] : [])
       .filter((key) => Object.hasOwn(sourceData, key)).map((key) => [key, structuredClone(sourceData[key])])) : structuredClone(sourceData);
     const mediaKey = file.category === 'image' ? 'imageUrl' : file.category === 'video' ? 'videoUrl' : 'audioUrl';
     const data: Record<string, unknown> = { ...inherited, type, [mediaKey]: file.relativePath, relativePath: file.relativePath, storageRootRef: resultRootRef,

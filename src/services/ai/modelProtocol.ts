@@ -10,7 +10,8 @@ import type {
   ModelExecutionProfile,
   NormalizedModelExecutionProtocol,
 } from '../../types/aiTypes';
-import { corsSafeFetch } from './httpTransport';
+import { corsSafeFetch, logAiResponse, type AiResponseLogContext } from './httpTransport';
+import { redactModelProtocolMultipartPreview } from './modelProtocolBody';
 import { readModelProtocolFirstScalar, readModelProtocolUrls } from './modelProtocolResponse';
 import {
   ensureSuccessfulRawResponse,
@@ -147,23 +148,37 @@ export async function submitModelProtocol(
     await options.beforeSubmit();
     options.signal?.throwIfAborted();
   }
+  const traceId = import.meta.env.DEV && !options.sensitive
+    ? globalThis.crypto?.randomUUID?.() ?? `ai-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}` : undefined;
+  const debug: AiResponseLogContext = { url: built.url, method: built.init.method,
+    source: 'Model Protocol', traceId, apiKey: options.apiKey, sensitive: options.sensitive };
+  // 只在真实提交点展示渲染后的值，不在预览/预检时冒充已发出的请求。
+  const requestDebug = traceId ? { traceId, stage: 'submit' as const, apiKey: options.apiKey,
+    bodyEncoding: protocol.submit.bodyEncoding ?? 'json',
+    body: protocol.submit.bodyEncoding === 'multipart' && built.renderedBody !== undefined
+      ? redactModelProtocolMultipartPreview(built.renderedBody) : built.renderedBody } : undefined;
   const response = await (options.sensitive
     ? corsSafeFetch(built.url, built.init, { sensitive: true })
-    : corsSafeFetch(built.url, built.init));
+    : requestDebug ? corsSafeFetch(built.url, built.init, { debug: requestDebug })
+      : corsSafeFetch(built.url, built.init));
   const responseConfig = protocol.response;
 
   if (protocol.mode === 'sync') {
     if (responseConfig.type === 'text') {
-      await ensureSuccessfulRawResponse(response, '模型请求失败', responseConfig.errorPath, options.apiKey);
+      await ensureSuccessfulRawResponse(response, '模型请求失败', responseConfig.errorPath, options.apiKey, debug);
       const text = await response.text();
+      logAiResponse(response, text, debug);
       if (!text) throw new Error('模型响应中未找到文本结果');
       return { text };
     }
     if (responseConfig.type === 'binary') {
-      await ensureSuccessfulRawResponse(response, '模型请求失败', responseConfig.errorPath, options.apiKey);
-      return { urls: [await readBinaryModelProtocolResult(response, responseConfig.result?.mimeType, options.signal)] };
+      await ensureSuccessfulRawResponse(response, '模型请求失败', responseConfig.errorPath, options.apiKey, debug);
+      const url = await readBinaryModelProtocolResult(response, responseConfig.result?.mimeType, options.signal);
+      logAiResponse(response, { type: 'binary', mimeType: responseConfig.result?.mimeType ?? response.headers.get('content-type'),
+        encodedLength: url.length }, debug);
+      return { urls: [url] };
     }
-    const payload = await readJsonResponse(response, '模型请求失败', responseConfig.errorPath, options.apiKey);
+    const payload = await readJsonResponse(response, '模型请求失败', responseConfig.errorPath, options.apiKey, debug);
     try {
       options.validateResponse?.(payload);
     } catch (error) {
@@ -202,7 +217,7 @@ export async function submitModelProtocol(
     };
   }
 
-  let payload: unknown = await readJsonResponse(response, '模型请求失败', responseConfig.errorPath, options.apiKey);
+  let payload: unknown = await readJsonResponse(response, '模型请求失败', responseConfig.errorPath, options.apiKey, debug);
   try {
     options.validateResponse?.(payload);
     if (options.normalizeSubmitResponse) payload = options.normalizeSubmitResponse(payload);

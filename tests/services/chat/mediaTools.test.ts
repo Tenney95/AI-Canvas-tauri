@@ -14,6 +14,7 @@ import { getPendingTasksForProject, registerMediaNodeOperation, savePendingTask 
 import * as generationRuntime from '../../../src/services/ai/generationRuntime';
 import * as operationProgress from '../../../src/services/mcp/mcpOperationService';
 import { DEFAULT_AGENT_TASK_BUDGET, type AgentTask } from '../../../src/types/agent';
+import type { ImageModelCapability } from '../../../src/types/aiTypes';
 import type { MediaGenerationResult } from '../../../src/types/media';
 import { imageBatchArtifactId } from '../../../src/services/imageBatchService';
 import * as chatHistory from '../../../src/services/chat/chatHistoryService';
@@ -559,6 +560,34 @@ describe('media_generate display parameters', () => {
       ],
     } }));
   }
+
+  it('发现并传递模型声明的 GIF 参数，显式 false 保留且未声明模型拒绝格式', async () => {
+    configureVisualModels();
+    useAppStore.setState((state) => ({ config: { ...state.config, generalModels: state.config.generalModels!.map((model) =>
+      model.id !== 'image-custom' ? model : { ...model, imageCapability: { ...model.imageCapability,
+        outputFormats: ['png', 'gif', 'svg'], defaultOutputFormat: 'png',
+        squareOnlyOutputFormats: ['gif', 'svg'], textOnlyOutputFormats: ['gif', 'svg'],
+        gifFrameCount: { min: 2, max: 16, default: 9 }, gifFrameDurationMs: { min: 20, max: 655350, step: 10, default: 200 },
+        supportsGifTransparency: true } satisfies ImageModelCapability }) } }));
+    const capability = await getAgentTool('media_model_parameters')!.execute({ ...context, signal: new AbortController().signal },
+      { modelRef: 'general/image-custom' });
+    expect(JSON.parse(capability.modelContent).capability).toMatchObject({ outputFormats: ['png', 'gif', 'svg'],
+      squareOnlyOutputFormats: ['gif', 'svg'], gifFrameCount: { min: 2, max: 16, default: 9 }, supportsGifTransparency: true });
+    useAppStore.setState({ messages: [{ id: 'gif-message', conversationId: context.conversationId,
+      role: 'assistant', content: '', timestamp: 1, status: 'executing', agentTaskId: context.taskId }] });
+    const generate = vi.spyOn(generationRuntime, 'runMediaGeneration').mockResolvedValue({ id: 'gif-artifact', kind: 'image',
+      deliveryMode: 'chat', url: 'https://cdn.example/animation.gif', sourceUrl: 'https://cdn.example/animation.gif',
+      persistence: 'skipped', prompt: '山谷', modelId: 'general/image-custom', provider: 'general', createdAt: 1 });
+    const input = { kind: 'image', prompt: '山谷', modelRef: 'general/image-custom', deliveryMode: 'chat',
+      imageOutputFormat: 'gif', imageFrameCount: 8, imageFrameDurationMs: 300, imageTransparent: false };
+    const prepared = prepareAgentToolCall({ callId: 'gif', toolId: 'media_generate', input }, context);
+    expect(prepared.ok).toBe(true); if (!prepared.ok) return;
+    await getAgentTool('media_generate')!.execute({ ...context, signal: new AbortController().signal }, prepared.prepared.input);
+    expect(generate).toHaveBeenCalledWith(expect.objectContaining(input), context.projectId, expect.any(AbortSignal),
+      undefined, expect.objectContaining({ messageId: 'gif-message' }));
+    configureVisualModels();
+    expect(getAgentTool('media_generate')!.authorize?.(context, input).allowed).toBe(false);
+  });
 
   it('普通模型能力发现只返回声明的参数，不返回连接地址、协议或 Key', async () => {
     configureVisualModels();

@@ -37,6 +37,15 @@ describe('protocol variable table', () => {
     expect(resolveProtocolFieldTemplate('background', 'transparent', 'video')).toBeUndefined();
     expect(getCategoryProtocolVariables('image')).toContain('imageBackground');
     expect(getCategoryProtocolVariables('video')).not.toContain('imageBackground');
+    expect(resolveProtocolFieldTemplate('output_format', 'svg', 'image')).toBe('{{imageOutputFormat}}');
+    expect(resolveProtocolFieldTemplate('frame_count', 9, 'image')).toBe('{{imageFrameCount}}');
+    expect(resolveProtocolFieldTemplate('frame_duration_ms', 200, 'image')).toBe('{{imageFrameDurationMs}}');
+    expect(resolveProtocolFieldTemplate('transparent', false, 'image')).toBe('{{imageTransparent}}');
+    expect(resolveProtocolFieldTemplate('frame_count', 49, 'video')).toBe('{{frames8n1}}');
+    for (const variable of ['imageOutputFormat', 'imageFrameCount', 'imageFrameDurationMs', 'imageTransparent']) {
+      expect(getCategoryProtocolVariables('image')).toContain(variable);
+      expect(getCategoryProtocolVariables('video')).not.toContain(variable);
+    }
     expect(resolveProtocolFieldTemplate('resolution', '720p', 'video')).toBe('{{seedanceResolution}}');
     // 类别限定优先于取值限定
     expect(resolveProtocolFieldTemplate('firstframeimage', 'https://a/1.png', 'video')).toBe('{{firstImage}}');

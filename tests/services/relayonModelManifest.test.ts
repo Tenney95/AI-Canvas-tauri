@@ -5,8 +5,10 @@ import { assert, describe, expect, it } from 'vitest';
 import type { ProviderModelSelection } from '../../src/types';
 import {
   RELAYON_BASE_URL,
+  RELAYON_IMAGE_BASE_URL,
   RELAYON_VIDEO_BASE_URL,
   RELAYON_IMAGE_MODEL_IDS,
+  RELAYON_IMAGE_26_VARIANT_MODEL_IDS,
   RELAYON_IMAGE_REFERENCE_LIMIT,
   RELAYON_MIDJOURNEY_MODEL_IDS,
   RELAYON_MODEL_MANIFEST,
@@ -22,12 +24,14 @@ import {
   resolveRelayonVideoExecutionProfile,
   getRelayonVideoRecoveryProfiles,
   usesRelayonModelProtocol,
+  usesRelayonImageFileUpload,
   getRelayonImageOutputsPerJob,
 } from '../../src/services/ai/providers/relayonModelManifest';
 import { assertModelCapabilityProtocol } from '../../src/services/ai/modelCapabilityValidation';
-import { buildModelProtocolRequest, validateModelExecutionProtocol } from '../../src/services/ai/modelProtocol';
+import { buildModelProtocolRequest, previewModelProtocolRequest, validateModelExecutionProtocol } from '../../src/services/ai/modelProtocol';
 import { assertVideoModelCapability } from '../../src/services/ai/videoRequestResolver';
 import { findUnusedReferenceVariables } from '../../src/services/ai/modelProtocolRuntime';
+import { getImageSizePresets } from '../../src/services/ai/modelSizeProfiles';
 import type { ImageModelCapability, ModelExecutionProfile, ProtocolJsonValue, VideoModelCapability } from '../../src/types/aiTypes';
 
 function remote(id: string): ProviderModelSelection {
@@ -107,6 +111,12 @@ function model(id: string): ProviderModelSelection {
   return known;
 }
 
+function legacyImage26Capability(): ImageModelCapability {
+  const pixels = getImageSizePresets('relayon-image-2.5');
+  return { ...structuredClone(model('image-2.6-01').imageCapability!),
+    resolutions: Object.keys(pixels), ratios: Object.keys(pixels['1K']), dimensionPresets: pixels };
+}
+
 const SEEDANCE_VIDEO_IDS = RELAYON_VIDEO_MODEL_IDS.filter((id) => id !== 'minimax-h3');
 const LEGACY_SINGLE_RATIO_VIDEO_IDS = [
   'doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260128',
@@ -115,6 +125,7 @@ const LEGACY_SINGLE_RATIO_VIDEO_IDS = [
 ];
 const SEEDANCE_RATIOS = ['16:9', '9:16', '4:3', '3:4', '1:1'];
 const SD_COMMON_RATIOS = ['16:9', '9:16', '1:1'];
+const SD_25_C_IDS = ['sd-2.5-c1', 'sd-2.5-c2', 'sd-2.5-c3'];
 const SD_VIDEO_IDS = ['sd-2.0-A', 'sd-2.5-A', 'sd-2.0-c1', 'sd-2.0-c2', 'sd-2.0-c3', 'sd-2.5-c1'];
 
 /** 2026-11-10 修订前实际发布的合同，保留旧时长、音频与 output 层级。 */
@@ -188,7 +199,7 @@ describe('RelayOnAPI Seedance 宽高比', () => {
   it.each(SEEDANCE_VIDEO_IDS)('%s 读取公共型号基线并应用当前渠道比例和请求层级', (id) => {
     const selected = model(id);
     const expectedRatios = ['sd-2.0-c1', 'sd-2.0-c2', 'sd-2.0-c3'].includes(id) ? SD_COMMON_RATIOS
-      : id === 'sd-2.5-c1' ? [...SEEDANCE_RATIOS, '21:9'] : SEEDANCE_RATIOS;
+      : SD_25_C_IDS.includes(id) ? [...SEEDANCE_RATIOS, '21:9'] : SEEDANCE_RATIOS;
     expect(selected.videoCapability?.ratios).toEqual(expectedRatios);
     expect(selected.videoCapability?.defaultRatio).toBe('16:9');
     for (const aspectRatio of expectedRatios) {
@@ -284,7 +295,7 @@ describe('RelayOnAPI Seedance 宽高比', () => {
     expect(resolveRelayonVideoCapability('minimax-h3', model('minimax-h3').executionProfile)).toEqual(model('minimax-h3').videoCapability);
   });
 
-  it.each(RELAYON_VIDEO_MODEL_IDS)('%s 仅投影完整旧协议和能力，不修改保存记录', (id) => {
+  it.each(RELAYON_VIDEO_MODEL_IDS.filter((id) => !['sd-2.5-c2', 'sd-2.5-c3'].includes(id)))('%s 仅投影完整旧协议和能力，不修改保存记录', (id) => {
     const profile = previousVideoProfile(id);
     const capability = previousVideoCapability(id);
     const before = structuredClone({ profile, capability });
@@ -352,6 +363,10 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
       const keys = ['resolutions', 'defaultResolution', 'ratios', 'defaultRatio', 'dimensionPresets',
         'supportsBatch', 'maxBatchCount', 'supportsImageReference', 'maxImageReferences', 'supportsDataUrlReference'];
       if (id === 'Image-2.5-Flare' || id === 'Image-2.5-Sunburst') keys.push('qualities', 'backgrounds');
+      if (RELAYON_IMAGE_26_VARIANT_MODEL_IDS.some((variant) => variant === id)) {
+        keys.push('qualities', 'outputFormats', 'defaultOutputFormat', 'textOnlyOutputFormats', 'squareOnlyOutputFormats',
+          'gifFrameCount', 'gifFrameDurationMs', 'supportsGifTransparency');
+      }
       expect(Object.keys(model(id).imageCapability!).sort(), id).toEqual(keys.sort());
     }
     expect(model('nano-banana-pro').imageCapability?.dimensionPresets?.['2K']['16:9']).toEqual([2560, 1440]);
@@ -359,10 +374,10 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
     expect(model('Midjourney v7').imageCapability?.maxImageReferences).toBe(1);
   });
 
-  it('声明十五个图片、十一个视频，仅普通 Flare／Sunburst 开放本批确认的质量／背景候选', () => {
-    expect(RELAYON_IMAGE_MODEL_IDS).toHaveLength(15);
-    expect(RELAYON_VIDEO_MODEL_IDS).toHaveLength(11);
-    expect(RELAYON_MODEL_MANIFEST).toHaveLength(30);
+  it('声明十七个图片、十三个视频，质量/背景与输出格式按具体型号隔离', () => {
+    expect(RELAYON_IMAGE_MODEL_IDS).toHaveLength(17);
+    expect(RELAYON_VIDEO_MODEL_IDS).toHaveLength(13);
+    expect(RELAYON_MODEL_MANIFEST).toHaveLength(34);
     expect(RELAYON_MODEL_MANIFEST.filter((item) => item.category === 'image').map((item) => item.id))
       .toEqual(RELAYON_IMAGE_MODEL_IDS);
     expect(RELAYON_MODEL_MANIFEST.filter((item) => item.category === 'video').map((item) => item.id))
@@ -373,6 +388,10 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
       if (id === 'Image-2.5-Flare' || id === 'Image-2.5-Sunburst') {
         expect(model(id).imageCapability).toMatchObject({ qualities: ['auto', 'low', 'medium', 'high', 'xhigh', 'max'],
           backgrounds: ['auto', 'opaque', 'transparent'] });
+      } else if (RELAYON_IMAGE_26_VARIANT_MODEL_IDS.some((variant) => variant === id)) {
+        expect(model(id).imageCapability).toMatchObject({ qualities: ['auto', 'low', 'medium', 'high'],
+          outputFormats: ['png', 'gif', 'svg'], defaultOutputFormat: 'png' });
+        expect(model(id).imageCapability).not.toHaveProperty('backgrounds');
       } else {
         expect(model(id).imageCapability).not.toHaveProperty('qualities');
         expect(model(id).imageCapability).not.toHaveProperty('backgrounds');
@@ -395,12 +414,13 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
     expect(getRelayonImageOutputsPerJob(id, item.executionProfile)).toBe(4);
     const original = structuredClone(item.executionProfile!);
     const edited = resolveRelayonImageExecutionProfile(id, item.executionProfile, 1)!;
+    const reference = 'data:image/png;base64,YQ==';
     const variables = relayonImageVariables(id, { model: id, prompt: 'test', imageSize: extended ? '2K' : '1K',
-      aspectRatio: extended ? '4:5' : '16:9', imageUrls: ['https://cdn.example/reference.png'], n: 1 });
+      aspectRatio: extended ? '4:5' : '16:9', imageUrls: [reference], n: 1 });
     const built = buildModelProtocolRequest({ baseUrl: RELAYON_BASE_URL, apiKey: 'fixture', protocol: edited.protocol!, variables });
     expect(built.url).toBe(`${RELAYON_BASE_URL}/images/edits`);
     expect(built.renderedBody).toMatchObject({ model: id, n: 1, resolution: extended ? '2k' : '1k',
-      size: extended ? '1632x2040' : '1536x864', image: ['https://cdn.example/reference.png'] });
+      size: extended ? '1632x2040' : '1536x864', image: { $file: [reference] } });
     expect(item.executionProfile).toEqual(original);
     const protocol = item.executionProfile?.protocol;
     assert(protocol?.version === 2);
@@ -425,19 +445,186 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
     expect(resolveRelayonImageModelContract('Midjourney v8.2', urlOnly).executionProfile).toBe(urlOnly);
   });
 
-  it('2.6 01 仅按确认复用 2.5 01 请求与尺寸，不继承普通 2.5 的质量或背景', () => {
+  it('2.6 01 按独立文档发送全部 30 档像素，分辨率和比例保持一致', () => {
     const current = model('image-2.6-01');
     const previous = model('image-2.5-flare-01');
-    expect(current.imageCapability).toEqual(previous.imageCapability);
+    const documented = {
+      '1:1': [[1024, 1024], [2048, 2048], [3840, 3840]],
+      '16:9': [[1280, 720], [2560, 1440], [3840, 2160]],
+      '9:16': [[720, 1280], [1440, 2560], [2160, 3840]],
+      '3:2': [[1248, 832], [2496, 1664], [3504, 2336]],
+      '2:3': [[832, 1248], [1664, 2496], [2336, 3504]],
+      '4:3': [[1152, 864], [2304, 1728], [3264, 2448]],
+      '3:4': [[864, 1152], [1728, 2304], [2448, 3264]],
+      '5:4': [[1120, 896], [2240, 1792], [3200, 2560]],
+      '4:5': [[896, 1120], [1792, 2240], [2560, 3200]],
+      '21:9': [[1456, 624], [3024, 1296], [3696, 1584]],
+    };
+    expect(current.imageCapability!.resolutions).toEqual(['1K', '2K', '4K']);
+    expect(new Set(current.imageCapability!.ratios)).toEqual(new Set(Object.keys(documented)));
+    expect(current.imageCapability!.dimensionPresets).not.toEqual(previous.imageCapability!.dimensionPresets);
     expect(current.executionProfile).toEqual(previous.executionProfile);
     expect(getRelayonImageOutputsPerJob(current.id, current.executionProfile)).toBe(1);
-    const variables = relayonImageVariables(current.id, { model: current.id, imageSize: '4K', aspectRatio: '5:4' });
-    expect(variables).toMatchObject({ model: 'image-2.6-01', imageSize: '4K', size: '2880x2304' });
+    for (const [tier, resolution] of ['1K', '2K', '4K'].entries()) {
+      for (const [ratio, sizes] of Object.entries(documented)) {
+        const [width, height] = sizes[tier];
+        const size = `${width}x${height}`;
+        expect(current.imageCapability!.dimensionPresets![resolution][ratio]).toEqual([width, height]);
+        const variables = relayonImageVariables(current.id, { model: current.id, prompt: 'test',
+          imageSize: resolution, aspectRatio: ratio });
+        expect(variables).toMatchObject({ model: current.id, imageSize: resolution, aspectRatio: ratio, size, width, height });
+        const built = buildModelProtocolRequest({ baseUrl: RELAYON_BASE_URL, apiKey: 'fixture',
+          protocol: current.executionProfile!.protocol!, variables });
+        expect(built.renderedBody).toMatchObject({ model: current.id, resolution, aspect_ratio: ratio, size });
+      }
+    }
     expect(current.imageCapability).not.toHaveProperty('qualities');
     expect(current.imageCapability).not.toHaveProperty('backgrounds');
   });
 
-  it('全部能力与协议满足当前校验，H3 和 SD 六款均沿本渠道鉴权 content 取件', () => {
+  it('2.6 完整旧内置能力在运行期采用新像素表，不改写保存快照', () => {
+    const current = model('image-2.6-01');
+    const saved = legacyImage26Capability();
+    const profile = structuredClone(current.executionProfile!);
+    const before = structuredClone({ saved, profile });
+    const effective = resolveRelayonImageModelContract(current.id, profile, saved);
+    expect(effective.imageCapability).toEqual(current.imageCapability);
+    expect(effective.executionProfile).toEqual(profile);
+    expect({ saved, profile }).toEqual(before);
+    effective.imageCapability!.dimensionPresets!['2K']['16:9'][0] = 1;
+    expect({ saved, profile }).toEqual(before);
+    expect(current.imageCapability!.dimensionPresets!['2K']['16:9']).toEqual([2560, 1440]);
+  });
+
+  it('普通2.6只为文档明确的4K方图显式旧像素保留2880，不更改默认3840', () => {
+    expect(relayonImageVariables('image-2.6-01', { imageSize: '4K', aspectRatio: '1:1', size: '2880x2880' }))
+      .toMatchObject({ size: '2880x2880', width: 2880, height: 2880 });
+    expect(relayonImageVariables('image-2.6-01', { imageSize: '4K', aspectRatio: '1:1' })).toMatchObject({ size: '3840x3840' });
+    expect(() => relayonImageVariables('image-2.6-01', { imageSize: '2K', aspectRatio: '1:1', size: '2880x2880' })).toThrow('不一致');
+  });
+
+  it.each(RELAYON_IMAGE_26_VARIANT_MODEL_IDS)('%s 按独立30档与三种真实输出格式映射请求', (id) => {
+    const current = model(id);
+    const before = structuredClone(current);
+    const dimensions = getImageSizePresets('relayon-image-2.6');
+    dimensions['4K']['1:1'] = [4096, 4096];
+    expect(current.imageCapability!.dimensionPresets).toEqual(dimensions);
+    expect(current.imageCapability).toMatchObject({ maxImageReferences: 6, maxBatchCount: 1,
+      textOnlyOutputFormats: ['gif', 'svg'], squareOnlyOutputFormats: ['gif', 'svg'],
+      gifFrameCount: { min: 2, max: 16, step: 1, default: 9 },
+      gifFrameDurationMs: { min: 20, max: 655350, step: 10, default: 200 }, supportsGifTransparency: true });
+    for (const format of ['png', 'gif', 'svg'] as const) {
+      const variables = relayonImageVariables(id, { model: id, prompt: 'format contract', imageSize: '4K', aspectRatio: '1:1',
+        imageOutputFormat: format, imageQuality: 'high' });
+      const profile = resolveRelayonImageExecutionProfile(id, current.executionProfile, 0, undefined, { imageOutputFormat: format })!;
+      const built = buildModelProtocolRequest({ baseUrl: RELAYON_BASE_URL, apiKey: 'fixture', protocol: profile.protocol!, variables });
+      expect(built.renderedBody).toMatchObject({ model: id, n: 1, response_format: 'url', size: '4096x4096',
+        resolution: '4K', aspect_ratio: '1:1', output_format: format, quality: 'high' });
+      expect(built.renderedBody).not.toHaveProperty('image');
+      expect(profile.protocol!.response.result!.mimeType).toBe(format === 'svg' ? 'image/svg+xml' : `image/${format}`);
+      if (format === 'gif') expect(built.renderedBody).toMatchObject({ frame_count: 9, frame_duration_ms: 200, transparent: false });
+      else for (const key of ['frame_count', 'frame_duration_ms', 'transparent']) expect(built.renderedBody).not.toHaveProperty(key);
+      const automatic = relayonImageVariables(id, { model: id, imageOutputFormat: format, imageQuality: 'auto' });
+      const autoRequest = buildModelProtocolRequest({ baseUrl: RELAYON_BASE_URL, apiKey: 'fixture', protocol: profile.protocol!, variables: automatic });
+      expect(autoRequest.renderedBody).not.toHaveProperty('quality');
+    }
+    expect(current).toEqual(before);
+    const defaults = relayonImageVariables(id, {});
+    expect(defaults.imageOutputFormat).toBe('png');
+    expect(defaults.imageFrameCount).toBeUndefined();
+  });
+
+  it.each(RELAYON_IMAGE_26_VARIANT_MODEL_IDS)('%s 上传前拒绝GIF/SVG参考、非方图和非法专属参数', (id) => {
+    for (const format of ['gif', 'svg'] as const) {
+      expect(() => relayonImageVariables(id, { imageOutputFormat: format, aspectRatio: '16:9' })).toThrow('方图');
+      expect(() => resolveRelayonImageExecutionProfile(id, model(id).executionProfile, 1, undefined, { imageOutputFormat: format })).toThrow('文生');
+      expect(() => relayonImageVariables(id, { imageOutputFormat: format, mask: 'https://example.test/mask.png' })).toThrow('文生');
+    }
+    for (const fields of [{ imageFrameCount: 1 }, { imageFrameCount: 17 }, { imageFrameDurationMs: 21 },
+      { imageFrameDurationMs: 655360 }, { imageTransparent: 'false' }]) {
+      expect(() => relayonImageVariables(id, { imageOutputFormat: 'gif', ...fields })).toThrow();
+    }
+    expect(() => relayonImageVariables(id, { imageOutputFormat: 'png', imageTransparent: false })).toThrow('仅适用于GIF');
+    expect(() => relayonImageVariables(id, { imageOutputFormat: 'svg', imageFrameCount: 9 })).toThrow('仅适用于GIF');
+    expect(() => relayonImageVariables(id, { imageOutputFormat: 'jpeg' })).toThrow('格式');
+    expect(() => relayonImageVariables('image-2-01', { imageOutputFormat: 'gif' })).toThrow('未声明');
+  });
+
+  it.each(RELAYON_IMAGE_26_VARIANT_MODEL_IDS.flatMap((id) => [1, 2].flatMap((count) => [false, true].map((explicit) => ({ id, count, explicit })))))(
+    '$id 的$count图PNG编辑省略wire格式，显式PNG=$explicit，canonical格式映射仍有效', ({ id, count, explicit }) => {
+      const current = model(id); const before = structuredClone(current);
+      const fixtures = [
+        { mime: 'image/png', extension: 'png', encoded: 'iVBORw0KGgo=' },
+        { mime: 'image/jpeg', extension: 'jpg', encoded: '/9j/2Q==' },
+      ].slice(0, count);
+      const imageUrls = fixtures.map(({ mime, encoded }) => `data:${mime};base64,${encoded}`);
+      const input = { model: id, prompt: 'png edit contract', imageSize: '2K', aspectRatio: '16:9', imageUrls,
+        ...(explicit ? { imageOutputFormat: 'png' } : {}) };
+      const variables = relayonImageVariables(id, input);
+      const profile = resolveRelayonImageExecutionProfile(id, current.executionProfile, count, undefined,
+        explicit ? { imageOutputFormat: 'png' } : {})!;
+      expect(() => assertModelCapabilityProtocol({ ...current, executionProfile: profile })).not.toThrow();
+      expect(profile.protocol!.submit.body).toHaveProperty('output_format', '{{imageOutputFormat}}');
+      expect(variables.imageOutputFormat).toBeUndefined();
+      expect(input.imageOutputFormat).toBe(explicit ? 'png' : undefined);
+      const built = buildModelProtocolRequest({ baseUrl: RELAYON_IMAGE_BASE_URL, apiKey: 'fixture', protocol: profile.protocol!, variables });
+      expect(built.url).toBe(`${RELAYON_IMAGE_BASE_URL}/images/edits`);
+      expect(built.renderedBody).toMatchObject({ model: id, size: '2560x1440', n: 1 });
+      for (const key of ['output_format', 'resolution', 'aspect_ratio']) expect(built.renderedBody).not.toHaveProperty(key);
+      expect(new Headers(built.init.headers).get('Content-Type')).toMatch(/^multipart\/form-data; boundary=/);
+      const wire = String.fromCharCode(...new Uint8Array(built.init.body as ArrayBuffer));
+      const field = count === 1 ? 'image' : 'image[]';
+      expect(wire.split(`name="${field}"; filename=`)).toHaveLength(count + 1);
+      expect(wire).not.toContain(`name="${count === 1 ? 'image[]' : 'image'}"; filename=`);
+      expect(wire).not.toContain('name="output_format"');
+      let previousPosition = -1;
+      for (const [index, { mime, extension, encoded }] of fixtures.entries()) {
+        expect(wire).toContain(`name="${field}"; filename="reference-${index + 1}.${extension}"`);
+        const position = wire.indexOf(`Content-Type: ${mime}\r\n\r\n${atob(encoded)}\r\n`);
+        expect(position).toBeGreaterThan(previousPosition); previousPosition = position;
+      }
+      expect(wire).not.toContain('data:image/');
+      expect(current).toEqual(before);
+    },
+  );
+
+  it.each(['pixels', 'ratios', 'references'] as const)('2.6 用户修改过的 %s 能力不按旧快照升级', (change) => {
+    const saved = legacyImage26Capability();
+    if (change === 'pixels') saved.dimensionPresets!['2K']['16:9'] = [2400, 1350];
+    else if (change === 'ratios') { saved.ratios = ['16:9']; saved.defaultRatio = '16:9'; }
+    else saved.maxImageReferences = 1;
+    const before = structuredClone(saved);
+    const effective = resolveRelayonImageModelContract('image-2.6-01', model('image-2.6-01').executionProfile, saved);
+    expect(effective.imageCapability).toEqual(before);
+    expect(saved).toEqual(before);
+  });
+
+  it('2.6 自定义协议及无协议配置不自动套用新内置能力', () => {
+    const saved = legacyImage26Capability();
+    const custom = structuredClone(model('image-2.6-01').executionProfile!);
+    custom.protocol!.submit.path = '/user/images';
+    const before = structuredClone({ saved, custom });
+    const effective = resolveRelayonImageModelContract('image-2.6-01', custom, saved);
+    expect(effective.executionProfile).toBe(custom);
+    expect(effective.imageCapability).toBe(saved);
+    expect(resolveRelayonImageModelContract('image-2.6-01', undefined, saved))
+      .toEqual({ executionProfile: undefined, imageCapability: saved });
+    expect({ saved, custom }).toEqual(before);
+  });
+
+  it('2.6 尺寸修正不改变 2.5 型号的既有像素与保存配置', () => {
+    for (const id of ['Image-2.5-Flare', 'image-2.5-flare-01', 'Image-2.5-Sunburst', 'image-2.5-sunburst-01']) {
+      const current = model(id);
+      const saved = structuredClone(current.imageCapability!);
+      const effective = resolveRelayonImageModelContract(id, current.executionProfile, saved);
+      expect(effective.imageCapability).toEqual(saved);
+      expect(saved.dimensionPresets).toEqual(getImageSizePresets('relayon-image-2.5'));
+      expect(relayonImageVariables(id, { imageSize: '2K', aspectRatio: '16:9' })).toMatchObject({ size: '2048x1152' });
+      expect(relayonImageVariables(id, { imageSize: '4K', aspectRatio: '5:4' })).toMatchObject({ size: '2880x2304' });
+    }
+  });
+
+  it('全部能力与协议满足当前校验，H3 和 SD 渠道均沿本渠道鉴权 content 取件', () => {
     for (const item of RELAYON_MODEL_MANIFEST) {
       expect(() => assertModelCapabilityProtocol(item), item.id).not.toThrow();
       if (item.videoCapability) expect(() => assertVideoModelCapability(item.videoCapability!), item.id).not.toThrow();
@@ -448,7 +635,7 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
           poll: { path: '/videos/{{submit.id}}', intervalMs: 10_000, maxDurationMs: 7_200_000,
             response: { statusPath: 'status', successValues: ['completed'], failureValues: ['failed'] } } });
         assert(protocol?.version === 2, item.id);
-        if (item.id === 'minimax-h3' || SD_VIDEO_IDS.includes(item.id)) {
+        if (item.id === 'minimax-h3' || SD_VIDEO_IDS.includes(item.id) || SD_25_C_IDS.includes(item.id)) {
           expect(protocol.poll!.response.result).toEqual({ mimeType: 'video/mp4', download: { method: 'GET', path: '/videos/{{submit.id}}/content' } });
         } else expect(protocol.poll!.response.result).toEqual({ urlPath: 'url', mimeType: 'video/mp4' });
       }
@@ -486,10 +673,88 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
       size: '2048x1152', imageUrls: [inline] });
     const built = buildModelProtocolRequest({ baseUrl: RELAYON_BASE_URL, apiKey: 'fixture', protocol: edit.protocol!, variables });
     expect(built.url).toBe('https://relayonapi.com/v1/images/edits');
-    expect(built.renderedBody).toMatchObject({ image: [inline], size: '2048x1152', n: 1 });
+    expect(built.renderedBody).toMatchObject({ image: { $file: [inline] }, size: '2048x1152', n: 1 });
+    expect(new Headers(built.init.headers).get('Content-Type')).toMatch(/^multipart\/form-data; boundary=/);
     expect(resolveRelayonImageExecutionProfile(id, profile, 0)!.protocol!.submit.path).toBe('/images/generations');
     expect(relayonImageVariables(id, { imageUrls: [] }).imageUrls).toBeUndefined();
     expect(profile).toEqual(original);
+  });
+
+  it.each(RELAYON_IMAGE_MODEL_IDS)('%s 的参考编辑编码为有序文件，文生请求仍为原 JSON 合同', (id) => {
+    const item = model(id);
+    const saved = structuredClone(item.executionProfile!);
+    const fixtures = [
+      { mime: 'image/png', extension: 'png', encoded: 'iVBORw0KGgo=' },
+      { mime: 'image/jpeg', extension: 'jpg', encoded: '/9j/2Q==' },
+      { mime: 'image/webp', extension: 'webp', encoded: 'UklGRgQAAABXRUJQ' },
+    ].slice(0, item.imageCapability!.maxImageReferences);
+    const imageUrls = fixtures.map(({ mime, encoded }) => `data:${mime};base64,${encoded}`);
+    expect(usesRelayonImageFileUpload(id, item.executionProfile)).toBe(true);
+    const variables = relayonImageVariables(id, { model: id, prompt: 'reference edit', n: 1, imageUrls });
+    const protocol = resolveRelayonImageExecutionProfile(id, item.executionProfile, imageUrls.length)!.protocol!;
+    const built = buildModelProtocolRequest({ baseUrl: RELAYON_BASE_URL, apiKey: 'fixture', protocol, variables });
+    expect(built.url).toBe(`${RELAYON_BASE_URL}/images/edits`);
+    expect(new Headers(built.init.headers).get('Content-Type')).toMatch(/^multipart\/form-data; boundary=/);
+    expect(built.init.body).toBeInstanceOf(ArrayBuffer);
+    const wire = String.fromCharCode(...new Uint8Array(built.init.body as ArrayBuffer));
+    const field = imageUrls.length > 1 ? 'image[]' : 'image';
+    const indexedFiles = id === 'image-2.6-01' || RELAYON_IMAGE_26_VARIANT_MODEL_IDS.some((variant) => variant === id);
+    expect(wire.split(`name="${field}"; filename=`)).toHaveLength(imageUrls.length + 1);
+    let previousPosition = -1;
+    for (const [index, { mime, extension, encoded }] of fixtures.entries()) {
+      const filename = indexedFiles ? `reference-${index + 1}.${extension}` : `upload.${extension}`;
+      expect(wire).toContain(`name="${field}"; filename="${filename}"`);
+      const position = wire.indexOf(`Content-Type: ${mime}\r\n\r\n${atob(encoded)}\r\n`);
+      expect(position).toBeGreaterThan(previousPosition);
+      previousPosition = position;
+    }
+    expect(wire).not.toContain('data:image/');
+    expect(built.renderedBody).toMatchObject({ model: id, n: 1, size: variables.size, response_format: 'url' });
+    if (indexedFiles) for (const key of ['resolution', 'aspect_ratio']) expect(built.renderedBody).not.toHaveProperty(key);
+    else expect(built.renderedBody).toMatchObject({ resolution: variables.imageSize, aspect_ratio: variables.aspectRatio });
+    expect(protocol.mode).toBe('sync');
+    expect(protocol.response).toEqual(saved.protocol!.response);
+    const preview = previewModelProtocolRequest({ baseUrl: RELAYON_BASE_URL, protocol, variables });
+    for (const { encoded } of fixtures) expect(JSON.stringify(preview.body)).not.toContain(encoded);
+
+    const textProtocol = resolveRelayonImageExecutionProfile(id, item.executionProfile, 0)!.protocol!;
+    const textVariables = relayonImageVariables(id, { model: id, prompt: 'text generation', n: 1 });
+    const textRequest = buildModelProtocolRequest({ baseUrl: RELAYON_BASE_URL, apiKey: 'fixture', protocol: textProtocol, variables: textVariables });
+    expect(textRequest.url).toBe(`${RELAYON_BASE_URL}/images/generations`);
+    expect(textProtocol.submit.bodyEncoding).toBe('json');
+    expect(new Headers(textRequest.init.headers).get('Content-Type')).toBe('application/json');
+    const textBody = JSON.parse(String(textRequest.init.body));
+    expect(textBody).not.toHaveProperty('image');
+    expect(textBody).toMatchObject({ resolution: textVariables.imageSize, aspect_ratio: textVariables.aspectRatio, size: textVariables.size });
+    expect(item.executionProfile).toEqual(saved);
+  });
+
+  it('文件直传只接受已核实精确型号及完整新旧内置协议，不接管自定义合同', () => {
+    const id = 'image-2-01';
+    const stored = model(id).executionProfile!;
+    for (const unknown of ['image-2-01-alias', 'Image-2-01', 'image-2.6-Flare', 'unknown']) {
+      expect(usesRelayonImageFileUpload(unknown, stored)).toBe(false);
+    }
+    expect(usesRelayonImageFileUpload(id, undefined)).toBe(false);
+    for (const change of ['path', 'response', 'image-field'] as const) {
+      const custom = structuredClone(stored);
+      assert(custom.protocol?.version === 2);
+      if (change === 'path') custom.protocol.submit.path = '/custom/images';
+      else if (change === 'response') custom.protocol.response.result!.urlPath = 'custom_result';
+      else (custom.protocol.submit.body as Record<string, ProtocolJsonValue>).image = '{{firstImage}}';
+      const before = structuredClone(custom);
+      expect(usesRelayonImageFileUpload(id, custom)).toBe(false);
+      expect(resolveRelayonImageExecutionProfile(id, custom, 1)).toBe(custom);
+      expect(custom).toEqual(before);
+    }
+    const legacy = structuredClone(stored);
+    assert(legacy.protocol?.version === 2);
+    delete legacy.protocol.response.result!.base64Path;
+    delete legacy.protocol.response.result!.mimeType;
+    const before = structuredClone(legacy);
+    expect(usesRelayonImageFileUpload(id, legacy)).toBe(true);
+    expect(resolveRelayonImageExecutionProfile(id, legacy, 1)!.protocol!.submit.bodyEncoding).toBe('multipart');
+    expect(legacy).toEqual(before);
   });
 
   it('参考数量、图片格式、生成数量和未映射尺寸错误在提交前失败', () => {
@@ -666,8 +931,7 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
     expect(() => relayonVideoVariables('sd-2.0-c1', { duration: 30, durationText: '10' })).toThrow('不支持 30 秒');
   });
 
-  it('2.5 C1 按本地文档发送顶层参数，规格与参考上限仍按本型号声明', () => {
-    const id = 'sd-2.5-c1';
+  it.each(SD_25_C_IDS)('%s 沿用 2.5 C1 顶层参数、规格与参考上限', (id) => {
     expect(model(id).videoCapability).toMatchObject({ minDuration: 4, maxDuration: 30, resolutions: ['720p'],
       maxImageReferences: 30, maxVideoReferences: 10, maxAudioReferences: 10 });
     expect(model(id).inputModalities).toEqual(['text', 'image']);
@@ -680,6 +944,31 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
       references: [{ type: 'image', url: 'https://cdn.example/i.png', role: 'reference' },
         { type: 'video', url: 'https://cdn.example/v.mp4' }, { type: 'audio', url: 'https://cdn.example/a.mp3' }] });
     expect(() => relayonVideoVariables(id, { referenceImageUrls: Array(31).fill('https://cdn.example/i.png') })).toThrow('最多接受 30 个参考图');
+  });
+
+  it.each(['sd-2.5-c2', 'sd-2.5-c3'])('%s 与 2.5 C1 只区分请求型号，中间秒数与音视频参考使用同一合同', (id) => {
+    const original = model('sd-2.5-c1');
+    const selected = model(id);
+    expect(selected.executionProfile).toEqual(original.executionProfile);
+    expect(selected.videoCapability).toEqual(original.videoCapability);
+    expect(selected.inputModalities).toEqual(original.inputModalities);
+    expect(selected.videoCapability).not.toHaveProperty('durations');
+    expect(getRelayonVideoRecoveryProfiles(id, selected.executionProfile)).toEqual([selected.executionProfile]);
+    for (const duration of [4, 7, 30]) {
+      const input = { prompt: '图片1参考视频1与音频1', duration, durationText: String(duration),
+        resolution: '720p', aspectRatio: '21:9', referenceImageUrls: ['https://cdn.example/i.png'],
+        referenceVideoUrls: ['https://cdn.example/v.mp4'], referenceAudioUrls: ['https://cdn.example/a.mp3'] };
+      const build = (modelId: string) => buildModelProtocolRequest({ baseUrl: RELAYON_BASE_URL, apiKey: 'fixture',
+        protocol: model(modelId).executionProfile!.protocol!, variables: relayonVideoVariables(modelId, { ...input, model: modelId }) });
+      const expected = build(original.id);
+      const actual = build(id);
+      expect(actual.renderedBody).toEqual({ ...(expected.renderedBody as Record<string, ProtocolJsonValue>), model: id });
+      expect(actual.renderedBody).toMatchObject({ seconds: String(duration), aspect_ratio: '21:9',
+        references: [{ type: 'image', url: 'https://cdn.example/i.png', role: 'reference' },
+          { type: 'video', url: 'https://cdn.example/v.mp4' }, { type: 'audio', url: 'https://cdn.example/a.mp3' }] });
+      expect(actual.renderedBody).not.toHaveProperty('duration');
+      expect(actual.renderedBody).not.toHaveProperty('generate_audio');
+    }
   });
 
   it('JSON 合同不接未公开的首尾帧，不把它们降级成普通参考', () => {

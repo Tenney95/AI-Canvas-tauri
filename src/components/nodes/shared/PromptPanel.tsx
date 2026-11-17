@@ -49,6 +49,8 @@ import SkillManager from './SkillManager';
 import { expandSkillReferences } from '../../../services/skillPromptService';
 import { listRuntimeSkills, projectSkillPickerOptions } from '../../../services/chat/skillCatalog';
 import { MAX_IMAGE_BATCH_COUNT } from '../../../types/aiTypes';
+import type { ImageOutputParameters } from '../../../types/aiTypes';
+import { resolveImageOutputCapability } from '../../../services/ai/imageOutputParameters';
 import type { AudioOutputFormat, AudioSpeechSettings, AudioSpeechReference, AudioTtsVoice, VideoReferenceItem } from '../../../types/aiTypes';
 import type { AudioGenerationPurpose } from '../../../types/media';
 import { useT } from '../../../i18n';
@@ -409,10 +411,12 @@ interface PromptPanelProps {
   imageSize?: string;
   imageQuality?: string;
   imageBackground?: string;
+  imageOutputParameters?: ImageOutputParameters;
   aspectRatio?: string;
   onChangeImageSize?: (size: string) => void;
   onChangeImageQuality?: (quality: string | undefined) => void;
   onChangeImageBackground?: (background: string | undefined) => void;
+  onChangeImageOutputParameters?: (parameters: ImageOutputParameters) => void;
   onChangeAspectRatio?: (ratio: string) => void;
   batchCount?: number;
   onChangeBatchCount?: (count: number) => void;
@@ -494,10 +498,12 @@ export default function PromptPanel({
   imageSize,
   imageQuality,
   imageBackground,
+  imageOutputParameters,
   aspectRatio,
   onChangeImageSize,
   onChangeImageQuality,
   onChangeImageBackground,
+  onChangeImageOutputParameters,
   onChangeAspectRatio,
   batchCount = 1,
   onChangeBatchCount,
@@ -600,9 +606,12 @@ export default function PromptPanel({
   const dreaminaImageModel = nodeType === 'ai-image' && selectedProvider === 'dreamina'
     ? getDreaminaImageModel(selectedModel)
     : undefined;
-  const imageCapability = nodeType === 'ai-image' && !dreaminaImageModel
+  const baseImageCapability = nodeType === 'ai-image' && !dreaminaImageModel
     ? resolveImageParameterCapability(selectedModel, selectedProvider, imageModelConfig)
     : undefined;
+  const outputFormat = baseImageCapability?.outputFormats?.find((format) => format === imageOutputParameters?.imageOutputFormat)
+    ?? baseImageCapability?.defaultOutputFormat ?? baseImageCapability?.outputFormats?.[0];
+  const imageCapability = resolveImageOutputCapability(baseImageCapability, outputFormat);
   const imageOutputsPerJob = nodeType === 'ai-image' && !selectedWorkflowId
     ? resolveImageOutputsPerJob(selectedModel, selectedProvider, imageModelConfig) : 1;
   const imageResolutions = dreaminaImageModel?.resolutions ?? imageCapability?.resolutions;
@@ -1100,6 +1109,9 @@ export default function PromptPanel({
                 imageBackgrounds={selectedWorkflowId ? undefined : imageCapability?.backgrounds}
                 defaultImageBackground={selectedWorkflowId ? undefined : imageCapability?.defaultBackground}
                 imageBackgroundIsFixed={selectedWorkflowId ? false : imageCapability?.backgroundIsFixed}
+                imageOutputParameters={imageOutputParameters}
+                imageOutputCapability={selectedWorkflowId ? undefined : imageCapability}
+                onChangeImageOutputParameters={onChangeImageOutputParameters}
                 aspectRatio={imageRatioValues?.length === 0 && !imageSupportsAdaptive ? t('比例待确认') : aspectRatio}
                 onChangeImageSize={onChangeImageSize || (() => {})}
                 onChangeImageQuality={onChangeImageQuality}

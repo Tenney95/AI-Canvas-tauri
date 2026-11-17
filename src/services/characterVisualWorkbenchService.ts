@@ -5,7 +5,8 @@ import { fillTemplate, getSlashCommands } from '../components/nodes/shared/slash
 import { getMediaModelOptions } from '../components/nodes/shared/defaultModels';
 import { useAppStore } from '../store/useAppStore';
 import type { AppConfig, WorkflowDefinition } from '../types';
-import type { MediaDownloadAccess } from '../types/aiTypes';
+import type { ImageOutputParameters, MediaDownloadAccess } from '../types/aiTypes';
+import { assertImageOutputInput, pickImageOutputParameters, resolveConfiguredImageOutput } from './ai/imageOutputParameters';
 import type { CharacterImageTaskRecovery, CharacterVisualGenerationParameters } from '../types/media';
 import type { DramaCharacter } from '../types/dramaAssets';
 import type { ProjectContext } from '../types/project';
@@ -70,7 +71,7 @@ export interface CharacterVisualCandidate {
   operation: CharacterVisualOperation;
   prompt: string;
 }
-export interface CharacterVisualRun {
+export interface CharacterVisualRun extends ImageOutputParameters {
   id: string;
   target: CharacterVisualTarget;
   operation: CharacterVisualOperation;
@@ -114,7 +115,7 @@ export interface CharacterVisualModel {
   workflowId?: string;
   connectionId?: string;
 }
-interface GenerateCharacterVisualInput {
+interface GenerateCharacterVisualInput extends ImageOutputParameters {
   target: CharacterVisualTarget;
   characterName?: string;
   isNew?: boolean;
@@ -239,7 +240,12 @@ export function listCharacterVisualModels(
 export function resolveCharacterVisualParameters(model: CharacterVisualModel, parameters: CharacterVisualGenerationParameters,
   config: AppConfig = useAppStore.getState().config): CharacterVisualGenerationParameters {
   const capability = model.workflowId ? undefined : resolveImageParameterCapability(model.id, model.provider, config);
+  const outputFormat = capability?.outputFormats?.find((format) => format === parameters.imageOutputFormat) ?? capability?.defaultOutputFormat ?? capability?.outputFormats?.[0];
   return { ...parameters,
+    imageOutputFormat: outputFormat,
+    imageFrameCount: outputFormat === 'gif' ? parameters.imageFrameCount : undefined,
+    imageFrameDurationMs: outputFormat === 'gif' ? parameters.imageFrameDurationMs : undefined,
+    imageTransparent: outputFormat === 'gif' ? parameters.imageTransparent : undefined,
     imageQuality: capability?.qualities?.find((value) => value.toLowerCase() === parameters.imageQuality?.toLowerCase()) ?? capability?.defaultQuality,
     imageBackground: capability?.backgroundIsFixed ? capability.defaultBackground : parameters.imageBackground === '' ? ''
       : capability?.backgrounds?.find((value) => value.toLowerCase() === parameters.imageBackground?.toLowerCase()) ?? capability?.defaultBackground,
@@ -410,6 +416,7 @@ function displayRun(row: StoredRun, candidates: CharacterVisualCandidate[], over
     prompt: row.prompt, submittedPrompt: row.submittedPrompt, expectedOutputCount: row.expectedOutputCount,
     model: row.model, provider: row.provider, aspectRatio: row.aspectRatio, imageSize: row.imageSize,
     imageQuality: row.imageQuality, imageBackground: row.imageBackground, workflowId: row.workflowId,
+    ...pickImageOutputParameters(row),
     workflowInputs: row.workflowInputs, runninghubModelParameters: row.runninghubModelParameters,
     recoverable: Boolean(row.recovery?.tasks.length && ['submitting', 'uncertain', 'paused'].includes(overrides.status ?? row.status)),
     remoteTaskIds: row.recovery?.tasks.map((task) => task.taskId),
@@ -676,7 +683,7 @@ async function executeCharacterVisualPlan(row: StoredRun, plan: CharacterImageEx
   const connectionId = plan.recovery.workflow?.connectionId ?? options.connectionId;
   const config = useAppStore.getState().config;
   const connection = config.providers[connectionId];
-  const base = plan.recovery.workflow?.providerBase ?? (connectionId === 'dreamina' ? 'http://dreamina.local'
+  const base = plan.recovery.providerBase ?? plan.recovery.workflow?.providerBase ?? (connectionId === 'dreamina' ? 'http://dreamina.local'
     : connection?.baseUrl?.trim() || getProviderDefinition(connectionId, connection)?.defaultBaseUrl || DEFAULT_BASE_URLS[connectionId] || '');
   const expectedCount = plan.expectedCount ?? row.expectedOutputCount ?? 1;
   const recovery: CharacterImageTaskRecovery = options.resume && row.recovery ? structuredClone(row.recovery) : {
@@ -855,6 +862,9 @@ export async function generateCharacterVisual(
   activeRuns.add(id);
   try {
     guard();
+    const outputCapability = selected.workflowId ? undefined : resolveImageParameterCapability(selected.id, selected.provider, config);
+    const imageOutput = resolveConfiguredImageOutput(outputCapability, input);
+    assertImageOutputInput(outputCapability, imageOutput, { aspectRatio, imageCount: references.length, hasMask: Boolean(mask) });
     const frozen = await freezeReferences(references, controller.signal);
     if (mask && frozen[0]?.digest !== mask.baseDigest) throw new Error(t('底图已变化，请重新绘制蒙版'));
     guard();
@@ -863,7 +873,8 @@ export async function generateCharacterVisual(
       selected.provider, connectionId, connection?.baseUrl, general?.modelId,
       aspectRatio, imageSize, frozen.map((reference) => [reference.digest, reference.purpose]),
       input.imageQuality, input.imageBackground, selected.workflowId, workflowInputs, runninghubModelParameters,
-      ...(viewSlot || mask ? [viewSlot, mask ? await sha256BytesHex(new TextEncoder().encode(mask.pngDataUrl)) : undefined] : [])])));
+      ...(viewSlot || mask ? [viewSlot, mask ? await sha256BytesHex(new TextEncoder().encode(mask.pngDataUrl)) : undefined] : []),
+      ...(Object.keys(imageOutput).length ? [['imageOutput', imageOutput]] : [])])));
     const isNative = context?.modelGeneration === 1;
     const createdAt = Date.now();
     const row: StoredRun = {
@@ -872,6 +883,7 @@ export async function generateCharacterVisual(
       name: input.characterName?.trim().slice(0, 128) ?? '', prompt, model: selected.id, provider: selected.provider,
       aspectRatio, imageSize, createdAt, status: 'submitting', candidates: [], sent: false, native: isNative, draft: input.isNew === true,
       imageQuality: input.imageQuality, imageBackground: input.imageBackground, workflowId: selected.workflowId,
+      ...imageOutput,
       projectEpoch: context?.projectEpoch, fingerprint,
       references: frozen.map(({ id: referenceId, purpose, sourceUrl }) => ({ id: referenceId, purpose, sourceUrl })),
     };
@@ -914,6 +926,7 @@ export async function generateCharacterVisual(
         prompt: requestPrompt, model: selected.id, provider: selected.provider,
         characterWorkbench: target.scope, collectCandidates: true, imageSize, aspectRatio,
         imageQuality: input.imageQuality, imageBackground: input.imageBackground, workflowId: selected.workflowId,
+        ...imageOutput,
         workflowInputs, runninghubModelParameters,
         image_urls: frozen.map((reference) => reference.url),
         ...(mask ? { characterPaintMask: mask.pngDataUrl } : {}),

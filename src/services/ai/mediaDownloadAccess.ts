@@ -5,6 +5,8 @@ import { APIMART_BASE_URL, GRSAI_BASE_URL } from '../../constants/api';
 import type { MediaDownloadAccess, ModelProtocolAuthConfig } from '../../types/aiTypes';
 import { applyQueryAuthentication, renderRequestHeaders } from './modelProtocolRequest';
 import { validateAuthentication } from './modelProtocolValidation';
+import { resolveProviderCatalogId } from './providerPolicies';
+import { isRelayonOfficialBaseUrl } from './relayonProviderGroups';
 
 function httpUrl(value: string): URL {
   const url = new URL(value);
@@ -44,12 +46,18 @@ export function createMediaDownloadAccess(providerConfigId: string, baseUrl: str
   return access;
 }
 
+/** 官方图片交付会返回无后缀链接；按原连接决定容器校验，不限制结果的 CDN 来源。 */
+export function requiresImageContainerValidation(access?: MediaDownloadAccess): boolean {
+  const safe = sanitizeMediaDownloadAccess(access);
+  return Boolean(safe && isRelayonOfficialBaseUrl(`${safe.origin}/v1`));
+}
+
 export interface MediaDownloadRequest {
   url: string;
   downloadAccess?: { origin: string; headers: Record<string, string>; queryAuthName?: string };
 }
 
-/** 外部签名链接不带厂商 Key；同源结果绑定原连接，地址变更后失败关闭。 */
+/** 外部签名链接不带厂商 Key；同源结果绑定原连接，万象仅兼容两个官方来源。 */
 export async function resolveMediaDownloadRequest(url: string, access?: MediaDownloadAccess): Promise<MediaDownloadRequest> {
   if (!access || !/^https?:/i.test(url)) return { url };
   const safe = sanitizeMediaDownloadAccess(access);
@@ -59,7 +67,9 @@ export async function resolveMediaDownloadRequest(url: string, access?: MediaDow
   const { useAppStore } = await import('../../store/useAppStore');
   const provider = useAppStore.getState().config.providers[safe.providerConfigId];
   const currentBaseUrl = provider?.baseUrl || (safe.providerConfigId === 'apimart' ? APIMART_BASE_URL : safe.providerConfigId === 'grsai' ? GRSAI_BASE_URL : '');
-  if (!provider || !currentBaseUrl || httpUrl(currentBaseUrl).origin !== safe.origin) {
+  const relayonOfficialOrigin = resolveProviderCatalogId(safe.providerConfigId, provider) === 'relayonapi'
+    && isRelayonOfficialBaseUrl(currentBaseUrl) && isRelayonOfficialBaseUrl(`${safe.origin}/v1`);
+  if (!provider || !currentBaseUrl || httpUrl(currentBaseUrl).origin !== safe.origin && !relayonOfficialOrigin) {
     throw new Error('原媒体连接或接口地址已变化，请检查原连接配置');
   }
   if (!provider.apiKey) throw new Error('原媒体连接尚未填写 API Key，请补填后继续保存');

@@ -33,7 +33,7 @@ const mocks = vi.hoisted(() => {
 }; });
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => mocks.state } }));
 vi.mock('../../src/services/pollManager', () => mocks);
-vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: mocks.fetch }));
+vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: mocks.fetch, logAiResponse: vi.fn() }));
 vi.mock('../../src/services/ai/imageUtils', () => ({ resolveImageUrlArray: mocks.images }));
 vi.mock('../../src/services/uploadService', () => ({ resolveMediaReferenceUrl: mocks.media }));
 import { grsaiMediaProviderAdapter } from '../../src/services/ai/providers/grsaiMedia';
@@ -171,7 +171,8 @@ describe('GRSAI H3 独立视频合同', () => {
       .resolves.toMatchObject({ urls: ['https://cdn.example/recovered.mp4'] });
     expect(mocks.fetch).toHaveBeenCalledTimes(1);
     expect(mocks.fetch).toHaveBeenCalledWith('https://grsai.dakka.com.cn/v1/api/result?id=recover-task',
-      expect.objectContaining({ method: 'GET', headers: { Authorization: 'Bearer rotated-key' } }));
+      expect.objectContaining({ method: 'GET', headers: { Authorization: 'Bearer rotated-key' } }),
+      expect.objectContaining({ debug: expect.objectContaining({ stage: 'poll', traceId: expect.any(String) }) }));
   });
 
   it('cancels after submission without resubmission', async () => {

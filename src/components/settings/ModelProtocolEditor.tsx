@@ -49,6 +49,7 @@ import {
 import { useT } from '../../i18n';
 import { copyText } from '../../services/clipboardService';
 import { buildGoogleImageParts, resolveImageTemplateDimensions } from '../../services/ai/imageModelTemplates';
+import { resolveConfiguredImageOutput } from '../../services/ai/imageOutputParameters';
 import {
   buildChatApiRequest,
   isNativeTextProtocolPreset,
@@ -195,13 +196,16 @@ function createPreviewVariables(model: ProviderModelSelection): ModelProtocolVar
     // 未完成的编辑草稿不能让整个设置窗口加载失败；真实发送仍严格校验尺寸。
     let dimensions = { width: 1024, height: 1024 };
     let imageBackground: string | undefined;
+    let imageOutput: ReturnType<typeof resolveConfiguredImageOutput> = {};
     try { dimensions = resolveImageTemplateDimensions(model.imageCapability, imageSize, aspectRatio); } catch { /* 保留预览占位 */ }
     try { imageBackground = resolveConfiguredImageBackground(model.imageCapability); } catch { /* 无效能力留待保存时报告 */ }
+    try { imageOutput = resolveConfiguredImageOutput(model.imageCapability, {}); } catch { /* 编辑草稿留待保存时校验 */ }
     return {
       ...common,
       imageSize,
       imageQuality: model.imageCapability?.qualities?.length ? model.imageCapability.defaultQuality : undefined,
       imageBackground,
+      ...imageOutput,
       aspectRatio,
       size: `${dimensions.width}x${dimensions.height}`,
       ...dimensions,

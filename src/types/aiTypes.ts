@@ -22,7 +22,24 @@ export interface TextGenerationResult {
   comfyTaskId?: string;
 }
 
-export interface AIImageGenParams extends AIGenerateParams {
+export type ImageOutputFormat = 'png' | 'gif' | 'svg';
+
+/** 原图输出参数；GIF选项与精灵动画节点的帧数分开。 */
+export interface ImageOutputParameters {
+  imageOutputFormat?: ImageOutputFormat;
+  imageFrameCount?: number;
+  imageFrameDurationMs?: number;
+  imageTransparent?: boolean;
+}
+
+export interface ImageParameterRange {
+  min: number;
+  max: number;
+  step?: number;
+  default: number;
+}
+
+export interface AIImageGenParams extends AIGenerateParams, ImageOutputParameters {
   /** 仅供完整交付多候选的图片节点／对话入口使用，不写入厂商请求。 */
   collectCandidates?: boolean;
   /** 角色工作台只使用显式选择的素材，交付到角色任务。 */
@@ -322,6 +339,15 @@ export interface VideoModelCapability {
  * 便于同一套参数面板与生成入口消费。
  */
 export interface ImageModelCapability {
+  /** 只显示并提交厂商明确声明的原文件格式。 */
+  outputFormats?: ImageOutputFormat[];
+  defaultOutputFormat?: ImageOutputFormat;
+  /** 这些格式只支持文生，或仅支持方图；限制在上传前校验。 */
+  textOnlyOutputFormats?: ImageOutputFormat[];
+  squareOnlyOutputFormats?: ImageOutputFormat[];
+  gifFrameCount?: ImageParameterRange;
+  gifFrameDurationMs?: ImageParameterRange;
+  supportsGifTransparency?: boolean;
   /** 可选分辨率档位，如 ['1K', '2K', '4K'] 或 ['1MP', '2MP']。 */
   resolutions?: string[];
   /** 未指定分辨率时的默认值。 */

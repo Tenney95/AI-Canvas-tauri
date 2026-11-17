@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const transportMocks = vi.hoisted(() => ({
   corsSafeFetch: vi.fn(),
+  logAiResponse: vi.fn(),
 }));
 
 vi.mock('../../src/services/ai/httpTransport', () => transportMocks);
@@ -24,6 +25,7 @@ import { getProviderDefinition } from '../../src/services/ai/providerCatalogServ
 import { generateImageStandard } from '../../src/services/ai/providers/standardImage';
 import { mediaProviderRegistry } from '../../src/services/ai/mediaProviderRegistry';
 import { resolveImageParameterCapability } from '../../src/services/ai/mediaModelCapabilities';
+import { getImageSizePresets } from '../../src/services/ai/modelSizeProfiles';
 import { analyzeModelProtocolExamples } from '../../src/services/ai/modelProtocolImport';
 import { useAppStore } from '../../src/store/useAppStore';
 import { createImageQuickAdaptTemplate } from '../../src/services/ai/imageModelTemplates';
@@ -43,8 +45,21 @@ function jsonResponse(payload: unknown): Response {
   });
 }
 
+const protocolSubmitDebug = () => expect.objectContaining({ debug: expect.objectContaining({
+  stage: 'submit', traceId: expect.any(String),
+}) });
+
+async function multipartImageRequest(init: RequestInit) {
+  expect(new Headers(init.headers).get('Content-Type')).toMatch(/^multipart\/form-data; boundary=/);
+  const form = await new Response(init.body, { headers: init.headers }).formData();
+  return { form, fields: Object.fromEntries([...form].filter(([, value]) => typeof value === 'string')),
+    files: [...form.getAll('image'), ...form.getAll('image[]')] as File[] };
+}
+
 beforeEach(() => {
   transportMocks.corsSafeFetch.mockReset();
+  transportMocks.corsSafeFetch.mockRejectedValue(new Error('未模拟的模型网络请求'));
+  vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('未模拟的直接网络请求'));
   useAppStore.setState(useAppStore.getInitialState(), true);
 });
 
@@ -958,7 +973,7 @@ describe('RelayOnAPI 图片请求与连接身份', () => {
       })]);
       expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(1);
       const [url, init] = transportMocks.corsSafeFetch.mock.calls[0];
-      expect(url).toBe('https://relayonapi.com/v1/images/generations');
+      expect(url).toBe('https://api.relayonapi.com/v1/images/generations');
       expect(JSON.parse(String(init.body))).toMatchObject({ model: modelId, n: 1, resolution: '1k',
         size: '1536x864', aspect_ratio: '16:9' });
       expect(new Headers(init.headers).get('Idempotency-Key')).toMatch(/^[a-f0-9-]{36}$/i);
@@ -983,8 +998,8 @@ describe('RelayOnAPI 图片请求与连接身份', () => {
       prompt: 'direct', imageSize: '2K', aspectRatio: '4:5', collectCandidates: true });
     expect([result.url, ...result.additionalResults!.map(({ url }) => url)]).toEqual(urls);
     expect(result.expectedOutputCount).toBe(4);
-    expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith('https://relayonapi.com/v1/images/generations',
-      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer direct-mj-fixture' }) }));
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith('https://api.relayonapi.com/v1/images/generations',
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer direct-mj-fixture' }) }), protocolSubmitDebug());
     expect(JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0][1].body))).toMatchObject({
       model: 'Midjourney v8.2', n: 1, resolution: '2k', size: '1632x2040', aspect_ratio: '4:5',
     });
@@ -1004,7 +1019,7 @@ describe('RelayOnAPI 图片请求与连接身份', () => {
     expect(result.url).toBe(urls[0]);
     expect(result).not.toHaveProperty('additionalResults');
     expect(result).not.toHaveProperty('expectedOutputCount');
-    expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith('https://gateway.example/v1/custom/mj', expect.anything());
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith('https://gateway.example/v1/custom/mj', expect.anything(), protocolSubmitDebug());
     expect(JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0][1].body))).toMatchObject({ resolution: '2K', n: 1 });
     expect(useAppStore.getState().config.providers['my-custom-mj'].selectedModels).toEqual([before]);
   });
@@ -1015,27 +1030,38 @@ describe('RelayOnAPI 图片请求与连接身份', () => {
     useAppStore.getState().saveProviderConfig('direct-custom-mj', { name: '万象自定义协议', catalogId: 'relayonapi',
       apiKey: 'direct-custom-fixture', baseUrl: 'https://relayonapi.com/v1', selectedModels: [selected] });
     const before = structuredClone(useAppStore.getState().config.providers['direct-custom-mj']);
-    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.example/direct-custom.png' }] }));
+    const directFetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('自定义协议测试不能外联'));
+    transportMocks.corsSafeFetch.mockImplementation(async (url) => {
+      if (url !== 'https://relayonapi.com/v1/my-mj/images') throw new Error('未模拟的自定义模型请求');
+      return jsonResponse({ data: [{ url: 'https://cdn.example/direct-custom.png' }] });
+    });
+    const reference = 'https://custom.example/reference.png';
     const result = await generateImage({ provider: 'direct-custom-mj', model: 'direct-custom-mj/Midjourney v8.2',
-      prompt: 'direct custom', imageSize: '1K', aspectRatio: '1:1' });
+      prompt: 'direct custom', imageSize: '1K', aspectRatio: '1:1', image_urls: [reference] });
     expect(result).toMatchObject({ url: 'https://cdn.example/direct-custom.png' });
     expect(result).not.toHaveProperty('additionalResults');
-    expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith('https://relayonapi.com/v1/my-mj/images', expect.anything());
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith('https://relayonapi.com/v1/my-mj/images', expect.anything(), protocolSubmitDebug());
+    expect(new Headers(transportMocks.corsSafeFetch.mock.calls[0][1].headers).get('Content-Type')).toBe('application/json');
+    expect(JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0][1].body)).image).toEqual([reference]);
+    expect(directFetch).not.toHaveBeenCalled();
     expect(useAppStore.getState().config.providers['direct-custom-mj']).toEqual(before);
   });
 
   it('MJ 参考编辑可交付四张 Base64，2K 使用型号公布尺寸，不额外提交或裁图', async () => {
     const params = configureRelayonImage('relayon-image-fixture', 'Midjourney v8.2');
     const encoded = ['YQ==', 'Yg==', 'Yw==', 'ZA=='];
+    const reference = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j8Z0AAAAASUVORK5CYII=';
     transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: encoded.map((b64_json) => ({ b64_json })) }));
-    const result = await generateImagesBatch({ ...params, aspectRatio: '3:2', image_urls: ['data:image/png;base64,YQ=='] }, 1);
+    const result = await generateImagesBatch({ ...params, aspectRatio: '3:2', image_urls: [reference] }, 1);
     expect(result).toMatchObject({ requestedCount: 1, expectedOutputCount: 4, failedCount: 0 });
     expect(result.results.map(({ url }) => url)).toEqual(encoded.map((value) => `data:image/png;base64,${value}`));
     expect(result.results.every((item) => item.width === 2048 && item.height === 1360)).toBe(true);
-    expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith('https://relayonapi.com/v1/images/edits', expect.anything());
-    expect(JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0][1].body))).toMatchObject({
-      model: 'Midjourney v8.2', n: 1, resolution: '2k', size: '2048x1360', image: ['data:image/png;base64,YQ=='],
-    });
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith('https://api.relayonapi.com/v1/images/edits', expect.anything(), protocolSubmitDebug());
+    const { fields, files } = await multipartImageRequest(transportMocks.corsSafeFetch.mock.calls[0][1]);
+    expect(fields).toMatchObject({ model: 'Midjourney v8.2', n: '1', resolution: '2k', size: '2048x1360' });
+    expect(files).toHaveLength(1);
+    expect(files[0].type).toBe('image/png');
+    expect(Buffer.from(await files[0].arrayBuffer())).toEqual(Buffer.from(reference.split(',')[1], 'base64'));
   });
 
   it('MJ 少返回候选仍保留期望四张，不补交付费生成；一次请求不能把四候选当 n=4', async () => {
@@ -1048,21 +1074,144 @@ describe('RelayOnAPI 图片请求与连接身份', () => {
     expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(1);
   });
 
-  it('2.6 01 按确认兼容 2.5 01 编辑与尺寸，不默认追加质量、背景或多候选', async () => {
+  it('2.6 01 文件编辑采用独立文档尺寸，不默认追加质量、背景或多候选', async () => {
     const params = configureRelayonImage('relayon-image-fixture', 'image-2.6-01');
+    const reference = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j8Z0AAAAASUVORK5CYII=';
     transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [{ b64_json: 'aW1hZ2U=' }] }));
-    const result = await generateImage({ ...params, aspectRatio: '9:16', image_urls: ['data:image/png;base64,YQ=='] });
-    expect(result).toMatchObject({ url: 'data:image/png;base64,aW1hZ2U=', width: 1152, height: 2048 });
+    const result = await generateImage({ ...params, aspectRatio: '9:16', image_urls: [reference] });
+    expect(result).toMatchObject({ url: 'data:image/png;base64,aW1hZ2U=', width: 1440, height: 2560 });
     expect(result).not.toHaveProperty('additionalResults');
     expect(result).not.toHaveProperty('expectedOutputCount');
-    expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith('https://relayonapi.com/v1/images/edits', expect.anything());
-    const body = JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0][1].body));
-    expect(body).toMatchObject({ model: 'image-2.6-01', n: 1, size: '1152x2048', resolution: '2K' });
-    expect(body).not.toHaveProperty('quality');
-    expect(body).not.toHaveProperty('background');
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith('https://api.relayonapi.com/v1/images/edits', expect.anything(), protocolSubmitDebug());
+    const { fields, files } = await multipartImageRequest(transportMocks.corsSafeFetch.mock.calls[0][1]);
+    expect(fields).toMatchObject({ model: 'image-2.6-01', n: '1', size: '1440x2560' });
+    for (const key of ['resolution', 'aspect_ratio']) expect(fields).not.toHaveProperty(key);
+    expect(fields).not.toHaveProperty('quality');
+    expect(fields).not.toHaveProperty('background');
+    expect(files).toHaveLength(1);
+    expect(files[0].name).toBe('reference-1.png');
+    expect(files[0].type).toBe('image/png');
+    expect(Buffer.from(await files[0].arrayBuffer())).toEqual(Buffer.from(reference.split(',')[1], 'base64'));
   });
 
-  it('文生和内联参考编辑各提交一次，像素、比例、分辨率一致且不经过公共上传', async () => {
+  it('已保存的 2.6 旧内置能力无需拉取即可发送新尺寸，参数面板与生成一致且不写回', async () => {
+    const params = configureRelayonImage('relayon-image-fixture', 'image-2.6-01');
+    const pixels = getImageSizePresets('relayon-image-2.5');
+    const provider = useAppStore.getState().config.providers['my-relayon-images'];
+    const selected = structuredClone(provider.selectedModels![0]);
+    const saved = { ...selected.imageCapability!, resolutions: Object.keys(pixels),
+      ratios: Object.keys(pixels['1K']), dimensionPresets: pixels };
+    selected.imageCapability = saved;
+    useAppStore.setState((state) => ({ config: { ...state.config,
+      providers: { ...state.config.providers, 'my-relayon-images': { ...provider, selectedModels: [selected] } },
+      generalModels: state.config.generalModels!.map((item) => item.providerConfigId === 'my-relayon-images'
+        ? { ...item, imageCapability: structuredClone(saved) } : item),
+    } }));
+    const before = structuredClone({ provider: useAppStore.getState().config.providers['my-relayon-images'],
+      models: useAppStore.getState().config.generalModels });
+    const capability = resolveImageParameterCapability(params.model, params.provider, useAppStore.getState().config);
+    expect(capability!.dimensionPresets!['2K']['16:9']).toEqual([2560, 1440]);
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.example/relayon-26-new-size.png' }] }));
+    await expect(generateImage(params)).resolves.toMatchObject({ width: 2560, height: 1440 });
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith('https://api.relayonapi.com/v1/images/generations', expect.anything(), protocolSubmitDebug());
+    const body = JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0][1].body));
+    expect(body).toMatchObject({ model: 'image-2.6-01', resolution: '2K', aspect_ratio: '16:9', size: '2560x1440' });
+    expect({ provider: useAppStore.getState().config.providers['my-relayon-images'],
+      models: useAppStore.getState().config.generalModels }).toEqual(before);
+  });
+
+  it.each(['image-2.6-flare-01', 'image-2.6-sunburst-01'])('%s 的格式、质量和GIF标量完整进入JSON请求且不改写配置', async (id) => {
+    const params = configureRelayonImage('format-fixture', id);
+    const before = structuredClone(useAppStore.getState().config);
+    for (const format of ['png', 'gif', 'svg'] as const) {
+      transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [{ url: `https://cdn.example/format-result.${format}` }] }));
+      await expect(generateImage({ ...params, imageSize: '4K', aspectRatio: '1:1', imageOutputFormat: format,
+        imageQuality: format === 'png' ? 'auto' : 'high',
+        ...(format === 'gif' ? { imageFrameCount: 16, imageFrameDurationMs: 30, imageTransparent: false } : {}),
+      })).resolves.toMatchObject({ url: `https://cdn.example/format-result.${format}`, width: 4096, height: 4096 });
+      const [url, init] = transportMocks.corsSafeFetch.mock.calls.at(-1)!;
+      expect(url).toBe('https://api.relayonapi.com/v1/images/generations');
+      const body = JSON.parse(String(init.body));
+      expect(body).toMatchObject({ model: id, size: '4096x4096', resolution: '4K', aspect_ratio: '1:1',
+        output_format: format, n: 1, response_format: 'url' });
+      expect(body).not.toHaveProperty('image');
+      if (format === 'gif') expect(body).toMatchObject({ frame_count: 16, frame_duration_ms: 30, transparent: false, quality: 'high' });
+      else for (const field of ['frame_count', 'frame_duration_ms', 'transparent']) expect(body).not.toHaveProperty(field);
+      if (format === 'png') expect(body).not.toHaveProperty('quality');
+      else expect(body.quality).toBe('high');
+    }
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(3);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(useAppStore.getState().config).toEqual(before);
+  });
+
+  it.each(['image-2.6-flare-01', 'image-2.6-sunburst-01'].flatMap((id) => (['gif', 'svg'] as const).map((format) => ({ id, format }))))(
+    '$id 的$format参考、非方图、无效帧字段在读取素材和提交前拒绝', async ({ id, format }) => {
+    const params = configureRelayonImage('format-fixture', id);
+    await expect(generateImage({ ...params, aspectRatio: '1:1', imageOutputFormat: format,
+      image_urls: ['asset://localhost/unreadable-reference.png'] })).rejects.toThrow('文生');
+    await expect(generateImage({ ...params, aspectRatio: '16:9', imageOutputFormat: format })).rejects.toThrow('方图');
+    await expect(generateImage({ ...params, aspectRatio: '1:1', imageOutputFormat: format,
+      imageFrameDurationMs: 21 })).rejects.toThrow();
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(['image-2.6-flare-01', 'image-2.6-sunburst-01'].flatMap((id) => [1, 2].flatMap((count) => [false, true].map((explicit) => ({ id, count, explicit })))))(
+    '$id 的$count图PNG编辑不发送output_format，显式PNG=$explicit，文件有序且仅一个POST', async ({ id, count, explicit }) => {
+    const params = configureRelayonImage('format-fixture', id);
+    const references = [
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j8Z0AAAAASUVORK5CYII=',
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+    ].slice(0, count);
+    const before = structuredClone(useAppStore.getState().config);
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.example/variant-edited.png' }] }));
+    await expect(generateImage({ ...params, ...(explicit ? { imageOutputFormat: 'png' as const } : {}), image_urls: references }))
+      .resolves.toMatchObject({ url: 'https://cdn.example/variant-edited.png', width: 2560, height: 1440 });
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith('https://api.relayonapi.com/v1/images/edits', expect.anything(), protocolSubmitDebug());
+    const { form, fields, files } = await multipartImageRequest(transportMocks.corsSafeFetch.mock.calls[0][1]);
+    expect(form.getAll(count === 1 ? 'image' : 'image[]')).toHaveLength(count);
+    expect(form.has(count === 1 ? 'image[]' : 'image')).toBe(false);
+    expect(fields).toMatchObject({ model: id, size: '2560x1440', n: '1' });
+    for (const key of ['output_format', 'resolution', 'aspect_ratio']) expect(fields).not.toHaveProperty(key);
+    for (const field of ['frame_count', 'frame_duration_ms', 'transparent']) expect(fields).not.toHaveProperty(field);
+    expect(files.map((file) => file.type)).toEqual(Array(count).fill('image/png'));
+    expect(files.map((file) => file.name)).toEqual(Array.from({ length: count }, (_, index) => `reference-${index + 1}.png`));
+    for (const [index, file] of files.entries()) {
+      expect(Buffer.from(await file.arrayBuffer())).toEqual(Buffer.from(references[index].split(',')[1], 'base64'));
+    }
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(useAppStore.getState().config).toEqual(before);
+  });
+
+  it.each(['image-2.6-flare-01', 'image-2.6-sunburst-01'])('%s 同名自定义编辑协议保留原output_format，不被内置PNG省略规则接管', async (id) => {
+    const params = configureRelayonImage('custom-format-fixture', id);
+    const connection = useAppStore.getState().config.providers['my-relayon-images'];
+    const selected = structuredClone(connection.selectedModels![0]);
+    selected.executionProfile!.protocol!.submit.path = '/custom/edits';
+    useAppStore.getState().saveProviderConfig('my-relayon-images', { ...connection, selectedModels: [selected] });
+    const before = structuredClone(useAppStore.getState().config);
+    const reference = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j8Z0AAAAASUVORK5CYII=';
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.example/custom-variant.png' }] }));
+    await expect(generateImage({ ...params, imageOutputFormat: 'png', image_urls: [reference] }))
+      .resolves.toMatchObject({ url: 'https://cdn.example/custom-variant.png', width: 2560, height: 1440 });
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith('https://relayonapi.com/v1/custom/edits', expect.anything(), protocolSubmitDebug());
+    const init = transportMocks.corsSafeFetch.mock.calls[0][1];
+    expect(new Headers(init.headers).get('Content-Type')).toBe('application/json');
+    expect(JSON.parse(String(init.body))).toMatchObject({ model: id, output_format: 'png', size: '2560x1440',
+      resolution: '2K', aspect_ratio: '16:9', n: 1, image: [reference] });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(useAppStore.getState().config).toEqual(before);
+  });
+
+  it('未声明输出格式的旧型号在网络副作用前拒绝新增参数', async () => {
+    const params = configureRelayonImage();
+    await expect(generateImage({ ...params, imageOutputFormat: 'gif' })).rejects.toThrow('未声明');
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it('文生 JSON 和参考文件编辑各提交一次，像素、比例、分辨率一致且不经过公共上传', async () => {
     const params = configureRelayonImage();
     useAppStore.setState((state) => ({ config: { ...state.config, providers: { ...state.config.providers,
       relayonapi: { name: '另一万象连接', catalogId: 'relayonapi', apiKey: 'wrong-default-key-fixture' },
@@ -1083,19 +1232,22 @@ describe('RelayOnAPI 图片请求与连接身份', () => {
 
     const calls = transportMocks.corsSafeFetch.mock.calls;
     expect(calls.map(([url]) => url)).toEqual([
-      'https://relayonapi.com/v1/images/generations', 'https://relayonapi.com/v1/images/edits',
+      'https://api.relayonapi.com/v1/images/generations', 'https://api.relayonapi.com/v1/images/edits',
     ]);
     for (const [, init] of calls) {
       expect(init).toMatchObject({ method: 'POST', headers: { Authorization: 'Bearer relayon-image-fixture' } });
-      expect(JSON.parse(String(init.body))).toMatchObject({ model: 'image-2-01', size: '2048x1152',
-        aspect_ratio: '16:9', resolution: '2K', n: 1, response_format: 'url' });
-      expect(JSON.parse(String(init.body))).not.toHaveProperty('relayonGroup');
       expect(init.headers).not.toHaveProperty('relayonGroup');
-      expect(JSON.parse(String(init.body))).not.toHaveProperty('quality');
     }
-    const bodies = calls.map(([, init]) => JSON.parse(String(init.body)));
-    expect(bodies[0]).not.toHaveProperty('image');
-    expect(bodies[1].image).toEqual([reference]);
+    const generated = JSON.parse(String(calls[0][1].body));
+    expect(generated).toMatchObject({ model: 'image-2-01', size: '2048x1152', aspect_ratio: '16:9', resolution: '2K', n: 1, response_format: 'url' });
+    expect(generated).not.toHaveProperty('image');
+    const { fields, files } = await multipartImageRequest(calls[1][1]);
+    expect(fields).toMatchObject({ model: 'image-2-01', size: '2048x1152', aspect_ratio: '16:9', resolution: '2K', n: '1', response_format: 'url' });
+    expect(fields).not.toHaveProperty('relayonGroup');
+    expect(fields).not.toHaveProperty('quality');
+    expect(files).toHaveLength(1);
+    expect(files[0].type).toBe('image/png');
+    expect(Buffer.from(await files[0].arrayBuffer())).toEqual(Buffer.from(reference.split(',')[1], 'base64'));
     const keys = calls.map(([, init]) => new Headers(init.headers).get('Idempotency-Key'));
     expect(keys.every((key) => typeof key === 'string' && key.length > 0)).toBe(true);
     expect(new Set(keys).size).toBe(2);
@@ -1107,21 +1259,24 @@ describe('RelayOnAPI 图片请求与连接身份', () => {
     useAppStore.getState().saveProviderConfig('relayonapi', {
       name: '同名自定义', catalogId: 'custom-openai', apiKey: 'custom-image-fixture', baseUrl: 'https://custom.example/v1',
       selectedModels: [{ id: 'image-2-01', name: '自定义图片', provider: 'relayonapi', category: 'image',
+        imageReferenceRequestMode: 'generation-json-image-data-urls',
         executionProfile: { preset: 'custom', protocol: { version: 2, mode: 'sync', auth: { type: 'bearer' },
-          submit: { method: 'POST', path: '/render', body: { model: '{{model}}', prompt: '{{prompt}}' } },
+          submit: { method: 'POST', path: '/render', body: { model: '{{model}}', prompt: '{{prompt}}', images: '{{imageUrls}}' } },
           response: { type: 'json', result: { urlPath: 'url' } } } },
       }],
     });
     const model = useAppStore.getState().config.generalModels!.find((item) => item.providerConfigId === 'relayonapi')!;
     transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ url: 'https://cdn.example/custom-relay.png' }));
 
-    await expect(generateImagesBatch({ provider: 'general', model: `general/${model.id}`, prompt: '使用自己的图片协议' }, 1))
+    const reference = 'data:image/png;base64,YQ==';
+    await expect(generateImagesBatch({ provider: 'general', model: `general/${model.id}`, prompt: '使用自己的图片协议', image_urls: [reference] }, 1))
       .resolves.toMatchObject({ results: [{ url: 'https://cdn.example/custom-relay.png' }] });
 
     expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith('https://custom.example/v1/render', expect.objectContaining({
       method: 'POST', headers: expect.objectContaining({ Authorization: 'Bearer custom-image-fixture' }),
-    }));
+    }), protocolSubmitDebug());
     expect(new Headers(transportMocks.corsSafeFetch.mock.calls[0][1].headers).has('Idempotency-Key')).toBe(false);
+    expect(JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0][1].body)).images).toEqual([reference]);
   });
 
   it('当前别名连接缺少 Key 时不借用默认万象连接的凭据', async () => {
@@ -1140,7 +1295,7 @@ describe('RelayOnAPI 图片请求与连接身份', () => {
     const url = 'https://relayonapi.com/v1/images/private-result';
     transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [{ url }] }));
     const result = await generateImagesBatch({ ...params, nodeId: 'relayon-sync-image' }, 1);
-    const access = { providerConfigId: 'my-relayon-images', origin: 'https://relayonapi.com', auth: { type: 'bearer' } };
+    const access = { providerConfigId: 'my-relayon-images', origin: 'https://api.relayonapi.com', auth: { type: 'bearer' } };
     expect(result.mediaDownloadAccess).toEqual(access);
     expect(result.results[0]).toMatchObject({ url, mediaDownloadAccess: access });
     expect(result.taskReceipt).toMatchObject({ nodeId: 'relayon-sync-image', projectId: 'relayon-sync-delivery-project',
@@ -1155,8 +1310,8 @@ describe('RelayOnAPI 图片请求与连接身份', () => {
     expect(localStorage.getItem('ai_canvas_pending_tasks')).not.toContain('relayon-image-fixture');
     expect(JSON.stringify(result)).not.toContain('relayon-image-fixture');
     expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(1);
-    expect(transportMocks.corsSafeFetch).toHaveBeenCalledWith('https://relayonapi.com/v1/images/generations',
-      expect.objectContaining({ method: 'POST' }));
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledWith('https://api.relayonapi.com/v1/images/generations',
+      expect.objectContaining({ method: 'POST' }), protocolSubmitDebug());
   });
 });
 
@@ -1248,16 +1403,20 @@ describe('RelayOnAPI 普通 2.5 旧连接的质量与背景', () => {
         .resolves.toMatchObject({ results: [{ url: 'https://cdn.example/relayon-alpha.png', width: 1152, height: 2048 }] });
     }
     expect(transportMocks.corsSafeFetch.mock.calls.map(([url]) => url)).toEqual([
-      'https://relayonapi.com/v1/images/generations', 'https://relayonapi.com/v1/images/edits',
+      'https://api.relayonapi.com/v1/images/generations', 'https://api.relayonapi.com/v1/images/edits',
     ]);
-    const bodies = transportMocks.corsSafeFetch.mock.calls.map(([, init]) => {
+    for (const [, init] of transportMocks.corsSafeFetch.mock.calls) {
       expect(init.headers).toMatchObject({ Authorization: 'Bearer relayon-options-fixture' });
-      return JSON.parse(String(init.body));
-    });
-    for (const body of bodies) expect(body).toMatchObject({ model: modelId, quality: 'high', background: 'transparent',
+    }
+    const generated = JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0][1].body));
+    expect(generated).toMatchObject({ model: modelId, quality: 'high', background: 'transparent',
       output_format: 'png', size: '1152x2048', aspect_ratio: '9:16', resolution: '2K', n: 1 });
-    expect(bodies[0]).not.toHaveProperty('image');
-    expect(bodies[1].image).toEqual([reference]);
+    expect(generated).not.toHaveProperty('image');
+    const edited = await multipartImageRequest(transportMocks.corsSafeFetch.mock.calls[1][1]);
+    expect(edited.fields).toMatchObject({ model: modelId, quality: 'high', background: 'transparent',
+      output_format: 'png', size: '1152x2048', aspect_ratio: '9:16', resolution: '2K', n: '1' });
+    expect(edited.files).toHaveLength(1);
+    expect(Buffer.from(await edited.files[0].arrayBuffer())).toEqual(Buffer.from(reference.split(',')[1], 'base64'));
     expect(directFetch).not.toHaveBeenCalled();
     const config = useAppStore.getState().config;
     expect(config.providers['relayon-old-options'].selectedModels).toEqual([original.selected]);
@@ -1289,11 +1448,12 @@ describe('RelayOnAPI 普通 2.5 旧连接的质量与背景', () => {
     await expect(generateImagesBatch({ ...params, imageQuality: 'high', imageBackground: 'transparent', image_urls: [reference] }, 1))
       .resolves.toMatchObject({ results: [{ url: 'https://cdn.example/relayon-recovered-options.png', width: 1152, height: 2048 }] });
 
-    expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith('https://relayonapi.com/v1/images/edits', expect.anything());
-    expect(JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0][1].body))).toMatchObject({
-      image: [reference], quality: 'high', background: 'transparent', output_format: 'png',
-      size: '1152x2048', aspect_ratio: '9:16', resolution: '2K', n: 1,
-    });
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith('https://api.relayonapi.com/v1/images/edits', expect.anything(), protocolSubmitDebug());
+    const { fields, files } = await multipartImageRequest(transportMocks.corsSafeFetch.mock.calls[0][1]);
+    expect(fields).toMatchObject({ quality: 'high', background: 'transparent', output_format: 'png',
+      size: '1152x2048', aspect_ratio: '9:16', resolution: '2K', n: '1' });
+    expect(files).toHaveLength(1);
+    expect(Buffer.from(await files[0].arrayBuffer())).toEqual(Buffer.from(reference.split(',')[1], 'base64'));
     expect(directFetch).not.toHaveBeenCalled();
     const after = useAppStore.getState().config;
     expect(after.providers['relayon-old-options'].selectedModels).toEqual([original.selected]);
@@ -1338,7 +1498,7 @@ describe('RelayOnAPI 普通 2.5 旧连接的质量与背景', () => {
     transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.example/relayon-custom.webp' }] }));
     await generateImagesBatch({ provider: 'general', model: `general/${model.id}`, prompt: '保留自己配置的图片协议',
       imageSize: '2K', aspectRatio: '9:16', imageQuality: 'high', imageBackground: 'opaque' }, 1);
-    expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith('https://relayonapi.com/v1/custom/images', expect.anything());
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith('https://relayonapi.com/v1/custom/images', expect.anything(), protocolSubmitDebug());
     expect(JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0][1].body))).toMatchObject({
       quality: 'high', background: 'opaque', output_format: 'webp', size: '1152x2048', aspect_ratio: '9:16', resolution: '2K',
     });

@@ -244,9 +244,15 @@ async function pollResolvedModelProtocolRequest(
       try {
         const requestUrl = applyQueryAuthentication(poll.url, poll.auth, apiKey);
         const requestInit = { ...buildResolvedRequestInit(poll, apiKey), signal: querySignal };
+        const traceId = import.meta.env.DEV && !sensitive
+          ? globalThis.crypto?.randomUUID?.() ?? `ai-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}` : undefined;
+        const debug = traceId ? { body: poll.method === 'GET' ? undefined : poll.body, bodyEncoding: poll.bodyEncoding ?? 'json',
+          traceId, stage: 'poll' as const, apiKey } : undefined;
         const response = await (sensitive ? corsSafeFetch(requestUrl, requestInit, { sensitive: true })
-          : corsSafeFetch(requestUrl, requestInit));
-        const payload = await readJsonResponse(response, '模型任务查询失败', poll.errorPath, apiKey);
+          : debug ? corsSafeFetch(requestUrl, requestInit, { debug }) : corsSafeFetch(requestUrl, requestInit));
+        const payload = await readJsonResponse(response, '模型任务查询失败', poll.errorPath, apiKey, {
+          url: requestUrl, method: poll.method, source: 'Model Protocol', traceId, apiKey, sensitive,
+        });
         try {
           validateResponse?.(payload);
         } catch (error) {

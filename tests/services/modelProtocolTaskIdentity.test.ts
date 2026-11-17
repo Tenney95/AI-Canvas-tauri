@@ -5,7 +5,7 @@ import { corsSafeFetch } from '../../src/services/ai/httpTransport';
 import { captureNativeProtocolContext } from '../../src/services/nativeModelProtocolTask';
 import { normalizeRelayonVideoSubmitResponse } from '../../src/services/ai/providers/relayonTaskIdentity';
 
-vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: vi.fn() }));
+vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: vi.fn(), logAiResponse: vi.fn() }));
 
 const protocol: NormalizedModelExecutionProtocol = {
   version: 2, mode: 'async', auth: { type: 'bearer' },

@@ -5,7 +5,7 @@ import { isSafeNativeProtocolTaskId, validateNativeProtocolContext } from './nat
 import { validateAuthentication } from './ai/modelProtocolValidation';
 
 export type CharacterImageRecoverySeed = Pick<CharacterImageTaskRecovery, 'kind'> &
-  Partial<Pick<CharacterImageTaskRecovery, 'builtinMode' | 'workflow' | 'query' | 'mediaDownloadAccess'>>;
+  Partial<Pick<CharacterImageTaskRecovery, 'providerBase' | 'builtinMode' | 'workflow' | 'query' | 'mediaDownloadAccess'>>;
 export type CharacterImageExecutionOutputs = Array<{ url: string; kind?: string }> & { incomplete?: true };
 export interface CharacterImageExecutionPlan {
   expectedCount?: number;

@@ -43,3 +43,14 @@ it('本机journal拒绝跨画布和未绑定相对路径，不以普通文件名
     value: { ...imported, id: 'new-history', projectId: 'other-canvas' } as { id: string; projectId: string } }],
   { projectId: 'project', canvasIds: ['canvas'], rootRefs: ['local-root'], identities, bindings })).toThrow();
 });
+
+
+it('GIF 输出参数保留 false 并随历史归档导入，其他私有参数仍不导出', () => {
+  const parameters = { imageOutputFormat: 'gif', imageFrameCount: 9, imageFrameDurationMs: 200, imageTransparent: false };
+  const row = captureArchiveOutputHistory({ ...local(), params: { ...local().params, ...parameters } },
+    'a'.repeat(64), 'project', 'local-root', identities, bindings);
+  expect(row.params).toMatchObject(parameters);
+  expect(row.params).not.toHaveProperty('apiKey');
+  expect(() => validateArchiveOutputHistory([row], files, 'project')).not.toThrow();
+  expect(materializeArchiveOutputHistory(row, files, identities, bindings).params).toMatchObject(parameters);
+});

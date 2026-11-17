@@ -3,18 +3,22 @@
  * SD 当前路由参数以用户提供的 2026-11-10 联序调用参考为准；H3 由用户确认仅支持 15/20/25/30 秒。
  * 媒体结果映射采用用户确认的 OpenAI 兼容合同，尚未进行厂商真实生成验收。
  * 普通 Flare／Sunburst 的质量和背景候选采用用户确认的兼容选项，未据此宣称平台实测通过。
- * Image 2.6 01 按用户确认兼容 2.5 01 的请求与尺寸，仍待真实渠道验收。
+ * Image 2.6 01 使用独立官网像素表；旧 2.5 兼容能力仅用于严格识别历史配置。
+ * 2026-11-17 两款 2.6 变体依官网启用 PNG/GIF/SVG；GIF/SVG 仅方图文生，文件编辑单图 image、多图 image[]。
+ * SD 2.5 C2／C3 按用户确认复用 C1 参数与协议，暂无独立文档，仍待真实渠道验收。
  * 其余型号不推断质量、背景或未公开的首尾帧合同。
  */
 import type { ProviderModelSelection } from '../../../types';
-import type { ImageModelCapability, ModelExecutionProfile, NormalizedModelExecutionProtocol, ProtocolJsonValue, VideoModelCapability } from '../../../types/aiTypes';
+import type { ImageModelCapability, ImageOutputParameters, ModelExecutionProfile, NormalizedModelExecutionProtocol, ProtocolJsonValue, VideoModelCapability } from '../../../types/aiTypes';
 import type { ModelProtocolVariables } from '../modelProtocolTypes';
 import { comparableProtocol } from '../modelProtocol';
 import { getImageSizePresets } from '../modelSizeProfiles';
 import { getImageCapabilityTemplate, getVideoCapabilityTemplate } from '../modelCapabilityTemplates';
 import { SEEDANCE_COMMON_RATIOS } from '../seedanceModelCapabilities';
+import { assertImageOutputInput, pickImageOutputParameters, resolveConfiguredImageOutput, resolveImageOutputCapability } from '../imageOutputParameters';
 
 export const RELAYON_BASE_URL = 'https://relayonapi.com/v1';
+export const RELAYON_IMAGE_BASE_URL = 'https://api.relayonapi.com/v1';
 export const RELAYON_VIDEO_BASE_URL = 'https://api.relayonapi.com/v1';
 
 export const RELAYON_TEXT_MODEL_IDS = [
@@ -32,22 +36,34 @@ export const RELAYON_MIDJOURNEY_MODEL_IDS = [
   'Midjourney v6', 'Midjourney v6.1', 'Midjourney v7', 'Midjourney v8.1', 'Midjourney v8.2',
 ] as const;
 
+export const RELAYON_IMAGE_26_VARIANT_MODEL_IDS = ['image-2.6-flare-01', 'image-2.6-sunburst-01'] as const;
+
 export const RELAYON_IMAGE_MODEL_IDS = [
   'image-2-01', 'Image-2.5-Flare', 'image-2.5-flare-01', 'Image-2.5-Sunburst', 'image-2.5-sunburst-01',
   'nano-banana-2', 'nano-banana-2.1', 'nano-banana-pro', 'Seedream 5.0 Pro',
-  'image-2.6-01', ...RELAYON_MIDJOURNEY_MODEL_IDS,
+  'image-2.6-01', ...RELAYON_IMAGE_26_VARIANT_MODEL_IDS, ...RELAYON_MIDJOURNEY_MODEL_IDS,
 ] as const;
+
+const SD_25_COMPATIBLE_MODEL_IDS = ['sd-2.5-c2', 'sd-2.5-c3'] as const;
 
 export const RELAYON_VIDEO_MODEL_IDS = [
   'doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-0-mini-260615',
   'doubao-seedance-2-5-260628', 'sd-2.0-A', 'sd-2.5-A', 'sd-2.0-c1', 'sd-2.0-c2',
-  'minimax-h3', 'sd-2.0-c3', 'sd-2.5-c1',
+  'minimax-h3', 'sd-2.0-c3', 'sd-2.5-c1', ...SD_25_COMPATIBLE_MODEL_IDS,
 ] as const;
 
 export const RELAYON_VIDEO_RESULT_URL_PATHS = ['url', 'video_url', 'content.video_url'] as const;
 
 /** 当前 imageUtils 内联准备入口最多 6 张；局部快照避免目录反向加载上传与 Store。 */
 export const RELAYON_IMAGE_REFERENCE_LIMIT = 6;
+
+// 仅这些精确型号已确认 /images/edits 接受 multipart image/image[] 文件。
+const IMAGE_FILE_UPLOAD_MODELS = new Set([
+  'image-2-01', 'Image-2.5-Flare', 'image-2.5-flare-01', 'Image-2.5-Sunburst', 'image-2.5-sunburst-01',
+  'nano-banana-2', 'nano-banana-2.1', 'nano-banana-pro', 'Seedream 5.0 Pro', 'image-2.6-01',
+  ...RELAYON_IMAGE_26_VARIANT_MODEL_IDS,
+  'Midjourney v6', 'Midjourney v6.1', 'Midjourney v7', 'Midjourney v8.1', 'Midjourney v8.2',
+]);
 
 // 只绑定已核对的调用 ID；渠道像素、素材与输出限制在工厂调用处覆写。
 const IMAGE_CAPABILITY_TEMPLATES = {
@@ -57,6 +73,8 @@ const IMAGE_CAPABILITY_TEMPLATES = {
   'Image-2.5-Sunburst': 'gpt-image-2.5',
   'image-2.5-sunburst-01': 'gpt-image-2.5',
   'image-2.6-01': 'gpt-image-2.6',
+  'image-2.6-flare-01': 'gpt-image-2.6',
+  'image-2.6-sunburst-01': 'gpt-image-2.6',
   'nano-banana-2': 'nano-banana-2',
   'nano-banana-2.1': 'nano-banana-2.1',
   'nano-banana-pro': 'nano-banana-pro',
@@ -81,6 +99,8 @@ type ImageDimensions = NonNullable<ImageModelCapability['dimensionPresets']>;
 
 const IMAGE_2_PIXELS = getImageSizePresets('relayon-image-2');
 const IMAGE_25_PIXELS = getImageSizePresets('relayon-image-2.5');
+const IMAGE_26_PIXELS = getImageSizePresets('relayon-image-2.6');
+const IMAGE_26_VARIANT_PIXELS = getImageSizePresets('relayon-image-2.6-variant');
 const BANANA_PIXELS = getImageSizePresets('relayon-nano-banana');
 const SEEDREAM_PIXELS = getImageSizePresets('relayon-seedream-5-pro');
 const MIDJOURNEY_PIXELS = getImageSizePresets('relayon-midjourney');
@@ -90,20 +110,33 @@ function isMidjourneyModel(modelId: string): boolean {
   return RELAYON_MIDJOURNEY_MODEL_IDS.some((id) => id === modelId);
 }
 
+function isImage26Variant(modelId: string): boolean {
+  return RELAYON_IMAGE_26_VARIANT_MODEL_IDS.some((id) => id === modelId);
+}
+
 function imageModel(id: string, name: string, pixels: ImageDimensions, maxReferences: number): ProviderModelSelection {
   const hasImageOptions = id === 'Image-2.5-Flare' || id === 'Image-2.5-Sunburst';
-  const hasBase64Result = isMidjourneyModel(id) || ['image-2-01', 'Image-2.5-Flare', 'image-2.5-flare-01', 'Image-2.5-Sunburst', 'image-2.5-sunburst-01', 'image-2.6-01'].includes(id);
+  const hasOutputFormats = isImage26Variant(id);
+  const hasBase64Result = hasOutputFormats || isMidjourneyModel(id) || ['image-2-01', 'Image-2.5-Flare', 'image-2.5-flare-01', 'Image-2.5-Sunburst', 'image-2.5-sunburst-01', 'image-2.6-01'].includes(id);
   const templateId = IMAGE_CAPABILITY_TEMPLATES[id as keyof typeof IMAGE_CAPABILITY_TEMPLATES];
   const channelCapability: ImageModelCapability = {
     resolutions: Object.keys(pixels), ratios: Object.keys(pixels['1K']), dimensionPresets: structuredClone(pixels),
     maxImageReferences: Math.min(RELAYON_IMAGE_REFERENCE_LIMIT, maxReferences),
   };
+  const formatCapability: ImageModelCapability = hasOutputFormats ? {
+    // auto为应用的“上游默认”选项，实际请求会省略quality。
+    qualities: ['auto', 'low', 'medium', 'high'], outputFormats: ['png', 'gif', 'svg'], defaultOutputFormat: 'png',
+    textOnlyOutputFormats: ['gif', 'svg'], squareOnlyOutputFormats: ['gif', 'svg'],
+    gifFrameCount: { min: 2, max: 16, step: 1, default: 9 },
+    gifFrameDurationMs: { min: 20, max: 655350, step: 10, default: 200 }, supportsGifTransparency: true,
+  } : {};
   const imageCapability = templateId ? getImageCapabilityTemplate(templateId, {
     defaultQuality: undefined,
     ...(!hasImageOptions ? { qualities: undefined, backgrounds: undefined } : {}),
     ...(templateId.startsWith('gpt-image-') ? { supportsBatch: false, maxBatchCount: 1 } : {}),
     ...(templateId === 'gpt-image-2.6' ? { supportsDataUrlReference: true } : {}),
     ...(templateId === 'seedream-5-pro' ? { defaultResolution: '1K', defaultRatio: '1:1', maxBatchCount: 1 } : {}),
+    ...formatCapability,
     ...channelCapability,
   }) : { defaultResolution: '1K', defaultRatio: '1:1', supportsBatch: false, maxBatchCount: 1,
     supportsImageReference: true, supportsDataUrlReference: true, ...channelCapability };
@@ -112,7 +145,10 @@ function imageModel(id: string, name: string, pixels: ImageDimensions, maxRefere
     submit: { method: 'POST', path: '/images/generations', bodyEncoding: 'json',
       body: { model: '{{model}}', prompt: '{{prompt}}', resolution: '{{imageSize}}',
         aspect_ratio: '{{aspectRatio}}', size: '{{size}}', n: 1, response_format: 'url', image: '{{imageUrls}}',
-        ...(hasImageOptions ? { quality: '{{imageQuality}}', background: '{{imageBackground}}' } : {}) } },
+        ...(hasImageOptions || hasOutputFormats ? { quality: '{{imageQuality}}' } : {}),
+        ...(hasImageOptions ? { background: '{{imageBackground}}' } : {}),
+        ...(hasOutputFormats ? { output_format: '{{imageOutputFormat}}', frame_count: '{{imageFrameCount}}',
+          frame_duration_ms: '{{imageFrameDurationMs}}', transparent: '{{imageTransparent}}' } : {}) } },
     response: { type: 'json', errorPath: 'error.message', result: { urlPath: 'data.*.url',
       ...(hasBase64Result ? { base64Path: 'data.*.b64_json', mimeType: 'image/png' } : {}) } },
   };
@@ -121,6 +157,8 @@ function imageModel(id: string, name: string, pixels: ImageDimensions, maxRefere
     imageCapability,
     executionProfile: { preset: 'custom', protocol } };
 }
+
+const LEGACY_IMAGE_26_CAPABILITY = imageModel('image-2.6-01', 'Image 2.6 01', IMAGE_25_PIXELS, 8).imageCapability!;
 
 function videoProtocol(body: Record<string, ProtocolJsonValue>): NormalizedModelExecutionProtocol {
   return {
@@ -265,10 +303,17 @@ export const RELAYON_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
   imageModel('nano-banana-2.1', 'Nano Banana 2.1', BANANA_PIXELS, 8),
   imageModel('nano-banana-pro', 'Nano Banana Pro', BANANA_PIXELS, 8),
   imageModel('Seedream 5.0 Pro', 'Seedream 5.0 Pro', SEEDREAM_PIXELS, 10),
-  imageModel('image-2.6-01', 'Image 2.6 01', IMAGE_25_PIXELS, 8),
+  imageModel('image-2.6-01', 'Image 2.6 01', IMAGE_26_PIXELS, 8),
+  imageModel('image-2.6-flare-01', 'Image 2.6 Flare 01', IMAGE_26_VARIANT_PIXELS, 8),
+  imageModel('image-2.6-sunburst-01', 'Image 2.6 Sunburst 01', IMAGE_26_VARIANT_PIXELS, 8),
   ...RELAYON_MIDJOURNEY_MODEL_IDS.map((id) => imageModel(id, id,
     id === 'Midjourney v8.1' || id === 'Midjourney v8.2' ? MIDJOURNEY_8_PIXELS : MIDJOURNEY_PIXELS, 1)),
   ...LEGACY_VIDEO_MODELS.map(currentVideoModel),
+  // 两款尚无独立文档，仅复用完整 C1 当前合同，不为它们制造历史协议。
+  ...SD_25_COMPATIBLE_MODEL_IDS.map((id) => ({
+    ...currentVideoModel(LEGACY_VIDEO_BY_ID.get('sd-2.5-c1')!),
+    id, name: `Seedance 2.5 ${id.slice(-2).toUpperCase()}`,
+  })),
 ];
 
 const MODEL_BY_ID = new Map(RELAYON_MODEL_MANIFEST.map((model) => [model.id, model]));
@@ -299,7 +344,7 @@ export function usesRelayonModelProtocol(modelId: string, profile: ModelExecutio
     return actual === comparableProtocol(LEGACY_VIDEO_BY_ID.get(modelId)?.executionProfile);
   }
   // 本轮新增型号没有历史模板，不能把用户删除结果字段视作旧版本而覆盖。
-  if (known.category !== 'image' || isMidjourneyModel(modelId) || modelId === 'image-2.6-01') return false;
+  if (known.category !== 'image' || isMidjourneyModel(modelId) || modelId === 'image-2.6-01' || isImage26Variant(modelId)) return false;
   // 完整旧内置模板只读取 URL；保留其他请求和响应字段的严格比较。
   const previousResult = structuredClone(known.executionProfile!);
   if (previousResult.protocol?.version !== 2) return false;
@@ -338,7 +383,9 @@ export function getRelayonVideoRecoveryProfiles(
   if (MODEL_BY_ID.get(modelId)?.category !== 'video' || !usesRelayonModelProtocol(modelId, profile)) {
     return [structuredClone(profile)];
   }
-  const candidates = [profile, MODEL_BY_ID.get(modelId)!.executionProfile!, LEGACY_VIDEO_BY_ID.get(modelId)!.executionProfile!];
+  const candidates = [profile, MODEL_BY_ID.get(modelId)!.executionProfile!];
+  const previous = LEGACY_VIDEO_BY_ID.get(modelId)?.executionProfile;
+  if (previous) candidates.push(previous);
   const seen = new Set<string>();
   return candidates.flatMap((candidate) => {
     const identity = comparableProtocol(candidate)!;
@@ -390,7 +437,12 @@ export function resolveRelayonImageModelContract(
   if (known?.category !== 'image' || !usesRelayonModelProtocol(modelId, profile)) {
     return { executionProfile: profile, imageCapability: capability };
   }
-  const imageCapability = { ...structuredClone(known.imageCapability), ...structuredClone(capability) };
+  const previous = modelId === 'image-2.6-01' ? LEGACY_IMAGE_26_CAPABILITY : undefined;
+  const legacyFields = Object.keys({ ...previous, ...capability }) as (keyof ImageModelCapability)[];
+  const usesLegacyCapability = previous && capability && legacyFields.every((key) =>
+    JSON.stringify(capability[key]) === JSON.stringify(previous[key]));
+  const imageCapability = { ...structuredClone(known.imageCapability),
+    ...structuredClone(usesLegacyCapability ? undefined : capability) };
   // 缺少字段才添加兼容候选；显式缩窄过的候选及默认值不被覆盖。
   if (known.imageCapability?.qualities && capability?.qualities === undefined) {
     imageCapability.qualities = [...known.imageCapability.qualities];
@@ -401,16 +453,53 @@ export function resolveRelayonImageModelContract(
   return { executionProfile: structuredClone(known.executionProfile), imageCapability };
 }
 
+/** 文件直传仅用于完整内置合同；不按同名模型改写用户自定义协议。 */
+export function usesRelayonImageFileUpload(modelId: string, profile: ModelExecutionProfile | undefined): boolean {
+  return IMAGE_FILE_UPLOAD_MODELS.has(modelId) && usesRelayonModelProtocol(modelId, profile);
+}
+
 export function resolveRelayonImageExecutionProfile(
   modelId: string, profile: ModelExecutionProfile | undefined, referenceCount: number, imageBackground?: string,
+  outputParameters: ImageOutputParameters = {},
 ): ModelExecutionProfile | undefined {
   if (!usesRelayonModelProtocol(modelId, profile) || MODEL_BY_ID.get(modelId)?.category !== 'image') return profile;
-  const maximum = MODEL_BY_ID.get(modelId)!.imageCapability!.maxImageReferences!;
+  const capability = MODEL_BY_ID.get(modelId)!.imageCapability!;
+  const output = resolveConfiguredImageOutput(capability, outputParameters);
+  assertImageOutputInput(capability, output, { imageCount: referenceCount });
+  const maximum = capability.maxImageReferences!;
   if (!Number.isInteger(referenceCount) || referenceCount < 0 || referenceCount > maximum) {
     throw new Error(`RelayOnAPI 图片模型“${modelId}”最多接受 ${maximum} 张参考图`);
   }
   const result = resolveRelayonImageModelContract(modelId, profile).executionProfile!;
+  const body = result.protocol!.submit.body as Record<string, ProtocolJsonValue>;
   result.protocol!.submit.path = referenceCount ? '/images/edits' : '/images/generations';
+  if (referenceCount > 0 && usesRelayonImageFileUpload(modelId, profile)) {
+    result.protocol!.submit.bodyEncoding = 'multipart';
+    delete body.image;
+    const field = referenceCount > 1 ? 'image[]' : 'image';
+    if (modelId === 'image-2.6-01' || isImage26Variant(modelId)) {
+      // 对齐官方文件编辑示例：规格由size表达，每张参考图使用独立文件名。
+      delete body.resolution;
+      delete body.aspect_ratio;
+      const files = Array.from({ length: referenceCount }, (_, index) => ({
+        $file: `{{imageUrls.${index}}}`, filename: `reference-${index + 1}.png`,
+      }));
+      body[field] = referenceCount === 1 ? files[0] : files;
+    } else body[field] = { $file: '{{imageUrls}}' };
+  }
+  if (isImage26Variant(modelId)) {
+    const format = output.imageOutputFormat ?? 'png';
+    if (format !== 'png') {
+      delete body.image;
+      delete body['image[]'];
+    }
+    if (format !== 'gif') {
+      delete body.frame_count;
+      delete body.frame_duration_ms;
+      delete body.transparent;
+    }
+    result.protocol!.response.result!.mimeType = format === 'svg' ? 'image/svg+xml' : `image/${format}`;
+  }
   if (imageBackground?.toLowerCase() === 'transparent' && MODEL_BY_ID.get(modelId)!.imageCapability?.backgrounds) {
     (result.protocol!.submit.body as Record<string, ProtocolJsonValue>).output_format = 'png';
   }
@@ -434,8 +523,10 @@ function assertSingleResult(variables: ModelProtocolVariables): void {
 
 /** 同一份像素快照同时决定 size、resolution 与 aspect_ratio，不静默改付费档位。 */
 export function relayonImageVariables(modelId: string, variables: ModelProtocolVariables): ModelProtocolVariables {
-  const capability = MODEL_BY_ID.get(modelId)?.imageCapability;
-  if (!capability) throw new Error(`RelayOnAPI 图片模型“${modelId}”尚未适配`);
+  const declaredCapability = MODEL_BY_ID.get(modelId)?.imageCapability;
+  if (!declaredCapability) throw new Error(`RelayOnAPI 图片模型“${modelId}”尚未适配`);
+  const output = resolveConfiguredImageOutput(declaredCapability, pickImageOutputParameters(variables));
+  const capability = resolveImageOutputCapability(declaredCapability, output.imageOutputFormat)!;
   assertSingleResult(variables);
   const urls = stringArray(variables, 'imageUrls');
   if (urls.length > capability.maxImageReferences!) throw new Error(`RelayOnAPI 图片模型“${modelId}”最多接受 ${capability.maxImageReferences} 张参考图`);
@@ -449,11 +540,18 @@ export function relayonImageVariables(modelId: string, variables: ModelProtocolV
   }
   const resolution = capability.resolutions!.find((value) => value.toLowerCase() === String(variables.imageSize ?? capability.defaultResolution).toLowerCase());
   const ratio = typeof variables.aspectRatio === 'string' ? variables.aspectRatio : capability.defaultRatio!;
-  const dimensions = resolution && capability.dimensionPresets![resolution]?.[ratio];
+  assertImageOutputInput(declaredCapability, output, { aspectRatio: ratio, imageCount: urls.length,
+    hasMask: Boolean(variables.mask ?? variables.characterPaintMask) });
+  const dimensions = modelId === 'image-2.6-01' && resolution === '4K' && ratio === '1:1' && variables.size === '2880x2880'
+    ? [2880, 2880] : resolution && capability.dimensionPresets![resolution]?.[ratio];
   if (!dimensions) throw new Error(`RelayOnAPI 图片参数 ${String(variables.imageSize)} / ${ratio} 没有已公布的像素尺寸`);
   const size = `${dimensions[0]}x${dimensions[1]}`;
   if (variables.size !== undefined && variables.size !== size) throw new Error('RelayOnAPI 图片 size 与所选分辨率、比例不一致');
-  return { ...variables, imageSize: isMidjourneyModel(modelId) ? resolution!.toLowerCase() : resolution,
+  return { ...variables, ...output, imageSize: isMidjourneyModel(modelId) ? resolution!.toLowerCase() : resolution,
+    // PNG文件编辑沿用编辑接口的默认输出；文生的格式字段不带入此请求。
+    ...(isImage26Variant(modelId) && urls.length > 0 && output.imageOutputFormat === 'png'
+      ? { imageOutputFormat: undefined } : {}),
+    ...(isImage26Variant(modelId) && variables.imageQuality === 'auto' ? { imageQuality: undefined } : {}),
     aspectRatio: ratio, size, width: dimensions[0], height: dimensions[1],
     imageUrls: urls.length ? urls : undefined };
 }
@@ -481,7 +579,8 @@ export function relayonVideoVariables(modelId: string, variables: ModelProtocolV
   if (modelId === 'minimax-h3' && imageUrls.length + videoUrls.length + audioUrls.length > 12) {
     throw new Error('RelayOnAPI MiniMax H3 的图片、视频与音频参考合计最多 12 份，请减少参考素材');
   }
-  const usesSeconds = modelId.endsWith('-A') || modelId === 'sd-2.5-c1' || modelId.startsWith('doubao-');
+  const usesSeconds = modelId.endsWith('-A') || modelId === 'sd-2.5-c1'
+    || SD_25_COMPATIBLE_MODEL_IDS.some((id) => id === modelId) || modelId.startsWith('doubao-');
   const duration = Number((usesSeconds ? variables.durationText ?? variables.duration : variables.duration ?? variables.durationText)
     ?? capability.defaultDuration);
   if (!Number.isInteger(duration) || duration < capability.minDuration! || duration > capability.maxDuration!

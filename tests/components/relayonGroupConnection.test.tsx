@@ -48,6 +48,27 @@ async function save() {
   const button = elements(tree).find((item) => item.type === AnimatedButton && item.props.children === '保存全部分组')!;
   await (button.props.onClick as () => Promise<void>)(); render();
 }
+function savedVideoCatalog(cacheMissingSelected = false) {
+  const id = 'relay-saved-video';
+  const catalogModels = structuredClone(props.presetModels.filter((model) => model.category === 'video'
+    && !['sd-2.5-c2', 'sd-2.5-c3'].includes(model.id))).map((model) => ({ ...model, provider: id }));
+  expect(catalogModels).toHaveLength(11);
+  const cached = catalogModels.find((model) => model.id === 'sd-2.0-A')!;
+  cached.name = '缓存自定义 A'; cached.categoryManual = true;
+  cached.executionProfile!.protocol!.submit.path = '/cached/videos';
+  delete cached.inputModalities;
+  const selectedModels = structuredClone(catalogModels);
+  const selected = selectedModels.find((model) => model.id === 'sd-2.5-c1')!;
+  selected.name = '已选自定义 C1';
+  selected.executionProfile!.protocol!.submit.path = '/selected/videos';
+  selected.videoCapability = { ratios: ['1:1'], minDuration: 6, maxDuration: 27 };
+  if (cacheMissingSelected) delete selected.inputModalities;
+  const original = { name: '保留的视频连接', apiKey: 'saved-video-fixture', catalogId: 'relayonapi', relayonGroup: 'video',
+    baseUrl: 'https://relayonapi.com/v1', catalogUpdatedAt: 123, selectedModels,
+    catalogModels: cacheMissingSelected ? catalogModels.filter((model) => model.id !== selected.id) : catalogModels };
+  props.providerConfigs = { [id]: original };
+  return { id, original, before: structuredClone(original) };
+}
 beforeEach(() => {
   driver.scope = { values: [], index: 0 }; driver.catalog.mockReset();
   props = { provider: 'relayonapi', providerConfigs: {}, presetModels: [...getProviderDefinition('relayonapi')!.models!],
@@ -60,27 +81,118 @@ describe('万象分组连接', () => {
     for (const group of RELAYON_PROVIDER_GROUPS) expect(field(`${group.name} API Key`)).toBeDefined();
     expect(field('启用 image Image-2.5-Flare')).toBeDefined();
     expect(field('启用 video Image-2.5-Flare')).toBeUndefined();
-    for (const id of ['image-2.6-01', 'Midjourney v6', 'Midjourney v6.1', 'Midjourney v7', 'Midjourney v8.1', 'Midjourney v8.2']) {
+    for (const id of ['image-2.6-01', 'image-2.6-flare-01', 'image-2.6-sunburst-01',
+      'Midjourney v6', 'Midjourney v6.1', 'Midjourney v7', 'Midjourney v8.1', 'Midjourney v8.2']) {
       expect(field(`启用 image ${id}`)).toBeDefined();
       expect(field(`启用 image ${id}`).props.checked).toBe(false);
       expect(field(`启用 video ${id}`)).toBeUndefined();
     }
-    for (const id of ['minimax-h3', 'sd-2.0-c3', 'sd-2.5-c1']) {
+    for (const id of ['minimax-h3', 'sd-2.0-c3', 'sd-2.5-c1', 'sd-2.5-c2', 'sd-2.5-c3']) {
       expect(field(`启用 video ${id}`)).toBeDefined();
+      expect(field(`启用 video ${id}`).props.checked).toBe(false);
       expect(field(`启用 image ${id}`)).toBeUndefined();
     }
     key('image', 'image-fixture'); toggle('image', 'Image-2.5-Flare');
     key('video', 'video-fixture'); toggle('video', 'sd-2.5-A');
+    toggle('video', 'sd-2.5-c2'); toggle('video', 'sd-2.5-c3');
     await save();
     const connections = vi.mocked(props.onSave).mock.calls[0][0];
     const image = Object.entries(connections).find(([, config]) => config.relayonGroup === 'image')!;
     const video = Object.entries(connections).find(([, config]) => config.relayonGroup === 'video')!;
     expect(image[0]).not.toBe(video[0]);
     expect(image[1].apiKey).toBe('image-fixture'); expect(video[1].apiKey).toBe('video-fixture');
-    expect(image[1].baseUrl).toBe('https://relayonapi.com/v1');
+    expect(image[1].baseUrl).toBe('https://api.relayonapi.com/v1');
     expect(video[1].baseUrl).toBe('https://api.relayonapi.com/v1');
     expect(image[1].selectedModels).toEqual([expect.objectContaining({ id: 'Image-2.5-Flare', provider: image[0] })]);
-    expect(video[1].selectedModels).toEqual([expect.objectContaining({ id: 'sd-2.5-A', provider: video[0] })]);
+    expect(video[1].selectedModels).toEqual(['sd-2.5-A', 'sd-2.5-c2', 'sd-2.5-c3']
+      .map((id) => expect.objectContaining({ id, provider: video[0] })));
+  });
+
+  it('打开旧十一款视频目录只补候选，取消时不写入本地补充', () => {
+    const { original, before } = savedVideoCatalog();
+    render();
+    for (const model of original.selectedModels) expect(field(`启用 video ${model.id}`).props.checked).toBe(true);
+    for (const id of ['sd-2.5-c2', 'sd-2.5-c3']) expect(field(`启用 video ${id}`).props.checked).toBe(false);
+    expect(driver.catalog).not.toHaveBeenCalled();
+    expect(props.onSave).not.toHaveBeenCalled();
+    const cancel = elements(tree).find((item) => item.type === AnimatedButton && item.props.children === '取消')!;
+    (cancel.props.onClick as () => void)();
+    expect(props.onSave).not.toHaveBeenCalled();
+    expect(props.onClose).toHaveBeenCalledOnce();
+    expect(original).toEqual(before);
+  });
+
+  it('已保存十五款图片目录自动补两款未选候选，不联网、改写旧配置或自动启用', async () => {
+    const id = 'relay-saved-images';
+    const catalogModels = props.presetModels.filter((model) => model.category === 'image'
+      && !['image-2.6-flare-01', 'image-2.6-sunburst-01'].includes(model.id)).map((model) => ({ ...structuredClone(model), provider: id }));
+    expect(catalogModels).toHaveLength(15);
+    const original = { name: '旧图片连接', apiKey: 'saved-image-fixture', catalogId: 'relayonapi', relayonGroup: 'image',
+      baseUrl: 'https://relayonapi.com/v1', catalogModels, selectedModels: [structuredClone(catalogModels[0])] };
+    const before = structuredClone(original);
+    props.providerConfigs = { [id]: original };
+    render();
+    expect(field(`启用 image ${catalogModels[0].id}`).props.checked).toBe(true);
+    for (const modelId of ['image-2.6-flare-01', 'image-2.6-sunburst-01']) {
+      expect(field(`启用 image ${modelId}`).props.checked).toBe(false);
+      expect(field(`启用 video ${modelId}`)).toBeUndefined();
+    }
+    expect(driver.catalog).not.toHaveBeenCalled();
+    await save();
+    expect(props.onSave).toHaveBeenCalledExactlyOnceWith({});
+    toggle('image', 'image-2.6-flare-01'); toggle('image', 'image-2.6-sunburst-01');
+    await save();
+    const saved = vi.mocked(props.onSave).mock.calls[1][0][id];
+    expect(saved.selectedModels).toHaveLength(3);
+    expect(saved.selectedModels?.map((model) => model.id)).toEqual(expect.arrayContaining([
+      catalogModels[0].id, 'image-2.6-flare-01', 'image-2.6-sunburst-01',
+    ]));
+    expect(saved.catalogModels).toEqual(before.catalogModels);
+    expect(original).toEqual(before);
+    expect(driver.catalog).not.toHaveBeenCalled();
+  });
+
+  it('勾选新视频沿用原连接身份，已选但未缓存的自定义合同不拼入预置字段', async () => {
+    const { id, original, before } = savedVideoCatalog(true);
+    render();
+    expect(field('启用 video sd-2.5-c1').props.checked).toBe(true);
+    await save();
+    expect(props.onSave).toHaveBeenCalledExactlyOnceWith({});
+    toggle('video', 'sd-2.5-c2'); toggle('video', 'sd-2.5-c3');
+    await save();
+    const changes = vi.mocked(props.onSave).mock.calls[1][0];
+    expect(Object.keys(changes)).toEqual([id]);
+    const added = props.presetModels.filter((model) => ['sd-2.5-c2', 'sd-2.5-c3'].includes(model.id))
+      .map((model) => ({ ...model, provider: id }));
+    expect(changes[id]).toEqual({ ...before, selectedModels: expect.arrayContaining([...before.selectedModels, ...added]) });
+    expect(changes[id].selectedModels).toHaveLength(13);
+    expect(changes[id].selectedModels?.find((model) => model.id === 'sd-2.5-c1')?.inputModalities).toBeUndefined();
+    expect(changes[id].catalogModels).toEqual(before.catalogModels);
+    expect(original).toEqual(before);
+    expect(driver.catalog).not.toHaveBeenCalled();
+  });
+
+  it.each(['成功', '失败'] as const)('手动拉取%s后保留原已选合同，成功结果不立即补回缺失的新候选', async (result) => {
+    const { id, original, before } = savedVideoCatalog();
+    render();
+    expect(field('启用 video sd-2.5-c2').props.checked).toBe(false);
+    if (result === '成功') driver.catalog.mockResolvedValue({ models: [original.catalogModels[0]], source: 'remote' });
+    else driver.catalog.mockRejectedValue(new Error('目录暂时不可用'));
+    await (field('拉取模型 video').props.onClick as () => Promise<void>)(); render();
+    expect(driver.catalog).toHaveBeenCalledOnce();
+    for (const model of original.selectedModels) expect(field(`启用 video ${model.id}`).props.checked).toBe(true);
+    for (const modelId of ['sd-2.5-c2', 'sd-2.5-c3']) {
+      if (result === '成功') expect(field(`启用 video ${modelId}`)).toBeUndefined();
+      else expect(field(`启用 video ${modelId}`).props.checked).toBe(false);
+    }
+    await save();
+    const changes = vi.mocked(props.onSave).mock.calls[0][0];
+    if (result === '成功') {
+      expect(Object.keys(changes)).toEqual([id]);
+      expect(changes[id].selectedModels).toEqual(before.selectedModels);
+      expect(changes[id].catalogModels).toEqual(before.selectedModels);
+    } else expect(changes).toEqual({});
+    expect(original).toEqual(before);
   });
 
   it('assigns an old connection explicitly without changing its ID, key, selected model or custom protocol', async () => {

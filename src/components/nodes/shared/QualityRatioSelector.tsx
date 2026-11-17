@@ -7,6 +7,8 @@ import AnimatedButton from '../../shared/AnimatedButton';
 import { useT } from '../../../i18n';
 import { bindDialogFocus } from '../../../hooks/useDialogFocus';
 import { calcAnchoredPosition } from '../../../utils/popupPosition';
+import type { ImageModelCapability, ImageOutputParameters } from '../../../types/aiTypes';
+import { resolveImageOutputCapability } from '../../../services/ai/imageOutputParameters';
 
 interface RatioOption {
   value: string;
@@ -25,6 +27,9 @@ interface QualityRatioSelectorProps {
   imageBackgrounds?: readonly string[];
   defaultImageBackground?: string;
   imageBackgroundIsFixed?: boolean;
+  imageOutputParameters?: ImageOutputParameters;
+  imageOutputCapability?: ImageModelCapability;
+  onChangeImageOutputParameters?: (parameters: ImageOutputParameters) => void;
   aspectRatio?: string;
   onChangeImageSize?: (size: string) => void;
   onChangeImageQuality?: (quality: string | undefined) => void;
@@ -53,6 +58,9 @@ export default function QualityRatioSelector({
   imageBackgrounds,
   defaultImageBackground,
   imageBackgroundIsFixed,
+  imageOutputParameters,
+  imageOutputCapability,
+  onChangeImageOutputParameters,
   aspectRatio = '16:9',
   onChangeImageSize,
   onChangeImageQuality,
@@ -153,7 +161,11 @@ export default function QualityRatioSelector({
     { value: '8:1', className: 'img-rp-l81' },
   ];
 
-  const ratios = customRatios?.map((ratio) => {
+  const outputFormat = imageOutputCapability?.outputFormats?.find((value) => value === imageOutputParameters?.imageOutputFormat)
+    ?? imageOutputCapability?.defaultOutputFormat ?? imageOutputCapability?.outputFormats?.[0];
+  const outputCapability = resolveImageOutputCapability(imageOutputCapability, outputFormat);
+  const squareOutput = outputFormat !== undefined && imageOutputCapability?.squareOnlyOutputFormats?.includes(outputFormat);
+  const ratios = (squareOutput ? ['1:1'] : customRatios)?.map((ratio) => {
     if (typeof ratio !== 'string') return ratio;
     const known = DEFAULT_RATIOS.find((option) => option.value === ratio);
     const [width, height] = ratio.split(':').map(Number);
@@ -168,7 +180,7 @@ export default function QualityRatioSelector({
     : imageBackgrounds?.find((background) => background.toLowerCase() === imageBackground?.toLowerCase()) ?? backgroundDefault;
   const backgroundLabels: Record<string, string> = { auto: t('自动'), transparent: t('透明'), opaque: t('不透明') };
   const backgroundSummaries: Record<string, string> = { auto: t('自动背景'), transparent: t('透明背景'), opaque: t('不透明背景') };
-  const summary = [aspectRatio, showImageSize ? imageSize : undefined, selectedQuality,
+  const summary = [aspectRatio, showImageSize ? imageSize : undefined, outputFormat?.toUpperCase(), selectedQuality,
     selectedBackground ? backgroundSummaries[selectedBackground] ?? selectedBackground : undefined].filter(Boolean).join(' · ');
   const renderPopup = (content: ReactNode) => fixedMenu ? createPortal(content, document.body) : content;
 
@@ -205,7 +217,7 @@ export default function QualityRatioSelector({
               <div className="img-rp-quality-area" data-ui-schema-field="imageSize" data-ui-schema-type="segmented" data-ui-schema-default="2K">
                 <div className="img-rp-section-label">{t('分辨率')}</div>
                 <div className="ui-segmented ui-segmented--brand" role="group" aria-label={t('分辨率')}>
-                  {imageSizes.map((size) => (
+                  {(outputCapability?.resolutions ?? imageSizes).map((size) => (
                     <AnimatedButton
                       key={size}
                       type="button"
@@ -219,6 +231,56 @@ export default function QualityRatioSelector({
                     </AnimatedButton>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {!!imageOutputCapability?.outputFormats?.length && (
+              <div data-ui-schema-field="imageOutputFormat" data-ui-schema-type="segmented">
+                <div className="img-rp-section-label">{t('输出格式')}</div>
+                <div className="ui-segmented ui-segmented--brand" role="group" aria-label={t('输出格式')}>
+                  {imageOutputCapability.outputFormats.map((format) => (
+                    <AnimatedButton key={format} type="button"
+                      className={`ui-segmented__item ui-schema-option${outputFormat === format ? ' is-active' : ''}`}
+                      aria-pressed={outputFormat === format} data-ui-schema-value={format}
+                      onClick={() => {
+                        onChangeImageOutputParameters?.({ imageOutputFormat: format,
+                          imageFrameCount: undefined, imageFrameDurationMs: undefined, imageTransparent: undefined });
+                        if (imageOutputCapability.squareOnlyOutputFormats?.includes(format)) onChangeAspectRatio('1:1');
+                      }}>{format.toUpperCase()}</AnimatedButton>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {outputFormat === 'gif' && (
+              <div className="ui-stack ui-stack--tight">
+                {imageOutputCapability?.gifFrameCount && <label className="ui-field">
+                  <span className="img-rp-section-label">{t('GIF 帧数')}</span>
+                  <input className="ui-input ui-input--sm" type="number" aria-label={t('GIF 帧数')}
+                    min={imageOutputCapability.gifFrameCount.min} max={imageOutputCapability.gifFrameCount.max}
+                    step={imageOutputCapability.gifFrameCount.step ?? 1}
+                    value={imageOutputParameters?.imageFrameCount ?? imageOutputCapability.gifFrameCount.default}
+                    onChange={(event) => {
+                      const value = event.target.value === '' ? undefined : event.target.valueAsNumber;
+                      if (value === undefined || Number.isFinite(value)) onChangeImageOutputParameters?.({ imageFrameCount: value });
+                    }} />
+                </label>}
+                {imageOutputCapability?.gifFrameDurationMs && <label className="ui-field">
+                  <span className="img-rp-section-label">{t('每帧时长（毫秒）')}</span>
+                  <input className="ui-input ui-input--sm" type="number" aria-label={t('每帧时长（毫秒）')}
+                    min={imageOutputCapability.gifFrameDurationMs.min} max={imageOutputCapability.gifFrameDurationMs.max}
+                    step={imageOutputCapability.gifFrameDurationMs.step ?? 1}
+                    value={imageOutputParameters?.imageFrameDurationMs ?? imageOutputCapability.gifFrameDurationMs.default}
+                    onChange={(event) => {
+                      const value = event.target.value === '' ? undefined : event.target.valueAsNumber;
+                      if (value === undefined || Number.isFinite(value)) onChangeImageOutputParameters?.({ imageFrameDurationMs: value });
+                    }} />
+                </label>}
+                {imageOutputCapability?.supportsGifTransparency && <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={imageOutputParameters?.imageTransparent ?? false}
+                    onChange={(event) => onChangeImageOutputParameters?.({ imageTransparent: event.target.checked })} />
+                  <span>{t('GIF 透明背景')}</span>
+                </label>}
               </div>
             )}
 
@@ -266,8 +328,8 @@ export default function QualityRatioSelector({
 
             <div className="img-rp-ratio-area" data-ui-schema-field="aspectRatio" data-ui-schema-type="segmented" data-ui-schema-default={showAdaptive ? '自适应' : '16:9'}>
               <div className="img-rp-section-label">{t('比例')}</div>
-              <div className={`img-rp-ratio-split${showAdaptive ? ' has-adaptive' : ''}`}>
-                {showAdaptive && (
+              <div className={`img-rp-ratio-split${showAdaptive && !squareOutput ? ' has-adaptive' : ''}`}>
+                {showAdaptive && !squareOutput && (
                   <div className="img-rp-ratio-left">
                     <AnimatedButton
                       type="button"

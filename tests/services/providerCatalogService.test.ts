@@ -298,7 +298,7 @@ describe('万象 API 内置目录与连接身份', () => {
     expect(definition?.models?.filter((model) => model.category === 'text').map((model) => model.id)).toEqual([
       'gemini-3.8-flash', 'gemini-4-argon', 'gpt-6.1-sol', 'claude-opus-5-5',
     ]);
-    expect(definition?.models).toHaveLength(30);
+    expect(definition?.models).toHaveLength(34);
     expect(definition?.models?.filter((model) => model.category === 'image').map((model) => model.id)).toEqual([...RELAYON_IMAGE_MODEL_IDS]);
     expect(definition?.models?.filter((model) => model.category === 'video').map((model) => model.id)).toEqual([...RELAYON_VIDEO_MODEL_IDS]);
     expect(definition?.models?.filter((model) => model.category === 'text').every((model) => model.executionProfile?.preset === 'openai-chat')).toBe(true);
@@ -315,8 +315,8 @@ describe('万象 API 内置目录与连接身份', () => {
       'gemini-3.8-flash', 'gemini-4-argon',
     ]);
     expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, 'image').map(({ id }) => id)).toEqual([...RELAYON_IMAGE_MODEL_IDS]);
-    expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, 'video')).toHaveLength(11);
-    for (const id of ['minimax-h3', 'sd-2.0-c3', 'sd-2.5-c1']) {
+    expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, 'video')).toHaveLength(13);
+    for (const id of ['minimax-h3', 'sd-2.0-c3', 'sd-2.5-c1', 'sd-2.5-c2', 'sd-2.5-c3']) {
       expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, 'video').some((model) => model.id === id)).toBe(true);
       for (const group of ['image', 'default', 'GPTpro号池', 'Gemini号池', 'ClaudeMax号池']) {
         expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, group).some((model) => model.id === id)).toBe(false);
@@ -350,22 +350,31 @@ describe('万象 API 内置目录与连接身份', () => {
     expect(fetchMock.mock.calls[1][1]).not.toHaveProperty('body');
   });
 
-  it('新增三款视频只按 video 分组及当前 Key 实际权限启用', async () => {
+  it('视频候选包含 2.5 C2／C3，只按 video 分组及当前 Key 实际权限启用', async () => {
+    const ids = ['minimax-h3', 'sd-2.0-c3', 'sd-2.5-c1', 'sd-2.5-c2', 'sd-2.5-c3'];
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ data: [{ id: 'minimax-h3' }, { id: 'sd-2.0-c3' }, { id: 'sd-2.5-c1' }] }))
-      .mockResolvedValueOnce(jsonResponse({ success: true, data: [
-        { model_name: 'minimax-h3', enable_groups: ['video'] },
-        { model_name: 'sd-2.0-c3', enable_groups: ['video'] },
-        { model_name: 'sd-2.5-c1', enable_groups: ['video'] },
-      ] }));
+      .mockResolvedValueOnce(jsonResponse({ data: ids.map((id) => ({ id })) }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, data: ids.map((id) => ({ model_name: id, enable_groups: ['video'] })) }));
     vi.stubGlobal('fetch', fetchMock);
     const result = await fetchProviderModelCatalog({ providerId: 'my-video-group', config: {
       name: '视频组', catalogId: 'relayonapi', relayonGroup: 'video', apiKey: 'video-group-fixture',
     } });
-    expect(result.models.map(({ id }) => id)).toEqual(['minimax-h3', 'sd-2.0-c3', 'sd-2.5-c1']);
+    expect(result.models.map(({ id }) => id)).toEqual(ids);
     expect(result.models.every((model) => model.category === 'video' && model.provider === 'my-video-group')).toBe(true);
     expect(fetchMock.mock.calls[0][1].headers).toMatchObject({ Authorization: 'Bearer video-group-fixture' });
     expect(fetchMock.mock.calls[1][1]).not.toHaveProperty('headers');
+  });
+
+  it.each(['sd-2.5-c2', 'sd-2.5-c3'])('%s 未获当前 Key 开放时不从公开视频候选补入', async (id) => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: 'sd-2.5-c1' }] }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, data: ['sd-2.5-c1', id]
+        .map((model_name) => ({ model_name, enable_groups: ['video'] })) }));
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await fetchProviderModelCatalog({ providerId: 'my-video-group', config: {
+      name: '视频组', catalogId: 'relayonapi', relayonGroup: 'video', apiKey: 'video-group-fixture',
+    } });
+    expect(result.models.map((model) => model.id)).toEqual(['sd-2.5-c1']);
   });
 
   it.each([null, { success: false, data: [] }, { success: true, data: [{ model_name: 'x' }] }])(
@@ -419,7 +428,7 @@ describe('万象 API 内置目录与连接身份', () => {
       method: 'GET', headers: expect.objectContaining({ Authorization: 'Bearer alias-fixture-key' }),
     }));
     expect(result).toMatchObject({ source: 'remote', resolvedBaseUrl: 'https://relayonapi.com/v1' });
-    expect(result.models).toHaveLength(30);
+    expect(result.models).toHaveLength(34);
     expect(result.models).toEqual(expect.arrayContaining(RELAYON_MODEL_MANIFEST.map((model) => ({
       ...model, provider: 'relayon-alias',
     }))));
@@ -445,7 +454,7 @@ describe('万象 API 内置目录与连接身份', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     const definition = getProviderDefinition('relayonapi');
-    expect(definition?.models).toHaveLength(30);
+    expect(definition?.models).toHaveLength(34);
     await expect(fetchProviderModelCatalog({ providerId: 'relayonapi',
       config: { name: '万象', catalogId: 'relayonapi', apiKey: '' },
       fallbackModels: [...RELAYON_MODEL_MANIFEST] })).rejects.toThrow();
@@ -629,6 +638,30 @@ describe('providerCatalogService 模型分类推断', () => {
     expect(JSON.parse(JSON.stringify(result.models[0])).imageCapability)
       .toMatchObject({ qualities: ['auto', 'high'], defaultQuality: 'auto',
         backgrounds: ['opaque', 'transparent'], defaultBackground: 'transparent' });
+  });
+
+  it.each(['camel', 'snake'] as const)('远端%s格式/GIF元数据保持类型和false，序列化后不丢失', async (style) => {
+    const capability = style === 'camel' ? {
+      outputFormats: ['png', 'gif', 'svg'], defaultOutputFormat: 'png',
+      textOnlyOutputFormats: ['gif', 'svg'], squareOnlyOutputFormats: ['gif', 'svg'],
+      gifFrameCount: { min: 2, max: 16, step: 1, default: 9 },
+      gifFrameDurationMs: { min: 20, max: 655350, step: 10, default: 200 }, supportsGifTransparency: false,
+    } : {
+      output_formats: ['png', 'gif', 'svg'], default_output_format: 'png',
+      text_only_output_formats: ['gif', 'svg'], square_only_output_formats: ['gif', 'svg'],
+      gif_frame_count: { min: 2, max: 16, step: 1, default: 9 },
+      gif_frame_duration_ms: { min: 20, max: 655350, step: 10, default: 200 }, supports_gif_transparency: false,
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ data: [{ id: 'custom-output-image', category: 'image',
+      image_capability: capability }] })));
+    const result = await fetchProviderModelCatalog({ providerId: 'custom-formats',
+      config: { name: '格式目录', apiKey: 'fixture', catalogId: 'custom-openai', baseUrl: 'https://api.example/v1' } });
+    const expected = { outputFormats: ['png', 'gif', 'svg'], defaultOutputFormat: 'png',
+      textOnlyOutputFormats: ['gif', 'svg'], squareOnlyOutputFormats: ['gif', 'svg'],
+      gifFrameCount: { min: 2, max: 16, step: 1, default: 9 },
+      gifFrameDurationMs: { min: 20, max: 655350, step: 10, default: 200 }, supportsGifTransparency: false };
+    expect(result.models[0]?.imageCapability).toMatchObject(expected);
+    expect(JSON.parse(JSON.stringify(result.models[0])).imageCapability).toMatchObject(expected);
   });
 
   it('fails a CCC group catalog explicitly instead of offering models from other groups', async () => {
@@ -1024,7 +1057,7 @@ describe('GPT Image 2.6 的逐厂商目录', () => {
     for (const [provider, ids] of [
       ['toapis', ['gpt-image-2.6-flare-official', 'gpt-image-2.6-sunburst-official']],
       ['aigc-si', ['image-2.6-flare', 'image-2.6-sunburst']],
-      ['relayonapi', ['image-2.6-01']],
+      ['relayonapi', ['image-2.6-01', 'image-2.6-flare-01', 'image-2.6-sunburst-01']],
     ] as const) {
       for (const id of ids) expect(getProviderDefinition(provider)!.models!.find((item) => item.id === id)?.category).toBe('image');
     }

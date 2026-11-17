@@ -2,6 +2,7 @@
 import { webcrypto } from 'node:crypto';
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import type { ImageOutputParameters } from '../../src/types/aiTypes';
 import type { CanvasContext } from '../../src/types/project';
 import type { ProjectModelTransferCapture, ProjectModelTransferExchange } from '../../src/types/projectModelTransfer';
 import { EXCHANGE, createNativeProject, openNativeProjectDatabase, readNativeProjectCapture,
@@ -23,14 +24,14 @@ const files = [
 ];
 beforeEach(() => { factory = new IDBFactory(); vi.stubGlobal('crypto', webcrypto); vi.stubGlobal('IDBKeyRange', IDBKeyRange); });
 afterEach(() => vi.unstubAllGlobals());
-async function fixture(chat = false) {
+async function fixture(chat = false, output: ImageOutputParameters = {}) {
   const root = await createNativeProject({ name: '隔离历史' }, { factory });
   const context: CanvasContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'fixture-runtime', projectId: root.project.id,
     projectEpoch: root.project.epoch, canvasId: root.canvas!.id, canvasEpoch: root.canvas!.epoch, canvasRevision: 0, episodeId: null };
   const canvas = await saveNativeCanvas({ projectId: context.projectId, canvasId: context.canvasId, episodeId: null,
     expectedProjectEpoch: context.projectEpoch, expectedCanvasEpoch: context.canvasEpoch, expectedCanvasRevision: 0,
     document: { nodes: [{ id: 'source', type: 'ai-image', position: { x: 0, y: 0 }, data: { type: 'ai-image',
-      label: '原节点', prompt: '原始杯子', model: 'general/frozen', imageQuality: 'low', aspectRatio: '1:1', status: 'loading',
+      label: '原节点', prompt: '原始杯子', model: 'general/frozen', imageQuality: 'low', aspectRatio: '1:1', status: 'loading', ...output,
       filePath: 'must-not-copy', workflowInputs: { private: 'must-not-copy' } } }], edges: [], groups: [] } }, { factory });
   const nodeId = chat ? `media-message-${crypto.randomUUID()}` : 'source';
   const releaseOrigin = chat ? bindNativeMediaOrigin(context.canvasId, nodeId,
@@ -178,4 +179,14 @@ it('旧ID及缺失的新库读取不创建项目库', async () => {
   expect(await readNativeOutputHistory('legacy-project', { factory })).toEqual([]);
   expect(await readNativeOutputHistory(`c2-${crypto.randomUUID()}`, { factory })).toEqual([]);
   expect(await factory.databases()).toEqual([]);
+});
+
+
+it('原生图片交付历史与派生节点保留 GIF 参数和 false', async () => {
+  const parameters = { imageOutputFormat: 'gif' as const, imageFrameCount: 9, imageFrameDurationMs: 200, imageTransparent: false };
+  const { context, canvas, record, document } = await fixture(false, parameters);
+  expect((document.nodes[0] as { data: object }).data).toMatchObject(parameters);
+  await commitNativeMediaDelivery({ record, document, expectedCanvasRevision: canvas.revision, expectedAssetsRevision: 0 }, { factory });
+  const rows = await readNativeOutputHistory(context.canvasId, { factory });
+  expect(rows.find((row) => row.entry.nodeType === 'ai-image')?.entry.params).toMatchObject(parameters);
 });
