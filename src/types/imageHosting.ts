@@ -27,7 +27,7 @@ export interface ImageHostingConfig {
 
 /** 保留历史服务 ID 以读取原配置；当前可选服务由公共模板列表决定。 */
 export type PublicImageHostingProvider = 'scdn' | 'picui' | 'helloimg' | 'imgurl' | 'bohe'
-  | 'uguu' | 'imgbb' | 'freeimage' | 'catbox' | 'imagekit' | 'cloudinary';
+  | 'uguu' | 'imgbb' | 'freeimage' | 'catbox' | 'imagekit' | 'cloudinary' | 'custom';
 
 /** 全局公共图床；各服务独立保留配置及原生凭据引用。 */
 export interface GlobalImageHostingConfig {

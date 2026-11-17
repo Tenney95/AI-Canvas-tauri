@@ -23,12 +23,12 @@ export const IMAGE_HOSTING_TEMPLATES: ReadonlyArray<{ id: string; label: string;
   } },
 ];
 
-/** 仅保留支持图片、视频和音频的服务；国内候选在前，缺省仍为 Uguu。 */
+/** 内置项支持图片、视频和音频；自定义项由用户确认接口能力，缺省仍为 Uguu。 */
 export const PUBLIC_IMAGE_HOSTING_TEMPLATES: ReadonlyArray<{
   id: PublicImageHostingProvider;
   label: string;
   description: string;
-  docsUrl: string;
+  docsUrl?: string;
   config: ImageHostingConfig;
 }> = [
   { id: 'bohe', label: '薄荷图床（国内会员 API）', description: '支持图片、视频和音频；API 需高级会员，免费网页上传不包含 API。默认单文件 30 MB，以会员后台限制为准。',
@@ -60,6 +60,9 @@ export const PUBLIC_IMAGE_HOSTING_TEMPLATES: ReadonlyArray<{
       auth: 'none', formFields: [{ name: 'upload_preset', value: '' }], maxFileBytes: 10_000_000,
       maxFileBytesByKind: { image: 10_000_000, video: 100_000_000, audio: 100_000_000 },
     } },
+  { id: 'custom', label: '自定义', description: '自定义 POST 文件表单上传；请确认接口支持所需的图片、视频和音频格式。', config: {
+    enabled: true, uploadUrl: '', fileField: 'file', responseUrlPath: 'data.url', auth: 'none', credentialSource: 'separate',
+  } },
 ];
 
 /** 只兼容已知 Cloudinary 图片旧入口，不改第三方端点，也不原地修改保存的配置。 */

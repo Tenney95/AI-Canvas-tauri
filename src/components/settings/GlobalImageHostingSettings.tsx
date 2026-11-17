@@ -6,6 +6,7 @@ import { normalizeGlobalImageHostingConfig, PUBLIC_IMAGE_HOSTING_TEMPLATES } fro
 import { deleteImageHostingCredential, persistImageHosting } from '../../services/imageHostingService';
 import { configValuesEqual as sameSettings } from '../../services/configPatch';
 import { openExternal } from './providerConnection/providerConnectionShared';
+import ProviderImageHostingSettings from './providerConnection/ProviderImageHostingSettings';
 import Select from '../shared/Select';
 
 function copySettings(config?: GlobalImageHostingConfig): GlobalImageHostingConfig {
@@ -31,6 +32,7 @@ export default function GlobalImageHostingSettings() {
   const busyRef = useRef(false);
   const [error, setError] = useState('');
   const template = PUBLIC_IMAGE_HOSTING_TEMPLATES.find((item) => item.id === draft.provider);
+  const docsUrl = template?.docsUrl;
   const selectedLabel = PUBLIC_IMAGE_HOSTING_TEMPLATES.find((item) => item.id === (saved?.provider ?? 'uguu'))?.label;
   const current = template ? normalizeGlobalImageHostingConfig(draft.provider, { ...template.config, ...draft.configs[draft.provider] }) : undefined;
   const optionalKey = draft.provider === 'catbox';
@@ -126,7 +128,7 @@ export default function GlobalImageHostingSettings() {
   return <section className="ui-card mb-2" aria-label={t('图床设置')}>
     <div className="ui-card__header">
       <div className="min-w-0 flex-1">
-        <h3 className="ui-card__title">{t('图床')} · {selectedLabel ?? t('待重新选择')}</h3>
+        <h3 className="ui-card__title">{t('图床')} · {selectedLabel ? t(selectedLabel) : t('待重新选择')}</h3>
         <p className="ui-card__desc">{t('本地图片、视频和音频需要公网链接，且当前连接没有对应上传方式时，使用这里的服务。')}</p>
         {(saved?.provider ?? 'uguu') === 'uguu' && <p className="ui-card__desc">{t('Uguu 临时链接约 3 小时后过期。')}</p>}
         {!selectedLabel && <p role="alert" className="ui-error">{t('已保存的服务不在音视频兼容列表中，请重新选择；原配置和密钥仍保留。')}</p>}
@@ -141,11 +143,15 @@ export default function GlobalImageHostingSettings() {
           setDraft((previous) => ({ ...previous, provider })); setError('');
         }}>
           {!template && <option value={draft.provider} disabled>{t('请选择兼容图片、视频和音频的服务')}</option>}
-          {PUBLIC_IMAGE_HOSTING_TEMPLATES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+          {PUBLIC_IMAGE_HOSTING_TEMPLATES.map((item) => <option key={item.id} value={item.id}>{t(item.label)}</option>)}
         </Select>
         {template ? <small className="ui-hint">{t(template.description)}</small>
           : <small className="ui-error">{t('已保存的图床类型不可用，请重新选择')}</small>}
       </label>
+      {draft.provider === 'custom' && current && <ProviderImageHostingSettings scope="global" config={current} disabled={busy}
+          onChange={(config) => patch({ ...config, credentialSource: 'separate' })}
+          apiKey={keys.custom ?? ''}
+          onApiKeyChange={(value) => setKeys((previous) => ({ ...previous, custom: value }))} />}
       {needsKey && current && <label className="ui-field">
         <span className="ui-label">{keyLabel}</span>
         <input type="password" autoComplete="new-password" className="ui-input w-full" disabled={busy}
@@ -178,9 +184,9 @@ export default function GlobalImageHostingSettings() {
           <small className="ui-hint">{t('请先创建 unsigned 上传预设，并允许图片、视频和音频格式。')}</small>
         </label>
       </div>}
-      <p className="ui-hint">{t('只列出兼容图片、视频和音频的服务。厂商对应类型的专用上传优先；连接自定义图片上传仍只处理图片。上传失败会停止，不会改传其他服务。')}</p>
+      <p className="ui-hint">{t('内置服务支持图片、视频和音频；自定义服务请确认支持所需格式。厂商对应类型的专用上传优先，连接自定义图片上传仅处理图片。上传失败会停止，不会改传其他服务。')}</p>
       <p className="ui-hint">{t('本应用公共上传上限：图片 32 MiB、视频 64 MiB、音频 32 MiB；同时遵循服务和账号的文件限制。')}</p>
-      {template && <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => void openExternal(template.docsUrl)}>{t('查看服务文档')}</button>}
+      {docsUrl && <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => void openExternal(docsUrl)}>{t('查看服务文档')}</button>}
       {error && <p role="alert" className="ui-error">{error}</p>}
       <div className="flex flex-wrap items-center justify-end gap-2">
         <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={busy} onClick={() => { setEditing(false); setKeys({}); setError(''); }}>{t('取消')}</button>

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ReactElement } from 'react';
+import type { ComponentProps, ReactElement } from 'react';
 import type { AppState } from '../../src/store/useAppStore';
 import type { GlobalImageHostingConfig, ImageHostingConfig, PublicImageHostingProvider } from '../../src/types/imageHosting';
 
@@ -28,6 +28,7 @@ vi.mock('../../src/components/settings/providerConnection/providerConnectionShar
 vi.mock('../../src/services/imageHostingService', () => ({ persistImageHosting: driver.persist, deleteImageHostingCredential: driver.remove }));
 
 import GlobalImageHostingSettings from '../../src/components/settings/GlobalImageHostingSettings';
+import ProviderImageHostingSettings from '../../src/components/settings/providerConnection/ProviderImageHostingSettings';
 import { PUBLIC_IMAGE_HOSTING_TEMPLATES } from '../../src/services/imageHostingTemplates';
 
 type Element = ReactElement<Record<string, unknown>>;
@@ -61,6 +62,13 @@ function uploadAddress(value: string) {
   const input = elements(tree).find((item) => item.type === 'input' && item.props['aria-label'] === '薄荷图床上传 API 地址')!;
   (input.props.onChange as (event: { target: { value: string } }) => void)({ target: { value } }); render();
 }
+function customForm() {
+  return elements(tree).find((item) => item.type === ProviderImageHostingSettings)!.props as unknown as ComponentProps<typeof ProviderImageHostingSettings>;
+}
+function patchCustom(value: Partial<ImageHostingConfig>) {
+  const form = customForm();
+  form.onChange({ ...form.config!, ...value }); render();
+}
 async function settle() { await new Promise<void>((resolve) => setImmediate(resolve)); render(); }
 function savedImgBB(): GlobalImageHostingConfig {
   return { provider: 'imgbb', configs: { imgbb: { enabled: true, uploadUrl: 'https://api.imgbb.com/1/upload', fileField: 'image',
@@ -90,19 +98,85 @@ beforeEach(() => {
 });
 
 describe('全局图床设置', () => {
-  it('仅列出三类媒体兼容服务，国内会员服务在前，默认 Uguu，取消不保存', () => {
+  it('内置三类媒体服务后增加自定义，国内会员服务在前，默认 Uguu，取消不保存', () => {
     expect(text(tree)).toContain('图床 · Uguu');
     click('配置');
     const select = elements(tree).find((item) => item.type === 'hosting-select')!;
     expect(select.props.value).toBe('uguu');
     expect(elements(select.props.children).filter((item) => item.type === 'option').map((item) => item.props.value))
-      .toEqual(['bohe', 'uguu', 'catbox', 'imagekit', 'cloudinary']);
+      .toEqual(['bohe', 'uguu', 'catbox', 'imagekit', 'cloudinary', 'custom']);
     expect(text(tree)).toContain('视频 64 MiB');
     choose('imagekit'); key('draft-key'); click('取消');
     expect(driver.update).not.toHaveBeenCalled();
     expect(driver.persist).not.toHaveBeenCalled();
     expect(driver.save).not.toHaveBeenCalled();
     expect(driver.remove).not.toHaveBeenCalled();
+  });
+
+  it('自定义草稿切换服务仍保留字段和独立密钥，取消后不写配置或凭据', () => {
+    click('配置'); choose('custom');
+    expect(customForm().scope).toBe('global');
+    expect(customForm().config).toMatchObject({ enabled: true, uploadUrl: '', fileField: 'file', auth: 'none' });
+    expect(text(tree)).not.toContain('查看服务文档');
+    patchCustom({ uploadUrl: 'https://hosting.example/upload', fileField: 'media', auth: 'header', authField: 'X-Upload-Key' });
+    customForm().onApiKeyChange('private-draft-key'); render();
+    choose('catbox'); choose('custom');
+    expect(customForm().config).toMatchObject({ uploadUrl: 'https://hosting.example/upload', fileField: 'media', authField: 'X-Upload-Key' });
+    expect(customForm().apiKey).toBe('private-draft-key');
+    click('取消');
+    expect(driver.update).not.toHaveBeenCalled(); expect(driver.persist).not.toHaveBeenCalled();
+    expect(driver.save).not.toHaveBeenCalled(); expect(driver.remove).not.toHaveBeenCalled();
+    click('配置'); choose('custom');
+    expect(customForm().config!.uploadUrl).toBe('');
+    expect(customForm().apiKey).toBe('');
+  });
+
+  it.each(['json', 'text'] as const)('自定义 %s 合同保存重开保持字段，只传独立凭据引用', async (responseFormat) => {
+    const catbox = structuredClone(PUBLIC_IMAGE_HOSTING_TEMPLATES.find((item) => item.id === 'catbox')!.config);
+    driver.state.config.imageHosting = { provider: 'catbox', configs: { catbox } };
+    render(); click('配置'); choose('custom');
+    patchCustom({ uploadUrl: 'https://hosting.example/upload', fileField: 'media', responseFormat,
+      responseUrlPath: responseFormat === 'text' ? '' : 'data.download', auth: 'bearer',
+      formFields: [{ name: 'folder', value: 'canvas' }],
+      ...(responseFormat === 'json' ? { successPath: 'ok', successValue: 'true' } : {}) });
+    customForm().onApiKeyChange('private-upload-key'); render();
+    click('保存图床设置'); await settle();
+    expect(driver.persist).toHaveBeenCalledWith(expect.objectContaining({ uploadUrl: 'https://hosting.example/upload',
+      fileField: 'media', responseFormat, credentialSource: 'separate', auth: 'bearer' }), 'private-upload-key');
+    expect(driver.state.config.imageHosting).toMatchObject({ provider: 'custom', configs: { catbox,
+      custom: { responseFormat, credentialRef: 'secret:image-host/22222222-2222-2222-2222-222222222222' } } });
+    expect(JSON.stringify(driver.update.mock.calls)).not.toContain('private-upload-key');
+    expect(text(tree)).toContain('图床 · 自定义');
+    click('配置');
+    expect(customForm().config).toMatchObject({ responseFormat, formFields: [{ name: 'folder', value: 'canvas' }] });
+    expect(customForm().apiKey).toBe('');
+    click('保存图床设置'); await settle();
+    expect(driver.persist).toHaveBeenLastCalledWith(expect.objectContaining({
+      credentialRef: 'secret:image-host/22222222-2222-2222-2222-222222222222' }), '');
+  });
+
+  it('自定义保存校验失败保留草稿、旧设置和凭据，不写入配置', async () => {
+    const baseline = savedImageKit(); driver.state.config.imageHosting = baseline;
+    driver.persist.mockRejectedValueOnce(new Error('请填写有效的图床文件字段名'));
+    render(); click('配置'); choose('custom');
+    patchCustom({ uploadUrl: 'https://hosting.example/upload', fileField: '' });
+    click('保存图床设置'); await settle();
+    expect(driver.state.config.imageHosting).toEqual(baseline);
+    expect(driver.update).not.toHaveBeenCalled(); expect(driver.save).not.toHaveBeenCalled();
+    expect(driver.remove).not.toHaveBeenCalled();
+    expect(text(tree)).toContain('请填写有效的图床文件字段名');
+    expect(customForm().config!.fileField).toBe('');
+  });
+
+  it('自定义保存期间禁用复用表单，避免在凭据写入时修改草稿', async () => {
+    let resolvePersist!: (config: ImageHostingConfig) => void;
+    driver.persist.mockImplementationOnce(() => new Promise<ImageHostingConfig>((resolve) => { resolvePersist = resolve; }));
+    click('配置'); choose('custom'); patchCustom({ uploadUrl: 'https://hosting.example/upload' });
+    const config = customForm().config!;
+    click('保存图床设置');
+    expect(customForm().disabled).toBe(true);
+    resolvePersist(config); await settle();
+    expect(driver.state.config.imageHosting?.provider).toBe('custom');
   });
 
   it('旧图片专用服务提示重选，保留配置与凭据，不静默切换或保存', async () => {

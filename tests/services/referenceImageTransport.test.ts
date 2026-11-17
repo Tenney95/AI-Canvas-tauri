@@ -58,12 +58,13 @@ function publicHostingFixture(provider: PublicImageHostingProvider): ImageHostin
     config.formFields = [{ name: 'upload_preset', value: 'fixture-unsigned' }];
   }
   if (provider === 'bohe') config.uploadUrl = 'https://bohe-upload.example/upload';
+  if (provider === 'custom') config.uploadUrl = 'https://own-host.example/media/upload';
   if (config.auth !== 'none') config.credentialRef = hostingRef;
   return config;
 }
 function publicHostingResponse(provider: PublicImageHostingProvider, url: string): Response {
   return provider === 'catbox' ? new Response(url) : json(provider === 'cloudinary' ? { secure_url: url }
-    : provider === 'bohe' ? { status: 'success', url } : { url });
+    : provider === 'bohe' ? { status: 'success', url } : provider === 'custom' ? { data: { url } } : { url });
 }
 const asDataUrl = async (blob: Blob) => `data:${blob.type};base64,${Buffer.from(await blob.arrayBuffer()).toString('base64')}`;
 const imageMarker = async (blob: Blob) => new Uint8Array(await blob.slice(41, 42).arrayBuffer())[0];
@@ -393,7 +394,7 @@ describe('方舟全部参考素材的私有 TOS 路由', () => {
 });
 
 describe('全局托管覆盖图片、视频和音频', () => {
-  it.each((['catbox', 'imagekit', 'cloudinary', 'bohe'] as const).flatMap((hostingProvider) =>
+  it.each((['catbox', 'imagekit', 'cloudinary', 'bohe', 'custom'] as const).flatMap((hostingProvider) =>
     (['video', 'audio'] as const).map((kind) => ({ hostingProvider, kind }))))('$hostingProvider 接收 $kind 原字节，连接图片上传不覆盖音视频', async ({ hostingProvider, kind }) => {
     const config = publicHostingFixture(hostingProvider);
     const provider = `global-media-${hostingProvider}-${kind}`;
@@ -423,6 +424,37 @@ describe('全局托管覆盖图片、视频和音频', () => {
     expect(localFetch).not.toHaveBeenCalled();
     expect(mocks.invoke).not.toHaveBeenCalled();
     expect(decode).not.toHaveBeenCalled(); expect(encode).not.toHaveBeenCalled();
+  });
+
+  it.each(['image', 'video', 'audio'] as const)('自定义全局纯文本接口接收 %s，已有公网链接直接使用', async (kind) => {
+    const config: ImageHostingConfig = { ...publicHostingFixture('custom'), responseFormat: 'text', responseUrlPath: '',
+      auth: 'header', authField: 'X-Upload-Token', credentialRef: hostingRef };
+    const provider = `global-custom-text-${kind}`;
+    useAppStore.setState((state) => ({ config: { ...state.config,
+      imageHosting: { provider: 'custom', configs: { custom: config } },
+      providers: { [provider]: { name: '自定义全局托管', catalogId: 'custom-openai', apiKey: 'model-key-not-for-hosting' } },
+    } }));
+    mocks.readSecret.mockResolvedValue('custom-hosting-key');
+    const mime = kind === 'image' ? 'image/png' : kind === 'video' ? 'video/mp4' : 'audio/mpeg';
+    const extension = kind === 'image' ? 'png' : kind === 'video' ? 'mp4' : 'mp3';
+    const source = kind === 'image' ? png(36, 0) : new Blob([kind], { type: mime });
+    const remote = `https://cdn.example/custom-text.${extension}`;
+    mocks.transport.mockResolvedValueOnce(new Response(`${remote}\n`));
+    expect(await resolveMediaReferenceUrl(await asDataUrl(source), { provider, kind })).toBe(remote);
+    expect(mocks.transport).toHaveBeenCalledOnce();
+    const [endpoint, init] = mocks.transport.mock.calls[0] as [string, RequestInit];
+    expect(endpoint).toBe(config.uploadUrl);
+    const file = (init.body as FormData).get(config.fileField) as File;
+    expect(file.name).toBe(`reference.${extension}`);
+    expect(file.type).toBe(mime);
+    if (kind === 'image') await assertPreparedPng(file, 36);
+    else expect(new Uint8Array(await file.arrayBuffer())).toEqual(new Uint8Array(await source.arrayBuffer()));
+    expect(new Headers(init.headers).get('X-Upload-Token')).toBe('custom-hosting-key');
+    expect(new Headers(init.headers).get('Authorization')).toBeNull();
+    expect(mocks.readSecret).toHaveBeenCalledExactlyOnceWith(hostingRef.slice('secret:'.length));
+    expect(await uploadToRemote(remote, provider, kind)).toBe(remote);
+    expect(mocks.transport).toHaveBeenCalledOnce();
+    expect(localFetch).not.toHaveBeenCalled();
   });
 
   it.each(['video', 'audio'] as const)('APIMart 的 %s 不使用图片专属接口，改用已选择的全局托管', async (kind) => {
@@ -468,12 +500,32 @@ describe('全局托管覆盖图片、视频和音频', () => {
     expect(mocks.transport).not.toHaveBeenCalled(); expect(localFetch).not.toHaveBeenCalled();
   });
 
-  it.each(['video', 'audio'] as const)('%s 公共上传失败停止，不改用默认 Uguu', async (kind) => {
-    useAppStore.setState((state) => ({ config: { ...state.config, imageHosting: { provider: 'catbox', configs: {} } } }));
+  it.each((['catbox', 'custom'] as const).flatMap((hostingProvider) =>
+    (['video', 'audio'] as const).map((kind) => ({ hostingProvider, kind }))))('$hostingProvider 的 $kind 公共上传失败停止，不改用默认 Uguu', async ({ hostingProvider, kind }) => {
+    const config = publicHostingFixture(hostingProvider);
+    useAppStore.setState((state) => ({ config: { ...state.config,
+      imageHosting: { provider: hostingProvider, configs: { [hostingProvider]: config } },
+    } }));
     mocks.transport.mockResolvedValueOnce(new Response('denied', { status: 403 }));
     const source = kind === 'video' ? 'data:video/mp4;base64,MzQ1' : 'data:audio/mpeg;base64,NTY3';
-    await expect(uploadToRemote(source, `global-media-failure-${kind}`, kind)).rejects.toThrow('HTTP 403');
+    await expect(uploadToRemote(source, `global-media-failure-${hostingProvider}-${kind}`, kind)).rejects.toThrow('HTTP 403');
     expect(mocks.transport).toHaveBeenCalledOnce(); expect(localFetch).not.toHaveBeenCalled();
+    expect(mocks.transport.mock.calls[0][0]).toBe(config.uploadUrl);
+  });
+
+  it.each(['json', 'text'] as const)('自定义全局 %s 错误响应停止，不重试或转传', async (responseFormat) => {
+    const config: ImageHostingConfig = { ...publicHostingFixture('custom'), responseFormat,
+      responseUrlPath: responseFormat === 'json' ? 'data.url' : '' };
+    useAppStore.setState((state) => ({ config: { ...state.config,
+      imageHosting: { provider: 'custom', configs: { custom: config } },
+    } }));
+    mocks.transport.mockResolvedValueOnce(responseFormat === 'json'
+      ? json({ data: { url: 'javascript:invalid' } }) : new Response('Upload rejected'));
+    await expect(uploadToRemote('data:audio/mpeg;base64,OTg3', `global-custom-invalid-${responseFormat}`, 'audio'))
+      .rejects.toThrow('未返回有效的 HTTP(S) 素材链接');
+    expect(mocks.transport).toHaveBeenCalledOnce();
+    expect(mocks.transport.mock.calls[0][0]).toBe(config.uploadUrl);
+    expect(localFetch).not.toHaveBeenCalled();
   });
 });
 
@@ -529,7 +581,7 @@ describe('共享参考图压缩的实际请求边界', () => {
     expect(JSON.stringify([...storage.values()])).not.toContain('stale.png');
   });
 
-  it.each(['cloudinary', 'catbox'] as const)('普通中转图片使用所选全局 %s，停用的连接图床不覆盖全局设置', async (hostingProvider) => {
+  it.each(['cloudinary', 'catbox', 'custom'] as const)('普通中转图片使用所选全局 %s，停用的连接图床不覆盖全局设置', async (hostingProvider) => {
     const template = publicHostingFixture(hostingProvider);
     const provider = `global-reference-${hostingProvider}`;
     useAppStore.setState((state) => ({ config: { ...state.config,
@@ -572,12 +624,15 @@ describe('共享参考图压缩的实际请求边界', () => {
     expect(mocks.readSecret).not.toHaveBeenCalled();
   });
 
-  it('全局图床上传失败时直接报错，不重试或切换到 Uguu', async () => {
-    useAppStore.setState((state) => ({ config: { ...state.config, imageHosting: { provider: 'catbox', configs: {} } } }));
+  it.each(['catbox', 'custom'] as const)('全局 %s 图片上传失败时直接报错，不重试或切换到 Uguu', async (hostingProvider) => {
+    const config = publicHostingFixture(hostingProvider);
+    useAppStore.setState((state) => ({ config: { ...state.config,
+      imageHosting: { provider: hostingProvider, configs: { [hostingProvider]: config } },
+    } }));
     mocks.transport.mockResolvedValueOnce(new Response('denied', { status: 403 }));
-    await expect(uploadToRemote(await asDataUrl(png(33, 0)), 'global-failure-relay')).rejects.toThrow('HTTP 403');
+    await expect(uploadToRemote(await asDataUrl(png(33, 0)), `global-failure-relay-${hostingProvider}`)).rejects.toThrow('HTTP 403');
     expect(mocks.transport).toHaveBeenCalledOnce();
-    expect(mocks.transport.mock.calls[0][0]).toBe('https://catbox.moe/user/api.php');
+    expect(mocks.transport.mock.calls[0][0]).toBe(config.uploadUrl);
     expect(localFetch).not.toHaveBeenCalled();
   });
 

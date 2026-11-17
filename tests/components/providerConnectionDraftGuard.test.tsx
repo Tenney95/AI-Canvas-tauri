@@ -36,8 +36,10 @@ import ProviderConnectionDialog from '../../src/components/settings/ProviderConn
 import ProviderConnectionForm from '../../src/components/settings/providerConnection/ProviderConnectionForm';
 import ProviderModelSection from '../../src/components/settings/providerConnection/ProviderModelSection';
 import ProviderImageHostingSettings from '../../src/components/settings/providerConnection/ProviderImageHostingSettings';
+import Select from '../../src/components/shared/Select';
 import VolcengineTosSettings from '../../src/components/settings/VolcengineTosSettings';
 import type { VolcengineTosConfig, VolcengineTosCredentials } from '../../src/types/volcengineTos';
+import type { ImageHostingConfig } from '../../src/types/imageHosting';
 import { IMAGE_HOSTING_TEMPLATES } from '../../src/services/imageHostingTemplates';
 import { MUSE_MODEL_MANIFEST } from '../../src/services/ai/museModels';
 import type { ProviderModelSelection } from '../../src/types';
@@ -283,6 +285,96 @@ it.each([
   expect(saved.apiKey).toBe('');
   expect(saved).not.toHaveProperty('cookie');
   expect(saved).not.toHaveProperty('credentialStored');
+});
+
+describe('自定义图床复用表单', () => {
+  const baseConfig: ImageHostingConfig = { enabled: true, uploadUrl: 'https://host.example/upload', fileField: 'file',
+    responseUrlPath: 'data.url', auth: 'bearer', credentialSource: 'separate' };
+  function contents(value: unknown): string {
+    if (Array.isArray(value)) return value.map(contents).join('');
+    if (value && typeof value === 'object' && 'props' in value) return contents((value as Element).props.children);
+    return typeof value === 'string' || typeof value === 'number' ? String(value) : '';
+  }
+
+  it('默认连接模式保留开关、格式模板、连接 Key 来源与原地址提示', () => {
+    const rendered = ProviderImageHostingSettings({ config: baseConfig, onChange: vi.fn(), apiKey: '', onApiKeyChange: vi.fn() });
+    expect(elements(rendered).some((item) => item.props.role === 'switch')).toBe(true);
+    expect(contents(rendered)).toContain('套用内置上传格式');
+    expect(contents(rendered)).toContain('沿用当前连接 API Key（仅同源）');
+    expect(contents(rendered)).toContain('填写完整地址，或用 {{baseUrl}}');
+    expect(contents(rendered)).not.toContain('图床响应格式');
+    expect(contents(rendered)).toContain('关闭后恢复默认上传方式。');
+  });
+
+  it('全局模式隐藏连接专属控件，显示媒体字段和独立密钥，修改不会沿用连接 Key', () => {
+    const onChange = vi.fn();
+    const rendered = ProviderImageHostingSettings({ scope: 'global', config: { ...baseConfig, credentialSource: 'connection' },
+      onChange, apiKey: '', onApiKeyChange: vi.fn() });
+    expect(contents(rendered)).toContain('自定义上传配置');
+    expect(contents(rendered)).toContain('上传文件字段');
+    expect(contents(rendered)).not.toContain('套用内置上传格式');
+    expect(contents(rendered)).not.toContain('沿用当前连接 API Key');
+    expect(contents(rendered)).not.toContain('{{baseUrl}}');
+    expect(contents(rendered)).not.toContain('关闭后恢复默认上传方式。');
+    expect(elements(rendered).some((item) => item.props.role === 'switch')).toBe(false);
+    expect(elements(rendered).filter((item) => item.type === 'input' && item.props.type === 'password')).toHaveLength(1);
+    const address = elements(rendered).find((item) => item.type === 'input' && item.props.value === baseConfig.uploadUrl)!;
+    (address.props.onChange as (event: { target: { value: string } }) => void)({ target: { value: 'https://new-host.example/upload' } });
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ ...baseConfig, uploadUrl: 'https://new-host.example/upload' });
+  });
+
+  it('全局纯文本模式清理 JSON 判断并隐藏路径，切回 JSON 恢复默认路径', () => {
+    let config: ImageHostingConfig = { ...baseConfig, successPath: 'success', successValue: 'true' };
+    const onChange = (next: ImageHostingConfig) => { config = next; };
+    const renderFields = () => ProviderImageHostingSettings({ scope: 'global', config, onChange, apiKey: '', onApiKeyChange: vi.fn() });
+    let rendered = renderFields();
+    let format = elements(rendered).find((item) => item.type === Select && item.props.value === 'json')!;
+    (format.props.onChange as (value: string) => void)('text');
+    expect(config).toMatchObject({ responseFormat: 'text', responseUrlPath: '' });
+    expect(config.successPath).toBeUndefined();
+    expect(config.successValue).toBeUndefined();
+    rendered = renderFields();
+    expect(contents(rendered)).not.toContain('返回链接路径');
+    expect(contents(rendered)).not.toContain('成功标记路径（可选）');
+    expect(contents(rendered)).toContain('附加表单参数');
+    format = elements(rendered).find((item) => item.type === Select && item.props.value === 'text')!;
+    (format.props.onChange as (value: string) => void)('json');
+    expect(config).toMatchObject({ responseFormat: 'json', responseUrlPath: 'data.url' });
+    expect(contents(renderFields())).toContain('返回链接路径');
+    expect(contents(renderFields())).toContain('成功标记路径（可选）');
+  });
+
+  it('全局表单鉴权提供 Basic 并说明密钥作为用户名，普通表单鉴权仍单独声明密钥字段', () => {
+    let config: ImageHostingConfig = { ...baseConfig, auth: 'none' };
+    const onChange = (next: ImageHostingConfig) => { config = next; };
+    const renderFields = () => ProviderImageHostingSettings({ scope: 'global', config, onChange, apiKey: '', onApiKeyChange: vi.fn() });
+    let rendered = renderFields();
+    expect(elements(rendered).filter((item) => item.type === 'input' && item.props.type === 'password')).toHaveLength(0);
+    const auth = elements(rendered).find((item) => item.type === Select && item.props.value === 'none')!;
+    expect(elements(auth).some((item) => item.type === 'option' && item.props.value === 'basic')).toBe(true);
+    (auth.props.onChange as (value: string) => void)('form');
+    expect(config).toMatchObject({ auth: 'form', authField: 'key', credentialSource: 'separate' });
+    rendered = renderFields();
+    expect(contents(rendered)).toContain('密钥表单字段');
+    const formAuth = elements(rendered).find((item) => item.type === Select && item.props.value === 'form')!;
+    (formAuth.props.onChange as (value: string) => void)('basic');
+    expect(contents(renderFields())).toContain('Basic 方式将密钥作为用户名，密码留空；密钥保存在本机凭据存储中。');
+  });
+
+  it('保存忙碌时禁用复用表单及下拉，字段和密钥回调不再修改草稿', () => {
+    const onChange = vi.fn();
+    const onApiKeyChange = vi.fn();
+    const rendered = ProviderImageHostingSettings({ scope: 'global', disabled: true, config: baseConfig, onChange,
+      apiKey: '', onApiKeyChange });
+    expect(elements(rendered).find((item) => item.type === 'fieldset')?.props.disabled).toBe(true);
+    expect(elements(rendered).filter((item) => item.type === Select).every((item) => item.props.disabled === true)).toBe(true);
+    const address = elements(rendered).find((item) => item.type === 'input' && item.props.value === baseConfig.uploadUrl)!;
+    (address.props.onChange as (event: { target: { value: string } }) => void)({ target: { value: 'https://changed.example/upload' } });
+    const key = elements(rendered).find((item) => item.type === 'input' && item.props.type === 'password')!;
+    (key.props.onChange as (event: { target: { value: string } }) => void)({ target: { value: 'unsaved-fixture-key' } });
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onApiKeyChange).not.toHaveBeenCalled();
+  });
 });
 
 describe('自定义连接未完成草稿保护', () => {
