@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="AI Canvas 0.11.7 操作说明书：参考素材直传与私有 TOS、万象图片规格和视频秒数、剧本改写与分栏、保存恢复及存储排错。">
-<title>AI Canvas 0.11.7 · 操作说明书</title>
+<meta name="description" content="AI Canvas 0.11.8 操作说明书：内置中转素材上传修复、万象视频文件提交、Sora2U 图片原序内联及 HTTPS 素材限制；保留私有 TOS、剧本工作台和保存恢复操作。">
+<title>AI Canvas 0.11.8 · 操作说明书</title>
 <style>
 /* Standalone document: a small copy of the application's base.css color tokens. */
 :root{color-scheme:dark;--theme-bg:#0a0a0f;--theme-surface:#14141c;--theme-card:#1a1a26;--theme-border:#2a2a3a;--theme-hover:#252535;--theme-text:#dddde4;--theme-text-secondary:#8888a0;--brand:#6366f1;--brand-light:#818cf8;--brand-pale:#a5b4fc;--node-markdown:#a855f7;--success:#22c55e;--success-bg:rgba(16,185,129,.15);--warning:#f97316;--warning-bg:rgba(249,115,22,.15);--danger:#ef4444;--white:#fff;--black-alpha-30:rgba(0,0,0,.3)}
@@ -47,6 +47,9 @@ dialog .character-actions-shot{width:1912px}
 <a href="#connection">06 · 添加厂商与模型</a><a href="#provider-sites">↳ 国内 / 国际站切换</a><a href="#image-quick-templates">↳ 图片快速模板</a><a href="#connection-transfer">↳ JSON 文件导入导出</a><a href="#import">07 · 接口说明与手动配置</a><a href="#protocol">08 · 调用协议与视频预设</a><a href="#protocol-json-editor">↳ JSON 变量插入与预览</a><a href="#variables">09 · 变量与结果路径</a><a href="#sync">10 · 同步图像接口示例</a><a href="#async">11 · 异步视频接口示例</a><a href="#async-download">↳ 完成后同源下载</a><a href="#api-check">12 · 验证与接口排错</a>
 <div class="group">日常制作与维护</div>
 <a href="#comfy">13 · 本地与云端工作流</a><a href="#comfy-install">↳ 安装官方 ComfyUI</a><a href="#assets">14 · 资源库、文件夹与创作资产</a><a href="#asset-image-batch-reverse">↳ 批量反推提示词与标签</a><a href="#assistant">15 · AI 助手与任务</a><a href="#ai-app">↳ AI 应用节点</a><a href="#director">16 · 分镜制作与 3D 导演台</a><a href="#plugins">17 · 插件与 MCP 控制</a><a href="#mcp-ai-app">↳ 调用 AI 应用动作</a><a href="#storage">18 · 保存、备份与迁移</a><a href="#shortcuts">19 · 快捷键速查</a><a href="#faq">20 · 常见问题</a><a href="#checklist">21 · 使用前检查单</a><a href="#appearance">22 · 外观主题与预设</a><a href="#about">说明书范围与版本</a>
+<div class="group">0.11.8 更新入口</div>
+<a href="#updates-0-11-8">↳ 内置中转素材上传修复</a>
+<a href="#builtin-upload-0-11-8">↳ 八家内置中转与上传限制</a><a href="#relayon-upload-0-11-8">↳ 万象视频参考文件</a><a href="#sora-upload-0-11-8">↳ Sora2U 图片顺序与大小</a>
 <div class="group">0.11.7 更新入口</div>
 <a href="#updates-0-11-7">↳ 参考素材直传与剧本改写</a>
 <a href="#reference-upload-0-11-7">↳ 私有 TOS 与全局上传</a><a href="#relayon-specs-0-11-7">↳ 万象图片格式与视频秒数</a><a href="#article-rewrite-0-11-7">↳ 文章改写与分栏</a><a href="#storage-recovery-0-11-7">↳ 保存恢复与存储排错</a>
@@ -99,9 +102,10 @@ dialog .character-actions-shot{width:1912px}
 <div class="eyebrow">AI CANVAS · USER MANUAL</div>
 <h1>AI Canvas 操作说明书<br>从首次生成到完整创作</h1>
 <p>从启动页选择项目，在资源库整理素材，再用无限画布连接文本、图像、视频与音频。按步骤完成首次出图、剧本分集、逐镜生成和剪辑；需要接入自己的服务时，查阅接口与工作流示例。</p>
-<span class="badge">0.11.7 说明书</span><span class="badge">2026-11-17 内容核对</span><span class="badge">截图内嵌 · 可离线阅读</span>
+<span class="badge">0.11.8 说明书</span><span class="badge">2026-11-17 内容核对</span><span class="badge">截图内嵌 · 可离线阅读</span>
 </header>
 <div class="actions"><button class="action" id="print" type="button">打印 / 保存为 PDF</button><button class="action" id="theme" type="button" aria-pressed="false">切换深色阅读</button><a class="action" href="#project-settings">先看项目设置 →</a><a class="action" href="#connection">直接看自定义接口 →</a></div>
+<aside class="tip"><b>0.11.8 · 内置中转素材上传修复：</b><a href="#builtin-upload-0-11-8">八家内置中转</a>使用已接入的自身上传或请求内联，已有连接无需重新添加；查看<a href="#relayon-upload-0-11-8">万象视频文件</a>和<a href="#sora-upload-0-11-8">Sora2U 图片顺序与大小</a>。只有 HTTPS 合同的路径不能用本地素材转图床补齐，自定义连接保持原设置；公开状态与验收边界见<a href="#about">版本范围</a>。</aside>
 <aside class="tip"><b>0.11.7 · 参考素材直传与剧本改写：</b>先配置<a href="#reference-upload-0-11-7">私有 TOS 或兼容上传服务</a>，再按<a href="#relayon-specs-0-11-7">万象当前图片规格与视频秒数</a>生成；工作台可<a href="#article-rewrite-0-11-7">预览 AI 改写、采用到草稿并调整分栏</a>。保存或目录异常按<a href="#storage-recovery-0-11-7">排错步骤</a>处理，旧项目不自动迁移；发布及验收边界见<a href="#about">版本范围</a>。</aside>
 <aside class="tip"><b>0.11.6 · 全页剧本工作台与大纲资料：</b>启动页右键项目可直达创作页面，顶部切换画布；大纲资料栏支持 MD／TXT 编辑和 PDF、PPT／PPTX、DOCX 本地只读预览，智能体中心可管理上传的 Skill。本版修复顶栏拖窗，标题与空白可拖动，按钮照常点击。详见<a href="#updates-0-11-6">该版操作入口</a>；发布状态和未验收边界见<a href="#about">版本范围</a>。</aside>
 <aside class="tip"><b>0.11.3 · 助手窗口与常用 Skill：</b>查看<a href="#assistant-close-0-11-2">独立助手关闭与草稿交接</a>、<a href="#recent-skills-0-11-2">最近五个上传及包内 Skill</a>、<a href="#canvas-storage-0-11-2">分组开合让位与新项目清理</a>，以及<a href="#models-team-0-11-2">七角色团队与媒体修复</a>。旧项目与兼容限制保留，安装包和验收状态见<a href="#about">版本范围</a>。</aside>
@@ -1155,9 +1159,32 @@ dialog .character-actions-shot{width:1912px}
 <p>ComfyUI H3 低显存优化默认关闭，启用前核对工作流和后端插件。Windows 更新受保护目录时按需请求同账户 UAC，标准用户不能通过另一个管理员账户继续安装。以上能力须在桌面端按实际工作流验收。</p>
 </section>
 
+<section id="updates-0-11-8"><h2>0.11.8 · 内置中转素材上传修复</h2>
+<p>本版集中修复参考素材仍进入连接图床或全局 Uguu 的问题，已有内置连接无需重新添加。以下说明以当前已提交源码为依据；真实厂商上传、付费生成、桌面升级和跨平台使用仍需按实际组合验收，安装包公开状态以<a href="https://github.com/Tenney95/AI-Canvas-tauri/releases/tag/v0.11.8">对应 GitHub Release</a>为准。</p>
+<h3 id="builtin-upload-0-11-8">八家内置中转使用自身上传，不再回退图床</h3>
+<p>APIMart、ToAPIs、LibAPI、CCC API、Amam、GRSAI、Sora2U、万象均按真实连接类型使用已接入的上传或请求内联。旧连接图床、全局图床和旧图床上传缓存不能抢先替代这些通道；厂商上传失败、取消或输入不受支持时停止，不切换公共图床重试，也不自动重投生成。</p>
+<div class="table-scroll"><table><thead><tr><th>内置中转站</th><th>当前本地素材入口与限制</th></tr></thead><tbody>
+<tr><td>ToAPIs</td><td>图片、视频、音频沿原连接的专用上传方法，各类型限制保持。</td></tr>
+<tr><td>LibAPI</td><td>三类参考素材沿自身文件上传方法，保留原连接鉴权。</td></tr>
+<tr><td>APIMart</td><td>图片优先专用上传；尚未接入本地上传的音视频路径明确停止。</td></tr>
+<tr><td>CCC API</td><td>已确认图片模型沿请求内联或文件编辑方法；其他仅 URL 的路径不补造文件接口。</td></tr>
+<tr><td>Amam</td><td>图片沿已接入的请求内联；视频中未确认本地参考上传的路径需使用支持的 HTTPS 素材。</td></tr>
+<tr><td>GRSAI</td><td>已确认图片模型沿请求内联；H3 未确认本地文件合同的图片／音频参考需使用支持的 HTTPS 素材。</td></tr>
+<tr><td>Sora2U</td><td>图片与视频沿自身生成请求；图片最多 4 张，内联解码合计 20 MiB，顺序规则见下文。</td></tr>
+<tr><td>万象</td><td>图片编辑直接提交文件；视频按型号已支持的素材类型随生成请求提交文件，缺口见下文。</td></tr>
+</tbody></table></div>
+<p>并非所有型号和素材类型都有本地上传合同。提示需要 HTTPS 地址时，使用该厂商能公开访问、权限及有效期合适的素材地址；不要把内网地址或过期签名链接交给上游。自定义连接、工作流及用户修改过的协议继续按原配置使用，不按显示名称猜测厂商，也不自动覆盖自定义协议；允许公共托管的自定义连接仍可使用原图床设置。</p>
+<h3 id="relayon-upload-0-11-8">万象：参考视频文件随模型请求提交</h3>
+<ol class="steps"><li>在已有万象连接中选择模型，再引用当前能力允许的图片、视频或音频。优先使用本地副本；支持的文件随生成请求提交，不先上传到公共图床。</li><li>A 系列、2.0 C1 和 H3 在既有能力允许时支持三类文件；2.0 C2／C3 仅接收当前允许的图片／音频，不能据此开启原先受限的类型或角色。</li><li>2.5 C 系列仅本地图片有已接入的文件合同，视频／音频需使用当前支持的 HTTPS 地址；本地视频／音频会在生成前明确停止。四款官转保留既有文生能力，不套入其他系列的参考功能。</li><li>本版不改变型号时长、参考数量或角色限制。输入、读取或上传失败时不提交生成；已有任务仍沿原身份查询和取回，不重新创建任务。</li></ol>
+<h3 id="sora-upload-0-11-8">Sora2U：保留参考图顺序，核对四张与 20 MiB 上限</h3>
+<ol class="steps"><li>选择 <b>Gemini Image</b> 或 <b>Kontext Image</b>，从旧节点或通用模型入口引用图片，无需重新添加连接；每次最多 <b>4 张参考图</b>。</li><li>全部为 HTTPS 图片时直接使用 URL 数组，不额外下载。只要含本地图片或 data URL，就将整组参考按原序准备为图片内联，避免跨字段合并导致参考编号错位；HTTPS 本地资产地址也须先读取。</li><li>内联解码后图片内容合计不得超过 <b>20 MiB</b>，按图片字节计算而非 Base64 字符串长度。超限、远程下载失败或本地读取失败会停止，不转公共图床，也不提交生成。</li><li>纯 HTTPS 图片进入 <code>reference_urls</code>，内联图片进入 <code>references</code> 字符串数组；不会把 Base64 当成 URL。用户修改过的调用协议保持原值，排错时应同时核对自己的字段配置。</li></ol>
+<p>火山私有 TOS、图片格式与固定视频秒数、文章改写和保存恢复属于此前版本功能，继续按<a href="#updates-0-11-7">0.11.7 说明</a>使用。本版不升级数据库或自动迁移旧项目；升级前仍应备份。</p>
+</section>
+
 <section id="updates-0-11-7"><h2>0.11.7 · 参考素材直传与剧本改写</h2>
 <p>以下入口按本版已提交源码说明；真实模型、上传服务、桌面交互和安装升级仍按<a href="#about">发布计划</a>分别验收，不以说明书更新表示安装包已公开。</p>
 <h3 id="reference-upload-0-11-7">为参考素材配置私有 TOS 或全局上传</h3>
+<p>此处保留 0.11.7 的 TOS 与全局设置入口；八家内置中转的上传优先级、图床禁用与本地素材限制以<a href="#builtin-upload-0-11-8">0.11.8 当前规则</a>为准。</p>
 <ol class="steps"><li>进入<b>设置 → API Key → 火山方舟</b>，在<b>私有 TOS 参考素材上传</b>填写自己已创建的北京区域私有 Bucket、TOS AK 与 SK，保存连接。可点<b>前往获取 AK/SK</b>打开官方控制台；模型 API Key 不能代替对象存储凭据。</li><li>方舟图片、视频与音频参考统一上传或转存到这套 TOS，再将同对象的内网签名地址交给方舟。缺配置、取消或上传失败会停止，不回退公共图床；内网签名地址不用于普通浏览器预览。AK/SK 保存后只显示掩码，不能再次查看；更新时重新填写两项。</li><li>人像入库上传也使用该 TOS，但<b>虚拟人像库</b>仍需单独启用并配置入库 AK/SK。上传不等于入库成功，提交后等待素材可用；TOS 的存储、请求与保留周期由自己的云服务配置决定。</li><li>其他厂商没有独立上传方法时，才使用 API Key 列表顶部的<b>全局图床</b>配置。图片、视频和音频需选支持该类型的服务，核对接口权限、大小和有效期；默认 Uguu 是临时链接。配置不完整或上传失败时停止并显示原因，不自动换服务重复提交。</li></ol>
 <h3 id="relayon-specs-0-11-7">万象：图片规格、文件参考与固定视频秒数</h3>
 <p>在万象 <b>image</b> 分组选准精确型号。支持的参考编辑按该型号使用文件直传，避免把本地素材当作上游不可读的图片地址；本地上传失败时不提交生成。普通 <code>image-2.6-01</code> 与 Flare／Sunburst 变体各有尺寸表，按当前型号提供的画幅和 1K／2K／4K 选项选择，不手抄其他型号的像素值。</p>
@@ -1313,8 +1340,8 @@ dialog .character-actions-shot{width:1912px}
 </section>
 
 <section id="about"><h2>说明书范围与版本</h2>
-<p>本说明书面向 <b>0.11.7「参考素材直传与剧本改写」</b>，<b>2026-11-17</b> 按已提交源码补充 TOS 与全局上传、万象格式与秒数、文章改写与分栏、保存恢复及存储排错。此前章节、既有正式版本锚点与十一张内嵌截图继续保留。安装包是否已公开，以<a href="https://github.com/Tenney95/AI-Canvas-tauri/releases/tag/v0.11.7">对应 GitHub Release</a>为准；截图用于辨认位置，不代表所有按钮与最新界面完全一致。</p>
-<p>发布准备、源码检查记录与验收缺口见<a href="https://github.com/Tenney95/AI-Canvas-tauri/blob/master/doc/plans/2026-11-17-release-0.11.7.md">0.11.7 发布计划</a>；目标提交仍须取得同标签、同 SHA、同次尝试的质量与产物证明，未预写为公开完成。原有应用数据库沿用 <b>v27</b>，新项目使用独立项目库；新结构项目包为 <b>v4</b>，旧 <b>v1–v3</b> 包继续兼容。正式迁移开关保持关闭，不自动迁移真实旧项目。升级前备份项目与应用数据，安装旧程序不能直接读取新结构或借此回退数据。Windows Legacy 不含本地 ONNX 与自动更新；macOS 仅 Apple Silicon 临时签名，下载后可能需要在系统安全设置中允许打开，Linux 安装包暂停。多窗口、云同步、剪辑、真实模型及各平台安装升级按发布计划分别验收；自动化检查和说明书更新不能代替这些桌面验收。</p>
+<p>本说明书面向 <b>0.11.8「内置中转素材上传修复」</b>，<b>2026-11-17</b> 按已提交源码补充八家内置中转的上传边界、万象视频文件提交与 Sora2U 图片内联。0.11.7 及此前章节、既有正式版本锚点与十一张内嵌截图继续保留。安装包是否已公开，以<a href="https://github.com/Tenney95/AI-Canvas-tauri/releases/tag/v0.11.8">对应 GitHub Release</a>为准；截图用于辨认位置，不代表所有按钮与最新界面完全一致。</p>
+<p>发布准备、源码检查记录与验收缺口见<a href="https://github.com/Tenney95/AI-Canvas-tauri/blob/master/doc/plans/2026-11-17-release-0.11.8.md">0.11.8 发布计划</a>；目标提交仍须取得同标签、同 SHA、同次尝试的质量与产物证明，未预写为公开完成。原有应用数据库沿用 <b>v27</b>，新项目使用独立项目库；新结构项目包为 <b>v4</b>，旧 <b>v1–v3</b> 包继续兼容。正式迁移开关保持关闭，不自动迁移真实旧项目。升级前备份项目与应用数据，安装旧程序不能直接读取新结构或借此回退数据。Windows Legacy 不含本地 ONNX 与自动更新；macOS 仅 Apple Silicon 临时签名，下载后可能需要在系统安全设置中允许打开，Linux 安装包暂停。多窗口、云同步、剪辑、真实模型及各平台安装升级按发布计划分别验收；自动化检查和说明书更新不能代替这些桌面验收。</p>
 <h3 id="source-updates-0-10-19">0.10.19 范围与兼容提示</h3>
 <ul><li>武器仍为道具子类型，数据库维持 v26；旧客户端不支持新武器字段，团队应统一升级。</li><li>本集清单和资产库分别管理；提取不直接入库，角色引用不自动加入武器参考。</li><li>项目云同步仍为手动，不共享全局资产，也未新增自动监听或删除传播。</li></ul>
 <h3 id="source-updates-0-10-18">0.10.18「项目资产云同步与万象分组」范围与兼容提示</h3>
