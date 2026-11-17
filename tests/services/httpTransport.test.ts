@@ -4,6 +4,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { corsSafeFetch, logAiRequest, logAiResponse } from '../../src/services/ai/httpTransport';
 import { parseResponseError } from '../../src/services/ai/httpUtils';
+import * as uploadDiagnostics from '../../src/services/uploadDiagnostics';
 
 const invokeMock = vi.hoisted(() => vi.fn());
 
@@ -25,7 +26,7 @@ interface MockNativeInvokeArgs {
 
 function mockNativeStream(
   chunks: Uint8Array[],
-  options: { status?: number; headers?: [string, string][] } = {},
+  options: { status?: number; headers?: [string, string][]; uploadDiagnostics?: unknown } = {},
 ) {
   invokeMock.mockImplementation((command: string, args?: MockNativeInvokeArgs) => {
     if (command === 'cancel_proxy_fetch') return Promise.resolve();
@@ -35,6 +36,7 @@ function mockNativeStream(
         event: 'meta',
         status: options.status ?? 200,
         headers: options.headers ?? [],
+        ...(options.uploadDiagnostics !== undefined ? { uploadDiagnostics: options.uploadDiagnostics } : {}),
       });
       for (const chunk of chunks) {
         args?.onEvent?.onmessage({ event: 'chunk', body: Buffer.from(chunk).toString('base64') });
@@ -52,6 +54,10 @@ beforeEach(() => {
 });
 
 describe('CORS-safe AI HTTP transport', () => {
+  const uploadContext: uploadDiagnostics.UploadDiagnosticContext = {
+    id: 'upload-fixture-id', source: 'custom', endpoint: 'https://host.example/upload', startedAt: 1, secrets: [],
+  };
+
   it('敏感图床请求不记录自定义鉴权字段或上游回显的原文', async () => {
     vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
@@ -63,6 +69,88 @@ describe('CORS-safe AI HTTP transport', () => {
     expect(await response.text()).toBe('fixture-image-host-secret');
     expect(info).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('显式上传诊断关联原生请求、实际 multipart boundary 和返回的网络元数据，不消费响应正文', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const logTransport = vi.spyOn(uploadDiagnostics, 'logUploadTransport').mockImplementation(() => undefined);
+    const native = { httpVersion: 'HTTP/2.0', remoteAddress: '127.0.0.1:18719', proxyEnvironment: [], noProxyPresent: false };
+    const responseBody = '<html><title>502 Bad Gateway</title></html>';
+    mockNativeStream([Buffer.from(responseBody)], { status: 502, headers: [['content-type', 'text/html']], uploadDiagnostics: native });
+    const bytes = Uint8Array.from([0, 255, 10]);
+    const form = new FormData();
+    form.append('files[]', new Blob([bytes], { type: 'image/png' }), 'reference.png');
+    const response = await corsSafeFetch(uploadContext.endpoint, {
+      method: 'POST', headers: { 'X-Upload-Auth': 'fixture-private-key' }, body: form,
+    }, { sensitive: true, uploadDiagnostics: uploadContext });
+    const request = invokeMock.mock.calls.find(([command]) => command === 'proxy_stream_fetch')![1].req as {
+      requestId: string; body: string; headers: [string, string][]; uploadDiagnosticId: string;
+    };
+    const contentType = new Headers(request.headers).get('content-type')!;
+    expect(request.uploadDiagnosticId).toBe(uploadContext.id);
+    expect(contentType).toMatch(/^multipart\/form-data; boundary=/);
+    expect(logTransport).toHaveBeenCalledWith(uploadContext, expect.objectContaining({
+      transport: 'tauri-stream', requestId: request.requestId, contentType, wireBytes: Buffer.from(request.body, 'base64').byteLength,
+    }));
+    expect(logTransport).toHaveBeenCalledWith(uploadContext, expect.objectContaining({
+      transport: 'tauri-stream', requestId: request.requestId, native,
+    }));
+    const transmitted = await new Response(Buffer.from(request.body, 'base64'), { headers: { 'content-type': contentType } }).formData();
+    const file = transmitted.get('files[]') as File;
+    expect(file.name).toBe('reference.png');
+    expect(file.type).toBe('image/png');
+    expect(new Uint8Array(await file.arrayBuffer())).toEqual(bytes);
+    expect(response.status).toBe(502);
+    expect(await response.text()).toBe(responseBody);
+    expect(info).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+    expect(invokeMock).toHaveBeenCalledOnce();
+  });
+
+  it('没有上传诊断上下文的敏感请求不附加 IPC 诊断字段，也不输出诊断日志', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    const logTransport = vi.spyOn(uploadDiagnostics, 'logUploadTransport').mockImplementation(() => undefined);
+    mockNativeStream([Buffer.from('unchanged')]);
+    const response = await corsSafeFetch(uploadContext.endpoint, { method: 'POST', body: 'request' }, { sensitive: true });
+    expect(invokeMock.mock.calls[0][1].req).not.toHaveProperty('uploadDiagnosticId');
+    expect(logTransport).not.toHaveBeenCalled();
+    expect(await response.text()).toBe('unchanged');
+  });
+
+  it('浏览器上传诊断不重建 FormData 或修改 fetch 参数', async () => {
+    const logTransport = vi.spyOn(uploadDiagnostics, 'logUploadTransport').mockImplementation(() => undefined);
+    const fetchMock = vi.fn().mockResolvedValue(new Response('browser response'));
+    vi.stubGlobal('fetch', fetchMock);
+    const form = new FormData();
+    form.append('files[]', new Blob(['file'], { type: 'image/png' }), 'reference.png');
+    const init = { method: 'POST', body: form, headers: { Accept: 'application/json' } };
+    const response = await corsSafeFetch(uploadContext.endpoint, init, { sensitive: true, uploadDiagnostics: uploadContext });
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(uploadContext.endpoint, init);
+    expect(fetchMock.mock.calls[0][1].body).toBe(form);
+    expect(logTransport).toHaveBeenCalledExactlyOnceWith(uploadContext, { transport: 'browser-fetch', headers: init.headers });
+    expect(await response.text()).toBe('browser response');
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it.each([1, 2, 3])('上传诊断正确统计含 Base64 padding 的 %s 字节请求，不修改原始字节', async (length) => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    const logTransport = vi.spyOn(uploadDiagnostics, 'logUploadTransport').mockImplementation(() => undefined);
+    mockNativeStream([]);
+    const bytes = Uint8Array.from({ length }, (_, index) => index + 250);
+    await corsSafeFetch(uploadContext.endpoint, { method: 'POST', body: bytes.buffer }, { sensitive: true, uploadDiagnostics: uploadContext });
+    expect(logTransport).toHaveBeenCalledWith(uploadContext, expect.objectContaining({ wireBytes: length }));
+    expect(Buffer.from(invokeMock.mock.calls[0][1].req.body, 'base64')).toEqual(Buffer.from(bytes));
+  });
+
+  it('上传诊断统计 UTF-8 文本字节数且仍按 textBody 发送', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    const logTransport = vi.spyOn(uploadDiagnostics, 'logUploadTransport').mockImplementation(() => undefined);
+    mockNativeStream([]);
+    await corsSafeFetch(uploadContext.endpoint, { method: 'POST', body: '字🙂' }, { sensitive: true, uploadDiagnostics: uploadContext });
+    expect(logTransport).toHaveBeenCalledWith(uploadContext, expect.objectContaining({ wireBytes: 7 }));
+    expect(invokeMock.mock.calls[0][1].req).toMatchObject({ body: null, textBody: '字🙂' });
   });
 
   it('rejects oversized blobs before reading their bytes and releases the request slot', async () => {

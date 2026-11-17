@@ -5,6 +5,7 @@ import { corsSafeFetch } from './ai/httpTransport';
 import { readModelProtocolFirstScalar } from './ai/modelProtocolResponse';
 import { validatePathExpression } from './ai/modelProtocolShared';
 import { isRemoteMediaUrl } from '../utils/mediaUrl';
+import { startUploadDiagnostics, logUploadFailureResponse, logUploadNetworkFailure } from './uploadDiagnostics';
 
 const CREDENTIAL_REF = /^secret:image-host\/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const FIELD_NAME = /^[\w.[\]-]{1,128}$/;
@@ -126,6 +127,7 @@ export async function uploadCustomImage(blob: Blob, filename: string, config: Im
   if (config.allowedExtensions && (!filenameExt || !config.allowedExtensions.includes(filenameExt))) throw new Error('参考素材格式不符合当前图床限制');
   const headers = new Headers({ Accept: config.responseFormat === 'text' ? 'text/plain' : 'application/json' });
   const form = new FormData();
+  const diagnosticSecrets: string[] = [];
   const uploadFilename = extension === 'jpeg' ? filename.replace(/\.jpeg$/i, '.jpg') : filename;
   form.append(config.fileField.trim(), blob, uploadFilename);
   if (config.fileNameField) form.append(config.fileNameField.trim(), uploadFilename);
@@ -136,6 +138,7 @@ export async function uploadCustomImage(blob: Blob, filename: string, config: Im
     catch { throw new Error('无法读取图床密钥，请在连接设置中重新保存'); }
     signal?.throwIfAborted();
     if (!key) throw new Error('图床密钥不存在，请在连接设置中重新填写');
+    diagnosticSecrets.push(key);
     if (config.auth === 'form') form.append(config.authField!.trim(), key);
     else {
       try {
@@ -147,17 +150,20 @@ export async function uploadCustomImage(blob: Blob, filename: string, config: Im
     }
   }
   options?.beforeUpload?.();
+  const endpoint = uploadEndpoint(config, options?.connection?.baseUrl).href;
+  const diagnostic = startUploadDiagnostics('custom', endpoint, form, diagnosticSecrets);
   let response: Response;
   try {
-    response = await corsSafeFetch(uploadEndpoint(config, options?.connection?.baseUrl).href, { method: 'POST', body: form, headers, signal,
-      credentials: 'omit', redirect: 'error' }, { sensitive: true });
-  } catch {
+    response = await corsSafeFetch(endpoint, { method: 'POST', body: form, headers, signal,
+      credentials: 'omit', redirect: 'error' }, { sensitive: true, ...(diagnostic ? { uploadDiagnostics: diagnostic } : {}) });
+  } catch (cause) {
+    logUploadNetworkFailure(diagnostic, cause);
     signal?.throwIfAborted();
-    throw new Error('自定义图床上传失败，请检查地址、网络及鉴权配置');
+    throw new Error('自定义图床上传失败，请检查地址、网络及鉴权配置', { cause });
   }
   signal?.throwIfAborted();
   if (!response.ok) {
-    await response.body?.cancel().catch(() => undefined);
+    await logUploadFailureResponse(diagnostic, response, signal).catch(() => undefined);
     throw new Error(`自定义图床上传失败（HTTP ${response.status}），请检查密钥权限与文件限制`);
   }
   // 图床只应返回一个小响应，不能把失控的响应整份读进内存。

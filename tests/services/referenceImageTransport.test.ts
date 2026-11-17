@@ -921,6 +921,50 @@ describe('共享参考图压缩的实际请求边界', () => {
     expect(body.length).toBeLessThan(1024);
   });
 
+  it('桌面 Uguu 502 诊断保留超过 200 字符的网关尾部，原上传错误和单次提交语义保持', async () => {
+    vi.stubEnv('DEV', true);
+    try {
+      mocks.native = true;
+      const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const tail = 'diagnostic-upstream-failure-tail';
+      const errorBody = `<html><title>502 Bad Gateway</title><body>${'!'.repeat(300)} ${tail}</body></html>`;
+      localFetch.mockResolvedValue(new Response(png(81)));
+      mocks.invoke.mockImplementation(async (command, payload) => command === 'proxy_fetch'
+        ? { status: 502, body: Buffer.from(errorBody).toString('base64'), headers: [['content-type', 'text/html'], ['server', 'nginx']] }
+        : optimizePng(command, payload));
+      await expect(uploadToRemote('asset://localhost/uguu-diagnostic-502.png', 'uguu-diagnostic-502-relay'))
+        .rejects.toThrow('Uguu 上传失败 (502)');
+      const uploadCalls = mocks.invoke.mock.calls.filter(([command]) => command === 'proxy_fetch');
+      expect(uploadCalls).toHaveLength(1);
+      expect(uploadCalls[0][1].req.url).toBe('https://uguu.se/upload');
+      expect(uploadCalls[0][1].req.uploadDiagnosticId).toMatch(/^upload-/);
+      const event = info.mock.calls.filter(([label]) => label === '[Upload Diagnostics]')
+        .map(([, value]) => JSON.parse(String(value)) as Record<string, unknown>)
+        .find((value) => value.stage === 'http-error');
+      expect(event).toMatchObject({ id: uploadCalls[0][1].req.uploadDiagnosticId, source: 'uguu', status: 502, truncated: false,
+        body: expect.stringContaining(tail), headers: expect.arrayContaining([['server', 'nginx']]) });
+      expect(mocks.transport).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('桌面 Uguu 502 的诊断正文不是合法 Base64 时仍抛原 HTTP 错误，不重试或泄出解码异常', async () => {
+    vi.stubEnv('DEV', true);
+    try {
+      mocks.native = true;
+      vi.spyOn(console, 'info').mockImplementation(() => undefined);
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      localFetch.mockResolvedValue(new Response(png(82)));
+      mocks.invoke.mockImplementation(async (command, payload) => command === 'proxy_fetch'
+        ? { status: 502, body: 'not base64!', headers: [['content-type', 'text/html']] }
+        : optimizePng(command, payload));
+      await expect(uploadToRemote('asset://localhost/uguu-diagnostic-invalid.png', 'uguu-diagnostic-invalid-relay'))
+        .rejects.toThrow('Uguu 上传失败 (502): not base64!');
+      expect(mocks.invoke.mock.calls.filter(([command]) => command === 'proxy_fetch')).toHaveLength(1);
+      expect(mocks.transport).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it.each([
     ['apimart', 'image', 'png'],
     ['expiry-relay', 'image', 'png'],

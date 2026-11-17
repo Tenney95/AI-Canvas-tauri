@@ -440,11 +440,121 @@ const DREAMINA_LOGIN_WATCHER: &str = r#"
 #[serde(rename_all = "camelCase")]
 struct ProxyFetchRequest {
     request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    upload_diagnostic_id: Option<String>,
     url: String,
     method: String,
     headers: Vec<(String, String)>,
     body: Option<String>, // base64 编码的请求体
     text_body: Option<String>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct UploadProxyEnvironment {
+    name: String,
+    value: String,
+}
+
+#[derive(Clone)]
+struct UploadProxySnapshot {
+    environment: Vec<UploadProxyEnvironment>,
+    no_proxy_present: bool,
+    time_ms: u64,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UploadDiagnostics {
+    http_version: String,
+    remote_address: Option<String>,
+    final_url: String,
+    proxy_environment: Vec<UploadProxyEnvironment>,
+    no_proxy_present: bool,
+    proxy_snapshot_time_ms: u64,
+    user_agent: String,
+    proxy_policy: &'static str,
+}
+
+fn sanitized_upload_proxy(value: &str) -> String {
+    let raw = value.trim();
+    if raw.len() > 4096 || raw.chars().any(char::is_control) {
+        return "configured".into();
+    }
+    let parsed = if raw.contains("://") {
+        Url::parse(raw)
+    } else {
+        Url::parse(&format!("http://{raw}"))
+    };
+    let Ok(proxy) = parsed else { return "configured".into(); };
+    let default_port = match proxy.scheme() {
+        "http" => 80,
+        "https" => 443,
+        "socks4" | "socks4a" | "socks5" | "socks5h" => 1080,
+        _ => return "configured".into(),
+    };
+    let Some(host) = proxy.host() else { return "configured".into(); };
+    let host = match host {
+        url::Host::Ipv6(address) => format!("[{address}]"),
+        host => host.to_string(),
+    };
+    format!("{}://{}:{}", proxy.scheme(), host, proxy.port().unwrap_or(default_port))
+}
+
+impl UploadProxySnapshot {
+    fn capture() -> Self {
+        let mut environment = Vec::new();
+        let mut no_proxy_present = false;
+        for (name, value) in std::env::vars_os() {
+            let Some(name) = name.to_str() else { continue; };
+            let matches = |expected: &str| name == expected || cfg!(windows) && name.eq_ignore_ascii_case(expected);
+            if ["NO_PROXY", "no_proxy"].into_iter().any(matches) {
+                no_proxy_present = true;
+            } else if ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"].into_iter().any(matches) {
+                environment.push(UploadProxyEnvironment {
+                    name: name.into(),
+                    value: value.to_str().map(sanitized_upload_proxy).unwrap_or_else(|| "configured".into()),
+                });
+            }
+        }
+        environment.sort_by(|left, right| left.name.cmp(&right.name));
+        Self {
+            environment,
+            no_proxy_present,
+            time_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64).unwrap_or(0),
+        }
+    }
+}
+
+fn upload_diagnostic_user_agent(req: &ProxyFetchRequest) -> Option<String> {
+    let id = req.upload_diagnostic_id.as_deref()?;
+    if id.is_empty() || id.len() > 128 || !id.bytes().all(|value| value.is_ascii_alphanumeric() || b"._:-".contains(&value)) {
+        return None;
+    }
+    Some(req.headers.iter().find(|(name, _)| name.eq_ignore_ascii_case("user-agent"))
+        .map(|(_, value)| value.clone()).unwrap_or_else(|| "AI-Canvas/0.1".into()))
+}
+
+fn sanitized_upload_response_url(url: &Url) -> String {
+    let mut final_url = url.clone();
+    let _ = final_url.set_username("");
+    let _ = final_url.set_password(None);
+    final_url.set_query(None);
+    final_url.set_fragment(None);
+    final_url.to_string()
+}
+
+fn upload_response_diagnostics(response: &reqwest::Response, snapshot: &UploadProxySnapshot, user_agent: String) -> UploadDiagnostics {
+    UploadDiagnostics {
+        http_version: format!("{:?}", response.version()),
+        remote_address: response.remote_addr().map(|address| address.to_string()),
+        final_url: sanitized_upload_response_url(response.url()),
+        proxy_environment: snapshot.environment.clone(),
+        no_proxy_present: snapshot.no_proxy_present,
+        proxy_snapshot_time_ms: snapshot.time_ms,
+        user_agent,
+        proxy_policy: "reqwest automatic; actual route not exposed",
+    }
 }
 
 // 分别限制在途请求和提前到达的取消；128 项远高于正常模型与工具并发。
@@ -534,15 +644,19 @@ struct ProxyHttpState {
     download_client: reqwest::Client,
     cancellations: ProxyFetchCancellations,
     body_slots: tokio::sync::Semaphore,
+    upload_proxy_snapshot: UploadProxySnapshot,
 }
 
 impl ProxyHttpState {
     fn new() -> Result<Self, String> {
+        // 在本进程创建 HTTP 客户端时仅保留脱敏代理摘要，不读取其他进程环境。
+        let upload_proxy_snapshot = UploadProxySnapshot::capture();
         Ok(Self {
             client: build_proxy_http_client(true)?,
             download_client: build_proxy_http_client(false)?,
             cancellations: Mutex::default(),
             body_slots: tokio::sync::Semaphore::new(2),
+            upload_proxy_snapshot,
         })
     }
 }
@@ -655,6 +769,8 @@ struct ProxyFetchResponse {
     status: u16,
     body: String, // base64 编码的响应体
     headers: Vec<(String, String)>,
+    #[serde(rename = "uploadDiagnostics", skip_serializing_if = "Option::is_none")]
+    upload_diagnostics: Option<UploadDiagnostics>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -663,6 +779,8 @@ enum ProxyFetchStreamEvent {
     Meta {
         status: u16,
         headers: Vec<(String, String)>,
+        #[serde(rename = "uploadDiagnostics", skip_serializing_if = "Option::is_none")]
+        upload_diagnostics: Option<UploadDiagnostics>,
     },
     Chunk {
         body: String,
@@ -807,6 +925,7 @@ async fn proxy_fetch(
     state: tauri::State<'_, ProxyHttpState>,
     req: ProxyFetchRequest,
 ) -> Result<ProxyFetchResponse, String> {
+    let upload_user_agent = upload_diagnostic_user_agent(&req);
     let request_id = req.request_id.clone().unwrap_or_else(|| {
         format!(
             "legacy-proxy-{}",
@@ -822,6 +941,9 @@ async fn proxy_fetch(
 
     let request = async {
         let response = send_proxy_request(&state, req).await?;
+        let upload_diagnostics = upload_user_agent.map(|user_agent| {
+            upload_response_diagnostics(&response, &state.upload_proxy_snapshot, user_agent)
+        });
 
         let status = response.status().as_u16();
         let res_headers: Vec<(String, String)> = response
@@ -838,6 +960,7 @@ async fn proxy_fetch(
             status,
             body: body_b64,
             headers: res_headers,
+            upload_diagnostics,
         })
     };
 
@@ -850,6 +973,7 @@ async fn proxy_stream_fetch(
     req: ProxyFetchRequest,
     on_event: Channel<ProxyFetchStreamEvent>,
 ) -> Result<(), String> {
+    let upload_user_agent = upload_diagnostic_user_agent(&req);
     let request_id = req
         .request_id
         .clone()
@@ -863,6 +987,9 @@ async fn proxy_stream_fetch(
 
     let request = async {
         let mut response = send_proxy_request(&state, req).await?;
+        let upload_diagnostics = upload_user_agent.map(|user_agent| {
+            upload_response_diagnostics(&response, &state.upload_proxy_snapshot, user_agent)
+        });
         ensure_content_length_within_limit(&response, PROXY_RESPONSE_MAX_BYTES, "代理响应体")?;
         let status = response.status().as_u16();
         let headers = response
@@ -871,7 +998,7 @@ async fn proxy_stream_fetch(
             .map(|(key, value)| (key.to_string(), value.to_str().unwrap_or("").to_string()))
             .collect();
         on_event
-            .send(ProxyFetchStreamEvent::Meta { status, headers })
+            .send(ProxyFetchStreamEvent::Meta { status, headers, upload_diagnostics })
             .map_err(|e| format!("发送 HTTP 响应状态失败: {e}"))?;
 
         let mut total_bytes = 0;
@@ -908,6 +1035,7 @@ async fn fetch_image_data_url(
 ) -> Result<String, String> {
     let response = send_proxy_request(&state, ProxyFetchRequest {
         request_id: None,
+        upload_diagnostic_id: None,
         url: url.clone(),
         method: "GET".into(),
         headers: Vec::new(),
@@ -965,9 +1093,65 @@ mod proxy_http_tests {
 
     fn test_request(url: String, method: &str) -> ProxyFetchRequest {
         ProxyFetchRequest {
-            request_id: None, url, method: method.into(), headers: Vec::new(),
+            request_id: None, upload_diagnostic_id: None, url, method: method.into(), headers: Vec::new(),
             body: None, text_body: None,
         }
+    }
+
+    #[test]
+    fn upload_diagnostics_remove_proxy_secrets_and_response_url_credentials() {
+        assert_eq!(sanitized_upload_proxy("http://user:private-key@127.0.0.1:18719/path?token=private#fragment"),
+            "http://127.0.0.1:18719");
+        assert_eq!(sanitized_upload_proxy("127.0.0.1:18719"), "http://127.0.0.1:18719");
+        assert_eq!(sanitized_upload_proxy("https://user:private-key@proxy.example/path"), "https://proxy.example:443");
+        assert_eq!(sanitized_upload_proxy("socks5h://user:private-key@[::1]:1081/path"), "socks5h://[::1]:1081");
+        for invalid in ["", "not a valid proxy", "file:///private/credentials", "http://proxy.example\nprivate"] {
+            assert_eq!(sanitized_upload_proxy(invalid), "configured");
+        }
+        let response_url = Url::parse("https://user:private-key@upload.example/upload?token=private#private").unwrap();
+        assert_eq!(sanitized_upload_response_url(&response_url), "https://upload.example/upload");
+    }
+
+    #[test]
+    fn upload_diagnostics_are_optional_and_use_camel_case_in_both_response_modes() {
+        let legacy: ProxyFetchRequest = serde_json::from_value(serde_json::json!({
+            "url": "https://upload.example/upload", "method": "POST", "headers": [], "body": null,
+        })).unwrap();
+        assert!(upload_diagnostic_user_agent(&legacy).is_none());
+        let mut request = legacy;
+        for invalid in [String::new(), "upload diagnostic".into(), "x".repeat(129)] {
+            request.upload_diagnostic_id = Some(invalid);
+            assert!(upload_diagnostic_user_agent(&request).is_none());
+        }
+        request.upload_diagnostic_id = Some("upload:diagnostic-1".into());
+        assert_eq!(upload_diagnostic_user_agent(&request).as_deref(), Some("AI-Canvas/0.1"));
+        request.headers.push(("uSeR-aGeNt".into(), "upload-fixture".into()));
+        assert_eq!(upload_diagnostic_user_agent(&request).as_deref(), Some("upload-fixture"));
+        let legacy_response = serde_json::to_value(ProxyFetchResponse {
+            status: 502, body: String::new(), headers: Vec::new(), upload_diagnostics: None,
+        }).unwrap();
+        assert!(legacy_response.get("uploadDiagnostics").is_none());
+        let legacy_meta = serde_json::to_value(ProxyFetchStreamEvent::Meta {
+            status: 502, headers: Vec::new(), upload_diagnostics: None,
+        }).unwrap();
+        assert!(legacy_meta.get("uploadDiagnostics").is_none());
+        let diagnostics = UploadDiagnostics {
+            http_version: "HTTP/2.0".into(), remote_address: Some("127.0.0.1:18719".into()),
+            final_url: "https://upload.example/upload".into(), proxy_environment: Vec::new(),
+            no_proxy_present: false, proxy_snapshot_time_ms: 123, user_agent: "upload-fixture".into(),
+            proxy_policy: "reqwest automatic; actual route not exposed",
+        };
+        let response = serde_json::to_value(ProxyFetchResponse {
+            status: 502, body: String::new(), headers: Vec::new(), upload_diagnostics: Some(diagnostics.clone()),
+        }).unwrap();
+        let meta = serde_json::to_value(ProxyFetchStreamEvent::Meta {
+            status: 502, headers: Vec::new(), upload_diagnostics: Some(diagnostics),
+        }).unwrap();
+        assert_eq!(meta["event"], "meta");
+        assert_eq!(response["uploadDiagnostics"], meta["uploadDiagnostics"]);
+        assert_eq!(response["uploadDiagnostics"]["proxySnapshotTimeMs"], 123);
+        assert_eq!(response["uploadDiagnostics"]["httpVersion"], "HTTP/2.0");
+        assert!(response.get("upload_diagnostics").is_none());
     }
 
     fn read_test_request(listener: &TcpListener) -> (TcpStream, String) {

@@ -2,9 +2,10 @@
 import { isLocalMediaUrl, isRemoteMediaUrl, isTauriAssetUrl } from '../../utils/mediaUrl';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { bytePartsToBase64Async } from '../fs/core';
+import { logUploadTransport, type UploadDiagnosticContext } from '../uploadDiagnostics';
 
 type ProxyFetchStreamEvent =
-  | { event: 'meta'; status: number; headers: [string, string][] }
+  | { event: 'meta'; status: number; headers: [string, string][]; uploadDiagnostics?: unknown }
   | { event: 'chunk'; body: string }
   | { event: 'done' };
 
@@ -362,10 +363,15 @@ function normalizeTransportError(error: unknown): Error {
   return new Error(typeof error === 'string' && error ? error : '原生 HTTP 请求失败');
 }
 
-export async function corsSafeFetch(url: string, init: RequestInit = {}, options: { sensitive?: boolean; debug?: AiRequestLogPreview } = {}): Promise<Response> {
+export async function corsSafeFetch(url: string, init: RequestInit = {}, options: {
+  sensitive?: boolean;
+  debug?: AiRequestLogPreview;
+  uploadDiagnostics?: UploadDiagnosticContext;
+} = {}): Promise<Response> {
   if (!options.sensitive) logAiRequest(url, init, 'HTTP', options.debug);
   const signal = init.signal ?? undefined;
   if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) {
+    if (options.uploadDiagnostics) logUploadTransport(options.uploadDiagnostics, { transport: 'browser-fetch', headers: init.headers });
     return fetch(url, init);
   }
   if (signal?.aborted) throw createAbortError();
@@ -382,6 +388,16 @@ export async function corsSafeFetch(url: string, init: RequestInit = {}, options
   const headers = Array.from(requestHeaders.entries());
   if (signal?.aborted) { releaseBody(); throw createAbortError(); }
   const requestId = createRequestId();
+  if (options.uploadDiagnostics) {
+    const body = encodedBody.body;
+    const wireBytes = body !== null
+      ? Math.floor(body.length * 3 / 4) - (body.endsWith('==') ? 2 : body.endsWith('=') ? 1 : 0)
+      : encodedBody.textBody !== undefined ? new TextEncoder().encode(encodedBody.textBody).byteLength : 0;
+    logUploadTransport(options.uploadDiagnostics, {
+      transport: 'tauri-stream', requestId, headers: requestHeaders,
+      contentType: requestHeaders.get('Content-Type') ?? undefined, wireBytes,
+    });
+  }
   return new Promise<Response>((resolve, reject) => {
     let controller: ReadableStreamDefaultController<Uint8Array>;
     let responseResolved = false;
@@ -485,6 +501,10 @@ export async function corsSafeFetch(url: string, init: RequestInit = {}, options
           }
           responseResolved = true;
           releaseBody();
+          if (options.uploadDiagnostics) logUploadTransport(options.uploadDiagnostics, {
+            transport: 'tauri-stream', requestId, headers: requestHeaders,
+            contentType: requestHeaders.get('Content-Type') ?? undefined, native: event.uploadDiagnostics,
+          });
           if (!options.sensitive && import.meta.env.DEV && event.status >= 400) {
             errorStatus = event.status;
             errorContentType = new Headers(event.headers).get('content-type') || '';
@@ -526,6 +546,7 @@ export async function corsSafeFetch(url: string, init: RequestInit = {}, options
         headers,
         body: encodedBody.body,
         textBody: encodedBody.textBody,
+        ...(options.uploadDiagnostics ? { uploadDiagnosticId: options.uploadDiagnostics.id } : {}),
       },
       onEvent: channel,
     }).catch((error) => fail(normalizeTransportError(error))).finally(releaseBody);

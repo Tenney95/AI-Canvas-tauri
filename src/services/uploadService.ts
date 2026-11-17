@@ -38,6 +38,7 @@ import { redactModelProtocolError, redactModelProtocolErrorText } from './ai/mod
 import { assertMinimaxResponse, resolveMinimaxBaseUrl } from './ai/providers/minimaxModelManifest';
 import type { ApiProviderConfig } from '../types';
 import { uploadCustomImage } from './imageHostingService';
+import { startUploadDiagnostics, logUploadFailureResponse, logUploadNetworkFailure, logUploadTransport } from './uploadDiagnostics';
 import { resolveGlobalImageHosting } from './imageHostingTemplates';
 import type { ImageHostingConfig, PublicImageHostingProvider } from '../types/imageHosting';
 import { assertVolcengineTosEndpoint, assertVolcengineTosMediaSize, uploadVolcengineTosReference } from './ai/providers/volcengineTosUpload';
@@ -779,6 +780,7 @@ async function uploadToUguu(
 
   const formData = new FormData();
   formData.append('files[]', blob, `canvas-upload-${Date.now()}.${publicUploadExtension(url, kind, ext)}`);
+  const diagnostic = startUploadDiagnostics('uguu', UGUU_UPLOAD_URL, formData);
 
   // Tauri 环境：走 Rust proxy_fetch 绕过浏览器 CORS
   if (isTauriEnv()) {
@@ -790,29 +792,43 @@ async function uploadToUguu(
       });
     };
     signal?.addEventListener('abort', cancelNativeRequest, { once: true });
-    let result: { status: number; body: string };
+    let result: { status: number; body: string; headers?: [string, string][]; uploadDiagnostics?: unknown };
+    const headers: [string, string][] = [
+      ['Content-Type', contentType],
+      ['User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'],
+      ['Accept', '*/*'],
+      ['Accept-Language', 'zh-CN,zh;q=0.9,en;q=0.8'],
+    ];
+    logUploadTransport(diagnostic, { transport: 'tauri-buffered', requestId, contentType, headers,
+      wireBytes: body.length * 3 / 4 - (body.endsWith('==') ? 2 : body.endsWith('=') ? 1 : 0) });
     try {
       if (signal?.aborted) throw abortReason(signal);
-      result = await invoke<{ status: number; body: string }>('proxy_fetch', {
+      result = await invoke<typeof result>('proxy_fetch', {
         req: {
           requestId,
           url: UGUU_UPLOAD_URL,
           method: 'POST',
-          headers: [
-            ['Content-Type', contentType],
-            ['User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'],
-            ['Accept', '*/*'],
-            ['Accept-Language', 'zh-CN,zh;q=0.9,en;q=0.8'],
-          ],
+          headers,
           body,
+          ...(diagnostic ? { uploadDiagnosticId: diagnostic.id } : {}),
         },
       });
       if (signal?.aborted) throw abortReason(signal);
+      logUploadTransport(diagnostic, { transport: 'tauri-buffered', requestId, native: result.uploadDiagnostics });
+    } catch (cause) {
+      logUploadNetworkFailure(diagnostic, cause);
+      throw cause;
     } finally {
       signal?.removeEventListener('abort', cancelNativeRequest);
     }
 
     if (result.status < 200 || result.status >= 300) {
+      if (diagnostic) {
+        try {
+          const bytes = Uint8Array.from(atob(result.body), (char) => char.charCodeAt(0));
+          await logUploadFailureResponse(diagnostic, new Response(bytes, { status: result.status, headers: result.headers }), signal);
+        } catch { /* 诊断解码失败也必须保留下面的原始 HTTP 错误。 */ }
+      }
       const errBody = (() => { try { return atob(result.body); } catch { return result.body; } })();
       throw new Error(`Uguu 上传失败 (${result.status}): ${errBody.slice(0, 200)}`);
     }
@@ -824,10 +840,15 @@ async function uploadToUguu(
   }
 
   // 浏览器开发模式：直接 fetch（ugu.se 无 CORS 头，仅在开发代理下可用）
-  const resp = await fetch(UGUU_UPLOAD_URL, { method: 'POST', body: formData, signal });
+  logUploadTransport(diagnostic, { transport: 'browser-fetch' });
+  let resp: Response;
+  try { resp = await fetch(UGUU_UPLOAD_URL, { method: 'POST', body: formData, signal }); }
+  catch (cause) { logUploadNetworkFailure(diagnostic, cause); throw cause; }
 
   if (!resp.ok) {
     const errBody = await resp.text().catch(() => '');
+    if (diagnostic) await logUploadFailureResponse(diagnostic,
+      new Response(errBody, { status: resp.status, headers: resp.headers }), signal).catch(() => undefined);
     throw new Error(`Uguu 上传失败 (${resp.status}): ${errBody.slice(0, 200)}`);
   }
 

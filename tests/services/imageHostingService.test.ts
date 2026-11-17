@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ImageHostingConfig } from '../../src/types/imageHosting';
 
 const mocks = vi.hoisted(() => ({ read: vi.fn(), write: vi.fn(), remove: vi.fn(), fetch: vi.fn() }));
@@ -19,12 +19,42 @@ const json = (value: unknown) => new Response(JSON.stringify(value));
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.spyOn(console, 'info').mockImplementation(() => undefined);
   mocks.read.mockResolvedValue('fixture-image-host-key');
   mocks.write.mockResolvedValue(true);
   mocks.fetch.mockImplementation(async () => json({ data: { url: 'https://cdn.example/image.png' } }));
 });
+afterEach(() => { vi.restoreAllMocks(); });
 
 describe('自定义图床合同', () => {
+  it('502 保留原状态并输出脱敏完整错误详情，敏感传输仍启用且不重试', async () => {
+    const detail = 'upstream connection failed; '.repeat(16) + 'end-of-gateway-detail';
+    const config: ImageHostingConfig = { ...base, auth: 'bearer', credentialRef: ref };
+    mocks.fetch.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Bad Gateway', detail,
+      echoedKey: 'fixture-image-host-key', requestBody: 'short-image-bytes', filename: 'private-image.png' }),
+    { status: 502, headers: { 'Content-Type': 'application/json', Server: 'nginx', 'Set-Cookie': 'session=private-cookie' } }));
+    await expect(uploadCustomImage(blob, 'private-image.png', config)).rejects.toThrow('HTTP 502');
+    expect(mocks.fetch).toHaveBeenCalledOnce();
+    expect(mocks.fetch.mock.calls[0][2].sensitive).toBe(true);
+    const lines = vi.mocked(console.info).mock.calls.filter(([label]) => label === '[Upload Diagnostics]');
+    const failure = lines.map(([, line]) => JSON.parse(String(line))).find((event) => event.stage === 'http-error');
+    expect(failure).toMatchObject({ endpoint: base.uploadUrl, status: 502, body: { error: 'Bad Gateway', detail },
+      truncated: false, interrupted: null });
+    const logged = JSON.stringify(lines);
+    for (const forbidden of ['fixture-image-host-key', 'short-image-bytes', 'private-image.png', 'private-cookie', 'image-fixture']) {
+      expect(logged).not.toContain(forbidden);
+    }
+  });
+
+  it('已有 HTTP 502 不被诊断读取期间的取消改写', async () => {
+    const controller = new AbortController();
+    const response = new Response(new ReadableStream({ pull(stream) { controller.abort(); stream.close(); } },
+      { highWaterMark: 0 }), { status: 502 });
+    mocks.fetch.mockResolvedValueOnce(response);
+    await expect(uploadCustomImage(blob, 'image.png', base, controller.signal)).rejects.toThrow('HTTP 502');
+    expect(mocks.fetch).toHaveBeenCalledOnce();
+  });
+
   it('内置通用服务之外可自定义接口，国内会员 API 在前且默认仍为 Uguu', () => {
     expect(PUBLIC_IMAGE_HOSTING_TEMPLATES.map((item) => item.id))
       .toEqual(['bohe', 'uguu', 'catbox', 'imagekit', 'cloudinary', 'custom']);
@@ -67,7 +97,9 @@ describe('自定义图床合同', () => {
       expect(init.method).toBe('POST');
       expect(init.redirect).toBe('error');
       expect(init.credentials).toBe('omit');
-      expect(options).toEqual({ sensitive: true });
+      expect(options).toEqual({ sensitive: true, uploadDiagnostics: expect.objectContaining({
+        source: 'custom', endpoint: config.uploadUrl, id: expect.stringMatching(/^upload-/),
+      }) });
       const form = init.body as FormData;
       expect(await (form.get('media') as File).text()).toBe(kind);
       expect(form.get('purpose')).toBe('reference');
@@ -286,7 +318,9 @@ describe('自定义图床合同', () => {
     expect(mocks.read).toHaveBeenCalledWith(ref.slice(7));
     const [url, init, options] = mocks.fetch.mock.calls[0] as [string, RequestInit, { sensitive: boolean }];
     expect(url).toBe(base.uploadUrl);
-    expect(options).toEqual({ sensitive: true });
+    expect(options).toEqual({ sensitive: true, uploadDiagnostics: expect.objectContaining({
+      source: 'custom', id: expect.stringMatching(/^upload-/),
+    }) });
     expect(init.redirect).toBe('error');
     expect(init.credentials).toBe('omit');
     const form = init.body as FormData;
