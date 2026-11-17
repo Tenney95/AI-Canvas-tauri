@@ -26,7 +26,8 @@ describe('媒体引用内存守卫接线', () => {
   it('通用音频引用按顺序转换并检查取消信号', () => {
     const audioSource = source('generateAudio.ts');
     expect(audioSource).toContain('for (const reference of audioReferences)');
-    expect(audioSource).toContain("mode: 'dataUrl', kind: 'audio', signal, dataUrlBudget: budget");
+    expect(audioSource).toContain("mode: provider ? 'publicUrl' : 'dataUrl', kind: 'audio', signal, dataUrlBudget: budget");
+    expect(audioSource).toContain('...(provider ? { provider } : {})');
     expect(audioSource).not.toMatch(
       /Promise\.all\(references\.filter\(\(reference\) => reference\.kind === 'audio'\)/,
     );

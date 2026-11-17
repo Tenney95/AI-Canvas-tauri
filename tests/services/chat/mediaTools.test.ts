@@ -14,7 +14,7 @@ import { getPendingTasksForProject, registerMediaNodeOperation, savePendingTask 
 import * as generationRuntime from '../../../src/services/ai/generationRuntime';
 import * as operationProgress from '../../../src/services/mcp/mcpOperationService';
 import { DEFAULT_AGENT_TASK_BUDGET, type AgentTask } from '../../../src/types/agent';
-import type { ImageModelCapability } from '../../../src/types/aiTypes';
+import type { ImageModelCapability, ModelExecutionProfile } from '../../../src/types/aiTypes';
 import type { MediaGenerationResult } from '../../../src/types/media';
 import { imageBatchArtifactId } from '../../../src/services/imageBatchService';
 import * as chatHistory from '../../../src/services/chat/chatHistoryService';
@@ -564,7 +564,13 @@ describe('media_generate display parameters', () => {
   it('发现并传递模型声明的 GIF 参数，显式 false 保留且未声明模型拒绝格式', async () => {
     configureVisualModels();
     useAppStore.setState((state) => ({ config: { ...state.config, generalModels: state.config.generalModels!.map((model) =>
-      model.id !== 'image-custom' ? model : { ...model, imageCapability: { ...model.imageCapability,
+      model.id !== 'image-custom' ? model : { ...model,
+        executionProfile: { preset: 'custom', protocol: { version: 2, mode: 'sync',
+          submit: { method: 'POST', path: '/images/generations', body: { model: '{{model}}', prompt: '{{prompt}}', size: '{{size}}',
+            quality: '{{imageQuality}}', background: '{{imageBackground}}', output_format: '{{imageOutputFormat}}',
+            frame_count: '{{imageFrameCount}}', frame_duration_ms: '{{imageFrameDurationMs}}', transparent: '{{imageTransparent}}' } },
+          response: { type: 'json', result: { urlPath: 'data.*.url' } } } } satisfies ModelExecutionProfile,
+        imageCapability: { ...model.imageCapability,
         outputFormats: ['png', 'gif', 'svg'], defaultOutputFormat: 'png',
         squareOnlyOutputFormats: ['gif', 'svg'], textOnlyOutputFormats: ['gif', 'svg'],
         gifFrameCount: { min: 2, max: 16, default: 9 }, gifFrameDurationMs: { min: 20, max: 655350, step: 10, default: 200 },

@@ -41,7 +41,7 @@ const serviceMocks = vi.hoisted(() => ({
     },
     currentProjectId: 'project-1',
   },
-  uploadToRemote: vi.fn(),
+  resolveMediaReferenceUrl: vi.fn(),
 }));
 
 vi.mock('../../src/services/pollManager', () => pollingMocks);
@@ -50,8 +50,7 @@ vi.mock('../../src/store/useAppStore', () => ({
 }));
 vi.mock('../../src/services/uploadService', () => ({
   isLocalImageUrl: (url: string) => url.startsWith('asset:') || url.includes('asset.localhost'),
-  uploadToRemote: serviceMocks.uploadToRemote,
-  resolveMediaReferenceUrl: async (url: string) => url,
+  resolveMediaReferenceUrl: serviceMocks.resolveMediaReferenceUrl,
 }));
 
 import {
@@ -197,7 +196,8 @@ describe('APIMart Omni 视频合同', () => {
     vi.clearAllMocks();
     vi.unstubAllGlobals();
     pollingMocks.registerNodePolling.mockReturnValue(new AbortController().signal);
-    serviceMocks.uploadToRemote.mockResolvedValue('https://upload.example/reference.png');
+    serviceMocks.resolveMediaReferenceUrl.mockImplementation(async (url: string) => url.startsWith('asset:')
+      ? 'https://upload.example/reference.png' : url);
   });
 
   it.each(APIMART_OMNI_MODELS.map((model) => model.id))('提交 %s 到视频端点并读取轮询产物', async (model) => {
@@ -282,6 +282,9 @@ describe('APIMart Omni 视频合同', () => {
         videoUrls: [], audioUrls: [], references: referenceMedia,
       }),
     })).rejects.toThrow('Omni failed');
+    expect(serviceMocks.resolveMediaReferenceUrl.mock.calls).toEqual(referenceMedia.map((reference) => [
+      reference.url, { provider: 'apimart', kind: 'image', signal: undefined },
+    ]));
     expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toMatchObject({
       first_frame_image: 'https://upload.example/reference.png', last_frame_image: 'https://cdn.example/last.png',
       image_urls: ['https://cdn.example/ref.png'],
@@ -347,7 +350,8 @@ describe('APIMart image polling', () => {
     vi.clearAllMocks();
     vi.unstubAllGlobals();
     pollingMocks.registerNodePolling.mockReturnValue(new AbortController().signal);
-    serviceMocks.uploadToRemote.mockResolvedValue('https://upload.example/reference.png');
+    serviceMocks.resolveMediaReferenceUrl.mockImplementation(async (url: string) => url.startsWith('asset:')
+      ? 'https://upload.example/reference.png' : url);
   });
 
   it.each(['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst', 'gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'])(
@@ -646,7 +650,8 @@ describe('APIMart video polling', () => {
     vi.clearAllMocks();
     vi.unstubAllGlobals();
     pollingMocks.registerNodePolling.mockReturnValue(new AbortController().signal);
-    serviceMocks.uploadToRemote.mockResolvedValue('https://upload.example/reference.png');
+    serviceMocks.resolveMediaReferenceUrl.mockImplementation(async (url: string) => url.startsWith('asset:')
+      ? 'https://upload.example/reference.png' : url);
   });
 
   it('uses the documented Seedance 2.0 defaults while preserving an explicit audio opt-out', () => {
@@ -714,12 +719,12 @@ describe('APIMart video polling', () => {
       }),
     })).rejects.toThrow('APIMart 视频生成失败: 参考图片无法访问');
 
-    expect(serviceMocks.uploadToRemote).toHaveBeenCalledWith(
-      'asset://localhost/reference.png',
-      'apimart',
-      'image',
-      undefined,
-    );
+    // 图片与音视频统一委托公开素材解析入口；请求正文仍须只使用解析后的公网 URL。
+    expect(serviceMocks.resolveMediaReferenceUrl.mock.calls).toEqual([
+      ['asset://localhost/reference.png', { provider: 'apimart', kind: 'image', signal: undefined }],
+      ['https://cdn.example/reference.mp4', { provider: 'apimart', kind: 'video', signal: undefined }],
+      ['https://cdn.example/reference.mp3', { provider: 'apimart', kind: 'audio', signal: undefined }],
+    ]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const submitBody = JSON.parse(fetchMock.mock.calls[0][1]?.body as string) as Record<string, unknown>;
     expect(submitBody).toMatchObject({

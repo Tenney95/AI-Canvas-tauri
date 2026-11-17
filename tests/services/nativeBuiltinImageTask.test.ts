@@ -21,7 +21,9 @@ vi.mock('../../src/services/projectExecutionContext', () => ({ captureLegacyCanv
 vi.mock('../../src/services/nativeVideoSubmission', () => ({ isNativeVideoSubmissionGuard: () => true,
   captureNativeVideoSubmissionBaseline: async () => ({ inputFingerprint: 'a'.repeat(64), canvasRevision: io.canvasRevision }), assertNativeVideoSubmissionInput: io.assertInput }));
 vi.mock('../../src/services/ai/modelProtocol', async (original) => ({ ...await original<typeof import('../../src/services/ai/modelProtocol')>(), pollResolvedModelProtocol: io.query }));
-vi.mock('../../src/services/ai/httpTransport', () => ({ logAiRequest: vi.fn(), corsSafeFetch: io.fetch }));
+vi.mock('../../src/services/ai/httpTransport', async (original) => ({
+  ...await original<typeof import('../../src/services/ai/httpTransport')>(), logAiRequest: vi.fn(), corsSafeFetch: io.fetch,
+}));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: io.invoke, convertFileSrc: (path: string) => `asset://local/${path}` }));
 vi.mock('../../src/services/pollManager', () => ({ savePendingTask: io.legacySave, updatePendingTask: vi.fn(), removePendingTask: io.legacyRemove,
   registerNodePolling: () => io.polling.signal, cleanupNodePolling: vi.fn(), getVideoEditorTransitionAnchor: () => undefined,
@@ -403,7 +405,8 @@ it('CCC原任务一次查询确认失败后停止自动续查，保留失败回�
   await resumeNativeMediaLocalResults(io.context.canvasId, { allowOriginalCccTaskQuery: true });
   await resumeNativeMediaLocalResults(io.context.canvasId, { allowOriginalCccTaskQuery: true });
   expect(submissions).toBe(1); expect(io.query).toHaveBeenCalledOnce(); expect(io.dispatcher).not.toHaveBeenCalled();
-  expect(io.fetch).toHaveBeenCalledExactlyOnceWith('https://fixture.example/tasks/original-failed-task', expect.objectContaining({ method: 'GET' }));
+  expect(io.fetch).toHaveBeenCalledExactlyOnceWith('https://fixture.example/tasks/original-failed-task',
+    expect.objectContaining({ method: 'GET' }), { debug: expect.objectContaining({ stage: 'poll', traceId: expect.any(String) }) });
   expect((await listNativeMediaTasks(io.context.projectId))[0]).toMatchObject({ operationId: record.operationId, status: 'failed' });
 });
 

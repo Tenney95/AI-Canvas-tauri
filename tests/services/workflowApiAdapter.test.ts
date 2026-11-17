@@ -18,7 +18,9 @@ import {
 } from '../../src/services/pollManager';
 
 const mocks = vi.hoisted(() => ({ fetch: vi.fn(), upload: vi.fn(), persist: vi.fn(), desktop: vi.fn(() => true) }));
-vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: mocks.fetch }));
+vi.mock('../../src/services/ai/httpTransport', async (original) => ({
+  ...await original<typeof import('../../src/services/ai/httpTransport')>(), corsSafeFetch: mocks.fetch,
+}));
 vi.mock('../../src/services/uploadService', async (original) => ({
   ...await original<typeof import('../../src/services/uploadService')>(), resolveMediaReferenceUrl: mocks.upload,
 }));

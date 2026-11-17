@@ -375,7 +375,10 @@ it('delivers a bounded receipt for every result in a large tool batch', async ()
   expect(result.outcome).toBe('continue');
   const receipts = messages.filter((message) => message.role === 'tool');
   expect(receipts).toHaveLength(calls.length);
-  const contents = receipts.map((message) => JSON.parse(message.content));
+  const contents = receipts.map((message) => {
+    if (typeof message.content !== 'string') throw new Error('Tool receipt must contain serialized text');
+    return JSON.parse(message.content);
+  });
   expect(contents.every((value: { truncated: boolean }) => value.truncated)).toBe(true);
   expect(contents.reduce((total: number, value: { result: string }) => total + value.result.length, 0)).toBe(200_000);
   expect(result.totalToolResultChars).toBe(400_000);
@@ -400,6 +403,7 @@ it('preserves a full serialized result page and its next cursor beyond the previ
   expect(result.outcome).toBe('continue');
   const receipt = messages.find((message) => message.role === 'tool');
   expect(receipt).toBeDefined();
+  if (typeof receipt!.content !== 'string') throw new Error('Tool receipt must contain serialized text');
   const content = JSON.parse(receipt!.content).result;
   expect(content.length).toBeGreaterThan(12_000);
   expect(JSON.parse(content)).toEqual(page);

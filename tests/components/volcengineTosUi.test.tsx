@@ -24,6 +24,7 @@ vi.mock('react', async () => ({
   useCallback: <T,>(callback: T) => callback,
   useId: () => 'tos-field',
   useEffect: (effect: () => void | (() => void)) => { if (driver.captureEffects) driver.effects.push(effect); },
+  useLayoutEffect: (effect: () => void | (() => void)) => { if (driver.captureEffects) driver.effects.push(effect); },
 }));
 vi.mock('../../src/store/useAppStore', () => ({
   useAppStore: Object.assign(<T,>(selector: (state: AppState) => T) => selector(driver.state), { getState: () => driver.state }),

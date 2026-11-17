@@ -3,7 +3,7 @@
  */
 import { useT } from '../../i18n';
 import { getVolcengineAssetStatusLabel } from './volcengineAssetLabels';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { useAppStore } from '../../store/useAppStore';
 import { createAssetGroup, deleteAsset, deleteAssetGroup, getAsset, getAssetGroup, listAssetGroups, listAssets, updateAsset, updateAssetGroup } from '../../services/ai/providers/volcengineAssetLibrary';
@@ -73,6 +73,11 @@ export default function VolcengineAssetLibraryPanel({ compact = false, onCountCh
   const [assetPage, setAssetPage] = useState(1);
   const [groupTotal, setGroupTotal] = useState(0);
   const [assetTotal, setAssetTotal] = useState(0);
+  const [dialogProviderId, setDialogProviderId] = useState(providerId);
+  if (dialogProviderId !== providerId) {
+    setDialogProviderId(providerId);
+    setDialog(null); setLocalSource(undefined); setFormUrl(''); setFormAssetType('');
+  }
   const enabled = Boolean(provider?.assetLibrary?.enabled);
   const configured = Boolean(accessKeyId && secretAccessKey);
   const tosConfigured = Boolean(provider?.tosUpload?.bucket && provider.tosUpload.credentialRef);
@@ -99,10 +104,9 @@ export default function VolcengineAssetLibraryPanel({ compact = false, onCountCh
   }, [accessKeyId, secretAccessKey, options, selectedGroup, query, groupPage, assetPage, setMessage]);
   useEffect(() => { let cancelled = false; void Promise.all([readAppSecret(accessKeySecretRef), readAppSecret(secretAccessKeySecretRef)]).then(([ak, sk]) => { if (!cancelled) { setAccessKeyId(ak || ''); setSecretAccessKey(sk || ''); setLoadedSecretFingerprint(secretFingerprint); } }); return () => { cancelled = true; }; }, [accessKeySecretRef, secretAccessKeySecretRef, secretFingerprint]);
   useEffect(() => { if (!enabled || !secretsLoaded || !configured) return; const timer = window.setTimeout(() => { void load(); }, 0); return () => window.clearTimeout(timer); }, [enabled, secretsLoaded, configured, load]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     filePickVersion.current += 1;
     uploadAbort.current?.abort();
-    setDialog(null); setLocalSource(undefined); setFormUrl(''); setFormAssetType('');
   }, [providerId]);
   useEffect(() => () => { filePickVersion.current += 1; uploadAbort.current?.abort(); }, []);
   const openDialog = (next: Dialog) => {

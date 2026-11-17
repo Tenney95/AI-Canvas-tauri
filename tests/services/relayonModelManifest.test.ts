@@ -498,7 +498,9 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
     expect(effective.imageCapability).toEqual(current.imageCapability);
     expect(effective.executionProfile).toEqual(profile);
     expect({ saved, profile }).toEqual(before);
-    effective.imageCapability!.dimensionPresets!['2K']['16:9'][0] = 1;
+    expect(effective.imageCapability!.dimensionPresets!['2K']['16:9'])
+      .not.toBe(current.imageCapability!.dimensionPresets!['2K']['16:9']);
+    effective.imageCapability!.dimensionPresets!['2K']['16:9'] = [1, 1440];
     expect({ saved, profile }).toEqual(before);
     expect(current.imageCapability!.dimensionPresets!['2K']['16:9']).toEqual([2560, 1440]);
   });
@@ -524,6 +526,7 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
       const variables = relayonImageVariables(id, { model: id, prompt: 'format contract', imageSize: '4K', aspectRatio: '1:1',
         imageOutputFormat: format, imageQuality: 'high' });
       const profile = resolveRelayonImageExecutionProfile(id, current.executionProfile, 0, undefined, { imageOutputFormat: format })!;
+      assert(profile.protocol?.version === 2);
       const built = buildModelProtocolRequest({ baseUrl: RELAYON_BASE_URL, apiKey: 'fixture', protocol: profile.protocol!, variables });
       expect(built.renderedBody).toMatchObject({ model: id, n: 1, response_format: 'url', size: '4096x4096',
         resolution: '4K', aspect_ratio: '1:1', output_format: format, quality: 'high' });
@@ -690,6 +693,7 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
   it.each(RELAYON_IMAGE_MODEL_IDS)('%s 的参考编辑编码为有序文件，文生请求仍为原 JSON 合同', (id) => {
     const item = model(id);
     const saved = structuredClone(item.executionProfile!);
+    assert(saved.protocol?.version === 2);
     const fixtures = [
       { mime: 'image/png', extension: 'png', encoded: 'iVBORw0KGgo=' },
       { mime: 'image/jpeg', extension: 'jpg', encoded: '/9j/2Q==' },
@@ -699,6 +703,7 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
     expect(usesRelayonImageFileUpload(id, item.executionProfile)).toBe(true);
     const variables = relayonImageVariables(id, { model: id, prompt: 'reference edit', n: 1, imageUrls });
     const protocol = resolveRelayonImageExecutionProfile(id, item.executionProfile, imageUrls.length)!.protocol!;
+    assert(protocol.version === 2);
     const built = buildModelProtocolRequest({ baseUrl: RELAYON_BASE_URL, apiKey: 'fixture', protocol, variables });
     expect(built.url).toBe(`${RELAYON_BASE_URL}/images/edits`);
     expect(new Headers(built.init.headers).get('Content-Type')).toMatch(/^multipart\/form-data; boundary=/);

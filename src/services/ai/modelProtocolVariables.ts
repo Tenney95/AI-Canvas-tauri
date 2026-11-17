@@ -364,17 +364,18 @@ export const REFERENCE_PROTOCOL_VARIABLES: readonly string[] = PROTOCOL_VARIABLE
   .map((spec) => spec.name);
 
 /**
- * 把中转站请求体里的一个字段名解析成协议模板值（如 `{{imageUrls}}`）。
+ * 把中转站请求体里的字段名归一化后解析成协议模板值（如 `{{imageUrls}}`）。
  * 认不出来返回 undefined，调用方保留字面量。
  *
  * 该类别运行时拿不到值的变量不参与匹配：映射过去只会让这个字段在真实请求里
  * 整条消失（如给文本模型的 input 映射成 prompt），保留字面量才是对的。
  */
 export function resolveProtocolFieldTemplate(
-  normalizedField: string,
+  field: string,
   value: ProtocolJsonValue,
   category: GeneralModelCategory,
 ): string | undefined {
+  const normalizedField = field.toLowerCase().replace(/[^a-z0-9]/g, '');
   return COMPILED_RULES.find((rule) => (
     rule.key === normalizedField
     && rule.supplied.includes(category)

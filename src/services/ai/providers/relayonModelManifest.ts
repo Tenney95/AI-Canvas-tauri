@@ -496,10 +496,12 @@ export function resolveRelayonImageExecutionProfile(
     throw new Error(`RelayOnAPI 图片模型“${modelId}”最多接受 ${maximum} 张参考图`);
   }
   const result = resolveRelayonImageModelContract(modelId, profile).executionProfile!;
-  const body = result.protocol!.submit.body as Record<string, ProtocolJsonValue>;
-  result.protocol!.submit.path = referenceCount ? '/images/edits' : '/images/generations';
+  const protocol = result.protocol;
+  if (protocol?.version !== 2) throw new Error('RelayOnAPI 内置图片合同必须使用 version 2 协议');
+  const body = protocol.submit.body as Record<string, ProtocolJsonValue>;
+  protocol.submit.path = referenceCount ? '/images/edits' : '/images/generations';
   if (referenceCount > 0 && usesRelayonImageFileUpload(modelId, profile)) {
-    result.protocol!.submit.bodyEncoding = 'multipart';
+    protocol.submit.bodyEncoding = 'multipart';
     delete body.image;
     const field = referenceCount > 1 ? 'image[]' : 'image';
     if (modelId === 'image-2.6-01' || isImage26Variant(modelId)) {
@@ -523,10 +525,10 @@ export function resolveRelayonImageExecutionProfile(
       delete body.frame_duration_ms;
       delete body.transparent;
     }
-    result.protocol!.response.result!.mimeType = format === 'svg' ? 'image/svg+xml' : `image/${format}`;
+    protocol.response.result!.mimeType = format === 'svg' ? 'image/svg+xml' : `image/${format}`;
   }
   if (imageBackground?.toLowerCase() === 'transparent' && MODEL_BY_ID.get(modelId)!.imageCapability?.backgrounds) {
-    (result.protocol!.submit.body as Record<string, ProtocolJsonValue>).output_format = 'png';
+    body.output_format = 'png';
   }
   return result;
 }

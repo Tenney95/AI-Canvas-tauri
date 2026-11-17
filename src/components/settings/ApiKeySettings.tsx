@@ -42,7 +42,7 @@ import ModalOverlay from '../shared/ModalOverlay';
 import ProviderConnectionDialog from './ProviderConnectionDialog';
 import VolcengineBillingSettings from './VolcengineBillingSettings';
 import GlobalImageHostingSettings from './GlobalImageHostingSettings';
-import { hasBillingHistory } from '../../services/billing/volcengineBillingService';
+import { hasBillingHistory as checkBillingHistory } from '../../services/billing/volcengineBillingService';
 import { saveAutodlWorkflowTemplate, saveWorkflowApiDrafts } from '../../services/workflowApi/workflowApiConfig';
 import { invoke } from '@tauri-apps/api/core';
 import { useT } from '../../i18n';
@@ -262,7 +262,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     if (billingOpen || hasVolcengineConnection || !isTauri()) return;
     let cancelled = false;
-    void hasBillingHistory({ volcengineBillingPath: config.volcengineBillingPath }).then((exists) => {
+    void checkBillingHistory({ volcengineBillingPath: config.volcengineBillingPath }).then((exists) => {
       if (!cancelled) setHasBillingHistory(exists);
     }).catch(() => {});
     return () => { cancelled = true; };

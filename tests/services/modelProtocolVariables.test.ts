@@ -38,6 +38,9 @@ describe('protocol variable table', () => {
     expect(getCategoryProtocolVariables('image')).toContain('imageBackground');
     expect(getCategoryProtocolVariables('video')).not.toContain('imageBackground');
     expect(resolveProtocolFieldTemplate('output_format', 'svg', 'image')).toBe('{{imageOutputFormat}}');
+    expect(resolveProtocolFieldTemplate('imageOutputFormat', 'gif', 'image')).toBe('{{imageOutputFormat}}');
+    expect(resolveProtocolFieldTemplate('OUTPUT_FORMAT', 'mp3', 'audio')).toBe('{{audioFormat}}');
+    expect(resolveProtocolFieldTemplate('output_format', 'gif', 'video')).toBeUndefined();
     expect(resolveProtocolFieldTemplate('frame_count', 9, 'image')).toBe('{{imageFrameCount}}');
     expect(resolveProtocolFieldTemplate('frame_duration_ms', 200, 'image')).toBe('{{imageFrameDurationMs}}');
     expect(resolveProtocolFieldTemplate('transparent', false, 'image')).toBe('{{imageTransparent}}');

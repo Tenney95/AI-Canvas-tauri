@@ -147,7 +147,7 @@ function ApprovalCardContent({
             {t('待确认')} · {t(meta.label)}
           </p>
           <p className="mt-1 break-words text-xs leading-[18px] text-canvas-text-secondary">
-            {step.toolCall?.inputSummary || approval.summary}
+            {approval.summary || step.toolCall?.inputSummary}
           </p>
           <AgentToolDetails input={step.toolCall?.inputDisplay} defaultExpanded />
         </div>

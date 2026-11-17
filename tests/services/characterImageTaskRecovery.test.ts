@@ -46,7 +46,8 @@ describe('character image protocol receipts', () => {
       return { taskId: 'job-1', poll: protocol.poll, recoveryContext: { submit: { data: { task_id: 'job-1' } } } }; });
     const done = new Error('delivered');
     const destination = registerCharacterImageTaskContext({ assertCurrent: vi.fn(), execute: async (plan) => {
-      expect(plan.recovery).toEqual({ kind: 'protocol', query: { modelId: 'image', digest: 'b'.repeat(64) } });
+      expect(plan.recovery).toEqual({ kind: 'protocol', providerBase: 'https://gateway.example/v1',
+        query: { modelId: 'image', digest: 'b'.repeat(64) } });
       const results = await plan.execute(async () => { driver.events.push('intent'); }, async (id) => {
         expect(id).toBe('job-1'); driver.events.push('receipt');
       }, 'c6fce9e9-dd80-4abf-83bd-cd3c941b7632');

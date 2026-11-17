@@ -109,11 +109,15 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>();
   const [workflowInputs, setWorkflowInputs] = useState<Record<string, string>>({});
   const selectedWorkflow = imageWorkflows.find((workflow) => workflow.id === selectedWorkflowId);
+  const [operationSource, setOperationSource] = useState({ isOpen, imageUrl });
+  if (operationSource.isOpen !== isOpen || operationSource.imageUrl !== imageUrl) {
+    setOperationSource({ isOpen, imageUrl });
+    setBusy(false);
+  }
 
   // 在新来源提交到界面时立即撤销旧合成，异步编码完成也不能回调旧垫图。
   useLayoutEffect(() => {
     operationEpochRef.current += 1;
-    setBusy(false);
   }, [isOpen, imageUrl]);
 
   useEffect(() => () => {

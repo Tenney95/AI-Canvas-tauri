@@ -94,7 +94,7 @@ function syncSnapshot(frame: ProjectWindowFrame | null, projectId: string | null
   const snapshot: ChatStateSnapshot = {
     conversations: [], activeConversationId: frame?.conversationId ?? null, messages: [], agentTasks: [],
     projectId, projectName: projectId ?? undefined, nodes: [], generalModels: [], assistantModelGroups: [],
-    mediaModelOptions: [], skillOptions: [], dramaAssets: { characters: [], scenes: [], props: [] },
+    mediaModelOptions: [], skillOptions: [], dramaAssets: { version: 2, characters: [], scenes: [], props: [] },
     composerDraft: '', composerDrafts: {}, panelView: 'chat', ...fields, windowFrame: frame,
   };
   (mocks.initListener.mock.calls[0][0] as (sync: ChatStateSync) => void)({

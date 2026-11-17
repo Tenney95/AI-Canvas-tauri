@@ -115,11 +115,11 @@ function sanitizeValue(
   if (value === null || typeof value === 'boolean' || typeof value === 'number') return value;
   if (typeof value === 'string') {
     if (/(?:^b64_json$|base64(?:_?data)?$)/i.test(key)) return { type: 'base64', encodedLength: value.length };
-    value = redactLogSecrets(value, secrets);
-    if (isLocalMediaUrl(value) || isRemoteMediaUrl(value)) {
-      return sanitizeUrl(value, secrets);
+    const redacted = redactLogSecrets(value, secrets);
+    if (isLocalMediaUrl(redacted) || isRemoteMediaUrl(redacted)) {
+      return sanitizeUrl(redacted, secrets);
     }
-    return sanitizeString(value, secrets);
+    return sanitizeString(redacted, secrets);
   }
   if (value instanceof Blob) {
     return {

@@ -414,7 +414,22 @@ function sanitizeMediaParameters(value: MediaTaskContext['parameters']): MediaTa
   const result: NonNullable<MediaTaskContext['parameters']> = {};
   for (const key of MEDIA_PARAMETER_TEXT_FIELDS) {
     const item = value[key];
-    if (isSafeMediaParameterText(item, key)) result[key] = item;
+    if (!isSafeMediaParameterText(item, key)) continue;
+    if (key === 'imageOutputFormat') {
+      if (item === 'png' || item === 'gif' || item === 'svg') result[key] = item;
+    } else result[key] = item;
+  }
+  if (result.imageOutputFormat === 'gif') {
+    // 恢复记录只保留有界白名单；不补生成默认值，也不把GIF选项带到其他格式。
+    const output = pickImageOutputParameters(value);
+    for (const [key, min, max, step] of [
+      ['imageFrameCount', 2, 16, 1], ['imageFrameDurationMs', 20, 655350, 10],
+    ] as const) {
+      const item = output[key];
+      if (typeof item === 'number' && Number.isSafeInteger(item) && item >= min && item <= max
+        && (item - min) % step === 0) result[key] = item;
+    }
+    if (typeof output.imageTransparent === 'boolean') result.imageTransparent = output.imageTransparent;
   }
   if (typeof value.duration === 'number' && Number.isFinite(value.duration) && value.duration !== 0
     && value.duration <= 3600) result.duration = value.duration;

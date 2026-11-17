@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useId, useRef, useState, type ReactNode, type Ref } from 'react';
+import { lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react';
 import { useReducedMotion } from 'framer-motion';
 import { Icon } from '@iconify/react';
 import { useT } from '../../i18n';
@@ -37,19 +37,23 @@ export default function WorkbenchArticleAssistant({ targetKey, targetLabel, targ
   const lifetime = useRef(0);
   const request = useRef(0);
   const currentTargetKey = useRef(targetKey);
-
-  useEffect(() => {
-    lifetime.current += 1;
-    return () => { lifetime.current += 1; };
-  }, []);
-  useEffect(() => {
-    currentTargetKey.current = targetKey;
-    request.current += 1;
+  const [previousTargetKey, setPreviousTargetKey] = useState(targetKey);
+  if (previousTargetKey !== targetKey) {
+    setPreviousTargetKey(targetKey);
     setInstruction('');
     setCandidate(null);
     setError('');
     setStatus('');
     setPending(null);
+  }
+
+  useEffect(() => {
+    lifetime.current += 1;
+    return () => { lifetime.current += 1; };
+  }, []);
+  useLayoutEffect(() => {
+    currentTargetKey.current = targetKey;
+    request.current += 1;
   }, [targetKey]);
 
   const visibleCandidate = candidate?.key === targetKey ? candidate.value : null;

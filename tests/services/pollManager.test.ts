@@ -47,7 +47,7 @@ import { HttpResponseError } from '../../src/services/ai/httpUtils';
 import { createH3QuickAdaptTemplate } from '../../src/services/ai/h3ModelCapabilities';
 import { resolveModelExecutionProfile } from '../../src/services/ai/modelProtocol';
 import { resolvePoll } from '../../src/services/ai/modelProtocolPoll';
-import type { ResolvedModelProtocolPoll } from '../../src/types/aiTypes';
+import type { ImageOutputParameters, ResolvedModelProtocolPoll } from '../../src/types/aiTypes';
 import * as fileService from '../../src/services/fileService';
 import * as comfyPolling from '../../src/services/comfyPolling';
 import * as indexedDbService from '../../src/services/indexedDbService';
@@ -927,6 +927,53 @@ describe('pending generation task recovery', () => {
       videoFps: 24, generateAudio: false, imageBackground: '', imageQuality: 'high' });
     expect(localStorage.getItem('ai_canvas_pending_tasks')).not.toContain('secret');
     expect(localStorage.getItem('ai_canvas_pending_tasks')).not.toContain('不应保存');
+  });
+
+  describe('GIF 原任务恢复参数', () => {
+    const valid: ImageOutputParameters = { imageOutputFormat: 'gif', imageFrameCount: 9,
+      imageFrameDurationMs: 200, imageTransparent: false };
+
+    function capture(parameters: ImageOutputParameters): PendingTask {
+      const release = bindMediaTaskContext('gif-parameters', { projectId: 'project-1', parameters });
+      try {
+        savePendingTask({ projectId: 'project-1', nodeId: 'gif-parameters', nodeType: 'ai-image', provider: 'general',
+          taskType: 'general', taskId: 'original-gif-task', submitted: true });
+      } finally { release(); }
+      return getPendingTasksForProject('project-1')[0];
+    }
+
+    it('解绑后从持久化记录读回帧数、帧时长及 false，并保留合法上下限', () => {
+      for (const [imageFrameCount, imageFrameDurationMs, imageTransparent] of [[2, 20, false], [16, 655350, true], [9, 200, false]] as const) {
+        const parameters = { ...valid, imageFrameCount, imageFrameDurationMs, imageTransparent };
+        expect(capture(parameters).mediaContext?.parameters).toEqual(parameters);
+        const [stored] = JSON.parse(localStorage.getItem('ai_canvas_pending_tasks')!);
+        expect(stored.mediaContext.parameters).toEqual(parameters);
+      }
+    });
+
+    it('恢复读取拒绝超界、非整数、错误步进及文本值，只保留其他合法参数', () => {
+      const task = capture(valid);
+      for (const [field, invalid] of [
+        ['imageFrameCount', 1], ['imageFrameCount', 17], ['imageFrameCount', 2.5], ['imageFrameCount', '9'],
+        ['imageFrameCount', Number.NaN], ['imageFrameDurationMs', 10], ['imageFrameDurationMs', 655360],
+        ['imageFrameDurationMs', 25], ['imageFrameDurationMs', Number.POSITIVE_INFINITY], ['imageFrameDurationMs', '200'],
+        ['imageTransparent', 'false'], ['imageTransparent', 0],
+      ] as const) {
+        localStorage.setItem('ai_canvas_pending_tasks', JSON.stringify([{ ...task,
+          mediaContext: { ...task.mediaContext, parameters: { ...valid, [field]: invalid } } }]));
+        const expected = { ...valid };
+        delete expected[field];
+        expect(getPendingTasksForProject('project-1')[0].mediaContext?.parameters).toEqual(expected);
+      }
+    });
+
+    it('PNG、SVG 及未声明格式不持久化 GIF 专属参数，也不补默认值', () => {
+      for (const imageOutputFormat of ['png', 'svg', undefined] as const) {
+        expect(capture({ ...valid, imageOutputFormat }).mediaContext?.parameters)
+          .toEqual(imageOutputFormat ? { imageOutputFormat } : {});
+      }
+      expect(capture({ imageOutputFormat: 'gif' }).mediaContext?.parameters).toEqual({ imageOutputFormat: 'gif' });
+    });
   });
 
   it('显式空参数快照与旧任务无快照区分，敏感参数从恢复记录中剔除', () => {

@@ -217,6 +217,12 @@ describe('media generation project settings', () => {
 
   it('GIF 默认参数随请求、原任务与结果保留，交付使用原件实际画布尺寸', async () => {
     configureVisualModels();
+    // 格式声明必须有真实协议接线，不能用未配置协议的夹具绕过生产守卫。
+    mocks.storeState.config.generalModels[0].executionProfile = { preset: 'custom', protocol: { version: 2, mode: 'sync',
+      submit: { method: 'POST', path: '/images/generations', body: { model: '{{model}}', prompt: '{{prompt}}', size: '{{size}}',
+        quality: '{{imageQuality}}', background: '{{imageBackground}}', output_format: '{{imageOutputFormat}}',
+        frame_count: '{{imageFrameCount}}', frame_duration_ms: '{{imageFrameDurationMs}}', transparent: '{{imageTransparent}}' } },
+      response: { type: 'json', result: { urlPath: 'data.*.url' } } } };
     Object.assign(mocks.storeState.config.generalModels[0].imageCapability!, {
       outputFormats: ['png', 'gif', 'svg'], defaultOutputFormat: 'png',
       squareOnlyOutputFormats: ['gif', 'svg'], textOnlyOutputFormats: ['gif', 'svg'],

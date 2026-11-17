@@ -1117,7 +1117,7 @@ function AINodeDialog() {
   );
 
   const onChangeImageOutputParameters = useCallback(
-    (parameters: ImageOutputParameters) => updateNodeData(activeNodeId!, parameters),
+    (parameters: ImageOutputParameters) => updateNodeData(activeNodeId!, { ...parameters }),
     [activeNodeId, updateNodeData]
   );
 

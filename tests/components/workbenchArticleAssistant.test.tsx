@@ -9,6 +9,16 @@ let stateIndex = 0;
 let effectIndex = 0;
 const motion = vi.hoisted(() => ({ reduced: false }));
 
+function scheduleEffect(effect: () => void | (() => void), deps?: readonly unknown[]) {
+  const index = effectIndex++;
+  const previous = effects[index];
+  if (previous && deps?.length === previous.deps?.length && deps?.every((dependency, i) => Object.is(dependency, previous.deps?.[i]))) return;
+  pendingEffects.push(() => {
+    previous?.cleanup?.();
+    effects[index] = { deps, cleanup: effect() ?? undefined };
+  });
+}
+
 vi.mock('react', async (original) => ({
   ...await original<typeof import('react')>(),
   useState: <T,>(initial: T | (() => T)) => {
@@ -20,15 +30,8 @@ vi.mock('react', async (original) => ({
   },
   useRef: <T,>(initial: T) => values[stateIndex++] ??= { current: initial },
   useId: () => `article-assistant-${stateIndex++}`,
-  useEffect: (effect: () => void | (() => void), deps?: readonly unknown[]) => {
-    const index = effectIndex++;
-    const previous = effects[index];
-    if (previous && deps?.length === previous.deps?.length && deps?.every((dependency, i) => Object.is(dependency, previous.deps?.[i]))) return;
-    pendingEffects.push(() => {
-      previous?.cleanup?.();
-      effects[index] = { deps, cleanup: effect() ?? undefined };
-    });
-  },
+  useEffect: scheduleEffect,
+  useLayoutEffect: scheduleEffect,
 }));
 vi.mock('../../src/i18n', async (original) => {
   const actual = await original<typeof import('../../src/i18n')>();

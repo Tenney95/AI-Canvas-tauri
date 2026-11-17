@@ -379,7 +379,7 @@ describe('自定义连接 JSON 文件入口', () => {
       .find(([, item]) => item.name === '万象图片组')!;
     expect(id).toMatch(/^relayonapi-/);
     expect(connection).toMatchObject({ catalogId: 'relayonapi', relayonGroup: 'image', apiKey: '' });
-    expect(connection.baseUrl).toBe('https://relayonapi.com/v1');
+    expect(connection.baseUrl).toBe('https://api.relayonapi.com/v1');
     expect(driver.state().setPendingApiKeyConnectionId).toHaveBeenCalledWith(id);
   });
 

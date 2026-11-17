@@ -2,7 +2,7 @@
  * modelProtocol — 回归测试：声明式协议、共享基础规则与执行边界。
  */
 import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
-import type { ModelExecutionProfile, ModelExecutionProtocol, ProtocolJsonValue } from '../../src/types/aiTypes';
+import type { ModelExecutionProfile, ModelExecutionProtocol, NormalizedModelExecutionProtocol, ProtocolJsonValue } from '../../src/types/aiTypes';
 import {
   buildModelProtocolRequest,
   comparableProtocol,
@@ -201,6 +201,7 @@ describe('声明式协议的请求响应调试关联', () => {
     try {
       await expect(pollResolvedModelProtocol({ method: 'GET', url: 'https://gateway.example/v1/tasks/original',
         statusPath: 'status', successValues: ['completed'], failureValues: ['failed'], resultUrlPath: 'url',
+        intervalMs: 1,
       }, 'fallback-key', undefined, 'https://gateway.example/v1')).resolves.toMatchObject({ urls: ['https://cdn.example/fallback.mp4'] });
       expect(transport).toHaveBeenCalledOnce();
       expect(transport.mock.calls[0][2]?.debug).toMatchObject({ traceId: expect.stringMatching(/^ai-/), stage: 'poll' });
@@ -225,7 +226,7 @@ describe('声明式协议的请求响应调试关联', () => {
 
 describe('火山声明式协议的 TOS 隐私边界', () => {
   const signed = 'https://reference-bucket.tos-cn-beijing.ivolces.com/ai-canvas/ark-reference/input.png?X-Tos-Signature=private-fixture-signature';
-  const asyncProtocol = (): ModelExecutionProtocol => ({ version: 2, mode: 'async',
+  const asyncProtocol = (): NormalizedModelExecutionProtocol => ({ version: 2, mode: 'async',
     submit: { method: 'POST', path: '/generate', body: { image: '{{imageUrls}}' } },
     response: { type: 'json', taskIdPath: 'id' }, poll: { method: 'GET', path: '/tasks/{{submit.id}}',
       retry: { maxRetries: 0 }, response: { statusPath: 'status', successValues: ['completed'], failureValues: ['failed'],
@@ -621,12 +622,14 @@ describe('厂商提交幂等身份与明确结果路径', () => {
         expect([...result]).toEqual(['https://cdn.example/image.png']);
         expect(result.mediaDownloadAccess).toEqual({ providerConfigId: 'relay-alias', origin: 'https://relayonapi.com' });
       }
-      expect(uuidSpy).toHaveBeenCalledTimes(2);
       const keys = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')
         .map(([, init]) => new Headers(init?.headers).get('Idempotency-Key'));
       expect(keys).toHaveLength(2);
       expect(keys.every((key) => /^[a-f0-9-]{36}$/i.test(key ?? ''))).toBe(true);
       expect(new Set(keys).size).toBe(2);
+      // 调试 trace 也生成 UUID；仅把实际 POST 头中的标识计作业务幂等号。
+      expect(uuidSpy.mock.results.filter((result) => result.type === 'return' && keys.includes(result.value))
+        .map((result) => result.value)).toEqual(keys);
     } finally {
       uuidSpy.mockRestore();
       useAppStore.setState({ config: previous.config });

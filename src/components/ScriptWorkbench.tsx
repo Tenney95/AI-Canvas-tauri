@@ -169,6 +169,23 @@ const SERIES_ASSET_EXTRACTION_ACTIONS: Array<{
   { kind: 'prop', label: '提取道具', icon: 'lucide:briefcase-business' },
 ];
 
+function createWorkbenchArticleController() {
+  type Access = Required<Pick<Parameters<typeof createWorkbenchArticleSession>[0], 'readTarget' | 'applyTarget' | 'getExecution'>>;
+  let access: Access | undefined;
+  const current = () => {
+    if (!access) throw new Error('文章所在的项目或编辑位置已变化，请重新选择文章');
+    return access;
+  };
+  return {
+    ...createWorkbenchArticleSession({
+      readTarget: (target) => current().readTarget(target),
+      applyTarget: (captured, text) => current().applyTarget(captured, text),
+      getExecution: () => current().getExecution(),
+    }),
+    bindAccess(next: Access) { access = next; },
+  };
+}
+
 function toCreativeDraft(value: EpisodeCreativeInfo | undefined): CreativeDraft {
   return {
     ...EMPTY_CREATIVE_DRAFT,
@@ -1142,6 +1159,7 @@ export default function ScriptWorkbench({
       return { target, projectId: state.currentProjectId!, key, label: document.fileName, content: document.content,
         version: JSON.stringify([document.revision, document.acceptedSequence]) };
     }
+    if (!('documentId' in target)) throw new Error(t('请先打开可编辑的大纲文件并处理未同步的编辑或错误'));
     const summary = outlineDocuments?.getSummary();
     if ((currentEpisode && activeTab !== 'outline') || !outlineDocuments || !summary?.selected || summary.busy || summary.error
       || summary.documentId !== target.documentId) throw new Error(t('请先打开可编辑的大纲文件并处理未同步的编辑或错误'));
@@ -1169,6 +1187,7 @@ export default function ScriptWorkbench({
         originalWriting!.flush({ documentId: target.documentId, sequence: originalWriting!.summary().acceptedSequence + 1, content: text });
         setArticleRevision((previous) => ({ ...previous, original: previous.original + 1 }));
       } else {
+        if (!('documentId' in target)) throw new Error(t('请先打开可编辑的大纲文件并处理未同步的编辑或错误'));
         outlineDocuments!.flush({ documentId: target.documentId, sequence: outlineDocuments!.getSummary().acceptedSequence + 1, content: text });
         setArticleRevision((previous) => ({ ...previous, outlineDocument: previous.outlineDocument + 1 }));
       }
@@ -1183,16 +1202,15 @@ export default function ScriptWorkbench({
       mode: assistantConversation?.agentMode ?? teamMode };
   };
   const articleAccessRef = useRef({ readTarget: readArticleTarget, applyTarget: applyArticleTarget, readExecution: readArticleExecution });
-  const [articleAssistant] = useState(() => createWorkbenchArticleSession({
-    readTarget: (target) => articleAccessRef.current.readTarget(target),
-    applyTarget: (captured, text) => articleAccessRef.current.applyTarget(captured, text),
-    getExecution: () => articleAccessRef.current.readExecution(),
-  }));
+  const [articleAssistant] = useState(createWorkbenchArticleController);
   const [, refreshArticleAssistant] = useState(0);
   useEffect(() => articleAssistant.subscribe(() => refreshArticleAssistant((version) => version + 1)), [articleAssistant]);
   useEffect(() => () => articleAssistant.cancel(), [articleAssistant]);
+  const articleOutlineDocumentId = outlineDocuments?.getSummary().documentId;
+  const articleOutlineDocumentSelected = outlineDocuments?.getSummary().selected;
+  const articleOriginalDocumentId = originalWriting?.summary().documentId;
   useEffect(() => { articleAssistant.cancel(); }, [articleAssistant, contextReady, currentEpisodeId, activeTab, series?.exchangeEpoch,
-    outlineDocuments?.getSummary().documentId, outlineDocuments?.getSummary().selected, originalWriting?.summary().documentId]);
+    articleOutlineDocumentId, articleOutlineDocumentSelected, articleOriginalDocumentId]);
 
   const snapshot: ScriptWorkbenchSnapshot = {
     schemaVersion: 2, windowContext: captureProjectWindowContext(useAppStore.getState(), currentEpisodeId),
@@ -1642,6 +1660,7 @@ export default function ScriptWorkbench({
   };
   useLayoutEffect(() => {
     articleAccessRef.current = { readTarget: readArticleTarget, applyTarget: applyArticleTarget, readExecution: readArticleExecution };
+    articleAssistant.bindAccess({ readTarget: readArticleTarget, applyTarget: applyArticleTarget, getExecution: readArticleExecution });
     snapshotRef.current = snapshot;
     onCloseRequestRef.current = onCloseRequest;
     onPageVisibilityChangeRef.current = onPageVisibilityChange;

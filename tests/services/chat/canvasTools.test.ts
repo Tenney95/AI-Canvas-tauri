@@ -557,6 +557,11 @@ describe('canvas agent tools', () => {
       providers: { ...state.config.providers, output: { name: '图片连接', catalogId: 'custom-openai', apiKey: 'fixture' } },
       generalModels: [
         { id: 'image-output', name: '图片模型', modelId: 'image-output', category: 'image', providerConfigId: 'output',
+          executionProfile: { preset: 'custom', protocol: { version: 2, mode: 'sync',
+            submit: { method: 'POST', path: '/images/generations', body: { model: '{{model}}', prompt: '{{prompt}}', size: '{{size}}',
+              output_format: '{{imageOutputFormat}}', frame_count: '{{imageFrameCount}}',
+              frame_duration_ms: '{{imageFrameDurationMs}}', transparent: '{{imageTransparent}}' } },
+            response: { type: 'json', result: { urlPath: 'data.*.url' } } } },
           imageCapability: { ratios: ['1:1'], resolutions: ['2K'], outputFormats: ['png', 'gif', 'svg'], defaultOutputFormat: 'png',
             squareOnlyOutputFormats: ['gif', 'svg'], textOnlyOutputFormats: ['gif', 'svg'],
             gifFrameCount: { min: 2, max: 16, default: 9 }, gifFrameDurationMs: { min: 20, max: 655350, step: 10, default: 200 },
