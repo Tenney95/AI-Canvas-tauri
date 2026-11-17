@@ -113,7 +113,7 @@ describe('Sora2U 图片生成参考输入', () => {
   });
 
   it('非 Sora 的自定义图片协议显式声明 inlineReferences 时仍有真实内联值和预算', async () => {
-    const selected = { id: 'custom-inline-image', name: '自定义内联图片', category: 'image' as const,
+    const selected = { id: 'custom-inline-image', name: '自定义内联图片', provider: 'custom-openai', category: 'image' as const,
       executionProfile: { preset: 'custom' as const, protocol: { version: 2 as const, mode: 'sync' as const,
         submit: { method: 'POST' as const, path: '/v1/my-images', bodyEncoding: 'json' as const,
           body: { model: '{{model}}', prompt: '{{prompt}}', references: '{{inlineReferences}}' } },

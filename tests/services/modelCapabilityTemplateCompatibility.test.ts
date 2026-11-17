@@ -96,12 +96,28 @@ function relayonBeforeDocumentCorrection() {
   });
 }
 
+// Sora 图片已按用户确认增加内联字段；历史摘要仅还原这两处有意变更，其余合同继续由原哈希锁定。
+// 新旧识别、实际 references/reference_urls 及字节限制由 Sora 专项逐字段用例验证。
+function sora2uBeforeInlineImageTransport() {
+  return SORA2U_MODEL_MANIFEST.map((entry) => {
+    if (entry.category !== 'image') return entry;
+    const model = structuredClone(entry);
+    const protocol = model.executionProfile?.protocol;
+    if (protocol?.version !== 2) throw new Error('缺少已确认的 Sora2U 旧图片协议');
+    const body = protocol.submit.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('Sora2U 图片请求体无效');
+    body.reference_urls = '{{imageUrls}}';
+    delete body.references;
+    return model;
+  });
+}
+
 const PUBLIC_CONTRACTS = {
   toapis: TOAPIS_MODEL_MANIFEST,
   libapi: LIBAPI_MODEL_MANIFEST,
   relayon: relayonBeforeDocumentCorrection(),
   aigcsi: AIGCSI_MODEL_MANIFEST,
-  sora2u: SORA2U_MODEL_MANIFEST,
+  sora2u: sora2uBeforeInlineImageTransport(),
   runninghub: RUNNINGHUB_MODEL_MANIFEST,
   ccc: getProviderDefinition('cccapi')!.models!,
   grsaiVideo: [undefined, '480p', '768p', '1080p'].map((resolution) => ({

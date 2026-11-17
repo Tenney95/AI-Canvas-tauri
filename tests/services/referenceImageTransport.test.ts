@@ -193,7 +193,8 @@ describe('万象参考图片直接文件提交', () => {
       expect(file.name).toBe('own-reference.png');
       expect(file.type).toBe('image/png');
       expect(file.size).toBe(source.size);
-      expect(Buffer.from(await file.arrayBuffer())).toEqual(Buffer.from(await source.arrayBuffer()));
+      // 保留 9 MiB 完整字节相等判据，用原生比较避免 matcher 展开数百万个数组项。
+      expect(Buffer.from(await file.arrayBuffer()).equals(Buffer.from(await source.arrayBuffer()))).toBe(true);
     } else {
       expect(JSON.parse(init.body as string).images).toEqual([await asDataUrl(source)]);
     }
