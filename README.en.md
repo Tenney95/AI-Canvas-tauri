@@ -192,6 +192,8 @@ The toolbar and properties panel of the canvas note visual design reference [Exc
 
 ## Contact
 
+Discord: [Join the AI Canvas community](https://discord.gg/wZ5Qqab78B)
+
 Development QQ group: 873354155
 
 ## Contributors

@@ -213,6 +213,8 @@ npm run tauri build
 
 ## Contact
 
+Discord: [加入 AI Canvas 社区](https://discord.gg/wZ5Qqab78B)
+
 开发沟通 QQ 群：873354155
 
 ## 代码贡献

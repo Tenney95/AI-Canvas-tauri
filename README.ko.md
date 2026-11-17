@@ -188,6 +188,8 @@ npm run tauri build
 
 ## 연락처
 
+Discord: [AI Canvas 커뮤니티 참여](https://discord.gg/wZ5Qqab78B)
+
 개발 소통 QQ 그룹: 873354155
 
 ## 공동 개발자
