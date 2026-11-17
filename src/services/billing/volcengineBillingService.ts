@@ -10,7 +10,7 @@ import type { PriceQuote } from './volcenginePricing';
 import type { LegacyProjectBinding } from '../../types/project';
 import { getLegacyCanvasAliases } from '../projectExecutionCompatibility';
 import { resolveProviderCatalogId } from '../ai/providerPolicies';
-import { getBillingStorageErrorMessage } from './billingStorageErrors';
+import { createPublicBillingStorageError } from './billingStorageErrors';
 
 export { getBillingStorageErrorMessage } from './billingStorageErrors';
 
@@ -63,7 +63,7 @@ export async function setBillingStoragePath(path: string): Promise<string> {
     window.dispatchEvent(new Event(BILLING_STORAGE_CHANGED_EVENT));
     return result;
   } catch (error) {
-    throw new Error(getBillingStorageErrorMessage(error), { cause: error });
+    throw createPublicBillingStorageError(error);
   }
 }
 
@@ -82,7 +82,7 @@ export async function hasBillingHistory(config: BillingStorageConfig = {}): Prom
   if (!isTauriEnv()) return false;
   try {
     return await invoke<boolean>('billing_has_history', { path: await resolveBillingDirectory(config) });
-  } catch (error) { throw new Error(getBillingStorageErrorMessage(error), { cause: error }); }
+  } catch (error) { throw createPublicBillingStorageError(error); }
 }
 
 /** 配置与目录授权完成后同步；没有火山连接且没有已有账本时不初始化。 */
@@ -96,7 +96,7 @@ export async function syncBillingStoragePath(config: BillingStorageConfig): Prom
     if (!configured && !await invoke<boolean>('billing_has_history', { path: directory })) return;
     if (!config.volcengineBillingPath?.trim()) await mkdir(directory, { recursive: true });
     await setBillingStoragePath(directory);
-  } catch (error) { throw new Error(getBillingStorageErrorMessage(error), { cause: error }); }
+  } catch (error) { throw createPublicBillingStorageError(error); }
 }
 
 export const getBillingStoragePath = () =>

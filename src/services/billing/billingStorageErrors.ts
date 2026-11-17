@@ -24,6 +24,11 @@ const NATIVE_STORAGE_REASONS = new Set([
   '账本目录不存在，请重新选择目录',
 ]);
 
+/** 将原生私有异常转换为公开错误；不把含路径或凭据的原对象附加为 cause。 */
+export function createPublicBillingStorageError(error: unknown): Error {
+  return new Error(getBillingStorageErrorMessage(error));
+}
+
 export function getBillingStorageErrorMessage(error: unknown): string {
   const message = typeof error === 'string' ? error : error instanceof Error ? error.message : '';
   if (NATIVE_STORAGE_REASONS.has(message)) return message;
