@@ -13,6 +13,7 @@
  * 公共前置处理（prompt 解析、图床上传、空值校验）统一在此完成。
  */
 import { useAppStore } from '../../store/useAppStore';
+import { isRemoteMediaUrl } from '../../utils/mediaUrl';
 import { getEnabledProjectStyleReferenceUrl } from '../projectSettingsService';
 import { DEFAULT_BASE_URLS } from '../../constants/api';
 import { mapImageDimensions } from '../aiDimensions';
@@ -39,6 +40,7 @@ import { mediaProviderRegistry } from './mediaProviderRegistry';
 import { executeModelProtocol, modelProtocolUsesVariable, resolveModelExecutionProfile } from './modelProtocol';
 import { assertConfiguredImageReferences, assertModelCapabilityProtocol, resolveConfiguredImageParameters, resolveConfiguredImageBackground, resolveConfiguredImageQuality } from './modelCapabilityValidation';
 import { getProviderDefinition, resolveCccGeminiImageExecutionProfile } from './providerCatalogService';
+import { getProviderPolicy } from './providerPolicies';
 import { resolveBuiltInImageRequestContract, validateBuiltInImageResponse } from './imageRequestContracts';
 import { buildGoogleImageParts, resolveImageTemplateDimensions } from './imageModelTemplates';
 import { assertToapisImageInput, resolveToapisImageModelContract, toapisImageReferences } from './providers/toapisModelManifest';
@@ -46,6 +48,7 @@ import { assertLibapiImageInput, libapiImageExecutionProfile, libapiImageVariabl
 import { RELAYON_IMAGE_REFERENCE_LIMIT, relayonImageVariables, resolveRelayonImageExecutionProfile, resolveRelayonImageModelContract, usesRelayonImageFileUpload, usesRelayonModelProtocol } from './providers/relayonModelManifest';
 import { resolveRelayonImageBaseUrl } from './relayonProviderGroups';
 import { aigcsiImageExecutionProfile, usesAigcsiModelProtocol } from './providers/aigcsiModelManifest';
+import { SORA2U_IMAGE_REFERENCE_LIMIT, SORA2U_INLINE_REFERENCE_MAX_BYTES, resolveSora2uImageExecutionProfile, sora2uImageVariables, usesSora2uModelProtocol } from './providers/sora2uModelManifest';
 import { resolveImageOutputsPerJob, resolveImageExecutionCapability } from './mediaModelCapabilities';
 import { DREAMINA_IMAGE_RATIOS } from './dreaminaModels';
 import { compileVideoReferencePrompt } from './referencePrompt';
@@ -59,6 +62,11 @@ const RELAYON_FILE_IMAGE_BUDGET = {
   maxImages: RELAYON_IMAGE_REFERENCE_LIMIT,
   maxImageBytes: 20 * 1024 * 1024,
   maxTotalBytes: 48 * 1024 * 1024,
+};
+const SORA2U_IMAGE_REFERENCE_BUDGET = {
+  maxImages: SORA2U_IMAGE_REFERENCE_LIMIT,
+  maxImageBytes: SORA2U_INLINE_REFERENCE_MAX_BYTES,
+  maxTotalBytes: SORA2U_INLINE_REFERENCE_MAX_BYTES,
 };
 
 function hasReferenceImageFile(value: unknown): boolean {
@@ -294,12 +302,17 @@ export async function generateImagesBatch(
   const providerDefinition = getProviderDefinition(connectionId, providerConfig);
   const isLibapi = !params.workflowId && providerDefinition?.id === 'libapi';
   const usesVolcengineTos = !params.workflowId && providerDefinition?.id === 'volcengine';
+  const referencesUseRequestFiles = !params.workflowId
+    && getProviderPolicy(providerDefinition?.id).referenceTransport === 'request-files';
   if (providerDefinition?.id === 'cccapi' && !providerConfig?.apiKey?.trim()) {
     const group = providerConfig?.cccGroup ? `「${providerConfig.cccGroup}」分组` : '连接';
     throw new Error(`未配置 CCC API ${group}的 API Key\n请在「设置 → API Key」中配置对应连接`);
   }
   const catalogModel = providerDefinition?.models?.find((item) => item.id === modelName);
   const selectedModel = providerConfig?.selectedModels?.find((item) => item.id === modelName);
+  const isSora2uImage = !params.workflowId && providerDefinition?.id === 'sora2u';
+  const sora2uExecutionProfile = isSora2uImage ? resolveSora2uImageExecutionProfile(modelName,
+    generalModel?.executionProfile ?? selectedModel?.executionProfile ?? catalogModel?.executionProfile) : undefined;
   const toapisContract = providerDefinition?.id === 'toapis' && !params.workflowId
     ? resolveToapisImageModelContract(modelName, generalModel?.executionProfile, generalModel?.imageCapability)
     : undefined;
@@ -311,7 +324,7 @@ export async function generateImagesBatch(
   const cccExecutionProfile = isCccImage ? resolveCccGeminiImageExecutionProfile(
     modelName, generalModel?.executionProfile ?? selectedModel?.executionProfile,
   ) : undefined;
-  const effectiveProfile = cccExecutionProfile ?? toapisContract?.executionProfile
+  const effectiveProfile = cccExecutionProfile ?? sora2uExecutionProfile ?? toapisContract?.executionProfile
     ?? relayonContract?.executionProfile ?? characterRoute?.profile ?? generalModel?.executionProfile;
   if (isCccImage && /^(?:gemini-.*image|nano-banana)/i.test(modelName)
     && (!effectiveProfile || effectiveProfile.preset === 'openai-image' || effectiveProfile.preset === 'openai-gpt-image')) {
@@ -319,7 +332,8 @@ export async function generateImagesBatch(
   }
   // 直连节点仍绑定原连接；只为已配置协议构造本轮执行描述，不写入或迁移用户配置。
   const declarativeModel: GeneralModelConfig | undefined = generalModel ?? (isCccImage
-    || !params.workflowId && providerDefinition?.id === 'relayonapi' && effectiveProfile ? {
+    || !params.workflowId && providerDefinition?.id === 'relayonapi' && effectiveProfile
+    || isSora2uImage && effectiveProfile ? {
     id: modelName, modelId: modelName, name: selectedModel?.name ?? catalogModel?.name ?? modelName,
     category: 'image', providerConfigId: connectionId,
   } : undefined);
@@ -366,6 +380,7 @@ export async function generateImagesBatch(
     ? resolveImageOutputsPerJob(model, provider, config) : 1;
   const usesAigcsiProtocol = providerDefinition?.id === 'aigc-si'
     && usesAigcsiModelProtocol(modelName, executionProfile);
+  const usesSora2uProtocol = isSora2uImage && usesSora2uModelProtocol(modelName, executionProfile);
   const usesStandardImageRequest = !executionProfile
     || executionProfile.preset === 'openai-image'
     || executionProfile.preset === 'openai-gpt-image';
@@ -380,8 +395,9 @@ export async function generateImagesBatch(
     ? resolveModelExecutionProfile(executionProfile)
     : undefined;
   const usesGoogleImageParts = !!customProtocol && modelProtocolUsesVariable(JSON.stringify(customProtocol.submit), 'googleImageParts');
+  const usesCustomInlineReferences = !!customProtocol && modelProtocolUsesVariable(JSON.stringify(customProtocol.submit), 'inlineReferences');
   const usesImageDataUrls = !params.workflowId
-    && (provider === 'muse' || characterMidjourney || usesGoogleImageParts || usesAigcsiProtocol || usesRelayonProtocol || builtInContract?.kind === 'protocol' && builtInContract.referenceInput === 'data-url'
+    && (provider === 'muse' || characterMidjourney || usesGoogleImageParts || usesCustomInlineReferences || usesAigcsiProtocol || usesRelayonProtocol || usesSora2uProtocol || builtInContract?.kind === 'protocol' && builtInContract.referenceInput === 'data-url'
       || imageReferenceRequestMode === 'generation-json-image-data-urls');
   const usesImageMultipart = !params.workflowId
     && usesStandardImageRequest
@@ -402,7 +418,7 @@ export async function generateImagesBatch(
     ? { prompt: rawPrompt, imageUrls: [] }
     : localMedia
     ? { prompt: localMedia.prompt, imageUrls: getMediaReferenceUrls(localMedia.references, 'image', 'local') }
-    : await resolvePromptWithImageRefs(rawPrompt, { preferLocalImages: usesImageMultipart || usesCustomImageFiles || usesImageDataUrls || usesVolcengineTos || providerDefinition?.id === 'toapis' || isLibapi || !!providerConfig?.imageHosting?.enabled, cameraSettings });
+    : await resolvePromptWithImageRefs(rawPrompt, { preferLocalImages: usesImageMultipart || usesCustomImageFiles || usesImageDataUrls || usesVolcengineTos || referencesUseRequestFiles || providerDefinition?.id === 'toapis' || isLibapi || !!providerConfig?.imageHosting?.enabled, cameraSettings });
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
 
   // 仅归一同一节点的来源别名；裸 URL 或其他节点仍可能明确需要未标注的原图。
@@ -503,11 +519,17 @@ export async function generateImagesBatch(
   const aigcsiExecutionProfile = usesAigcsiProtocol ? aigcsiImageExecutionProfile(allImageUrls.length) : undefined;
   // 方舟固定接收 URL；历史模型的 Base64/multipart 偏好不能绕过专用 TOS 上传。
   // multipart 直接读取原始参考图，避免本地图片先上传图床再下载回来的额外网络依赖。
-  allImageUrls = usesVolcengineTos ? await resolveImageUrlArray(allImageUrls, connectionId, signal)
+  if (usesSora2uProtocol) {
+    if (allImageUrls.length > SORA2U_IMAGE_REFERENCE_LIMIT) throw new Error('Sora2U 图片模型最多支持 4 张参考图');
+    // 混合来源整组内联，保留参考图顺序，不猜服务端两个数组的合并顺序。
+    if (allImageUrls.some((url) => !isRemoteMediaUrl(url) || !/^https:\/\//i.test(url))) {
+      allImageUrls = await resolveImageDataUrlArray(allImageUrls, signal, SORA2U_IMAGE_REFERENCE_BUDGET);
+    }
+  } else allImageUrls = usesVolcengineTos ? await resolveImageUrlArray(allImageUrls, connectionId, signal)
     : provider === 'runninghub' || usesImageMultipart ? allImageUrls : usesImageDataUrls || usesCustomImageFiles
     ? await resolveImageDataUrlArray(allImageUrls, signal, usesRelayonImageFiles ? RELAYON_FILE_IMAGE_BUDGET
-      : usesGoogleImageParts || characterWorkbench ? IMAGE_GENERATION_DATA_URL_BUDGET : undefined)
-    : await resolveImageUrlArray(allImageUrls, providerDefinition?.id === 'toapis' || isLibapi || providerDefinition?.id === 'custom-openai' ? connectionId : provider, signal);
+      : usesGoogleImageParts || usesCustomInlineReferences || characterWorkbench || referencesUseRequestFiles && usesCustomImageFiles ? IMAGE_GENERATION_DATA_URL_BUDGET : undefined)
+    : await resolveImageUrlArray(allImageUrls, connectionId, signal);
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
 
   if (!prompt.trim() && provider !== 'runninghub') throw new Error('提示词不能为空');
@@ -632,6 +654,10 @@ export async function generateImagesBatch(
         n: requestedCount,
         batchCount: requestedCount,
         imageUrls: providerDefinition?.id === 'toapis' ? toapisImageReferences(modelName, allImageUrls) : allImageUrls,
+        referenceUrls: allImageUrls.some((url) => isRemoteMediaUrl(url) && /^https:\/\//i.test(url))
+          ? allImageUrls.filter((url) => isRemoteMediaUrl(url) && /^https:\/\//i.test(url)) : undefined,
+        inlineReferences: allImageUrls.some((url) => /^data:image\//i.test(url))
+          ? allImageUrls.filter((url) => /^data:image\//i.test(url)) : undefined,
         ...(usesGoogleImageParts
           ? { googleImageParts: buildGoogleImageParts(prompt, allImageUrls) } : {}),
       };
@@ -646,7 +672,8 @@ export async function generateImagesBatch(
         ...(outputsPerJob > 1 ? { expectedImageOutputs: outputsPerJob } : {}),
         ...(usesRelayonProtocol ? { useRelayonImageApi: true } : {}),
         variables: usesLibapiProtocol ? libapiImageVariables(modelName, variables)
-          : usesRelayonProtocol ? relayonImageVariables(modelName, variables) : variables,
+          : usesRelayonProtocol ? relayonImageVariables(modelName, variables)
+            : usesSora2uProtocol ? sora2uImageVariables(variables) : variables,
       });
       const results = (outputsPerJob > 1 ? urls : urls.slice(0, requestedCount)).map((url) => ({ url, ...dimensions,
         ...(urls.taskReceipt ? { taskReceipt: urls.taskReceipt } : {}),

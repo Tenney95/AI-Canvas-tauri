@@ -16,9 +16,11 @@ export interface ProviderPolicy {
     readonly connectionTest: 'default' | 'catalog';
   };
   /** 仅选择已有上传实现；地址、凭据及媒体约束仍由各实现复核。 */
-  readonly upload?: 'toapis' | 'libapi' | 'minimax' | 'volcengine-tos';
-  /** 媒体参考需要公网地址；无专用上传实现时沿用应用已有公共上传服务。 */
-  readonly referenceTransport?: 'public-url';
+  readonly upload?: 'apimart' | 'toapis' | 'libapi' | 'minimax' | 'volcengine-tos';
+  /** 内置中转站不能把参考素材改传连接图床或全局公共托管。 */
+  readonly publicUploadFallback?: 'deny';
+  /** 公网地址或随模型请求提交文件；后者不允许回退到独立图床上传。 */
+  readonly referenceTransport?: 'public-url' | 'request-files';
   /** 仅为每次新媒体提交注入应用生成的幂等身份，不启用提交重试。 */
   readonly submitIdempotency?: boolean;
 }
@@ -34,33 +36,35 @@ const DEFAULT_POLICY: Readonly<ProviderPolicy> = Object.freeze({
 });
 
 const POLICY_OVERRIDES: Record<string, PolicyOverrides> = {
+  apimart: { upload: 'apimart', publicUploadFallback: 'deny' },
+  grsai: { publicUploadFallback: 'deny' },
   volcengine: { upload: 'volcengine-tos' },
   'custom-openai': { syncGeneralModels: true },
   xai: { syncGeneralModels: true },
   google: { syncGeneralModels: true },
   minimax: { syncGeneralModels: true, upload: 'minimax',
     modelMenuGroup: { scope: 'connection', description: '使用当前 MiniMax 官方连接中的视频与语音模型' } },
-  sora2u: { syncGeneralModels: true,
+  sora2u: { syncGeneralModels: true, publicUploadFallback: 'deny',
     modelMenuGroup: { scope: 'connection', description: 'Seedance 视频与图片模型' } },
-  cccapi: { syncGeneralModels: true,
+  cccapi: { syncGeneralModels: true, publicUploadFallback: 'deny',
     modelMenuGroup: { scope: 'catalog', description: '按模型所属分组自动使用对应的 API Key' },
     catalog: { initialModelsOnCreate: 'empty', refresh: 'replace', fallback: 'ungrouped-only', connectionTest: 'catalog' } },
   toapis: { syncGeneralModels: true,
     modelMenuGroup: { scope: 'connection', description: '使用连接中选择的国内站或国际站' },
     catalog: { refresh: 'replace', fallback: 'deny', invalidateOnKeyChange: true, connectionTest: 'catalog' },
-    upload: 'toapis' },
+    upload: 'toapis', publicUploadFallback: 'deny' },
   libapi: { syncGeneralModels: true,
     modelMenuGroup: { scope: 'connection', description: '使用当前 LibAPI 连接中启用的模型' },
     catalog: { refresh: 'replace', fallback: 'deny', invalidateOnKeyChange: true, connectionTest: 'catalog' },
-    upload: 'libapi' },
+    upload: 'libapi', publicUploadFallback: 'deny' },
   relayonapi: { syncGeneralModels: true,
     modelMenuGroup: { scope: 'catalog', description: '按模型所属分组使用对应的 API Key' },
     catalog: { refresh: 'replace', fallback: 'deny', invalidateOnKeyChange: true, connectionTest: 'catalog' },
-    referenceTransport: 'public-url', submitIdempotency: true },
+    referenceTransport: 'request-files', publicUploadFallback: 'deny', submitIdempotency: true },
   'aigc-si': { syncGeneralModels: true,
     modelMenuGroup: { scope: 'connection', description: '使用当前 Amam 连接中启用的图片与视频模型' },
     catalog: { refresh: 'replace', fallback: 'deny', invalidateOnKeyChange: true, connectionTest: 'catalog' },
-    submitIdempotency: true },
+    publicUploadFallback: 'deny', submitIdempotency: true },
 };
 
 const POLICIES = new Map(Object.entries(POLICY_OVERRIDES).map(([id, overrides]) => [id, Object.freeze({

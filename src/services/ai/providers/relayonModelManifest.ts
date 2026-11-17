@@ -9,8 +9,9 @@
  * 其余型号不推断质量、背景或未公开的首尾帧合同。
  */
 import type { ProviderModelSelection } from '../../../types';
-import type { ImageModelCapability, ImageOutputParameters, ModelExecutionProfile, NormalizedModelExecutionProtocol, ProtocolJsonValue, VideoModelCapability } from '../../../types/aiTypes';
+import type { ImageModelCapability, ImageOutputParameters, MediaReferenceKind, ModelExecutionProfile, NormalizedModelExecutionProtocol, ProtocolJsonValue, VideoModelCapability } from '../../../types/aiTypes';
 import type { ModelProtocolVariables } from '../modelProtocolTypes';
+import { isRemoteMediaUrl } from '../../../utils/mediaUrl';
 import { comparableProtocol } from '../modelProtocol';
 import { getImageSizePresets } from '../modelSizeProfiles';
 import { getImageCapabilityTemplate, getVideoCapabilityTemplate } from '../modelCapabilityTemplates';
@@ -388,13 +389,74 @@ export function usesRelayonModelProtocol(modelId: string, profile: ModelExecutio
   return actual === comparableProtocol(previous);
 }
 
+// 官网当前明确的 /videos 文件合同；不把其他线路的 URL 能力推断为文件上传能力。
+const VIDEO_FILE_KINDS: Readonly<Record<string, readonly MediaReferenceKind[]>> = {
+  'sd-2.0-A': ['image', 'video', 'audio'], 'sd-2.5-A': ['image', 'video', 'audio'],
+  'sd-2.0-c1': ['image', 'video', 'audio'], 'minimax-h3': ['image', 'video', 'audio'],
+  'sd-2.0-c2': ['image', 'audio'], 'sd-2.0-c3': ['image', 'audio'],
+  'sd-2.5-c1': ['image'], 'sd-2.5-c2': ['image'], 'sd-2.5-c3': ['image'],
+};
+
+export function getRelayonVideoFileKinds(modelId: string, profile: ModelExecutionProfile | undefined): readonly MediaReferenceKind[] {
+  return usesRelayonModelProtocol(modelId, profile) ? VIDEO_FILE_KINDS[modelId] ?? [] : [];
+}
+
 /** 仅为新提交投影完整新旧内置协议，不修改配置或已提交任务的恢复合同。 */
 export function resolveRelayonVideoExecutionProfile(
   modelId: string, profile: ModelExecutionProfile | undefined,
+  variables?: ModelProtocolVariables,
 ): ModelExecutionProfile | undefined {
   const known = MODEL_BY_ID.get(modelId);
-  return known?.category === 'video' && usesRelayonModelProtocol(modelId, profile)
-    ? structuredClone(known.executionProfile) : profile;
+  if (known?.category !== 'video' || !usesRelayonModelProtocol(modelId, profile)) return profile;
+  const result = structuredClone(known.executionProfile)!;
+  if (!variables) return result;
+  const protocol = result.protocol;
+  if (protocol?.version !== 2) throw new Error('RelayOnAPI 内置视频合同必须使用 version 2 协议');
+  const body = protocol.submit.body as Record<string, ProtocolJsonValue>;
+  const supportedFiles = getRelayonVideoFileKinds(modelId, profile);
+  const remoteReferences: ProtocolJsonValue[] = [];
+  const sourceReferences = Array.isArray(body.references) ? body.references : [];
+  let hasFiles = false;
+  for (const kind of ['image', 'video', 'audio'] as const) {
+    const variable = kind === 'image' ? 'referenceImageUrls' : kind === 'video' ? 'referenceVideoUrls' : 'referenceAudioUrls';
+    const urls = stringArray(variables, variable);
+    const files: ProtocolJsonValue[] = [];
+    const source = sourceReferences.find((item) => item && typeof item === 'object' && !Array.isArray(item)
+      && item.$forEach === `{{${variable}}}`);
+    const sourceValue = source && typeof source === 'object' && !Array.isArray(source) ? source.$value : undefined;
+    urls.forEach((url, index) => {
+      if (isRemoteMediaUrl(url) && /^https:\/\//i.test(url)) {
+        if (!sourceValue || typeof sourceValue !== 'object' || Array.isArray(sourceValue)) {
+          throw new Error('万象当前模型没有对应的参考素材请求字段，请检查模型协议');
+        }
+        remoteReferences.push({ ...sourceValue, url: `{{${variable}.${index}}}` });
+        return;
+      }
+      const mime = /^data:([^;,]+);base64,/i.exec(url)?.[1].toLowerCase();
+      const label = kind === 'image' ? '图片' : kind === 'video' ? '视频' : '音频';
+      if (!supportedFiles.includes(kind)) {
+        throw new Error(`万象模型“${modelId}”尚未公开${label}文件直传合同，请使用可公开访问的 HTTPS 素材地址；不会回退到图床`);
+      }
+      if (!mime?.startsWith(`${kind}/`)) throw new Error(`万象参考${label}文件类型无效，请重新导入该类型的文件，或使用可公开访问的 HTTPS 地址`);
+      const extension = ({ 'video/mp4': 'mp4', 'video/quicktime': 'mov', 'audio/mpeg': 'mp3',
+        'audio/mp3': 'mp3', 'audio/wav': 'wav', 'audio/x-wav': 'wav',
+      } as Record<string, string>)[mime] ?? (kind === 'image' ? 'png' : 'bin');
+      files.push({ $file: `{{${variable}.${index}}}`, filename: `reference-${kind}-${index + 1}.${extension}` });
+    });
+    if (files.length) {
+      if (files.length !== urls.length) throw new Error('万象同类型参考素材须统一转为文件后提交，以保持素材编号顺序');
+      hasFiles = true;
+      // 视频接口使用 image/images、video/videos、audio/audios，与图片编辑的 image[] 不同。
+      body[files.length === 1 ? kind : `${kind}s`] = files.length === 1 ? files[0] : files;
+    }
+  }
+  if (hasFiles) {
+    protocol.submit.bodyEncoding = 'multipart';
+    // 外层数组只追加一个 part，内层数组由既有编码器 JSON.stringify，避免重复 references 对象字段。
+    if (remoteReferences.length) body.references = [remoteReferences];
+    else delete body.references;
+  }
+  return result;
 }
 
 /** 恢复端按原回执摘要选择，不按“新版优先”替换已提交合同。 */

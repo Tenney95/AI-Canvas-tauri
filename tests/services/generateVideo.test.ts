@@ -35,11 +35,13 @@ import { resolveVideoSubmissionControls } from '../../src/services/ai/videoReque
 import { TOAPIS_MODEL_MANIFEST } from '../../src/services/ai/providers/toapisModelManifest';
 import { LIBAPI_MODEL_MANIFEST } from '../../src/services/ai/providers/libapiModelManifest';
 import { RELAYON_MODEL_MANIFEST } from '../../src/services/ai/providers/relayonModelManifest';
+import { SORA2U_MODEL_MANIFEST } from '../../src/services/ai/providers/sora2uModelManifest';
 import { MINIMAX_BASE_URL, MINIMAX_MODEL_MANIFEST } from '../../src/services/ai/providers/minimaxModelManifest';
 import { getPendingTasksForProject, removePendingTask } from '../../src/services/pollManager';
 import { buildCharacterVideoReferences, resolveVideoParameterInputMode } from '../../src/components/nodes/shared/VideoParamSelector';
 import type {
   AIVideoGenParams,
+  MediaReference,
   ModelExecutionProfile,
   VideoModelCapability,
   VideoGenerationReferenceInput,
@@ -205,6 +207,16 @@ describe('MiniMax 官方视频素材与任务交付', () => {
 });
 
 describe('RelayOnAPI 视频渠道与原任务交付', () => {
+  const inlineImages = (urls: string[]) => urls.map((_url, index) => `data:image/png;base64,${btoa(`image-${index + 1}`)}`);
+  async function submittedVideoForm(init: RequestInit): Promise<FormData> {
+    expect(new Headers(init.headers).get('Content-Type')).toMatch(/^multipart\/form-data; boundary=/);
+    expect(new Headers(init.headers).get('Authorization')).toBe('Bearer relayon-video-fixture');
+    return new Response(init.body, { headers: init.headers }).formData();
+  }
+  async function fileContents(form: FormData, field: string): Promise<string[]> {
+    return Promise.all(form.getAll(field).map((file) => (file as File).text()));
+  }
+
   function configure(modelId: string) {
     const selected = RELAYON_MODEL_MANIFEST.find((item) => item.id === modelId)!;
     useAppStore.getState().saveProviderConfig('relayon-video-alias', {
@@ -280,6 +292,7 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
   it.each([4, 16, 21, 29, 31])('H3 非档位 %s 秒在上传和生成之前拒绝', async (duration) => {
     const params = configure('minimax-h3');
     const image = vi.spyOn(imageUtils, 'resolveImageUrlArray');
+    const inline = vi.spyOn(imageUtils, 'resolveImageDataUrlArray');
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     try {
@@ -287,13 +300,16 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
         referenceMedia: [{ kind: 'image', role: 'reference', origin: 'connection', url: 'data:image/png;base64,YQ==' }],
       })).rejects.toThrow(/时长|秒/);
       expect(image).not.toHaveBeenCalled();
+      expect(inline).not.toHaveBeenCalled();
       expect(fetchMock).not.toHaveBeenCalled();
-    } finally { image.mockRestore(); }
+    } finally { image.mockRestore(); inline.mockRestore(); }
   });
 
   it('C3 参考图片保留顺序，编号转换为文档的 @图，完成后鉴权取件', async () => {
     const params = configure('sd-2.0-c3');
     const image = vi.spyOn(imageUtils, 'resolveImageUrlArray').mockImplementation(async (urls) => urls);
+    const inline = vi.spyOn(imageUtils, 'resolveImageDataUrlArray').mockRejectedValue(new Error('纯 HTTPS 不应读取参考图片'));
+    const read = vi.spyOn(fileService, 'readFileToDataUrl').mockRejectedValue(new Error('纯 HTTPS 不应下载参考文件'));
     const media = vi.spyOn(uploadService, 'resolveMediaReferenceUrl').mockImplementation(async (url) => url);
     const constraints = vi.spyOn(videoInputValidation, 'assertVideoInputConstraints').mockResolvedValue(undefined);
     const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ id: 'c3-task' })))
@@ -310,12 +326,16 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
         duration: 15, resolution: '720p', aspect_ratio: '1:1', references: [
           { type: 'image', url: 'https://cdn.example/i.png' }, { type: 'image', url: 'https://cdn.example/i2.png' },
         ] });
-    } finally { image.mockRestore(); media.mockRestore(); constraints.mockRestore(); }
+      expect(image).not.toHaveBeenCalled();
+      expect(inline).not.toHaveBeenCalled();
+      expect(read).not.toHaveBeenCalled();
+    } finally { image.mockRestore(); inline.mockRestore(); read.mockRestore(); media.mockRestore(); constraints.mockRestore(); }
   });
 
   it.each([5, 10, 15])('C3 的 %s 秒音频输入优先校验素材限制，在上传与提交前拒绝', async (duration) => {
     const params = configure('sd-2.0-c3');
     const image = vi.spyOn(imageUtils, 'resolveImageUrlArray');
+    const inline = vi.spyOn(imageUtils, 'resolveImageDataUrlArray');
     const media = vi.spyOn(uploadService, 'resolveMediaReferenceUrl');
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
@@ -326,9 +346,10 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
           { kind: 'audio', role: 'reference_audio', origin: 'connection', url: 'data:audio/mpeg;base64,YQ==' },
         ] })).rejects.toThrow('参考音频');
       expect(image).not.toHaveBeenCalled();
+      expect(inline).not.toHaveBeenCalled();
       expect(media).not.toHaveBeenCalled();
       expect(fetchMock).not.toHaveBeenCalled();
-    } finally { image.mockRestore(); media.mockRestore(); }
+    } finally { image.mockRestore(); inline.mockRestore(); media.mockRestore(); }
   });
 
   it.each([
@@ -337,6 +358,7 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
   ] as const)('%s 历史输入保留的 %s 秒在任何上传和提交之前拒绝', async (modelId, duration) => {
     const params = configure(modelId);
     const image = vi.spyOn(imageUtils, 'resolveImageUrlArray');
+    const inline = vi.spyOn(imageUtils, 'resolveImageDataUrlArray');
     const media = vi.spyOn(uploadService, 'resolveMediaReferenceUrl');
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
@@ -345,9 +367,10 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
         referenceMedia: [{ kind: 'image', role: 'reference', origin: 'connection', url: 'data:image/png;base64,YQ==' }],
       })).rejects.toThrow(/时长|秒/);
       expect(image).not.toHaveBeenCalled();
+      expect(inline).not.toHaveBeenCalled();
       expect(media).not.toHaveBeenCalled();
       expect(fetchMock).not.toHaveBeenCalled();
-    } finally { image.mockRestore(); media.mockRestore(); }
+    } finally { image.mockRestore(); inline.mockRestore(); media.mockRestore(); }
   });
 
   it.each(['sd-2.5-c1', 'sd-2.5-c2', 'sd-2.5-c3'])('%s 沿用 2.5 C1 顶层参数提交 30 秒／21:9 并保持当前连接身份', async (modelId) => {
@@ -367,9 +390,11 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it.each(['sd-2.5-c2', 'sd-2.5-c3'])('%s 固定 30 秒并保留音视频参考，不套用 2.0 C2／C3 的素材限制', async (modelId) => {
+  it.each(['sd-2.5-c1', 'sd-2.5-c2', 'sd-2.5-c3'])('%s 固定 30 秒并保留 HTTPS 音视频参考，不套用 2.0 C2／C3 的素材限制', async (modelId) => {
     const params = configure(modelId);
     const image = vi.spyOn(imageUtils, 'resolveImageUrlArray').mockImplementation(async (urls) => urls);
+    const inline = vi.spyOn(imageUtils, 'resolveImageDataUrlArray').mockRejectedValue(new Error('纯 HTTPS 不应读取参考图片'));
+    const read = vi.spyOn(fileService, 'readFileToDataUrl').mockRejectedValue(new Error('纯 HTTPS 不应下载参考文件'));
     const media = vi.spyOn(uploadService, 'resolveMediaReferenceUrl').mockImplementation(async (url) => url);
     const constraints = vi.spyOn(videoInputValidation, 'assertVideoInputConstraints').mockResolvedValue(undefined);
     const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ id: 'sd25-reference-task' })))
@@ -389,10 +414,134 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
           { type: 'image', url: 'https://cdn.example/i.png', role: 'reference' },
           { type: 'video', url: 'https://cdn.example/v.mp4' }, { type: 'audio', url: 'https://cdn.example/a.mp3' },
         ] });
+      expect(image).not.toHaveBeenCalled();
+      expect(inline).not.toHaveBeenCalled();
+      expect(read).not.toHaveBeenCalled();
       expect(fetchMock.mock.calls[0][1].headers).toMatchObject({ Authorization: 'Bearer relayon-video-fixture' });
       expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['https://relayonapi.com/v1/videos',
         'https://relayonapi.com/v1/videos/sd25-reference-task', 'https://relayonapi.com/v1/videos/sd25-reference-task/content']);
-    } finally { image.mockRestore(); media.mockRestore(); constraints.mockRestore(); }
+    } finally { image.mockRestore(); inline.mockRestore(); read.mockRestore(); media.mockRestore(); constraints.mockRestore(); }
+  });
+
+  it.each(['sd-2.0-A', 'sd-2.5-A', 'minimax-h3'])('%s 本地图片、视频和音频直接编为万象文件，不调用公共图片上传', async (modelId) => {
+    const params = configure(modelId);
+    const duration = RELAYON_MODEL_MANIFEST.find((model) => model.id === modelId)!.videoCapability!.defaultDuration!;
+    const image = vi.spyOn(imageUtils, 'resolveImageDataUrlArray').mockImplementation(async (urls) => inlineImages(urls));
+    const publicImages = vi.spyOn(imageUtils, 'resolveImageUrlArray').mockRejectedValue(new Error('不得调用公共图片上传'));
+    const media = vi.spyOn(uploadService, 'resolveMediaReferenceUrl').mockImplementation(async (_url, options) => {
+      expect(options).toMatchObject({ mode: 'dataUrl', provider: 'relayon-video-alias' });
+      return options?.kind === 'video' ? 'data:video/mp4;base64,dmlkZW8=' : 'data:audio/mpeg;base64,YXVkaW8=';
+    });
+    const constraints = vi.spyOn(videoInputValidation, 'assertVideoInputConstraints').mockResolvedValue(undefined);
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ id: 'local-media-task' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'completed' })))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { headers: { 'Content-Type': 'video/mp4' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const result = await generateVideo({ ...params, prompt: '图片1参考视频1和音频1', seedanceDuration: duration,
+        seedanceResolution: '720p', seedanceRatio: '16:9', referenceMedia: [
+          { kind: 'image', role: 'reference', origin: 'connection', url: 'asset://localhost/image.png' },
+          { kind: 'video', role: 'reference', origin: 'connection', url: 'asset://localhost/video.mp4' },
+          { kind: 'audio', role: 'reference_audio', origin: 'connection', url: 'asset://localhost/audio.mp3' },
+        ] });
+      expect(result.url).toBe('data:video/mp4;base64,AQID');
+      const form = await submittedVideoForm(fetchMock.mock.calls[0][1]);
+      expect(form.get('model')).toBe(modelId);
+      expect(form.get(modelId.endsWith('-A') ? 'seconds' : 'duration')).toBe(String(duration));
+      expect(await fileContents(form, 'image')).toEqual(['image-1']);
+      expect(await fileContents(form, 'video')).toEqual(['video']);
+      expect(await fileContents(form, 'audio')).toEqual(['audio']);
+      expect(form.has('references')).toBe(false);
+      expect(publicImages).not.toHaveBeenCalled();
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['https://relayonapi.com/v1/videos',
+        'https://relayonapi.com/v1/videos/local-media-task', 'https://relayonapi.com/v1/videos/local-media-task/content']);
+    } finally { image.mockRestore(); publicImages.mockRestore(); media.mockRestore(); constraints.mockRestore(); }
+  });
+
+  it.each(['explicit', 'connected'] as const)('%s 参考优先 filePath，同类 HTTPS 与本地素材统一为文件并保留编号顺序', async (sourceMode) => {
+    const params = configure('sd-2.0-c1');
+    const kinds = ['image', 'video', 'audio'] as const;
+    const extension = { image: 'png', video: 'mp4', audio: 'mp3' };
+    const localPath = (kind: typeof kinds[number]) => `C:/fixture/mixed-${kind}.${extension[kind]}`;
+    const localUrl = (kind: typeof kinds[number]) => `asset://localhost/${encodeURIComponent(localPath(kind))}`;
+    const remoteUrl = (kind: typeof kinds[number]) => `https://cdn.example/remote-${kind}.${extension[kind]}`;
+    const references: MediaReference[] = kinds.flatMap((kind) => ['remote', 'local'].map((source): MediaReference => ({
+      kind, role: kind === 'audio' ? 'reference_audio' : 'reference', origin: 'connection',
+      url: source === 'remote' ? remoteUrl(kind) : `https://expired.example/local-${kind}.${extension[kind]}`,
+      ...(source === 'local' ? { filePath: localPath(kind) } : {}),
+    })));
+    const sources: Node<BaseNodeData>[] = references.map((reference, index) => ({
+      id: `mixed-source-${index}`, type: `source-${reference.kind}`, position: { x: 0, y: 0 },
+      data: { label: `素材 ${index + 1}`, type: `source-${reference.kind}`, filePath: reference.filePath,
+        sourceUrl: reference.url, [`${reference.kind}Url`]: reference.url },
+    }));
+    useAppStore.setState({ nodes: sourceMode === 'connected' ? sources : [],
+      edges: sourceMode === 'connected' ? sources.map((node) => ({ id: `edge-${node.id}`, source: node.id, target: 'mixed-target' })) : [] });
+    const assets = vi.spyOn(fileService, 'getAssetUrlFromPath').mockImplementation(async (path) => `asset://localhost/${encodeURIComponent(path)}`);
+    const image = vi.spyOn(imageUtils, 'resolveImageDataUrlArray').mockImplementation(async (urls) => inlineImages(urls));
+    const publicImages = vi.spyOn(imageUtils, 'resolveImageUrlArray').mockRejectedValue(new Error('不得调用公共图片上传'));
+    const media = vi.spyOn(uploadService, 'resolveMediaReferenceUrl').mockImplementation(async (url, options) => {
+      expect(options).toMatchObject({ mode: 'dataUrl', provider: 'relayon-video-alias' });
+      const kind = options?.kind === 'video' ? 'video' : 'audio';
+      expect(url).toBe(localUrl(kind));
+      return `data:${kind === 'video' ? 'video/mp4' : 'audio/mpeg'};base64,${btoa(`${kind}-2`)}`;
+    });
+    const read = vi.spyOn(fileService, 'readFileToDataUrl').mockImplementation(async (url, options) => {
+      const kind = options?.kind === 'video' ? 'video' : 'audio';
+      expect(url).toBe(remoteUrl(kind));
+      return `data:${kind === 'video' ? 'video/mp4' : 'audio/mpeg'};base64,${btoa(`${kind}-1`)}`;
+    });
+    const constraints = vi.spyOn(videoInputValidation, 'assertVideoInputConstraints').mockResolvedValue(undefined);
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ id: 'mixed-files-task' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'completed' })))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { headers: { 'Content-Type': 'video/mp4' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await generateVideo({ ...params, prompt: '图片1与图片2参考视频1、视频2和音频1、音频2', seedanceDuration: 15,
+        seedanceResolution: '720p', seedanceRatio: '16:9',
+        ...(sourceMode === 'explicit' ? { referenceMedia: references } : { nodeId: 'mixed-target' }),
+      });
+      const form = await submittedVideoForm(fetchMock.mock.calls[0][1]);
+      expect(form.get('prompt')).toBe('@图1与@图2参考@视频1、@视频2和@音频1、@音频2');
+      expect(image.mock.calls[0][0]).toEqual([remoteUrl('image'), localUrl('image')]);
+      expect(await fileContents(form, 'images')).toEqual(['image-1', 'image-2']);
+      expect(await fileContents(form, 'videos')).toEqual(['video-1', 'video-2']);
+      expect(await fileContents(form, 'audios')).toEqual(['audio-1', 'audio-2']);
+      expect(form.has('references')).toBe(false);
+      expect(assets.mock.calls.map(([path]) => path)).toEqual(kinds.map(localPath));
+      expect(read.mock.calls.map(([url]) => url)).toEqual([remoteUrl('video'), remoteUrl('audio')]);
+      expect(media.mock.calls.map(([url, options]) => ({ url, kind: options?.kind }))).toEqual([
+        { url: localUrl('video'), kind: 'video' }, { url: localUrl('audio'), kind: 'audio' },
+      ]);
+      expect(publicImages).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally {
+      assets.mockRestore(); image.mockRestore(); publicImages.mockRestore(); media.mockRestore(); read.mockRestore(); constraints.mockRestore();
+      removePendingTask('mixed-target');
+    }
+  });
+
+  it.each(['sd-2.5-c1', 'sd-2.5-c2', 'sd-2.5-c3'])('%s 本地音视频在读取素材和提交前拒绝，不回退图床也不妨碍 HTTPS 合同', async (modelId) => {
+    const params = configure(modelId);
+    const image = vi.spyOn(imageUtils, 'resolveImageDataUrlArray');
+    const publicImages = vi.spyOn(imageUtils, 'resolveImageUrlArray');
+    const media = vi.spyOn(uploadService, 'resolveMediaReferenceUrl');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      for (const kind of ['video', 'audio'] as const) {
+        await expect(generateVideo({ ...params, prompt: '图片1参考视频1和音频1', seedanceDuration: 30,
+          seedanceResolution: '720p', seedanceRatio: '16:9', referenceMedia: [
+            { kind: 'image', role: 'reference', origin: 'connection', url: 'https://cdn.example/person.png' },
+            { kind, role: kind === 'audio' ? 'reference_audio' : 'reference', origin: 'connection',
+              url: kind === 'video' ? 'data:video/mp4;base64,YQ==' : 'data:audio/mpeg;base64,YQ==' },
+          ] })).rejects.toThrow(/万象|RelayOn/);
+      }
+      expect(image).not.toHaveBeenCalled();
+      expect(publicImages).not.toHaveBeenCalled();
+      expect(media).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally { image.mockRestore(); publicImages.mockRestore(); media.mockRestore(); }
   });
 
   it('官转文生视频使用 metadata 和字符串时长，完成后保留原任务直到回填确认', async () => {
@@ -430,11 +579,11 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
     }
   });
 
-  it('C1 普通参考按类型与顺序发送，本地视频和音频沿用当前连接的公共上传策略', async () => {
+  it('C1 普通参考按类型与顺序文件直传，本地视频和音频不经过公共图床', async () => {
     const params = configure('sd-2.0-c1');
     const image = vi.spyOn(imageUtils, 'resolveImageUrlArray').mockImplementation(async (urls) => urls);
-    const media = vi.spyOn(uploadService, 'resolveMediaReferenceUrl').mockImplementation(async (_url, options) =>
-      `https://cdn.example/relayon-${options?.kind}.ref`);
+    const inline = vi.spyOn(imageUtils, 'resolveImageDataUrlArray').mockRejectedValue(new Error('纯 HTTPS 图片应保留 URL'));
+    const media = vi.spyOn(uploadService, 'resolveMediaReferenceUrl').mockImplementation(async (url) => url);
     const constraints = vi.spyOn(videoInputValidation, 'assertVideoInputConstraints').mockResolvedValue(undefined);
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'task-relayon-c1' })))
@@ -449,21 +598,26 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
           { kind: 'audio', role: 'reference_audio', origin: 'connection', url: 'data:audio/mpeg;base64,YXVkaW8=' },
         ] });
       expect(result.url).toBe('data:video/mp4;base64,AQID');
-      expect(media).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ provider: 'relayon-video-alias', mode: 'publicUrl', kind: 'video' }));
-      expect(media).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ provider: 'relayon-video-alias', mode: 'publicUrl', kind: 'audio' }));
-      const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
-      expect(body).toMatchObject({ model: 'sd-2.0-c1', duration: 15, resolution: '720p', aspect_ratio: '9:16', references: [
-        { type: 'image', url: 'https://cdn.example/person.png' },
-        { type: 'video', url: 'https://cdn.example/relayon-video.ref' },
-        { type: 'audio', url: 'https://cdn.example/relayon-audio.ref' },
-      ] });
-      expect(body.prompt).toContain('@图1');
-      expect(body.prompt).not.toContain('@@');
-      expect(body).not.toHaveProperty('metadata');
+      expect(media).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ provider: 'relayon-video-alias', mode: 'dataUrl', kind: 'video' }));
+      expect(media).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ provider: 'relayon-video-alias', mode: 'dataUrl', kind: 'audio' }));
+      const form = await submittedVideoForm(fetchMock.mock.calls[0][1]);
+      expect(form.get('model')).toBe('sd-2.0-c1');
+      expect(form.get('duration')).toBe('15');
+      expect(form.get('resolution')).toBe('720p');
+      expect(form.get('aspect_ratio')).toBe('9:16');
+      expect(form.has('image')).toBe(false);
+      expect(image).not.toHaveBeenCalled();
+      expect(inline).not.toHaveBeenCalled();
+      expect(await fileContents(form, 'video')).toEqual(['video']);
+      expect(await fileContents(form, 'audio')).toEqual(['audio']);
+      expect(String(form.get('prompt'))).toContain('@图1');
+      expect(String(form.get('prompt'))).not.toContain('@@');
+      expect(form.has('metadata')).toBe(false);
+      expect(JSON.parse(String(form.get('references')))).toEqual([{ type: 'image', url: 'https://cdn.example/person.png' }]);
       expect(fetchMock.mock.calls[2][0]).toBe('https://relayonapi.com/v1/videos/task-relayon-c1/content');
       expect(fetchMock).toHaveBeenCalledTimes(3);
     } finally {
-      image.mockRestore(); media.mockRestore(); constraints.mockRestore();
+      image.mockRestore(); inline.mockRestore(); media.mockRestore(); constraints.mockRestore();
     }
   });
 
@@ -541,6 +695,7 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
   it.each(['sd-2.0-A', 'sd-2.0-c1'])('%s 未开放的首帧输入在上传前拒绝', async (modelId) => {
     const params = configure(modelId);
     const image = vi.spyOn(imageUtils, 'resolveImageUrlArray');
+    const inline = vi.spyOn(imageUtils, 'resolveImageDataUrlArray');
     const media = vi.spyOn(uploadService, 'resolveMediaReferenceUrl');
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
@@ -549,9 +704,10 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
         referenceMedia: [{ kind: 'image', role: 'first_frame', origin: 'connection', url: 'data:image/png;base64,YQ==' }],
       })).rejects.toThrow('首尾帧');
       expect(image).not.toHaveBeenCalled();
+      expect(inline).not.toHaveBeenCalled();
       expect(media).not.toHaveBeenCalled();
       expect(fetchMock).not.toHaveBeenCalled();
-    } finally { image.mockRestore(); media.mockRestore(); }
+    } finally { image.mockRestore(); inline.mockRestore(); media.mockRestore(); }
   });
 });
 
@@ -1719,6 +1875,40 @@ describe('离散时长校验', () => {
 });
 
 describe('general video runtime safety', () => {
+  it('Sora2U 内置视频的本地图片直接进入 references，同类图片保持顺序且 reference_urls 只放 HTTPS', async () => {
+    const selected = SORA2U_MODEL_MANIFEST.find((item) => item.id === 'seedance-2.0')!;
+    useAppStore.getState().saveProviderConfig('sora-native-video-alias', {
+      name: '我的 Sora2U', catalogId: 'sora2u', baseUrl: 'https://sora2u.com', apiKey: 'sora-video-fixture', selectedModels: [selected],
+    });
+    const model = useAppStore.getState().config.generalModels!.find((item) => item.providerConfigId === 'sora-native-video-alias')!;
+    const inlineImages = ['data:image/png;base64,bG9jYWw=', 'data:image/png;base64,cmVtb3Rl'];
+    const images = vi.spyOn(imageUtils, 'resolveImageDataUrlArray').mockResolvedValue(inlineImages);
+    const publicImages = vi.spyOn(imageUtils, 'resolveImageUrlArray').mockRejectedValue(new Error('Sora2U 本地图片不能走公共图床'));
+    const media = vi.spyOn(uploadService, 'resolveMediaReferenceUrl').mockImplementation(async (url) => url);
+    const constraints = vi.spyOn(videoInputValidation, 'assertVideoInputConstraints').mockResolvedValue(undefined);
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ task: { id: 'sora-native-video-task' } })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ task: { status: 'completed', video_url: 'https://cdn.example/sora-result.mp4' } })));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const result = await generateVideo({ model: `general/${model.id}`, provider: 'general', prompt: '图片1、图片2配合音频1保持连续',
+        seedanceDuration: 6, seedanceResolution: '720p', seedanceRatio: '16:9', referenceMedia: [
+          { kind: 'image', role: 'reference', origin: 'connection', url: 'asset://localhost/local-image.png' },
+          { kind: 'image', role: 'reference', origin: 'connection', url: 'https://cdn.example/remote-image.png' },
+          { kind: 'audio', role: 'reference_audio', origin: 'connection', url: 'https://cdn.example/voice.mp3' },
+        ] });
+      expect(result.url).toBe('https://cdn.example/sora-result.mp4');
+      expect(images.mock.calls[0][0]).toEqual(['asset://localhost/local-image.png', 'https://cdn.example/remote-image.png']);
+      const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+      expect(body).toMatchObject({ model: 'seedance-2.0', references: inlineImages, reference_urls: ['https://cdn.example/voice.mp3'] });
+      expect(JSON.stringify(body.reference_urls)).not.toContain('data:');
+      expect(publicImages).not.toHaveBeenCalled();
+      expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({ Authorization: 'Bearer sora-video-fixture' });
+      expect(fetchMock.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual([
+        '/api/v1/videos', '/api/v1/videos/sora-native-video-task',
+      ]);
+    } finally { images.mockRestore(); publicImages.mockRestore(); media.mockRestore(); constraints.mockRestore(); }
+  });
+
   function configureSavedSora2u(catalogId: string, modelId: string, maximum?: number) {
     useAppStore.setState((state) => ({ config: { ...state.config,
       providers: { ...state.config.providers, sora2u: { name: 'Saved connection', catalogId,

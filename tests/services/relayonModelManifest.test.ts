@@ -22,6 +22,7 @@ import {
   resolveRelayonImageModelContract,
   resolveRelayonVideoCapability,
   resolveRelayonVideoExecutionProfile,
+  getRelayonVideoFileKinds,
   getRelayonVideoRecoveryProfiles,
   usesRelayonModelProtocol,
   usesRelayonImageFileUpload,
@@ -1040,6 +1041,116 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
       expect(relayonVideoVariables(id, { referenceImageUrls: ['https://cdn.example/i.png'],
         referenceAudioUrls: ['https://cdn.example/a.mp3'] }).referenceAudioUrls).toEqual(['https://cdn.example/a.mp3']);
     }
+  });
+});
+
+describe('RelayOnAPI 视频参考文件直传', () => {
+  const files = {
+    image: ['data:image/png;base64,YQ==', 'data:image/png;base64,Yg=='],
+    video: ['data:video/mp4;base64,Yw==', 'data:video/mp4;base64,ZA=='],
+    audio: ['data:audio/mpeg;base64,ZQ==', 'data:audio/mpeg;base64,Zg=='],
+  };
+
+  it.each([
+    ['sd-2.0-A', ['image', 'video', 'audio']], ['sd-2.5-A', ['image', 'video', 'audio']],
+    ['sd-2.0-c1', ['image', 'video', 'audio']], ['minimax-h3', ['image', 'video', 'audio']],
+    ['sd-2.0-c2', ['image', 'audio']], ['sd-2.0-c3', ['image', 'audio']],
+    ['sd-2.5-c1', ['image']], ['sd-2.5-c2', ['image']], ['sd-2.5-c3', ['image']],
+    ['doubao-seedance-2-0-260128', []], ['doubao-seedance-2-0-fast-260128', []],
+    ['doubao-seedance-2-0-mini-260615', []], ['doubao-seedance-2-5-260628', []],
+  ] as const)('%s 只声明文档确认的文件类型，不从其他型号借用上传合同', (id, kinds) => {
+    expect(getRelayonVideoFileKinds(id, model(id).executionProfile)).toEqual(kinds);
+    expect(getRelayonVideoFileKinds(id, undefined)).toEqual([]);
+    const custom = structuredClone(model(id).executionProfile!);
+    custom.protocol!.submit.path = '/custom/videos';
+    expect(getRelayonVideoFileKinds(id, custom)).toEqual([]);
+    expect(resolveRelayonVideoExecutionProfile(id, custom, { referenceImageUrls: files.image })).toBe(custom);
+    expect(getRelayonVideoFileKinds(`${id}-alias`, model(id).executionProfile)).toEqual([]);
+  });
+
+  it.each([
+    ['sd-2.0-A', 1], ['sd-2.0-A', 2], ['sd-2.5-A', 2], ['sd-2.0-c1', 1], ['sd-2.0-c1', 2],
+    ['minimax-h3', 2], ['sd-2.0-c2', 1], ['sd-2.0-c2', 2], ['sd-2.0-c3', 2],
+    ['sd-2.5-c1', 1], ['sd-2.5-c2', 2], ['sd-2.5-c3', 2],
+  ] as const)('%s 的 %s 份参考按 singular/plural 字段发送原文件，不使用 image[]', async (id, count) => {
+    const stored = model(id).executionProfile!;
+    const before = structuredClone(stored);
+    const kinds = getRelayonVideoFileKinds(id, stored).filter((kind) => id !== 'sd-2.0-c3' || kind !== 'audio');
+    const duration = model(id).videoCapability!.defaultDuration!;
+    const variables = relayonVideoVariables(id, { model: id, prompt: '图片1、图片2与视频1、音频1保持顺序',
+      duration, durationText: String(duration), resolution: '720p', aspectRatio: '16:9',
+      referenceImageUrls: files.image.slice(0, count),
+      referenceVideoUrls: kinds.includes('video') ? files.video.slice(0, count) : [],
+      referenceAudioUrls: kinds.includes('audio') ? files.audio.slice(0, count) : [],
+    });
+    const projected = resolveRelayonVideoExecutionProfile(id, stored, variables)!;
+    const built = buildModelProtocolRequest({ baseUrl: RELAYON_VIDEO_BASE_URL, apiKey: 'video-fixture',
+      protocol: projected.protocol!, variables, idempotencyKey: 'video-files-request-0001' });
+    expect(built.url).toBe(`${RELAYON_VIDEO_BASE_URL}/videos`);
+    expect(new Headers(built.init.headers).get('Content-Type')).toMatch(/^multipart\/form-data; boundary=/);
+    expect(new Headers(built.init.headers).get('Idempotency-Key')).toBe('video-files-request-0001');
+    const form = await new Response(built.init.body, { headers: built.init.headers }).formData();
+    expect(form.get('model')).toBe(id);
+    expect(form.get(id.endsWith('-A') || id.startsWith('sd-2.5-c') ? 'seconds' : 'duration')).toBe(String(duration));
+    for (const kind of kinds) {
+      const field = count === 1 ? kind : `${kind}s`;
+      const entries = form.getAll(field) as File[];
+      expect(entries).toHaveLength(count);
+      expect(form.has(`${kind}[]`)).toBe(false);
+      expect(form.has(count === 1 ? `${kind}s` : kind)).toBe(false);
+      for (const [index, file] of entries.entries()) {
+        expect(file.type).toBe(kind === 'image' ? 'image/png' : kind === 'video' ? 'video/mp4' : 'audio/mpeg');
+        expect(new TextDecoder().decode(await file.arrayBuffer())).toBe(atob(files[kind][index].split(',')[1]));
+      }
+    }
+    expect(form.has('references')).toBe(false);
+    expect(projected.protocol!.poll).toEqual(stored.protocol!.poll);
+    expect(stored).toEqual(before);
+    expect(resolveRelayonVideoExecutionProfile(id, stored)).toEqual(stored);
+    const preview = previewModelProtocolRequest({ baseUrl: RELAYON_VIDEO_BASE_URL, protocol: projected.protocol!, variables });
+    for (const urls of Object.values(files)) for (const url of urls) expect(JSON.stringify(preview.body)).not.toContain(url);
+  });
+
+  it('不能把 Tauri HTTPS 本地地址作为远程视频参考交给服务端', () => {
+    expect(() => resolveRelayonVideoExecutionProfile('sd-2.0-A', model('sd-2.0-A').executionProfile, {
+      referenceImageUrls: ['https://asset.localhost/local-reference.png'],
+    })).toThrow('文件类型无效');
+  });
+
+  it('纯 HTTPS 参考保留 JSON；混合文件请求的剩余 references 只编码为一个 JSON 数组字段', async () => {
+    const id = 'sd-2.0-A', stored = model(id).executionProfile!;
+    const remote = relayonVideoVariables(id, { model: id, prompt: '图片1参考视频1和音频1', durationText: '4',
+      resolution: '720p', aspectRatio: '16:9', referenceImageUrls: ['https://cdn.example/i.png'],
+      referenceVideoUrls: ['https://cdn.example/v.mp4'], referenceAudioUrls: ['https://cdn.example/a.mp3'] });
+    expect(resolveRelayonVideoExecutionProfile(id, stored, remote)).toEqual(stored);
+    const remoteBuilt = buildModelProtocolRequest({ baseUrl: RELAYON_VIDEO_BASE_URL, apiKey: 'fixture', protocol: stored.protocol!, variables: remote });
+    expect(new Headers(remoteBuilt.init.headers).get('Content-Type')).toBe('application/json');
+    expect(JSON.parse(String(remoteBuilt.init.body))).toMatchObject({ seconds: '4', references: [
+      { type: 'image', url: 'https://cdn.example/i.png', role: 'reference' },
+      { type: 'video', url: 'https://cdn.example/v.mp4' }, { type: 'audio', url: 'https://cdn.example/a.mp3' },
+    ] });
+    const variables = { ...remote, referenceImageUrls: [files.image[0]] };
+    const projected = resolveRelayonVideoExecutionProfile(id, stored, variables)!;
+    const built = buildModelProtocolRequest({ baseUrl: RELAYON_VIDEO_BASE_URL, apiKey: 'fixture', protocol: projected.protocol!, variables });
+    const form = await new Response(built.init.body, { headers: built.init.headers }).formData();
+    expect(form.getAll('references')).toHaveLength(1);
+    expect(JSON.parse(String(form.get('references')))).toEqual([
+      { type: 'video', url: 'https://cdn.example/v.mp4' }, { type: 'audio', url: 'https://cdn.example/a.mp3' },
+    ]);
+    expect((form.get('image') as File).type).toBe('image/png');
+    expect(form.get('seconds')).toBe('4');
+    expect(form.has('output')).toBe(false);
+  });
+
+  it.each(['sd-2.5-c1', 'sd-2.5-c2', 'sd-2.5-c3'])('%s 未公开本地音视频文件合同，投影前失败且不改写保存协议', (id) => {
+    const stored = model(id).executionProfile!;
+    const before = structuredClone(stored);
+    for (const kind of ['video', 'audio'] as const) {
+      const variables = { referenceImageUrls: files.image.slice(0, 1),
+        [kind === 'video' ? 'referenceVideoUrls' : 'referenceAudioUrls']: files[kind].slice(0, 1) };
+      expect(() => resolveRelayonVideoExecutionProfile(id, stored, variables)).toThrow('不会回退到图床');
+    }
+    expect(stored).toEqual(before);
   });
 });
 

@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
+  getState: vi.fn(() => ({ config: { providers: {} } })),
   assertMediaDataUrlSize: vi.fn((bytes: number, kind: string) => {
     const limits: Record<string, number> = {
       image: 32 * 1024 * 1024,
@@ -25,7 +26,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../src/store/useAppStore', () => ({
   useAppStore: {
-    getState: () => ({ config: { providers: {} } }),
+    getState: mocks.getState,
   },
 }));
 vi.mock('../../src/services/fs/core', () => ({
@@ -72,6 +73,7 @@ function responseFor(blob: Blob): Response {
 describe('uploadService 内存上传治理', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.getState.mockReturnValue({ config: { providers: {} } });
     mocks.lstat.mockRejectedValue(new Error('文件指纹不可用'));
     mocks.fingerprintAssetImage.mockReset();
     const storage = new Map<string, string>();
@@ -214,7 +216,7 @@ describe('uploadService 内存上传治理', () => {
     expect(atob(firstBody)).toContain(String.fromCharCode(...fileBytes));
   });
 
-  it('publicUrl 模式会上传 data URL，而不是把 Base64 直接交给 Provider', async () => {
+  it('APIMart publicUrl 音频没有官方上传合同，在图床及 IPC 前明确拒绝', async () => {
     mocks.invoke.mockResolvedValue({
       status: 200,
       body: btoa(JSON.stringify({ success: true, files: [{ url: 'https://cdn.example/audio.mp3' }] })),
@@ -224,14 +226,9 @@ describe('uploadService 内存上传治理', () => {
       provider: 'apimart',
       kind: 'audio',
       mode: 'publicUrl',
-    })).resolves.toBe('https://cdn.example/audio.mp3');
-    expect(mocks.invoke).toHaveBeenCalledWith('proxy_fetch', expect.objectContaining({
-      req: expect.objectContaining({ requestId: expect.stringMatching(/^media-upload-/) }),
-    }));
-    const multipartBody = atob(mocks.invoke.mock.calls.find(
-      ([command]) => command === 'proxy_fetch',
-    )?.[1]?.req?.body as string);
-    expect(multipartBody).toContain(String.fromCharCode(1, 2, 3));
+    })).rejects.toThrow('不会改传图床');
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(mocks.assertMediaDataUrlWithinLimit).not.toHaveBeenCalled();
   });
 
   it('Data URL scheme 大小写不能绕过预算和 publicUrl 上传', async () => {
@@ -412,6 +409,77 @@ describe('uploadService 内存上传治理', () => {
     mocks.invoke.mockClear();
     await expect(uploadToRemote(source, 'volcengine', 'image')).rejects.toThrow('配置北京私有 TOS');
     expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it.each(['image', 'video', 'audio'] as const)('万象的本地 %s 在读取、连接图床与全局托管选择前拒绝独立上传', async (kind) => {
+    mocks.getState.mockReturnValue({ config: { providers: { 'own-relayon': {
+      catalogId: 'relayonapi', imageHosting: { enabled: true, uploadUrl: 'https://unused.example/upload' },
+    } } } });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(uploadToRemote('http://asset.localhost/reference.bin', 'own-relayon', kind))
+      .rejects.toThrow('万象本地参考素材须随模型请求提交文件');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.lstat).not.toHaveBeenCalled();
+    expect(mocks.fingerprintAssetImage).not.toHaveBeenCalled();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it.each(['relayonapi', 'cccapi', 'sora2u', 'grsai', 'aigc-si'])('连接改为 %s 后不复用旧公共上传结果，也不读取原素材', async (catalogId) => {
+    const provider = `changed-to-${catalogId}`;
+    const source = 'data:image/png;base64,AQID';
+    mocks.getState.mockReturnValue({ config: { providers: { [provider]: { catalogId: 'custom-openai' } } } });
+    const fetchMock = vi.fn(async () => responseFor(new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' })));
+    vi.stubGlobal('fetch', fetchMock);
+    mocks.invoke.mockResolvedValue({ status: 200, body: btoa(JSON.stringify({
+      success: true, files: [{ url: 'https://cdn.example/before-relayon' }],
+    })) });
+    await expect(uploadToRemote(source, provider)).resolves.toBe('https://cdn.example/before-relayon');
+    expect(localStorage.getItem('canvas-upload-cache-v4')).not.toBeNull();
+    fetchMock.mockClear(); mocks.invoke.mockClear();
+    mocks.getState.mockReturnValue({ config: { providers: { [provider]: { catalogId } } } });
+    await expect(uploadToRemote(source, provider)).rejects.toThrow(/不会改传(?:全局)?图床/);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it.each(['cccapi', 'sora2u', 'grsai', 'aigc-si'].flatMap((catalogId) =>
+    (['image', 'video', 'audio'] as const).map((kind) => ({ catalogId, kind }))))('$catalogId 的本地 $kind 不使用连接图床，公网 URL 保留', async ({ catalogId, kind }) => {
+    const provider = `own-${catalogId}-${kind}`;
+    mocks.getState.mockReturnValue({ config: { providers: { [provider]: {
+      catalogId, imageHosting: { enabled: true, uploadUrl: 'https://unused.example/upload' },
+    } } } });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(uploadToRemote('blob:local-reference', provider, kind)).rejects.toThrow('不会改传图床');
+    const remote = `https://cdn.example/public-${kind}`;
+    await expect(uploadToRemote(remote, provider, kind)).resolves.toBe(remote);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.lstat).not.toHaveBeenCalled();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it('万象的公网地址与显式内联模式保留，取消仍返回 AbortError', async () => {
+    mocks.getState.mockReturnValue({ config: { providers: { 'own-relayon': { catalogId: 'relayonapi' } } } });
+    const remote = 'https://cdn.example/public-reference.mp4';
+    await expect(uploadToRemote(remote, 'own-relayon', 'video')).resolves.toBe(remote);
+    const inline = 'data:audio/mpeg;base64,AQID';
+    await expect(resolveMediaReferenceUrl(inline, { provider: 'own-relayon', kind: 'audio', mode: 'dataUrl' })).resolves.toBe(inline);
+    const controller = new AbortController();
+    controller.abort(new DOMException('用户取消', 'AbortError'));
+    await expect(uploadToRemote('asset://localhost/cancel.png', 'own-relayon', 'image', controller.signal))
+      .rejects.toMatchObject({ name: 'AbortError' });
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it.each(['apimart', 'cccapi', 'toapis', 'libapi', 'relayonapi', 'aigc-si', 'sora2u', 'grsai'])('名称恰好为 %s 的自定义连接仍可使用全局托管', async (provider) => {
+    mocks.getState.mockReturnValue({ config: { providers: { [provider]: { catalogId: 'custom-openai' } } } });
+    vi.stubGlobal('fetch', vi.fn(async () => responseFor(new Blob([new Uint8Array([4, 5, 6])], { type: 'image/png' }))));
+    mocks.invoke.mockResolvedValue({ status: 200, body: btoa(JSON.stringify({
+      success: true, files: [{ url: 'https://cdn.example/custom-same-name' }],
+    })) });
+    await expect(uploadToRemote('data:image/png;base64,BAUG', provider)).resolves.toBe('https://cdn.example/custom-same-name');
+    expect(mocks.invoke).toHaveBeenCalledWith('proxy_fetch', { req: expect.objectContaining({ url: 'https://uguu.se/upload' }) });
   });
 
   it('外部取消会调用 cancel_proxy_fetch 真正停止原生上传', async () => {

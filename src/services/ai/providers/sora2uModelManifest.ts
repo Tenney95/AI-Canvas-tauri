@@ -6,12 +6,18 @@
  */
 import type { ProviderModelSelection } from '../../../types';
 import type {
+  ModelExecutionProfile,
   NormalizedModelExecutionProtocol,
   VideoModelCapability,
 } from '../../../types/aiTypes';
 import { getVideoCapabilityTemplate } from '../modelCapabilityTemplates';
+import { comparableProtocol } from '../modelProtocol';
+import type { ModelProtocolVariables } from '../modelProtocolTypes';
+import { isRemoteMediaUrl } from '../../../utils/mediaUrl';
 
 export const SORA2U_BASE_URL = 'https://sora2u.com';
+export const SORA2U_IMAGE_REFERENCE_LIMIT = 4;
+export const SORA2U_INLINE_REFERENCE_MAX_BYTES = 20 * 1024 * 1024;
 export const SORA2U_REQUEST_QUERY = {
   utm_source: 'tenney',
   utm_medium: 'canvas',
@@ -27,7 +33,7 @@ const SORA2U_POLL_RETRY = {
   retryNetworkErrors: true,
 };
 
-function createSora2uProtocol(resultPath: 'task.image_url' | 'task.video_url'):
+function createSora2uProtocol(resultPath: 'task.image_url' | 'task.video_url', legacyImage = false):
 NormalizedModelExecutionProtocol {
   return {
     version: 2,
@@ -47,12 +53,10 @@ NormalizedModelExecutionProtocol {
           ? '{{imageSize}}'
           : '{{seedanceResolution}}',
         disable_audio: '{{disableAudio}}',
-        reference_urls: resultPath === 'task.image_url'
+        reference_urls: legacyImage
           ? '{{imageUrls}}'
           : '{{referenceUrls}}',
-        ...(resultPath === 'task.video_url'
-          ? { references: '{{inlineReferences}}' }
-          : {}),
+        ...(!legacyImage ? { references: '{{inlineReferences}}' } : {}),
       },
     },
     response: {
@@ -80,6 +84,7 @@ NormalizedModelExecutionProtocol {
 }
 
 const SORA2U_IMAGE_PROTOCOL = createSora2uProtocol('task.image_url');
+const SORA2U_LEGACY_IMAGE_PROTOCOL = createSora2uProtocol('task.image_url', true);
 const SORA2U_VIDEO_PROTOCOL = createSora2uProtocol('task.video_url');
 
 const SORA2U_VIDEO_INPUT_CONSTRAINTS: NonNullable<VideoModelCapability['inputConstraints']> = {
@@ -196,6 +201,42 @@ export const SORA2U_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
     executionProfile: { preset: 'custom', protocol: SORA2U_IMAGE_PROTOCOL },
   },
 ];
+
+/** 只识别完整内置新旧协议；改过路径、映射或恢复字段的用户协议不投影。 */
+export function usesSora2uModelProtocol(modelId: string, profile: ModelExecutionProfile | undefined): boolean {
+  const known = SORA2U_MODEL_MANIFEST.find((model) => model.id === modelId);
+  const actual = comparableProtocol(profile);
+  return Boolean(known && actual && (actual === comparableProtocol(known.executionProfile)
+    || known.category === 'image' && actual === comparableProtocol({ preset: 'custom', protocol: SORA2U_LEGACY_IMAGE_PROTOCOL })));
+}
+
+/** 仅新图片提交使用有效副本；不写回配置，也不重建历史任务的查询合同。 */
+export function resolveSora2uImageExecutionProfile(modelId: string, profile: ModelExecutionProfile | undefined): ModelExecutionProfile | undefined {
+  const known = SORA2U_MODEL_MANIFEST.find((model) => model.id === modelId);
+  return known?.category === 'image' && usesSora2uModelProtocol(modelId, profile)
+    ? { ...profile, preset: 'custom', protocol: structuredClone(SORA2U_IMAGE_PROTOCOL) } : profile;
+}
+
+/** references 接收 data URL 字符串数组；reference_urls 只接 HTTPS，不使用对象式媒体块。 */
+export function sora2uImageVariables(variables: ModelProtocolVariables): ModelProtocolVariables {
+  const images = variables.imageUrls ?? [];
+  if (!Array.isArray(images) || images.some((value) => typeof value !== 'string')) throw new Error('Sora2U 参考图片必须是地址数组');
+  if (images.length > SORA2U_IMAGE_REFERENCE_LIMIT) throw new Error('Sora2U 图片模型最多支持 4 张参考图');
+  const referenceUrls: string[] = [];
+  const inlineReferences: string[] = [];
+  let inlineBytes = 0;
+  for (const image of images as string[]) {
+    if (isRemoteMediaUrl(image) && /^https:\/\//i.test(image)) referenceUrls.push(image);
+    else if (/^data:image\/[^;,]+;base64,/i.test(image)) {
+      const payload = image.slice(image.indexOf(',') + 1).replace(/\s/g, '');
+      inlineBytes += Math.floor(payload.length * 3 / 4) - (payload.endsWith('==') ? 2 : payload.endsWith('=') ? 1 : 0);
+      inlineReferences.push(image);
+    } else throw new Error('Sora2U 参考图片须为 HTTPS 地址或已读取的图片 data URL，不会回退到图床');
+  }
+  if (inlineBytes > SORA2U_INLINE_REFERENCE_MAX_BYTES) throw new Error('Sora2U 内联参考图解码后合计不能超过 20 MiB');
+  return { ...variables, referenceUrls: referenceUrls.length ? referenceUrls : undefined,
+    inlineReferences: inlineReferences.length ? inlineReferences : undefined };
+}
 
 /** 旧模型记录也要补上已核实的联合名额，远端明确声明的值仍优先。 */
 export function withSora2uReferenceLimits(

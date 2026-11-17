@@ -9,12 +9,17 @@ import {
   validateModelExecutionProtocol,
 } from '../../src/services/ai/modelProtocol';
 import { getProviderDefinition } from '../../src/services/ai/providerCatalogService';
+import { getCategoryProtocolVariables, resolveProtocolFieldTemplate } from '../../src/services/ai/modelProtocolVariables';
 import {
   SORA2U_BASE_URL,
+  SORA2U_INLINE_REFERENCE_MAX_BYTES,
   SORA2U_MODEL_MANIFEST,
+  resolveSora2uImageExecutionProfile,
+  sora2uImageVariables,
+  usesSora2uModelProtocol,
   withSora2uReferenceLimits,
 } from '../../src/services/ai/providers/sora2uModelManifest';
-import type { ModelExecutionProtocol } from '../../src/types/aiTypes';
+import type { NormalizedModelExecutionProtocol, ProtocolJsonValue } from '../../src/types/aiTypes';
 
 const EXPECTED_MODELS = [
   'seedance-1.5',
@@ -29,10 +34,10 @@ const EXPECTED_MODELS = [
 ];
 const TRACKING_QUERY = 'utm_source=tenney&utm_medium=canvas&utm_content=wx';
 
-function protocolFor(modelId: string): ModelExecutionProtocol {
+function protocolFor(modelId: string): NormalizedModelExecutionProtocol {
   const protocol = SORA2U_MODEL_MANIFEST.find((model) => model.id === modelId)
     ?.executionProfile?.protocol;
-  if (!protocol) throw new Error(`模型 ${modelId} 没有自定义协议`);
+  if (!protocol || protocol.version !== 2) throw new Error(`模型 ${modelId} 没有 V2 自定义协议`);
   return protocol;
 }
 
@@ -112,13 +117,13 @@ describe('Sora2U 内置模型清单', () => {
     const request = previewModelProtocolRequest({
       baseUrl: SORA2U_BASE_URL,
       protocol: protocolFor('gemini-image'),
-      variables: {
+      variables: sora2uImageVariables({
         model: 'gemini-image',
         prompt: '雨后的霓虹街道',
         aspectRatio: '16:9',
         imageSize: '2K',
         imageUrls: ['https://assets.example/character.png'],
-      },
+      }),
     });
 
     expect(request).toMatchObject({
@@ -132,6 +137,76 @@ describe('Sora2U 内置模型清单', () => {
         reference_urls: ['https://assets.example/character.png'],
       },
     });
+    expect(request.body).not.toHaveProperty('references');
+  });
+
+  it.each(['gemini-image', 'kontext-image'])('%s 的新旧内置图片协议只为本轮提交投影', (modelId) => {
+    const current = { preset: 'custom' as const, protocol: structuredClone(protocolFor(modelId)) };
+    const legacy = structuredClone(current);
+    legacy.protocol.submit.body = { ...(legacy.protocol.submit.body as Record<string, ProtocolJsonValue>), reference_urls: '{{imageUrls}}' };
+    delete (legacy.protocol.submit.body as Record<string, ProtocolJsonValue>).references;
+    const saved = structuredClone(legacy);
+
+    for (const profile of [current, legacy]) {
+      expect(usesSora2uModelProtocol(modelId, profile)).toBe(true);
+      expect(resolveSora2uImageExecutionProfile(modelId, profile)).toEqual(current);
+      expect(resolveSora2uImageExecutionProfile(modelId, profile)).not.toBe(profile);
+    }
+    expect(legacy).toEqual(saved);
+    const variables = sora2uImageVariables({ model: modelId, prompt: '保留参考图的主体',
+      imageUrls: ['https://assets.example/first.png', 'data:image/png;base64,AQ==', 'data:image/webp;base64,AgM='],
+      n: 1, imageTransparent: false });
+    expect(variables.imageUrls).toEqual(['https://assets.example/first.png', 'data:image/png;base64,AQ==', 'data:image/webp;base64,AgM=']);
+    expect(variables.imageTransparent).toBe(false);
+    const request = previewModelProtocolRequest({ baseUrl: SORA2U_BASE_URL, protocol: current.protocol!, variables });
+    expect(request.body).toMatchObject({ model: modelId, reference_urls: ['https://assets.example/first.png'],
+      references: ['data:image/png;base64,AQ==', 'data:image/webp;base64,AgM='] });
+  });
+
+  it.each(['path', 'body', 'query', 'poll'] as const)('不投影用户修改过 %s 的同名 Sora 图片协议', (field) => {
+    const profile = { preset: 'custom' as const, protocol: structuredClone(protocolFor('gemini-image')) };
+    if (field === 'path') profile.protocol!.submit!.path = '/api/v1/my-images';
+    if (field === 'body') profile.protocol!.submit!.body = { model: '{{model}}', image: '{{imageUrls}}' };
+    if (field === 'query') profile.protocol!.submit!.query = { owner: 'my-workspace' };
+    if (field === 'poll') profile.protocol!.poll!.response!.result = { urlPath: 'task.my_image' };
+    expect(usesSora2uModelProtocol('gemini-image', profile)).toBe(false);
+    expect(resolveSora2uImageExecutionProfile('gemini-image', profile)).toBe(profile);
+  });
+
+  it('只识别清单型号，保留视频完整协议与无配置状态', () => {
+    const video = { preset: 'custom' as const, protocol: protocolFor('seedance-2.0') };
+    expect(usesSora2uModelProtocol('seedance-2.0', video)).toBe(true);
+    expect(resolveSora2uImageExecutionProfile('seedance-2.0', video)).toBe(video);
+    expect(usesSora2uModelProtocol('unknown', video)).toBe(false);
+    expect(usesSora2uModelProtocol('gemini-image', undefined)).toBe(false);
+    expect(resolveSora2uImageExecutionProfile('gemini-image', undefined)).toBeUndefined();
+    expect(sora2uImageVariables({ prompt: '无参考图' })).toEqual({ prompt: '无参考图', referenceUrls: undefined, inlineReferences: undefined });
+  });
+
+  it('图片联合上限为四张，HTTP 和非图片内联素材不能混进 HTTPS 字段', () => {
+    const https = 'https://assets.example/image.png';
+    expect(() => sora2uImageVariables({ imageUrls: [https, https, https, https] })).not.toThrow();
+    expect(() => sora2uImageVariables({ imageUrls: [https, https, https, https, https] })).toThrow('最多支持 4 张');
+    for (const imageUrls of ['invalid', [null], ['http://assets.example/image.png'],
+      ['https://asset.localhost/sora-reference.png'], ['data:video/mp4;base64,AQ==']]) {
+      expect(() => sora2uImageVariables({ imageUrls })).toThrow();
+    }
+  });
+
+  it('图片编辑器列出真实供应的别名，但不把普通图片导入字段自动映射到 Sora 数组', () => {
+    expect(getCategoryProtocolVariables('image')).toEqual(expect.arrayContaining(['referenceUrls', 'inlineReferences']));
+    expect(resolveProtocolFieldTemplate('reference_urls', ['https://assets.example/image.png'], 'image')).toBeUndefined();
+    expect(resolveProtocolFieldTemplate('references', ['data:image/png;base64,AQ=='], 'image')).toBeUndefined();
+    expect(resolveProtocolFieldTemplate('reference_urls', ['https://assets.example/image.png'], 'video')).toBe('{{referenceUrls}}');
+    expect(resolveProtocolFieldTemplate('references', ['data:image/png;base64,AQ=='], 'video')).toBe('{{inlineReferences}}');
+    expect(resolveProtocolFieldTemplate('images', ['https://assets.example/image.png'], 'image')).toBe('{{imageUrls}}');
+  });
+
+  it('内联图片解码后合计 20 MiB 可提交，超限不截断或转图床', () => {
+    const image = (bytes: number) => `data:image/png;base64,${'A'.repeat(Math.floor(bytes / 3) * 4)}${bytes % 3 === 1 ? 'AA==' : bytes % 3 === 2 ? 'AAA=' : ''}`;
+    expect(() => sora2uImageVariables({ imageUrls: [image(SORA2U_INLINE_REFERENCE_MAX_BYTES)] })).not.toThrow();
+    expect(() => sora2uImageVariables({ imageUrls: [image(SORA2U_INLINE_REFERENCE_MAX_BYTES), 'data:image/png;base64,AQ=='] }))
+      .toThrow('解码后合计不能超过 20 MiB');
   });
 
   it('渲染包含图片、视频和音频引用的视频任务', () => {

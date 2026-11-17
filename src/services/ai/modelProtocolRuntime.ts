@@ -391,7 +391,7 @@ export async function runConfiguredModelProtocol(
   const usesRelayonProtocol = catalogId === 'relayonapi' && options.category === 'video'
     && usesRelayonModelProtocol(options.model.modelId, options.model.executionProfile);
   const profile = usesRelayonProtocol
-    ? resolveRelayonVideoExecutionProfile(options.model.modelId, options.model.executionProfile) : options.model.executionProfile;
+    ? resolveRelayonVideoExecutionProfile(options.model.modelId, options.model.executionProfile, options.variables) : options.model.executionProfile;
   const protocol = resolveModelExecutionProfile(profile);
   if (!protocol) throw new Error(`模型“${options.model.name}”未配置调用协议`);
   const expansionConflicts = findModelProtocolForEachCapabilityConflicts(

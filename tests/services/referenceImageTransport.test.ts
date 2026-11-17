@@ -33,6 +33,7 @@ import type { ImageHostingConfig, PublicImageHostingProvider } from '../../src/t
 import type { VolcengineTosConfig } from '../../src/types/volcengineTos';
 import { IMAGE_HOSTING_TEMPLATES, PUBLIC_IMAGE_HOSTING_TEMPLATES } from '../../src/services/imageHostingTemplates';
 import { LIBAPI_BASE_URL, TOAPIS_BASE_URL, VOLCENGINE_BASE_URL } from '../../src/constants/api';
+import { MINIMAX_BASE_URL } from '../../src/services/ai/providers/minimaxModelManifest';
 
 // 请求链模拟原生无损返回，用 PNG 的标记追踪引用；真实像素保真由 Rust 测试验证。
 function png(marker: number, megabytes = 5): Blob {
@@ -114,6 +115,91 @@ describe('万象参考图片直接文件提交', () => {
       model: route === 'general' ? `general/${model.id}` : `my-relayon-files/${modelId}`,
       prompt: '参考图片生成角色', imageSize: '2K', aspectRatio: '16:9' };
   }
+
+  function configureCustom(transport: 'urls' | 'inline' | 'multipart') {
+    const protocol = { version: 2 as const, mode: 'sync' as const,
+      submit: { method: 'POST' as const, path: '/custom/reference',
+        bodyEncoding: transport === 'multipart' ? 'multipart' as const : 'json' as const,
+        body: { model: '{{model}}', prompt: '{{prompt}}', images: transport === 'multipart'
+          ? { $file: '{{imageUrls}}', filename: 'own-reference.png', contentType: 'image/png' } : '{{imageUrls}}' } },
+      response: { type: 'json' as const, result: { urlPath: 'data.output' } },
+    };
+    useAppStore.setState((state) => ({ config: { ...state.config,
+      imageHosting: { provider: 'imagekit', configs: {} },
+      providers: { 'custom-relayon-image': { name: '万象自定义协议', catalogId: 'relayonapi', apiKey: 'relayon-custom-fixture',
+        baseUrl: 'https://api.relayonapi.com/v1' } },
+      generalModels: [{ id: 'relayon-custom-image', modelId: 'vendor-image', name: '万象自定义图片', category: 'image',
+        providerConfigId: 'custom-relayon-image', executionProfile: { preset: 'custom', protocol },
+        ...(transport === 'inline' ? { imageReferenceRequestMode: 'generation-json-image-data-urls' as const } : {}) }],
+    } }));
+    return { provider: 'general', model: 'general/relayon-custom-image', prompt: '保留用户自己的请求协议' };
+  }
+
+  it('URL-only 自定义图片协议绑定真实万象连接，@本地副本在图床或生成提交前明确拒绝', async () => {
+    const params = configureCustom('urls');
+    const loaded = vi.fn();
+    vi.stubGlobal('Image', class {
+      onload: (() => void) | null = null;
+      set src(url: string) { loaded(url); queueMicrotask(() => this.onload?.()); }
+    });
+    useAppStore.setState({ nodes: [{ id: 'relayon-local-reference', type: 'ai-image', position: { x: 0, y: 0 },
+      data: { type: 'ai-image', label: '参考图', imageUrl: 'https://old-host.example/preview.png',
+        sourceUrl: 'https://old-host.example/original.png', filePath: '/project/data/reference.png' } }] });
+    const before = structuredClone(useAppStore.getState().config);
+    await expect(generateImagesBatch({ ...params, prompt: '@{relayon-local-reference:参考图} 生成图片' }, 1))
+      .rejects.toThrow('万象本地参考素材须随模型请求提交文件');
+    expect(loaded).not.toHaveBeenCalled();
+    expect(localFetch).not.toHaveBeenCalled();
+    expect(mocks.transport).not.toHaveBeenCalled();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(mocks.readSecret).not.toHaveBeenCalled();
+    expect(useAppStore.getState().config).toEqual(before);
+  });
+
+  it('URL-only 自定义图片协议继续使用已有公网地址，保留请求路径和响应映射', async () => {
+    const params = configureCustom('urls');
+    mocks.transport.mockResolvedValueOnce(json({ data: { output: 'https://output.example/custom-url.png' } }));
+    const reference = 'https://media.example/public-reference.png';
+    await expect(generateImagesBatch({ ...params, image_urls: [reference] }, 1))
+      .resolves.toMatchObject({ results: [{ url: 'https://output.example/custom-url.png' }] });
+    expect(mocks.transport).toHaveBeenCalledOnce();
+    const [url, init] = mocks.transport.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.relayonapi.com/v1/custom/reference');
+    expect(JSON.parse(init.body as string)).toEqual({ model: 'vendor-image', prompt: expect.stringContaining(params.prompt), images: [reference] });
+    expect(localFetch).not.toHaveBeenCalled();
+    expect(mocks.readSecret).not.toHaveBeenCalled();
+  });
+
+  it.each(['inline', 'multipart'] as const)('万象显式自定义 %s 参考协议不调用独立图床，也不改写用户合同', async (transport) => {
+    const params = configureCustom(transport);
+    const source = png(8, transport === 'multipart' ? 9 : 0);
+    // 无损结果没有缩小时仍保留原图；生图 multipart 不误用视觉模型的 8 MiB 预算。
+    mocks.invoke.mockImplementation(async (command, input: ArrayBuffer) => {
+      if (command !== 'optimize_reference_png') throw new Error('不应调用独立上传');
+      return input;
+    });
+    localFetch.mockResolvedValueOnce(new Response(source));
+    mocks.transport.mockResolvedValueOnce(json({ data: { output: 'https://output.example/custom-file.png' } }));
+    const before = structuredClone(useAppStore.getState().config);
+    await expect(generateImagesBatch({ ...params, image_urls: ['asset://localhost/custom-reference.png'] }, 1))
+      .resolves.toMatchObject({ results: [{ url: 'https://output.example/custom-file.png' }] });
+    expect(localFetch).toHaveBeenCalledOnce();
+    expect(mocks.transport).toHaveBeenCalledOnce();
+    const [url, init] = mocks.transport.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.relayonapi.com/v1/custom/reference');
+    if (transport === 'multipart') {
+      const form = await new Response(init.body, { headers: init.headers }).formData();
+      const file = form.get('images') as File;
+      expect(file.name).toBe('own-reference.png');
+      expect(file.type).toBe('image/png');
+      expect(file.size).toBe(source.size);
+      expect(Buffer.from(await file.arrayBuffer())).toEqual(Buffer.from(await source.arrayBuffer()));
+    } else {
+      expect(JSON.parse(init.body as string).images).toEqual([await asDataUrl(source)]);
+    }
+    expect(mocks.readSecret).not.toHaveBeenCalled();
+    expect(useAppStore.getState().config).toEqual(before);
+  });
 
   it.each(['image-2-01', 'image-2.6-01', 'image-2.6-flare-01', 'image-2.6-sunburst-01'].flatMap((modelId) =>
     (['general', 'direct'] as const).map((route) => ({ modelId, route }))))(
@@ -575,17 +661,16 @@ describe('全局托管覆盖图片、视频和音频', () => {
     expect(localFetch).not.toHaveBeenCalled();
   });
 
-  it.each(['video', 'audio'] as const)('APIMart 的 %s 不使用图片专属接口，改用已选择的全局托管', async (kind) => {
+  it.each(['video', 'audio'] as const)('APIMart 的 %s 缺少本地直传合同，不回退全局托管，公网 URL 保留', async (kind) => {
     useAppStore.setState((state) => ({ config: { ...state.config, imageHosting: { provider: 'catbox', configs: {} },
       providers: { apimart: { name: 'APIMart', apiKey: 'apimart-model-key', baseUrl: 'https://apimart.example/v1' } },
     } }));
     const mime = kind === 'video' ? 'video/mp4' : 'audio/mpeg';
     const remote = `https://cdn.example/apimart-global-${kind}`;
     mocks.transport.mockResolvedValueOnce(new Response(remote));
-    expect(await uploadToRemote(await asDataUrl(new Blob([new Uint8Array([45, 46])], { type: mime })), 'apimart', kind)).toBe(remote);
-    expect(mocks.transport).toHaveBeenCalledOnce();
-    expect(mocks.transport.mock.calls[0][0]).toBe('https://catbox.moe/user/api.php');
-    expect(new Headers(mocks.transport.mock.calls[0][1].headers).get('Authorization')).toBeNull();
+    await expect(uploadToRemote(await asDataUrl(new Blob([new Uint8Array([45, 46])], { type: mime })), 'apimart', kind)).rejects.toThrow('不会改传图床');
+    expect(await uploadToRemote(remote, 'apimart', kind)).toBe(remote);
+    expect(mocks.transport).not.toHaveBeenCalled();
     expect(localFetch).not.toHaveBeenCalled();
   });
 
@@ -725,11 +810,15 @@ describe('共享参考图压缩的实际请求边界', () => {
     const baseUrl = catalogId === 'toapis' ? TOAPIS_BASE_URL : LIBAPI_BASE_URL;
     useAppStore.setState((state) => ({ config: { ...state.config,
       imageHosting: { provider: 'imgbb', configs: {} },
-      providers: { [provider]: { name: catalogId, catalogId, apiKey: 'connection-only-key', baseUrl } },
+      providers: { [provider]: { name: catalogId, catalogId, apiKey: 'connection-only-key', baseUrl,
+        imageHosting: { enabled: true, uploadUrl: 'https://unused.example/upload', fileField: 'file', responseUrlPath: 'url', auth: 'none' } } },
     } }));
     const remote = `https://cdn.example/${catalogId}-${kind}-dedicated`;
-    mocks.transport.mockImplementation(async () => json(catalogId === 'toapis'
-      ? { success: true, data: { url: remote } } : { url: remote }));
+    mocks.transport.mockImplementation(async () => {
+      useAppStore.getState().setProviderConfig(provider, { imageHosting: { enabled: true,
+        uploadUrl: 'https://changed-unused.example/upload', fileField: 'file', responseUrlPath: 'url', auth: 'none' } });
+      return json(catalogId === 'toapis' ? { success: true, data: { url: remote } } : { url: remote });
+    });
     const source = kind === 'image' ? await asDataUrl(png(32, 0)) : kind === 'video'
       ? 'data:video/mp4;base64,ODk6' : 'data:audio/mpeg;base64,OTo7';
     expect(await uploadToRemote(source, provider, kind)).toBe(remote);
@@ -738,6 +827,31 @@ describe('共享参考图压缩的实际请求边界', () => {
     expect(endpoint).toBe(`${baseUrl}/${catalogId === 'toapis' ? `uploads/${kind === 'image' ? 'images' : kind === 'video' ? 'videos' : 'audios'}` : 'files'}`);
     expect(new Headers(init.headers).get('Authorization')).toBe('Bearer connection-only-key');
     expect((init.body as FormData).get('purpose')).toBe(catalogId === 'toapis' ? 'generation' : null);
+    expect(localFetch).not.toHaveBeenCalled();
+    expect(mocks.readSecret).not.toHaveBeenCalled();
+  });
+
+  it.each(['apimart', 'minimax'] as const)('%s 别名使用已登记专用上传，忽略连接图床及其无效配置变化', async (catalogId) => {
+    const provider = `own-${catalogId}-dedicated`;
+    const baseUrl = catalogId === 'minimax' ? MINIMAX_BASE_URL : 'https://official-apimart.example/v1';
+    useAppStore.setState((state) => ({ config: { ...state.config,
+      imageHosting: { provider: 'imagekit', configs: {} },
+      providers: { [provider]: { name: '官方上传别名', catalogId, apiKey: 'dedicated-fixture', baseUrl,
+        imageHosting: { enabled: true, uploadUrl: 'https://unused.example/upload', fileField: 'file', responseUrlPath: 'url', auth: 'none' } } },
+    } }));
+    mocks.transport.mockImplementation(async () => {
+      useAppStore.getState().setProviderConfig(provider, { imageHosting: { enabled: true,
+        uploadUrl: 'https://changed-unused.example/upload', fileField: 'file', responseUrlPath: 'url', auth: 'none' } });
+      return json(catalogId === 'apimart' ? { url: 'https://cdn.example/apimart-alias.png' }
+        : { base_resp: { status_code: 0 }, file: { file_id: '123456789' } });
+    });
+    const expected = catalogId === 'apimart' ? 'https://cdn.example/apimart-alias.png' : 'mm_file://123456789';
+    await expect(uploadToRemote(await asDataUrl(png(34, 0)), provider)).resolves.toBe(expected);
+    expect(mocks.transport).toHaveBeenCalledOnce();
+    const [url, init] = mocks.transport.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${baseUrl}/${catalogId === 'apimart' ? 'uploads/images' : 'v1/files/upload'}`);
+    expect(new Headers(init.headers).get('Authorization')).toBe('Bearer dedicated-fixture');
+    expect((init.body as FormData).get('file')).toBeInstanceOf(Blob);
     expect(localFetch).not.toHaveBeenCalled();
     expect(mocks.readSecret).not.toHaveBeenCalled();
   });
@@ -890,6 +1004,13 @@ describe('共享参考图压缩的实际请求边界', () => {
     localFetch.mockResolvedValue(json({ success: true, files: [{ url: 'https://cdn.example/ready.png' }] }));
     mocks.transport.mockResolvedValue(json({ url: 'https://cdn.example/ready.png' }));
     const source = await asDataUrl(png(7));
+    if (provider === 'cccapi') {
+      await expect(uploadToRemote(source, provider)).rejects.toThrow('不会改传图床');
+      expect(localFetch).not.toHaveBeenCalled();
+      expect(mocks.transport).not.toHaveBeenCalled();
+      expect(mocks.invoke).not.toHaveBeenCalled();
+      return;
+    }
     expect(await uploadToRemote(source, provider)).toBe('https://cdn.example/ready.png');
     const uploads = provider === 'apimart' ? mocks.transport : localFetch;
     const [endpoint, init] = uploads.mock.calls.find(([, request]) => request?.method === 'POST')!;
@@ -970,7 +1091,7 @@ describe('共享参考图压缩的实际请求边界', () => {
     ['expiry-relay', 'image', 'png'],
     ['apimart', 'video', 'mp4'],
     ['apimart', 'audio', 'mp3'],
-  ] as const)('%s 的 %s 本地引用在 2.5 小时边界重传并保留上传通道', async (provider, kind, ext) => {
+  ] as const)('%s 的 %s 只复用允许的上传通道，2.5 小时后仍不改传其他服务', async (provider, kind, ext) => {
     let now = Date.now();
     vi.spyOn(Date, 'now').mockImplementation(() => now);
     const storage = new Map<string, string>();
@@ -995,6 +1116,15 @@ describe('共享参考图压缩的实际请求边界', () => {
     localFetch.mockImplementation(upload);
     mocks.transport.mockImplementation(upload);
     const resolve = () => resolveMediaReferenceUrl(url, { provider, kind, mode: 'publicUrl' });
+    if (provider === 'apimart' && kind !== 'image') {
+      await expect(resolve()).rejects.toThrow('不会改传图床');
+      now += 150 * 60_000;
+      await expect(resolve()).rejects.toThrow('不会改传图床');
+      expect(await resolveMediaReferenceUrl(generatedUrl, { provider, kind, mode: 'publicUrl' })).toBe(generatedUrl);
+      expect(localFetch).not.toHaveBeenCalled();
+      expect(mocks.transport).not.toHaveBeenCalled();
+      return;
+    }
     expect(await resolve()).toBe(`https://cdn.example/expiry-1.${ext}`);
     now += 150 * 60_000 - 1;
     expect(await resolve()).toBe(`https://cdn.example/expiry-1.${ext}`);

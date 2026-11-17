@@ -3,13 +3,13 @@
  * 将 asset://localhost/... 或 data:... 等本地媒体转为模型可读取的 URL
  *
  * 上传策略：
- *  - provider === 'apimart' → APIMart /uploads/images（需 API Key）
+ *  - APIMart 连接 → /uploads/images（仅图片，需 API Key）
  *  - ToAPIs 连接 → 当前站点 /uploads/{images,videos,audios}（仅使用该连接 Key）
  *  - LibAPI 连接 → /v1/files（仅使用该连接 Key）
  *  - MiniMax 官方连接 → /v1/files/upload（返回当前连接的 mm_file 素材引用）
  *  - 火山方舟官方连接 → 私有北京 TOS 公网上传、内网预签名链接（只在内存缓存）
- *  - 启用自定义图床的连接 → 图片使用该连接声明的上传接口
- *  - 其他 provider 的图片、视频、音频 → 全局公共托管（默认 Uguu）
+ *  - 内置中转站 → 优先专用上传或随模型请求传文件，不改传图床
+ *  - 其他连接 → 启用的连接图片图床或全局公共托管（默认 Uguu）
  *
  * 缓存策略：
  *  - 内存缓存：同一进程内即时复用
@@ -32,7 +32,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { lstat } from '@tauri-apps/plugin-fs';
 import { prepareReferenceImageUpload, prepareApimartImageUpload } from './ai/referenceImageUpload';
 import { corsSafeFetch } from './ai/httpTransport';
-import { getProviderPolicy, resolveProviderCatalogId } from './ai/providerPolicies';
+import { getProviderPolicy, resolveProviderCatalogId, type ProviderPolicy } from './ai/providerPolicies';
 import { sha256BytesHex } from './mediaDataUrl';
 import { redactModelProtocolError, redactModelProtocolErrorText } from './ai/modelProtocolHttp';
 import { assertMinimaxResponse, resolveMinimaxBaseUrl } from './ai/providers/minimaxModelManifest';
@@ -75,16 +75,21 @@ type UploadConnection = Readonly<Pick<ApiProviderConfig, 'catalogId' | 'baseUrl'
   globalImageHosting?: { provider: PublicImageHostingProvider; config: ImageHostingConfig };
 }>;
 
+function dedicatedUploadForKind(policy: Readonly<ProviderPolicy>, kind: MediaDataUrlKind): ProviderPolicy['upload'] {
+  return policy.upload === 'apimart' && kind !== 'image' ? undefined : policy.upload;
+}
+
 function captureUploadConnection(provider: string, kind: MediaDataUrlKind = 'image'): UploadConnection {
   const config = useAppStore.getState().config;
   const connection = config.providers[provider];
-  const upload = getProviderPolicy(resolveProviderCatalogId(provider, connection)).upload;
-  // 连接自定义图床只声明图片合同；音视频仍读取全局托管，专用上传失败不改传。
-  const useGlobalHosting = kind !== 'other' && !(kind === 'image' && connection?.imageHosting?.enabled)
-    && upload !== 'toapis' && upload !== 'libapi' && upload !== 'minimax' && upload !== 'volcengine-tos'
-    && !(provider === 'apimart' && kind === 'image');
+  const policy = getProviderPolicy(resolveProviderCatalogId(provider, connection));
+  const upload = dedicatedUploadForKind(policy, kind);
+  // 专用上传及禁止公共托管的连接忽略无效图床配置，也不把它纳入缓存与换配置检查。
+  const allowsHosting = !upload && policy.publicUploadFallback !== 'deny';
+  const imageHosting = allowsHosting ? connection?.imageHosting : undefined;
+  const useGlobalHosting = allowsHosting && kind !== 'other' && !(kind === 'image' && imageHosting?.enabled);
   return { catalogId: connection?.catalogId, baseUrl: connection?.baseUrl, apiKey: connection?.apiKey?.trim() ?? '',
-    imageHosting: connection?.imageHosting ? structuredClone(connection.imageHosting) : undefined, kind,
+    imageHosting: imageHosting ? structuredClone(imageHosting) : undefined, kind,
     tosUpload: upload === 'volcengine-tos' && connection?.tosUpload ? structuredClone(connection.tosUpload) : undefined,
     globalImageHosting: useGlobalHosting ? {
       provider: config.imageHosting?.provider ?? 'uguu', config: resolveGlobalImageHosting(config.imageHosting),
@@ -912,7 +917,8 @@ export async function uploadToRemote(
   signal?: AbortSignal,
 ): Promise<string> {
   const providerConfig = useAppStore.getState().config.providers[provider];
-  const usesTos = getProviderPolicy(resolveProviderCatalogId(provider, providerConfig)).upload === 'volcengine-tos';
+  const policy = getProviderPolicy(resolveProviderCatalogId(provider, providerConfig));
+  const usesTos = policy.upload === 'volcengine-tos';
   // 已入库的方舟 Asset ID 是官方逻辑引用，不是待下载的本地 asset protocol。
   if (usesTos && /^asset:\/\/(?!localhost$)[a-zA-Z0-9][a-zA-Z0-9_-]{0,255}$/i.test(url)) {
     signal?.throwIfAborted();
@@ -920,6 +926,12 @@ export async function uploadToRemote(
   }
   if (!isLocalImageUrl(url) && !(usesTos && isRemoteMediaUrl(url))) return url;
   if (signal?.aborted) throw abortReason(signal);
+  if (policy.referenceTransport === 'request-files') {
+    throw new Error('万象本地参考素材须随模型请求提交文件；当前调用路径仅接收公网 URL，请配置该模型支持的文件或内联传输协议，不会改传全局图床');
+  }
+  if (policy.publicUploadFallback === 'deny' && !dedicatedUploadForKind(policy, kind)) {
+    throw new Error(`当前内置连接尚未接入${mediaKindLabel(kind)}独立文件上传，请使用模型支持的文件或内联传输协议，或公开可访问的 HTTPS 素材地址；不会改传图床`);
+  }
   if (uploadQueueQuarantine) throw new UploadQueueQuarantinedError();
   const connection = captureUploadConnection(provider, kind);
   if (usesTos) assertVolcengineTosEndpoint(connection.baseUrl);
@@ -951,8 +963,8 @@ export async function uploadToRemote(
     const queuedCached = identity.cacheable ? getCachedUrl(key, !usesTos) : null;
     if (queuedCached) return queuedCached;
 
-    const upload = getProviderPolicy(resolveProviderCatalogId(provider, connection)).upload;
-    const customImageHosting = usesTos ? undefined : kind === 'image' && connection.imageHosting?.enabled ? connection.imageHosting
+    const upload = dedicatedUploadForKind(getProviderPolicy(resolveProviderCatalogId(provider, connection)), kind);
+    const customImageHosting = upload ? undefined : kind === 'image' && connection.imageHosting?.enabled ? connection.imageHosting
       : connection.globalImageHosting?.provider !== 'uguu' ? connection.globalImageHosting?.config : undefined;
     let customUrl: string | undefined;
     if (customImageHosting && kind !== 'other') {
@@ -970,7 +982,7 @@ export async function uploadToRemote(
       ? await uploadToLibapi(url, connection, kind, operationSignal, identity.source)
       : upload === 'minimax'
       ? await uploadToMinimax(url, connection, kind, operationSignal, identity.source)
-      : provider === 'apimart' && kind === 'image'
+      : upload === 'apimart'
       ? await uploadToApimart(url, connection, operationSignal, identity.source)
       : await uploadToUguu(url, kind, operationSignal, identity.source));
 
@@ -1053,7 +1065,6 @@ export async function resolveMediaReferenceUrl(
     return kind === 'image' ? prepareReferenceImageDataUrl(dataUrl, signal) : dataUrl;
   }
 
-  // APIMart 的 /uploads/images 只接受图片；uploadToRemote 会让视频/音频走全局托管，
-  // 但缓存仍保留原 provider 作用域，避免不同调用方互相污染。
+  // 内置中转站缺少对应媒体的上传合同时明确失败，不改传连接或全局图床。
   return uploadToRemote(url, provider, kind, signal);
 }

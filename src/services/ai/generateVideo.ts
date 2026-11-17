@@ -65,13 +65,15 @@ import {
 } from '../aiDimensions';
 import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling, pauseMediaTask, VIDEO_POLL_MAX_DURATION_MS } from '../pollManager';
 import { corsSafeFetch } from './httpTransport';
-import { resolveImageUrlArray } from './imageUtils';
+import { IMAGE_GENERATION_DATA_URL_BUDGET, resolveImageDataUrlArray, resolveImageUrlArray } from './imageUtils';
 import { mapSequentially, resolveImageUrlsSequentially } from './referenceMediaPreparation';
 import { resolveMediaReferenceUrl } from '../uploadService';
-import { relayonVideoVariables, usesRelayonModelProtocol } from './providers/relayonModelManifest';
+import { getRelayonVideoFileKinds, relayonVideoVariables, usesRelayonModelProtocol } from './providers/relayonModelManifest';
+import { usesSora2uModelProtocol } from './providers/sora2uModelManifest';
 import {
   createMediaDataUrlBudget,
   getAssetUrlFromPath,
+  readFileToDataUrl,
   type MediaDataUrlBudget,
 } from '../fileService';
 import { mapVideoParameters } from './videoParameterMappings';
@@ -209,12 +211,20 @@ async function resolveGeneralProtocolMediaUrls(
   budget: MediaDataUrlBudget,
   signal?: AbortSignal,
   publicUrlProvider?: string,
+  inlineProvider?: string,
 ): Promise<string[]> {
-  return mapSequentially(references.filter((reference) => reference.kind === kind), async (reference) => {
-    const url = getMediaReferenceUrl(reference);
+  const urls = references.filter((reference) => reference.kind === kind).map(getMediaReferenceUrl);
+  // 同类参考不能拆到文件与 URL 两套数组而丢失编号顺序；有本地文件时整类统一成文件。
+  const requestFiles = inlineProvider && urls.some((url) => !isRemoteMediaUrl(url));
+  return mapSequentially(urls, async (url) => {
+    if (requestFiles && isRemoteMediaUrl(url)) {
+      const dataUrl = await readFileToDataUrl(url, { kind, dataUrlBudget: budget, signal });
+      if (!dataUrl) throw new Error(`无法读取万象参考${kind === 'video' ? '视频' : '音频'}，同类本地与远程素材须统一转为文件后提交`);
+      return dataUrl;
+    }
     // 仅要求公网素材的厂商使用所属连接上传；其他通用协议继续沿用 data URL。
     return resolveMediaReferenceUrl(url, {
-      mode: publicUrlProvider ? 'publicUrl' : 'dataUrl', provider: publicUrlProvider, kind, signal, dataUrlBudget: budget,
+      mode: publicUrlProvider ? 'publicUrl' : 'dataUrl', provider: publicUrlProvider ?? inlineProvider, kind, signal, dataUrlBudget: budget,
     });
   }, signal);
 }
@@ -237,11 +247,11 @@ async function resolveVideoReferenceInput(
   nodeId: string | undefined,
   /** 调用方直接给定的参考媒体；排在最前，保证首/尾帧角色按调用方的顺序分配 */
   explicitReferences: readonly MediaReference[] = [],
-  options: { promptFirst?: boolean; preserveDeclaredRoles?: boolean; sortKeyframes?: boolean; target?: 'remote' | 'local'; apimartModel?: string; legacyPrompt?: string; provider?: string; suppressWarning?: boolean } = {},
+  options: { promptFirst?: boolean; preserveDeclaredRoles?: boolean; sortKeyframes?: boolean; target?: 'remote' | 'local'; apimartModel?: string; legacyPrompt?: string; provider?: string; suppressWarning?: boolean; preferLocalMedia?: boolean } = {},
 ): Promise<VideoGenerationReferenceInput> {
   const cameraSettings = useAppStore.getState().nodes.find((node) => node.id === nodeId)?.data.cameraSettings;
   const promptInput = await resolvePromptWithMediaRefs(rawPrompt, { preserveBindings: true,
-    preferLocalMedia: options.provider === 'volcengine', cameraSettings });
+    preferLocalMedia: options.provider === 'volcengine' || options.preferLocalMedia, cameraSettings });
   const connected = collectConnectedReferenceMedia(nodeId);
   const nodeItems = resolveVideoNodeReferences(nodeId);
   // RH 先按来源节点归一本地副本，再去重，避免共享原图的其他节点提前被删掉。
@@ -253,7 +263,7 @@ async function resolveVideoReferenceInput(
         || useAppStore.getState().nodes.find((node) => node.id === candidate.sourceNodeId)?.data.imageUrl === reference.url));
     return local ? { ...reference, url: local.url } : reference;
   };
-  const localizeVolcengineReference = async (reference: MediaReference): Promise<MediaReference> => {
+  const localizeReference = async (reference: MediaReference): Promise<MediaReference> => {
     // 显式 data/asset/blob（包括裁剪或标注结果）拥有优先权，不能退回原文件。
     if (reference.provider === 'volcengine' || !isRemoteMediaUrl(reference.url)) return reference;
     const source = reference.sourceNodeId ? useAppStore.getState().nodes.find((node) => node.id === reference.sourceNodeId)?.data : undefined;
@@ -267,8 +277,8 @@ async function resolveVideoReferenceInput(
   };
   const groups = [explicitReferences.map(canonicalReference), toMediaReferences(nodeItems, options.provider).map(canonicalReference),
     promptInput.references, connected.references.map(canonicalReference)];
-  const [explicit, fromNode, fromPrompt, fromConnections] = options.provider === 'volcengine'
-    ? await Promise.all(groups.map((group) => Promise.all(group.map(localizeVolcengineReference)))) : groups;
+  const [explicit, fromNode, fromPrompt, fromConnections] = options.provider === 'volcengine' || options.preferLocalMedia
+    ? await Promise.all(groups.map((group) => Promise.all(group.map(localizeReference)))) : groups;
   const regularReferences = mergeMediaReferences(
     // 节点上手动挑的参考帧/参考角色排在连线与提示词引用之前，重复的图按它们的角色去重
     mergeMediaReferences(explicit, fromNode),
@@ -844,6 +854,7 @@ export async function generateVideo(
     const isToapis = catalogId === 'toapis';
     const isLibapi = catalogId === 'libapi';
     const usesRelayonProtocol = catalogId === 'relayonapi' && usesRelayonModelProtocol(gm.modelId, gm.executionProfile);
+    const usesSora2uProtocol = catalogId === 'sora2u' && usesSora2uModelProtocol(gm.modelId, gm.executionProfile);
     const usesAigcsiProtocol = catalogId === 'aigc-si' && usesAigcsiModelProtocol(gm.modelId, gm.executionProfile);
     const policy = getProviderPolicy(catalogId);
     const publicUrlProvider = policy.upload || (usesRelayonProtocol && policy.referenceTransport === 'public-url')
@@ -854,7 +865,8 @@ export async function generateVideo(
       rawPrompt,
       params.nodeId,
       params.referenceMedia ?? [],
-      { preserveDeclaredRoles: true, sortKeyframes: usesLibapiProtocol, provider },
+      { preserveDeclaredRoles: true, sortKeyframes: usesLibapiProtocol, provider,
+        ...(policy.referenceTransport === 'request-files' || usesSora2uProtocol ? { target: 'local', preferLocalMedia: true } : {}) },
     );
     const canonicalParams = {
       ...params,
@@ -873,6 +885,13 @@ export async function generateVideo(
     if (usesRelayonProtocol) {
       // 先检查素材角色与组合，避免上传完成后才发现内置合同接不住首尾帧。
       relayonVideoVariables(gm.modelId, buildCanonicalVideoProtocolVariables(preflight));
+      const fileKinds = getRelayonVideoFileKinds(gm.modelId, gm.executionProfile);
+      for (const reference of originalReferences) {
+        if (!isRemoteMediaUrl(getMediaReferenceUrl(reference)) && !fileKinds.includes(reference.kind)) {
+          const label = reference.kind === 'image' ? '图片' : reference.kind === 'video' ? '视频' : '音频';
+          throw new Error(`万象模型“${gm.modelId}”尚未公开${label}文件直传合同，请使用可公开访问的 HTTPS 素材地址；不会回退到图床`);
+        }
+      }
     }
     if (usesMinimaxProtocol) {
       minimaxVideoVariables(preflight, buildCanonicalVideoProtocolVariables(preflight));
@@ -890,24 +909,25 @@ export async function generateVideo(
     }
     if (resolveModelExecutionProfile(gm.executionProfile)) {
       const dataUrlBudget = createMediaDataUrlBudget('本次视频模型参考媒体');
-      const remoteImageUrls = await resolveImageUrlsSequentially(
-        referenceInput.imageUrls,
-        connection.providerConfigId,
-        signal,
-      );
+      const remoteImageUrls = usesRelayonProtocol || usesSora2uProtocol
+        ? referenceInput.imageUrls.some((url) => !isRemoteMediaUrl(url))
+          ? await resolveImageDataUrlArray(referenceInput.imageUrls, signal, IMAGE_GENERATION_DATA_URL_BUDGET)
+          : referenceInput.imageUrls
+        : await resolveImageUrlsSequentially(referenceInput.imageUrls, connection.providerConfigId, signal);
       const videoUrls = await resolveGeneralProtocolMediaUrls(
-        originalReferences, 'video', dataUrlBudget, signal, publicUrlProvider,
+        originalReferences, 'video', dataUrlBudget, signal, publicUrlProvider, usesRelayonProtocol ? connection.providerConfigId : undefined,
       );
       const audioUrls = await resolveGeneralProtocolMediaUrls(
-        originalReferences, 'audio', dataUrlBudget, signal, publicUrlProvider,
+        originalReferences, 'audio', dataUrlBudget, signal, publicUrlProvider, usesRelayonProtocol ? connection.providerConfigId : undefined,
       );
       const remoteReferences = replaceReferenceUrls(originalReferences, {
         image: remoteImageUrls,
         video: videoUrls,
         audio: audioUrls,
       });
-      if (usesRelayonProtocol && remoteReferences.some((reference) => !/^https:\/\//i.test(reference.url))) {
-        throw new Error('RelayOnAPI 视频 JSON 参考素材必须是可访问的 HTTPS 地址，请检查素材链接或公共上传结果');
+      if (usesRelayonProtocol && remoteReferences.some((reference) => !/^https:\/\//i.test(reference.url)
+        && !reference.url.toLowerCase().startsWith(`data:${reference.kind}/`))) {
+        throw new Error('万象视频参考素材必须是可访问的 HTTPS 地址或对应类型的本地文件；不会回退到图床');
       }
       const canonicalRequest = resolveCanonicalVideoRequest(canonicalParams, {
         references: remoteReferences,

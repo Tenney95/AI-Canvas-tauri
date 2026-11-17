@@ -225,13 +225,13 @@ export const PROTOCOL_VARIABLES: readonly ProtocolVariableSpec[] = [
     ]),
   },
   {
-    name: 'referenceUrls', supplied: VIDEO,
+    name: 'referenceUrls', supplied: IMAGE_VIDEO,
     reference: true,
     categories: VIDEO,
     fields: ['referenceurls'],
   },
   {
-    name: 'inlineReferences', supplied: VIDEO,
+    name: 'inlineReferences', supplied: IMAGE_VIDEO,
     reference: true,
     categories: VIDEO,
     fields: ['references', 'inlinereferences'],
