@@ -10,8 +10,6 @@
 
 AI Canvas Tauri は、テキスト・画像・動画・音声・コマ撮りアニメーション・Markdown・ショットリスト・360° パノラマ・手描きノートを、接続可能なキャンバスノードとして整理します。ひとつのプロジェクト内で生成パイプラインを構成し、キャラクターライブラリとローカル素材を管理し、ComfyUI ワークフローを実行し、対話アシスタントでキャンバスの参照・編集、メディア生成、読み取り専用サブエージェントの派遣、許可済みファイルの読み取り、プロジェクトメモリの蓄積ができます。プロジェクトはシリーズとエピソードに分割でき、短編ドラマの各話ごとにキャンバスを持ち、キャラクターライブラリと素材はシリーズ全体で共有します。
 
-**0.11.3 · アシスタントウィンドウと最近使った Skill：** 独立ウィンドウを閉じる・戻す際は、下書きの受け渡しと実際の終了を待ち、失敗時は下書きを保持して編集に戻れます。ノードの `/` メニューに、アップロード済み・有効なエージェントパッケージから最近使った利用可能な Skill を最大 5 件表示し、アシスタントでの選択も同じ履歴に記録します。グループ開閉時の間隔調整、新プロジェクトの未使用原本のスキャン、7 役割のチーム、Seedream 5.0 Flash に対応し、素材プレビューと macOS の一部ファイル処理も修正しました。既存プロジェクトは自動移行せず、v4 と旧 v1〜v3 の互換性を維持します。出力履歴を含む v4 は 0.11.0 または対応クライアントが必要で、初期の v4 クライアントでは拒否される場合があります。配布状況と検証範囲は[リリースノート](.release-notes.md)をご確認ください。
-
 ![Version](https://img.shields.io/badge/version-0.11.7-6366f1)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db)
 ![React](https://img.shields.io/badge/React-19-61dafb)
@@ -19,11 +17,13 @@ AI Canvas Tauri は、テキスト・画像・動画・音声・コマ撮りア�
 ![TypeScript](https://img.shields.io/badge/TypeScript-6-3178c6)
 ![License](https://img.shields.io/badge/license-source--available-f59e0b)
 
+**[オンライン体験](https://tenney95.github.io/AI-Canvas-tauri/) · [デスクトップ版をダウンロード](https://github.com/tenney95/AI-Canvas-tauri/releases) · [Afdian で支援](https://ifdian.net/a/AI-Canvas) · [開発に参加](#共同開発者)**
+
 **オンライン体験:** <https://tenney95.github.io/AI-Canvas-tauri/>（トップ画面ですぐ試せます。デモキャンバス内蔵）
 
 **ダウンロード:** <https://github.com/tenney95/AI-Canvas-tauri/releases>（デスクトップインストーラー）
 
-[オンライン体験](https://tenney95.github.io/AI-Canvas-tauri/) · [ダウンロード](https://github.com/tenney95/AI-Canvas-tauri/releases) · [スポンサー](#スポンサー) · [主な機能](#主な機能) · [クイックスタート](#クイックスタート) · [ドキュメント](#ドキュメント) · [ライセンス](#ライセンス)
+[オンライン体験](https://tenney95.github.io/AI-Canvas-tauri/) · [ダウンロード](https://github.com/tenney95/AI-Canvas-tauri/releases) · [スポンサー](#スポンサー) · [開発に参加](#共同開発者) · [主な機能](#主な機能) · [クイックスタート](#クイックスタート) · [ドキュメント](#ドキュメント) · [ライセンス](#ライセンス)
 
 > Web 版はキャンバスと UI の体験に適しています。ファイルシステム、認証情報ストレージ、独立ウィンドウ、3D ディレクターデスク、ローカルモデルなどは Tauri デスクトップ環境に依存します。完全な体験をご希望の場合は、以下の手順でデスクトップアプリを起動してください。
 
@@ -32,6 +32,14 @@ AI Canvas Tauri は、テキスト・画像・動画・音声・コマ撮りア�
 ![AI Canvas Tauri Screenshot](public/screenshot.png)
 
 ## スポンサー
+
+### 個人としてのご支援
+
+AI Canvas Tauri の継続的な開発を応援していただける方は、[Afdian](https://ifdian.net/a/AI-Canvas) からご支援いただけます。支援は任意ですので、無理のない範囲でご検討ください。フィードバック、Star、プロジェクトの紹介、コードへの貢献も大きな支えになります。
+
+支援収入の大部分を優れたコード貢献者と分配し、真剣に開発へ参加する方々もプロジェクトの成長による収益を分かち合えるようにします。具体的な選考・分配方法は後日公開します。詳しくは [Afdian の固定記事](https://ifdian.net/p/172129e4e27a11f1b27452540025c377)をご覧ください。
+
+### プロジェクトスポンサー
 
 <table>
   <tr>
@@ -183,6 +191,16 @@ npm run tauri build
 開発コミュニケーション QQ グループ: 873354155
 
 ## 共同開発者
+
+一緒に AI Canvas Tauri を育てる開発者を募集しています。React / TypeScript、Tauri / Rust、モデル・ワークフロー連携、プラグイン、ドキュメント、翻訳など、さまざまな形での参加を歓迎します。
+
+1. [開発ガイド](doc/开发指南.md)と[モジュール一覧](doc/文档导航.md)（いずれも中国語）を読み、既存の構成と開発ルールを確認してください。
+2. 再現可能な不具合は [Issues](https://github.com/Tenney95/AI-Canvas-tauri/issues) へ、提案や相談は [Discussions](https://github.com/Tenney95/AI-Canvas-tauri/discussions) へお寄せください。大きな変更は、着手前に方向性と範囲を相談してください。
+3. 小さな改善から始め、[Pull Request](https://github.com/Tenney95/AI-Canvas-tauri/pulls) には解決する問題、変更内容、検証内容を記載してください。
+
+優れたコード貢献者との収益分配については、[個人としてのご支援](#個人としてのご支援)をご覧ください。具体的な選考・分配方法は後日公開します。
+
+これまでに貢献してくださった皆さんに感謝します。
 
 <p>
   <a href="https://github.com/zhurui0523" title="zhurui0523"><img src="https://images.weserv.nl/?url=github.com/zhurui0523.png&amp;w=128&amp;h=128&amp;fit=cover&amp;mask=circle" width="64" height="64" alt="zhurui0523" /></a>

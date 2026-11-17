@@ -6,7 +6,7 @@
 
 [![GitHub Stars](https://img.shields.io/github/stars/Tenney95/AI-Canvas-tauri?style=flat&label=Star%20on%20GitHub)](https://github.com/Tenney95/AI-Canvas-tauri/stargazers)
 
-**[在线体验](https://tenney95.github.io/AI-Canvas-tauri/) · [下载桌面版](https://github.com/Tenney95/AI-Canvas-tauri/releases) · [分享作品与交流](https://github.com/Tenney95/AI-Canvas-tauri/discussions)**
+**[在线体验](https://tenney95.github.io/AI-Canvas-tauri/) · [下载桌面版](https://github.com/Tenney95/AI-Canvas-tauri/releases) · [分享作品与交流](https://github.com/Tenney95/AI-Canvas-tauri/discussions) · [爱发电支持](https://ifdian.net/a/AI-Canvas) · [参与开发](#代码贡献)**
 
 > ⭐ **开源计划：** 当本项目的 GitHub Stars 达到 **10,000（10k）** 时，项目自有代码将转用 **[MIT License（MIT 许可证）](https://opensource.org/license/mit)**，允许自由使用、修改、分发和商用，须保留版权声明和许可文本。在此之前，仍以 [LICENSE](LICENSE) 中的当前许可条款为准。
 
@@ -15,8 +15,6 @@
 > 面向 **AI短剧创作、AI资产管理、图像/视频生成与分镜制作** 的本地优先 AI 多模态画布与可视化工作流桌面应用，集成 **ComfyUI、对话 AI Agent 与 MCP**，基于 **Tauri 2 + React 19 + React Flow 12** 构建。
 
 AI Canvas Tauri 将文本、图像、视频、音频、逐帧动画、Markdown、分镜、360° 全景和手绘笔记组织成可连接的画布节点。你可以在同一个项目中编排生成链路、统一管理角色库、人物/场景/道具与本地素材、执行 ComfyUI 工作流、安装 JavaScript 或可信 Python 用户插件，也可以通过对话助手查询或修改画布、生成媒体、派出只读子智能体、读取授权文件并沉淀项目记忆。项目还能拆成剧集与分集，一部 AI短剧的每一集各占一张画布，角色库与素材整部剧共用。
-
-**0.11.3 · 助手窗口与常用 Skill：** 独立助手关闭或收回时等待草稿交接与窗口真正关闭，失败保留草稿并恢复编辑；节点 `/` 一级菜单显示最近使用的 5 个可用 Skill，包含上传项与已启用智能体包，助手选择也更新这份近期记录。另含分组开合自动让位、新项目废弃原件扫描、七角色团队及 Seedream 5.0 Flash 适配，修复素材预览与部分 macOS 文件处理。旧项目保持原样，正式迁移继续关闭；新结构沿用 v4 项目包，兼容旧 v1–v3 包。含输出历史的 v4 包需 0.11.0 或支持该字段的客户端，早期 v4 客户端可能拒绝。安装包与验收范围见 [发布说明](.release-notes.md)。
 
 ![Version](https://img.shields.io/badge/version-0.11.7-6366f1)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db)
@@ -29,7 +27,7 @@ AI Canvas Tauri 将文本、图像、视频、音频、逐帧动画、Markdown�
 
 **下载：** <https://github.com/tenney95/AI-Canvas-tauri/releases>（获取桌面安装包）
 
-[在线体验](https://tenney95.github.io/AI-Canvas-tauri/) · [下载](https://github.com/tenney95/AI-Canvas-tauri/releases) · [赞助支持](#赞助支持) · [核心能力](#核心能力) · [快速开始](#快速开始) · [项目文档](#项目文档) · [License](#license)
+[在线体验](https://tenney95.github.io/AI-Canvas-tauri/) · [下载](https://github.com/tenney95/AI-Canvas-tauri/releases) · [赞助支持](#赞助支持) · [核心能力](#核心能力) · [快速开始](#快速开始) · [参与开发](#代码贡献) · [项目文档](#项目文档) · [License](#license)
 
 > 在线版适合体验画布与界面。用户插件、文件系统、凭据存储、独立窗口、3D 导演台、本地模型等能力依赖 Tauri 桌面环境；完整体验请按下方步骤启动桌面应用。
 
@@ -56,6 +54,16 @@ AI Canvas Tauri 将文本、图像、视频、音频、逐帧动画、Markdown�
 ![帧动画编辑：逐帧预览、偏移调整与角色对齐](doc/images/animation-editor.jpg)
 
 ## 赞助支持
+
+### 为项目与贡献者发电
+
+如果 AI Canvas 帮到了你，欢迎通过[爱发电支持项目](https://ifdian.net/a/AI-Canvas)。赞助自愿，量力而行；反馈问题、分享作品、点一颗 Star 或贡献代码，同样都是支持。
+
+**我会留出大部分赞助收入，与优秀的代码贡献者一起分红，让认真参与开发的人也能分享项目成长的收益。具体评选与分配方式后续公开。**
+
+[了解项目与贡献者分红的想法](https://ifdian.net/p/172129e4e27a11f1b27452540025c377) · [一起参与开发](#代码贡献)
+
+### 项目赞助方
 
 <table>
   <tr>
@@ -208,6 +216,16 @@ npm run tauri build
 开发沟通 QQ 群：873354155
 
 ## 代码贡献
+
+欢迎开发者一起把 AI Canvas 做得更好。无论你熟悉 React / TypeScript、Tauri / Rust、模型与工作流适配、插件开发，还是文档与多语言，都可以找到参与的方向。
+
+1. 先读[开发指南](doc/开发指南.md)和[模块文档导航](doc/文档导航.md)，了解项目结构与工程边界。
+2. 在 [Issues](https://github.com/Tenney95/AI-Canvas-tauri/issues) 提交可复现的问题，在 [Discussions](https://github.com/Tenney95/AI-Canvas-tauri/discussions) 交流想法；较大的功能或结构调整先讨论方案。
+3. 从范围明确的小改动开始，通过 [Pull Request](https://github.com/Tenney95/AI-Canvas-tauri/pulls) 提交修复、功能、文档或翻译，并说明解决的问题、改动内容和验证情况。
+
+优秀代码贡献者的赞助收益分享计划见[赞助支持](#赞助支持)，具体评选与分配方式后续公开。
+
+感谢每一位参与项目建设的贡献者：
 
 <p>
   <a href="https://github.com/zhurui0523" title="zhurui0523"><img src="https://images.weserv.nl/?url=github.com/zhurui0523.png&amp;w=128&amp;h=128&amp;fit=cover&amp;mask=circle" width="64" height="64" alt="zhurui0523" /></a>
