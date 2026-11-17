@@ -59,3 +59,13 @@ Tauri 桌面验收（待用户执行）：
 5. 打开桌面开发者工具核对 SDK 初始化不再触发 Zod 动态执行探测；正常协议响应继续接受，非法工具及结果响应仍拒绝。表单字段提示不能作为窗口卡死证据。
 
 自动化入口（仅提供，未运行）：仓库根目录执行 `npx vitest run tests/store/chat.test.ts tests/components/chatWindowCloseLifecycle.test.tsx tests/components/chatMessages.test.ts tests/services/chat/chatWindowLifecycle.test.ts tests/services/chat/chatWindowListener.test.ts tests/services/chat/detachedChatSyncController.test.ts tests/services/chat/workbenchAgentInvocationService.test.ts tests/services/mcp/mcpControlService.test.ts tests/services/mcpSdkCsp.test.ts`；在 `src-tauri` 执行 `cargo test --lib chat_window_session_tests`。真实窗口销毁、跨平台事件及 CSP 仍需桌面验收。回滚本轮前后端接线须同步进行，不回退会话、任务或用户草稿，不放宽安全策略。
+
+## 2026-11-17 发送、页面跟随与关闭误拦修复
+
+- 窗口帧按完整字段值比较，兼容原生事件重排 JSON 键；返回列表立即同步，保留项目、会话、序号和版本守卫。会话列表的置顶、普通分组及空态使用稳定 key。
+- 未绑定会话的输入和待建会话的欢迎建议按主页／项目隔离；切换页面保留原稿。独立窗口保留各原范围尚未确认的交接，发送成功只消费未继续编辑的原稿；加载无有效帧时只读，健康新上下文清除陈旧关闭提示。
+- 绑定会话按宿主全局草稿表确认，清空删除键等价于空稿，不再因切项目或空键缺失误拦关闭。非空缺失及旧无会话稿继续保护原归属，不强制销毁窗口。
+
+验证：已获授权运行四组定向测试，当前源码对应的 98 项全部通过；行为红／绿及隔离逆向验证覆盖字段重排、即时同步、列表 key、跨页草稿和关闭确认。用户确认右上角关闭恢复，桌面回读确认独立助手消失且主窗口保留。其余真实发送、返回速度及完整项目往返仍待用户复测；本轮未运行 lint、类型检查、构建、Rust 或全仓门槛，不沿用历史检查为本轮背书。
+
+回归入口：仓库根目录执行 `npx vitest run tests/services/chat/detachedChatSyncController.test.ts tests/components/conversationList.test.tsx tests/components/chatMessages.test.ts tests/components/chatWindowCloseLifecycle.test.tsx`。桌面依次检查主页→项目 A→项目 B 的会话／模型跟随、各页草稿恢复、发送与返回，以及清空输入后关闭；发送期间继续编辑的新稿不得被迟到 ACK 清除。回滚只撤销本节前端及对应测试接线，无依赖、数据库或权限迁移。

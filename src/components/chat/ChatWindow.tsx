@@ -58,20 +58,26 @@ export default function ChatWindow() {
   const [isLocked, setIsLocked] = useState(false);
   const isLockedRef = useRef(false);
   const syncStateRef = useRef<ChatWindowState | null>(null);
-  const composerHandoffRef = useRef<ChatComposerHandoff | undefined>(undefined);
-  const handleComposerDraftChange = useCallback((draft: ChatComposerHandoff) => { composerHandoffRef.current = draft; }, []);
+  // 切页仍跟随宿主快照；各原始上下文尚未确认的输入留在本窗口，不能被新页面覆盖。
+  const composerHandoffsRef = useRef<ChatComposerHandoff[]>([]);
+  const handleComposerDraftChange = useCallback((draft: ChatComposerHandoff) => {
+    const index = composerHandoffsRef.current.findIndex((pending) => pending.conversationId === draft.conversationId
+      && pending.windowFrame?.sessionId === draft.windowFrame?.sessionId
+      && sameProjectWindowContext(pending.windowFrame?.context, draft.windowFrame?.context));
+    if (index < 0) composerHandoffsRef.current.push(draft);
+    else composerHandoffsRef.current[index] = draft;
+  }, []);
+  const handleComposerDraftConsumed = useCallback((draft: ChatComposerHandoff) => {
+    composerHandoffsRef.current = composerHandoffsRef.current.filter((pending) => !(
+      pending.conversationId === draft.conversationId && pending.draft === draft.draft
+      && pending.windowFrame?.sessionId === draft.windowFrame?.sessionId
+      && sameProjectWindowContext(pending.windowFrame?.context, draft.windowFrame?.context)
+    ));
+  }, []);
   const resyncRequestedRef = useRef(false);
   const closePendingRef = useRef<Promise<boolean> | null>(null);
   const [closing, setClosing] = useState(false);
   const [closeError, setCloseError] = useState(false);
-
-  useEffect(() => {
-    const handoff = composerHandoffRef.current;
-    if (handoff && sameProjectWindowContext(handoff.windowFrame?.context, snapshot.windowFrame?.context)
-      && (handoff.conversationId ? snapshot.composerDrafts[handoff.conversationId] ?? '' : snapshot.composerDraft) === handoff.draft) {
-      composerHandoffRef.current = undefined;
-    }
-  }, [snapshot.composerDraft, snapshot.composerDrafts, snapshot.windowFrame]);
 
   useEffect(() => {
     let disposed = false;
@@ -124,9 +130,14 @@ export default function ChatWindow() {
 
   const requestClose = useCallback((type: 'close_window' | 'dock_window'): Promise<boolean> => {
     if (closePendingRef.current) return closePendingRef.current;
+    // 现有关闭协议一次只交接一份草稿，多份未确认输入不能只提交最后一份就销毁窗口。
+    if (composerHandoffsRef.current.length > 1) {
+      showCloseFailure();
+      return Promise.resolve(false);
+    }
     setClosing(true);
     setCloseError(false);
-    const draft = composerHandoffRef.current;
+    const draft = composerHandoffsRef.current[0];
     const frame = draft?.windowFrame ?? syncStateRef.current?.snapshot.windowFrame;
     const pending = requestChatMessage({ type, composerDraft: draft, sessionId: getChatClientSessionId() }, frame)
       .then((accepted) => { if (!accepted) showCloseFailure(); return accepted; }, () => { showCloseFailure(); return false; });
@@ -188,12 +199,28 @@ export default function ChatWindow() {
           return;
         }
         if (next === syncStateRef.current) return;
+        const previousFrame = syncStateRef.current?.snapshot.windowFrame;
+        const frame = next.snapshot.windowFrame;
+        const hasCurrentFrame = frame?.schemaVersion === 2 && frame.sessionId === getChatClientSessionId();
+        if (hasCurrentFrame) {
+          composerHandoffsRef.current = composerHandoffsRef.current.filter((handoff) => !(
+            handoff.windowFrame?.sessionId === frame.sessionId
+            // 绑定会话的草稿表是宿主全局状态；清空会删除键，确认本地副本不需要切回原页面。
+            && (handoff.conversationId
+              ? (Object.prototype.hasOwnProperty.call(next.snapshot.composerDrafts, handoff.conversationId)
+                ? next.snapshot.composerDrafts[handoff.conversationId] === handoff.draft : handoff.draft === '')
+              : sameProjectWindowContext(handoff.windowFrame?.context, frame.context)
+                && frame.conversationId === null && next.snapshot.composerDraft === handoff.draft)
+          ));
+          if (previousFrame?.conversationId !== frame.conversationId
+            || !sameProjectWindowContext(previousFrame?.context, frame.context)) setCloseError(false);
+        }
         syncStateRef.current = next;
         setChatReferenceWindowFrame(next.snapshot.windowFrame ?? null);
         resyncRequestedRef.current = false;
         setSnapshot(next.snapshot);
         stopHandshake();
-        setInitialized(true);
+        setInitialized(hasCurrentFrame);
       },
       closeWindow,
       showCloseFailure,
@@ -227,7 +254,9 @@ export default function ChatWindow() {
   }, [closeWindow, showCloseFailure]);
 
   useEffect(() => {
-    const handleBeforeUnload = () => { void emitCloseRequest(composerHandoffRef.current); };
+    const handleBeforeUnload = () => {
+      if (composerHandoffsRef.current.length <= 1) void emitCloseRequest(composerHandoffsRef.current[0]);
+    };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, []);
@@ -278,6 +307,7 @@ export default function ChatWindow() {
       composerDisabled={closing || !initialized}
       detachedHeaderActions={headerActions}
       onComposerDraftChange={handleComposerDraftChange}
+      onComposerDraftConsumed={handleComposerDraftConsumed}
     />
       {closing && <div role="status" className="ui-alert ui-alert--info fixed left-3 right-3 top-12 z-[10010]">
         {t('正在交接草稿并关闭窗口…')}

@@ -97,16 +97,35 @@ beforeEach(() => {
   conversationControllerMocks.resume.mockReturnValue({ ok: true });
 });
 
+async function harness() {
+  const emissions: ChatStateSync[] = [];
+  let dispatch!: (action: ChatAction) => void;
+  const controller = createDetachedChatSyncController({ enabled: true, syncIntervalMs: 0,
+    emitSync: async (sync) => { emissions.push(sync); },
+    initListener: async (handler) => { dispatch = handler; return () => {}; } });
+  await controller.start();
+  return { controller, emissions, dispatch, frame: syncFrame(emissions[0])! };
+}
+
 describe('独立助手关闭与草稿交接', () => {
-  async function harness() {
-    const emissions: ChatStateSync[] = [];
-    let dispatch!: (action: ChatAction) => void;
-    const controller = createDetachedChatSyncController({ enabled: true, syncIntervalMs: 0,
-      emitSync: async (sync) => { emissions.push(sync); },
-      initListener: async (handler) => { dispatch = handler; return () => {}; } });
-    await controller.start();
-    return { controller, emissions, dispatch, frame: syncFrame(emissions[0])! };
-  }
+  it.each(['', '项目 A 已保存草稿'])('真实 Store 的草稿 %j 随全局快照确认：空稿删键，切项目不丢已保存稿', (draftA) => {
+    const state = useAppStore.getState();
+    state.setChatComposerLiveDraft('清空前正文', 'conversation-1');
+    state.setChatComposerLiveDraft(draftA, 'conversation-1');
+    expect(Object.prototype.hasOwnProperty.call(useAppStore.getState().chatComposerDrafts, 'conversation-1')).toBe(draftA !== '');
+    useAppStore.setState((current) => ({
+      currentProjectId: 'project-b', activeConversationId: 'conversation-b',
+      projects: [...current.projects, { ...current.projects[0], id: 'project-b' }],
+      conversations: [{ ...current.conversations[0], id: 'conversation-b', projectId: 'project-b' }],
+    }));
+    useAppStore.getState().setChatComposerLiveDraft('项目 B 已保存草稿', 'conversation-b');
+    const snapshot = buildDetachedChatSnapshot(useAppStore.getState());
+    expect(snapshot.projectId).toBe('project-b');
+    expect(snapshot.conversations.map((item) => item.id)).toEqual(['conversation-b']);
+    expect(snapshot.composerDrafts['conversation-1'] ?? '').toBe(draftA);
+    expect(Object.prototype.hasOwnProperty.call(snapshot.composerDrafts, 'conversation-1')).toBe(draftA !== '');
+    expect(snapshot.composerDrafts['conversation-b']).toBe('项目 B 已保存草稿');
+  });
 
   it('收到草稿先保留独立模式与 nonce，原生销毁确认后才收回', async () => {
     const setup = await harness(), sessionId = getMainChatWindowSessionId()!;
@@ -407,6 +426,61 @@ describe('detached chat sync controller', () => {
       expect(useAppStore.getState().chatComposerDrafts['conversation-1']).toBe('替换后草稿');
     } finally { controller.dispose(); }
   });
+
+  it.each(['send_message', 'set_panel_view'] as const)('原生事件重排各层 JSON 键后 %s 仍执行', async (type) => {
+    const setup = await harness();
+    try {
+      // serde_json 往返会按键名排序；不能直接把宿主原对象回传给监听器。
+      const windowFrame = JSON.parse(JSON.stringify(setup.frame, (_key, value) =>
+        value && typeof value === 'object' && !Array.isArray(value)
+          ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)))
+          : value)) as ProjectWindowFrame;
+      expect(windowFrame).toEqual(setup.frame);
+      expect(JSON.stringify(windowFrame)).not.toBe(JSON.stringify(setup.frame));
+      const requestId = crypto.randomUUID();
+      if (type === 'send_message') {
+        setup.dispatch({ type, conversationId: 'conversation-1', content: requestId, requestId, windowFrame, sequence: 1 });
+        expect(conversationControllerMocks.submit).toHaveBeenCalledWith(expect.objectContaining({
+          conversationId: 'conversation-1', content: requestId, requestId,
+        }));
+        expect(closingMocks.response).toHaveBeenCalledWith(requestId, true, setup.frame.sessionId);
+      } else {
+        useAppStore.setState({ chatPanelView: 'chat' });
+        setup.dispatch({ type, view: 'list', windowFrame, sequence: 1 });
+        expect(useAppStore.getState().chatPanelView).toBe('list');
+      }
+    } finally { setup.controller.dispose(); }
+  });
+
+  it.each(['sessionId', 'revision', 'conversationId', 'runtimeEpoch', 'projectId', 'projectEpoch', 'canvasEpoch', 'canvasRevision'] as const)(
+    '原生事件重排键后仍拒绝 %s 字段值变化并保留草稿', async (field) => {
+      useAppStore.setState({ chatComposerLiveDraft: '不能丢失的草稿', chatComposerDrafts: { 'conversation-1': '不能丢失的草稿' } });
+      const setup = await harness();
+      try {
+        const windowFrame = JSON.parse(JSON.stringify(setup.frame, (_key, value) =>
+          value && typeof value === 'object' && !Array.isArray(value)
+            ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)))
+            : value)) as ProjectWindowFrame;
+        if (field === 'sessionId' || field === 'conversationId') windowFrame[field] = 'other-identity';
+        else if (field === 'revision') windowFrame.revision += 1;
+        else if (field === 'runtimeEpoch') windowFrame.context.target.runtimeEpoch = 'other-runtime';
+        else if (field === 'projectId' || field === 'projectEpoch') {
+          if (windowFrame.context.target.kind === 'global') throw new Error('expected project context');
+          if (field === 'projectId') windowFrame.context.target.projectId = 'other-project';
+          else windowFrame.context.target.projectEpoch += 1;
+        } else {
+          if (!windowFrame.context.canvas) throw new Error('expected canvas context');
+          windowFrame.context.canvas[field] += 1;
+        }
+        const requestId = crypto.randomUUID();
+        setup.dispatch({ type: 'send_message', conversationId: 'conversation-1', content: requestId, requestId, windowFrame, sequence: 1 });
+        expect(conversationControllerMocks.submit).not.toHaveBeenCalled();
+        expect(closingMocks.response).toHaveBeenCalledWith(requestId, false, windowFrame.sessionId);
+        expect(useAppStore.getState().chatComposerDrafts['conversation-1']).toBe('不能丢失的草稿');
+      } finally { setup.controller.dispose(); }
+    },
+  );
+
   it('会话分集绑定经快照和补丁传递，但独立窗口发送不能声明或改绑目标', () => {
     const target = { seriesId: 'project-1', episodeId: 'episode-1' };
     useAppStore.setState({ projectLoadStatus: 'ready', isCreatingProject: false, isReturningToStartPage: false,
@@ -461,6 +535,26 @@ describe('detached chat sync controller', () => {
     } finally {
       controller.dispose();
     }
+  });
+
+  it('返回会话列表不等待普通窗口同步节流', async () => {
+    useAppStore.setState({ chatPanelView: 'chat' });
+    const frames: ChatStateSync[] = [];
+    let dispatch!: (action: ChatAction) => void;
+    const controller = createDetachedChatSyncController({
+      enabled: true, syncIntervalMs: 60_000, now: () => 1,
+      emitSync: async (sync) => { frames.push(sync); },
+      initListener: async (handler) => { dispatch = handler; return () => {}; },
+    });
+    await controller.start();
+    try {
+      expect(frames).toHaveLength(1);
+      dispatch({ type: 'set_panel_view', view: 'list', windowFrame: syncFrame(frames[0])!, sequence: 1 });
+      // 不推进计时器：点击返回应立即给独立窗口发回视图补丁。
+      expect(frames).toHaveLength(2);
+      const mirror = frames.reduce<ChatWindowState | null>((state, sync) => receiveChatStateSync(state, sync), null);
+      expect(mirror?.snapshot.panelView).toBe('list');
+    } finally { controller.dispose(); }
   });
 
   it('rejects a stale detached conversation selection even when the previous project remains cached', async () => {

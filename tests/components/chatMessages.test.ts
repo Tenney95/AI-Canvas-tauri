@@ -133,6 +133,7 @@ import * as chatImages from '../../src/services/chat/chatImageReferenceService';
 import MessageBubble from '../../src/components/chat/MessageBubble';
 import CreationProfilePicker from '../../src/components/shared/creationProfiles/CreationProfilePicker';
 import type { ChatStateSnapshot } from '../../src/services/chat/chatWindowService';
+import * as chatWindowService from '../../src/services/chat/chatWindowService';
 import { setLocale } from '../../src/i18n';
 
 function createMessage(
@@ -535,6 +536,65 @@ describe('ChatMessages', () => {
     hooks.panelState = { ...hooks.panelState, chatImageDrafts: {} };
     renderPanel();
     expect(chatImages.prepareChatImagePreviews).toHaveBeenLastCalledWith('project', []);
+  });
+
+  it('独立助手跟随项目与主页的模型，未绑定会话的草稿按页面隔离并可恢复', async () => {
+    preparePanel([]);
+    vi.spyOn(chatWindowService, 'emitAction').mockResolvedValue(undefined);
+    vi.spyOn(chatWindowService, 'requestChatMessage').mockResolvedValue(true);
+    const consumed = vi.fn();
+    const snapshot = (projectId: string | null): ChatStateSnapshot => ({
+      conversations: [], activeConversationId: null, messages: [], agentTasks: [], projectId,
+      generalModels: [], assistantModelGroups: [], mediaModelOptions: [], nodes: [],
+      dramaAssets: { version: 2, characters: [], scenes: [], props: [] }, skillOptions: [],
+      composerDraft: '', composerDrafts: {}, panelView: 'chat',
+      assistantModelId: `general/${projectId ?? 'home'}`,
+      windowFrame: { schemaVersion: 2, sessionId: 'same-window-session', revision: 1, conversationId: null,
+        context: { schemaVersion: 2, canvas: null, target: projectId
+          ? { schemaVersion: 2, kind: 'project', projectId, projectEpoch: 0, modelGeneration: 1, runtimeEpoch: 'same-runtime' }
+          : { schemaVersion: 2, kind: 'global', modelGeneration: 1, catalogRevision: 1, runtimeEpoch: 'same-runtime' } } },
+    });
+    type Input = { inputValue: string; assistantModelId: string; onInputChange: (value: string) => void; onSend: () => void };
+    const render = (detachedSnapshot: ChatStateSnapshot) => {
+      renderPanel({ detached: true, detachedSnapshot, onComposerDraftConsumed: consumed });
+      flushFrames();
+      return panelChild<Input>(renderPanel({ detached: true, detachedSnapshot, onComposerDraftConsumed: consumed }), 'chat-input');
+    };
+    const first = snapshot('project-a'), second = snapshot('project-b'), home = snapshot(null);
+    let input = render(first);
+    input.onInputChange('A 页还未确认的草稿');
+    expect(render(first).inputValue).toBe('A 页还未确认的草稿');
+    input = render(second);
+    expect(input.assistantModelId).toBe('general/project-b');
+    expect(input.inputValue).toBe('');
+    input.onInputChange('B 页自己的草稿');
+    expect(render(second).inputValue).toBe('B 页自己的草稿');
+    input = render(home);
+    expect(input.assistantModelId).toBe('general/home');
+    expect(input.inputValue).toBe('');
+    input.onInputChange('主页自己的草稿');
+    expect(render(first).inputValue).toBe('A 页还未确认的草稿');
+    expect(render(second).inputValue).toBe('B 页自己的草稿');
+    expect(render(home).inputValue).toBe('主页自己的草稿');
+    render(home).onSend();
+    await Promise.resolve();
+    expect(consumed).toHaveBeenCalledWith({
+      draft: '主页自己的草稿', conversationId: null, windowFrame: home.windowFrame,
+    });
+
+    // 欢迎建议创建会话的回执也可能晚于主窗口切页，不能把 A 的建议灌给 B。
+    const firstTree = renderPanel({ detached: true, detachedSnapshot: first, onComposerDraftConsumed: consumed });
+    panelChild<ComponentProps<typeof ChatMessages>>(firstTree, ChatMessages).onExampleClick?.('只属于 A 页的欢迎建议');
+    expect(consumed).toHaveBeenCalledWith({
+      draft: 'A 页还未确认的草稿', conversationId: null, windowFrame: first.windowFrame,
+    });
+    const bindConversation = (value: ChatStateSnapshot, id: string): ChatStateSnapshot => ({
+      ...value, activeConversationId: id,
+      conversations: [{ ...hooks.panelState.conversations[0], id, projectId: value.projectId! }],
+      windowFrame: { ...value.windowFrame!, conversationId: id },
+    });
+    expect(render(bindConversation(second, 'conversation-b')).inputValue).toBe('');
+    expect(render(bindConversation(first, 'conversation-a')).inputValue).toBe('只属于 A 页的欢迎建议');
   });
 
   it.each([false, true])('uses the bound episode model and locks model and bundle controls (detached: %s)', (detached) => {

@@ -2,7 +2,7 @@
  * ConversationList — 会话列表组件
  * 展示当前项目的全部会话，支持新建、切换、搜索、置顶、归档、重命名、删除
  */
-import { useState, useCallback } from 'react';
+import { Fragment, useState, useCallback } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
@@ -212,6 +212,7 @@ export default function ConversationList({
         <AnimatePresence>
           {filtered.length === 0 && (
             <motion.div
+              key="empty"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               transition={{ duration: reduceMotion ? 0.1 : 0.18 }}
@@ -224,24 +225,24 @@ export default function ConversationList({
 
           {/* Pinned section */}
           {pinned.length > 0 && (
-            <>
+            <Fragment key="pinned">
               <div className="px-2 py-1 text-[11px] font-medium text-canvas-text-muted">
                 {t('置顶')}
               </div>
               {pinned.map(renderConversationItem)}
-            </>
+            </Fragment>
           )}
 
           {/* Normal section */}
           {normal.length > 0 && (
-            <>
+            <Fragment key="normal">
               {pinned.length > 0 && (
                 <div className="px-2 py-1 text-[11px] font-medium text-canvas-text-muted">
                   {t('最近')}
                 </div>
               )}
               {normal.map(renderConversationItem)}
-            </>
+            </Fragment>
           )}
         </AnimatePresence>
       </div>

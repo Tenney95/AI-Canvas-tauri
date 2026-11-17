@@ -844,6 +844,7 @@ export function handleDetachedChatAction(
 
     case 'set_panel_view':
       store.setChatPanelView(action.view);
+      requestSync(true);
       break;
 
     case 'set_prompt_submit_shortcut':
@@ -1157,7 +1158,7 @@ export function createDetachedChatSyncController(
         const activeConversationId = state.conversations.find((item) => item.id === state.activeConversationId
           && (item.projectId === activeOwner || item.id === MCP_SETTINGS_CONVERSATION_ID))?.id ?? null;
         const valid = !disposed && state.chatPanelDetached && sessionId && frame?.schemaVersion === 2 && frame.sessionId === sessionId
-          && !!published && JSON.stringify(frame) === JSON.stringify(published)
+          && !!published && configValuesEqual(frame, published)
           && Number.isSafeInteger(action.sequence) && action.sequence! > acceptedSequence
           && frame.conversationId === activeConversationId
           && isProjectWindowContextCurrent(frame.context, state);

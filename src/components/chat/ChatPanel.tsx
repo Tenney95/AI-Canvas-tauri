@@ -133,6 +133,7 @@ interface ChatPanelProps {
   /** 窗口交接或初始化期间保持草稿只读。 */
   composerDisabled?: boolean;
   onComposerDraftChange?: (draft: ChatComposerHandoff) => void;
+  onComposerDraftConsumed?: (draft: ChatComposerHandoff) => void;
 }
 
 const EMPTY_IMAGE_DRAFTS: ChatImageReference[] = [];
@@ -144,6 +145,7 @@ export default function ChatPanel({
   detachedHeaderActions,
   composerDisabled = false,
   onComposerDraftChange,
+  onComposerDraftConsumed,
 }: ChatPanelProps = {}) {
   const windowFrame = detachedSnapshot?.windowFrame;
   const emitAction = useCallback((action: ChatAction) => emitWindowAction(action, windowFrame), [windowFrame]);
@@ -404,10 +406,12 @@ export default function ChatPanel({
     if (detached) return detachedSnapshot?.imagePreviewUrls;
     return imagePreviewVersion === 0 ? {} : getChatImagePreviews(chatScopeId, JSON.parse(imageFileKey) as string[]);
   }, [detached, detachedSnapshot?.imagePreviewUrls, chatScopeId, imageFileKey, imagePreviewVersion]);
-  const pendingDraftsRef = useRef(new Map<string | null, string>());
-  const pendingDraftFramesRef = useRef(new Map<string | null, typeof windowFrame>());
+  const composerDraftKey = effectiveActiveConversationId
+    ? `conversation:${effectiveActiveConversationId}` : `scope:${chatScopeId}`;
+  const pendingDraftsRef = useRef(new Map<string, string>());
+  const pendingDraftFramesRef = useRef(new Map<string, typeof windowFrame>());
   const pendingSendsRef = useRef(new Set<string>());
-  const pendingConversationDraftRef = useRef<string | null>(null);
+  const pendingConversationDraftsRef = useRef(new Map<string, string>());
   const effectivePanelView = detached ? detachedSnapshot?.panelView ?? 'chat' : chatPanelView;
   const viewMode = effectivePanelView === 'list' ? 'list' : 'chat';
   const showTaskCenter = effectivePanelView === 'tasks';
@@ -551,7 +555,8 @@ export default function ChatPanel({
       useAppStore.getState().setChatComposerLiveDraft(value, effectiveActiveConversationId);
       return;
     }
-    if (pending.value && pending.value.conversationId !== effectiveActiveConversationId) flushDraftSync();
+    if (pending.value && (pending.value.conversationId !== effectiveActiveConversationId
+      || !sameProjectWindowContext(pending.value.windowFrame?.context, windowFrame?.context))) flushDraftSync();
     pending.value = { draft: value, conversationId: effectiveActiveConversationId, windowFrame: windowFrame ?? undefined };
     if (pending.timer) return;
     pending.timer = setTimeout(() => {
@@ -573,12 +578,12 @@ export default function ChatPanel({
     if (composerDisabled) return;
     setInputValue(value);
     if (detached) {
-      pendingDraftsRef.current.set(effectiveActiveConversationId, value);
-      pendingDraftFramesRef.current.set(effectiveActiveConversationId, windowFrame);
+      pendingDraftsRef.current.set(composerDraftKey, value);
+      pendingDraftFramesRef.current.set(composerDraftKey, windowFrame);
     }
     queueDraftSync(value);
     onComposerDraftChange?.({ draft: value, conversationId: effectiveActiveConversationId, windowFrame: windowFrame ?? undefined });
-  }, [composerDisabled, detached, effectiveActiveConversationId, onComposerDraftChange, queueDraftSync, windowFrame]);
+  }, [composerDisabled, composerDraftKey, detached, effectiveActiveConversationId, onComposerDraftChange, queueDraftSync, windowFrame]);
 
   const canonicalDraft = effectiveActiveConversationId
     ? (detached ? detachedSnapshot?.composerDrafts : chatComposerDrafts)?.[effectiveActiveConversationId] ?? ''
@@ -587,28 +592,28 @@ export default function ChatPanel({
   useEffect(() => {
     if (!ownsComposer) return;
     const conversationId = effectiveActiveConversationId;
-    const pending = pendingDraftsRef.current.get(conversationId);
+    const pending = pendingDraftsRef.current.get(composerDraftKey);
     // 旧快照可能晚于本地输入到达；直到主窗口回传最新值，先保留正在编辑的内容。
     if (pending !== undefined && pending !== canonicalDraft) {
       const frame = requestAnimationFrame(() => {
-        setInputValue(pendingDraftsRef.current.get(conversationId) ?? canonicalDraft);
+        setInputValue(pendingDraftsRef.current.get(composerDraftKey) ?? canonicalDraft);
       });
       return () => cancelAnimationFrame(frame);
     }
-    pendingDraftsRef.current.delete(conversationId);
-    pendingDraftFramesRef.current.delete(conversationId);
+    pendingDraftsRef.current.delete(composerDraftKey);
+    pendingDraftFramesRef.current.delete(composerDraftKey);
     const frame = requestAnimationFrame(() => {
-      if (pendingDraftsRef.current.has(conversationId)) return;
-      if (conversationId && pendingConversationDraftRef.current != null) {
-        const draft = pendingConversationDraftRef.current;
-        pendingConversationDraftRef.current = null;
+      if (pendingDraftsRef.current.has(composerDraftKey)) return;
+      const draft = pendingConversationDraftsRef.current.get(chatScopeId);
+      if (conversationId && draft !== undefined) {
+        pendingConversationDraftsRef.current.delete(chatScopeId);
         updateInputDraft(draft);
       } else {
         setInputValue(canonicalDraft);
       }
     });
     return () => cancelAnimationFrame(frame);
-  }, [canonicalDraft, effectiveActiveConversationId, effectiveImageDrafts, ownsComposer, updateInputDraft]);
+  }, [canonicalDraft, chatScopeId, composerDraftKey, effectiveActiveConversationId, effectiveImageDrafts, ownsComposer, updateInputDraft]);
 
   const handleTextModelChange = useCallback((modelId?: string) => {
     if (workbenchTarget) return;
@@ -696,13 +701,20 @@ export default function ChatPanel({
 
   const handleExampleClick = useCallback((text: string) => {
     if (!effectiveActiveConversationId) {
-      pendingConversationDraftRef.current = text;
+      const previousDraft = pendingDraftsRef.current.get(composerDraftKey);
+      if (previousDraft !== undefined) {
+        onComposerDraftConsumed?.({ draft: previousDraft, conversationId: null,
+          windowFrame: pendingDraftFramesRef.current.get(composerDraftKey) ?? windowFrame ?? undefined });
+        pendingDraftsRef.current.delete(composerDraftKey);
+        pendingDraftFramesRef.current.delete(composerDraftKey);
+      }
+      pendingConversationDraftsRef.current.set(chatScopeId, text);
       handleNewConversation();
       setInputValue(text);
       return;
     }
     updateInputDraft(text);
-  }, [effectiveActiveConversationId, handleNewConversation, updateInputDraft]);
+  }, [chatScopeId, composerDraftKey, effectiveActiveConversationId, handleNewConversation, onComposerDraftConsumed, updateInputDraft, windowFrame]);
 
   useEffect(() => {
     if (detached || chatPanelDetached || !chatComposerDraft) return;
@@ -951,8 +963,8 @@ export default function ChatPanel({
     const requestId = effectiveExecutionSelection.kind === 'team' ? crypto.randomUUID() : undefined;
 
     if (detached) {
-      if (pendingDraftsRef.current.has(effectiveActiveConversationId)
-        && !sameProjectWindowContext(pendingDraftFramesRef.current.get(effectiveActiveConversationId)?.context, windowFrame?.context)) {
+      if (pendingDraftsRef.current.has(composerDraftKey)
+        && !sameProjectWindowContext(pendingDraftFramesRef.current.get(composerDraftKey)?.context, windowFrame?.context)) {
         showToast(t('项目已变化，草稿仍保留，请核对原目标后重新编辑或复制'), 'error'); return;
       }
       const target = windowFrame?.context.target;
@@ -976,10 +988,18 @@ export default function ChatPanel({
         executionSelection: effectiveExecutionSelection,
         requestId,
       }, windowFrame).then((accepted) => {
-        if (!accepted || latestWindowFrame.current?.sessionId !== windowFrame?.sessionId
+        if (!accepted) return;
+        const draftUnchanged = pendingDraftsRef.current.get(composerDraftKey) === content;
+        if (draftUnchanged) {
+          pendingDraftsRef.current.delete(composerDraftKey);
+          pendingDraftFramesRef.current.delete(composerDraftKey);
+          onComposerDraftConsumed?.({ draft: content, conversationId: effectiveActiveConversationId,
+            windowFrame: windowFrame ?? undefined });
+        }
+        if (latestWindowFrame.current?.sessionId !== windowFrame?.sessionId
           || latestWindowFrame.current?.conversationId !== windowFrame?.conversationId
           || !sameProjectWindowContext(latestWindowFrame.current?.context, windowFrame?.context)
-          || pendingDraftsRef.current.get(effectiveActiveConversationId) !== content) return;
+          || !draftUnchanged) return;
         updateInputDraft('');
       }).finally(() => { pendingSendsRef.current.delete(sendKey); });
       requestLatestMessages(effectiveActiveConversationId);
@@ -1002,6 +1022,7 @@ export default function ChatPanel({
     requestLatestMessages(conversationId);
   }, [
     composerDisabled,
+    composerDraftKey,
     detached,
     effectiveActiveConversationId,
     effectiveAgentMode,
@@ -1011,6 +1032,7 @@ export default function ChatPanel({
     effectiveImageDrafts,
     settingsConversation,
     requestLatestMessages,
+    onComposerDraftConsumed,
     updateInputDraft,
     windowFrame,
     showToast,
