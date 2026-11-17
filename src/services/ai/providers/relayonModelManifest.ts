@@ -1,6 +1,6 @@
 /**
  * RelayOnAPI 已核对目录（基础 2026-10-27；MJ 与 2.6 补充 2026-11-06）。来源：https://relayonapi.com/docs。
- * SD 当前路由参数以用户提供的 2026-11-10 联序调用参考为准；H3 由用户确认仅支持 15/20/25/30 秒。
+ * SD 路由参数以用户提供的联序调用参考为准；视频时长以 2026-11-17《联序视频模型与可用秒数》为准。
  * 媒体结果映射采用用户确认的 OpenAI 兼容合同，尚未进行厂商真实生成验收。
  * 普通 Flare／Sunburst 的质量和背景候选采用用户确认的兼容选项，未据此宣称平台实测通过。
  * Image 2.6 01 使用独立官网像素表；旧 2.5 兼容能力仅用于严格识别历史配置。
@@ -253,13 +253,14 @@ const LEGACY_VIDEO_MODELS: readonly ProviderModelSelection[] = [
 const LEGACY_VIDEO_BY_ID = new Map(LEGACY_VIDEO_MODELS.map((model) => [model.id, model]));
 const SD_CURRENT_COMMON_RATIOS = ['16:9', '9:16', '1:1'];
 
-function currentVideoModel(previous: ProviderModelSelection): ProviderModelSelection {
+/** 2026-11-17 时长表生效前的完整已发布合同，仅用于识别旧内置配置。 */
+function previousVideoModel(previous: ProviderModelSelection): ProviderModelSelection {
   const model = structuredClone(previous);
   const capability = model.videoCapability!;
   const protocol = model.executionProfile?.protocol;
   if (protocol?.version !== 2 || !protocol.poll) throw new Error('RelayOnAPI 内置视频合同缺少规范异步协议');
   if (model.id === 'minimax-h3') {
-    // 仅本渠道采用四档时长；不修改 H3 公共模板和已发布的查询/取件协议。
+    // 上版曾提供四档时长；保留完整旧快照，不把它作为当前可选秒数。
     capability.durations = [15, 20, 25, 30];
     capability.minDuration = 15;
     capability.maxDuration = 30;
@@ -291,6 +292,32 @@ function currentVideoModel(previous: ProviderModelSelection): ProviderModelSelec
   return model;
 }
 
+const PREVIOUS_VIDEO_MODELS: readonly ProviderModelSelection[] = [
+  ...LEGACY_VIDEO_MODELS.map(previousVideoModel),
+  // 两款没有更早的历史协议，但已发布的 C1 兼容能力也需参与完整快照识别。
+  ...SD_25_COMPATIBLE_MODEL_IDS.map((id) => ({
+    ...previousVideoModel(LEGACY_VIDEO_BY_ID.get('sd-2.5-c1')!),
+    id, name: `Seedance 2.5 ${id.slice(-2).toUpperCase()}`,
+  })),
+];
+const PREVIOUS_VIDEO_BY_ID = new Map(PREVIOUS_VIDEO_MODELS.map((model) => [model.id, model]));
+
+// 用户 2026-11-17 秒数表：C 系列及 H3 只提供对应标准时长；A 与官转沿用原合同。
+const FIXED_VIDEO_DURATIONS = new Map<string, number>([
+  ['sd-2.0-c1', 15], ['sd-2.0-c2', 15], ['sd-2.0-c3', 15], ['minimax-h3', 15],
+  ['sd-2.5-c1', 30], ['sd-2.5-c2', 30], ['sd-2.5-c3', 30],
+]);
+
+function currentVideoModel(previous: ProviderModelSelection): ProviderModelSelection {
+  const model = structuredClone(previous);
+  const duration = FIXED_VIDEO_DURATIONS.get(model.id);
+  if (duration !== undefined) {
+    model.videoCapability = { ...model.videoCapability, durations: [duration],
+      minDuration: duration, maxDuration: duration, defaultDuration: duration };
+  }
+  return model;
+}
+
 export const RELAYON_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
   ...RELAYON_TEXT_MODEL_IDS.map((id): ProviderModelSelection => ({ id, name: TEXT_MODEL_NAMES[id],
     provider: 'relayonapi', category: 'text', inputModalities: ['text'], executionProfile: { preset: 'openai-chat' } })),
@@ -308,12 +335,7 @@ export const RELAYON_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
   imageModel('image-2.6-sunburst-01', 'Image 2.6 Sunburst 01', IMAGE_26_VARIANT_PIXELS, 8),
   ...RELAYON_MIDJOURNEY_MODEL_IDS.map((id) => imageModel(id, id,
     id === 'Midjourney v8.1' || id === 'Midjourney v8.2' ? MIDJOURNEY_8_PIXELS : MIDJOURNEY_PIXELS, 1)),
-  ...LEGACY_VIDEO_MODELS.map(currentVideoModel),
-  // 两款尚无独立文档，仅复用完整 C1 当前合同，不为它们制造历史协议。
-  ...SD_25_COMPATIBLE_MODEL_IDS.map((id) => ({
-    ...currentVideoModel(LEGACY_VIDEO_BY_ID.get('sd-2.5-c1')!),
-    id, name: `Seedance 2.5 ${id.slice(-2).toUpperCase()}`,
-  })),
+  ...PREVIOUS_VIDEO_MODELS.map(currentVideoModel),
 ];
 
 const MODEL_BY_ID = new Map(RELAYON_MODEL_MANIFEST.map((model) => [model.id, model]));
@@ -409,7 +431,10 @@ export function resolveRelayonVideoCapability(
   if (known?.category !== 'video' || !usesRelayonModelProtocol(modelId, profile)) return capability;
   if (!capability) return structuredClone(known.videoCapability);
   const previous = LEGACY_VIDEO_BY_ID.get(modelId)?.videoCapability;
-  if (previous && sameVideoCapability(capability, previous)) return structuredClone(known.videoCapability);
+  const lastPublished = PREVIOUS_VIDEO_BY_ID.get(modelId)?.videoCapability;
+  if ([previous, lastPublished].some((snapshot) => snapshot && sameVideoCapability(capability, snapshot))) {
+    return structuredClone(known.videoCapability);
+  }
   if (modelId === 'minimax-h3') {
     // 上版曾发布连续 4–30 秒；只识别其完整快照，不覆盖用户修改或部分声明。
     return previous && sameVideoCapability(capability, { ...previous, maxDuration: 30 })
@@ -420,7 +445,7 @@ export function resolveRelayonVideoCapability(
     if (!LEGACY_SINGLE_RATIO_MODELS.has(modelId) || capability.ratios.length !== 1 || capability.ratios[0] !== '16:9') return capability;
   }
   // 缺省/历史单画幅只有其余字段完整匹配已发布快照时才补正。
-  if (![previous, known.videoCapability].some((snapshot) => snapshot && sameVideoCapability(capability, snapshot, true))) return capability;
+  if (![previous, lastPublished, known.videoCapability].some((snapshot) => snapshot && sameVideoCapability(capability, snapshot, true))) return capability;
   return { ...structuredClone(known.videoCapability), ...(capability.defaultRatio === undefined ? { defaultRatio: undefined } : {}) };
 }
 

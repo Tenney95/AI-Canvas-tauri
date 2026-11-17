@@ -5,11 +5,26 @@ import { describe, expect, it } from 'vitest';
 import { resolveVideoModelCapability } from '../../src/services/ai/videoModelCapabilityResolver';
 import { useAppStore } from '../../src/store/useAppStore';
 import type { AppConfig } from '../../src/types';
+import type { VideoModelCapability } from '../../src/types/aiTypes';
 import { createSeedanceQuickAdaptTemplate } from '../../src/services/ai/seedanceModelCapabilities';
 import { RELAYON_MODEL_MANIFEST } from '../../src/services/ai/providers/relayonModelManifest';
 
 function config(): AppConfig {
   return { ...useAppStore.getState().config, providers: {}, generalModels: [] };
+}
+
+// 用户 2026-11-17 秒数表生效前的完整已发布能力；仅还原本次有意变更的时长字段。
+function previousPublishedCapability(id: string): VideoModelCapability {
+  const capability = structuredClone(RELAYON_MODEL_MANIFEST.find((model) => model.id === id)!.videoCapability!);
+  if (id === 'minimax-h3') {
+    return { ...capability, durations: [15, 20, 25, 30], minDuration: 15, maxDuration: 30, defaultDuration: 15 };
+  }
+  if (id === 'sd-2.0-c2' || id === 'sd-2.0-c3') {
+    return { ...capability, durations: [5, 10, 15], minDuration: 5, maxDuration: 15, defaultDuration: 5 };
+  }
+  delete capability.durations;
+  return { ...capability, minDuration: id === 'sd-2.0-c1' ? 10 : 4,
+    maxDuration: id === 'sd-2.0-c1' ? 15 : 30, defaultDuration: id === 'sd-2.0-c1' ? 10 : 4 };
 }
 
 describe('videoModelCapabilityResolver', () => {
@@ -64,6 +79,7 @@ describe('videoModelCapabilityResolver', () => {
     const input = config();
     const selected = structuredClone(RELAYON_MODEL_MANIFEST.find((model) => model.id === 'sd-2.5-c1')!);
     selected.provider = 'relay-video';
+    selected.videoCapability = previousPublishedCapability(selected.id);
     selected.videoCapability!.ratios = ['16:9'];
     input.providers['relay-video'] = { name: '万象视频', catalogId: 'relayonapi', apiKey: 'fixture', selectedModels: [selected] };
     input.generalModels = [{ id: 'saved-relay', name: selected.name, modelId: selected.id, category: 'video',
@@ -72,7 +88,7 @@ describe('videoModelCapabilityResolver', () => {
     const ratios = ['16:9', '9:16', '4:3', '3:4', '1:1', '21:9'];
     for (const reference of ['general/saved-relay', 'relay-video/sd-2.5-c1']) {
       const effective = resolveVideoModelCapability(reference, input)!;
-      expect(effective).toMatchObject({ ratios, defaultRatio: '16:9', minDuration: 4, maxDuration: 30,
+      expect(effective).toMatchObject({ ratios, defaultRatio: '16:9', durations: [30], minDuration: 30, maxDuration: 30, defaultDuration: 30,
         resolutions: ['720p'], maxImageReferences: 30, maxVideoReferences: 10, maxAudioReferences: 10 });
       effective.ratios!.push('2:1');
       expect(resolveVideoModelCapability(reference, input)?.ratios).toEqual(ratios);
@@ -80,7 +96,7 @@ describe('videoModelCapabilityResolver', () => {
     expect(input).toEqual(before);
   });
 
-  it.each([15, 30])('万象完整旧 H3 连续上限 %s 秒快照在节点与 Agent/MCP 统一投影四档，不写回配置', (maximum) => {
+  it.each([15, 30])('万象完整旧 H3 连续上限 %s 秒快照在节点与 Agent/MCP 统一投影 15 秒，不写回配置', (maximum) => {
     const input = config();
     const selected = structuredClone(RELAYON_MODEL_MANIFEST.find((model) => model.id === 'minimax-h3')!);
     delete selected.videoCapability!.durations;
@@ -91,12 +107,59 @@ describe('videoModelCapabilityResolver', () => {
     const before = structuredClone(input);
     for (const reference of ['general/legacy-h3', 'relay-h3/minimax-h3']) {
       expect(resolveVideoModelCapability(reference, input)).toMatchObject({
-        durations: [15, 20, 25, 30], minDuration: 15, maxDuration: 30, defaultDuration: 15,
+        durations: [15], minDuration: 15, maxDuration: 15, defaultDuration: 15,
       });
     }
     expect(input).toEqual(before);
     input.generalModels[0].videoCapability = { ...selected.videoCapability, maxDuration: 10 };
     expect(resolveVideoModelCapability('general/legacy-h3', input)?.maxDuration).toBe(10);
+  });
+
+  it.each([
+    ['sd-2.0-c1', 15], ['sd-2.0-c2', 15], ['sd-2.0-c3', 15], ['minimax-h3', 15],
+    ['sd-2.5-c1', 30], ['sd-2.5-c2', 30], ['sd-2.5-c3', 30],
+  ] as const)('%s 完整上版快照只在运行期投影 %s 秒，用户修改能力或协议后保留原值', (id, duration) => {
+    const input = config();
+    const selected = structuredClone(RELAYON_MODEL_MANIFEST.find((model) => model.id === id)!);
+    const current = structuredClone(selected.videoCapability!);
+    const previous = previousPublishedCapability(id);
+    selected.videoCapability = previous;
+    input.providers['relay-video'] = { name: '万象视频', catalogId: 'relayonapi', apiKey: 'fixture', selectedModels: [selected] };
+    input.generalModels = [{ id: 'saved-relay', name: selected.name, modelId: selected.id, category: 'video',
+      providerConfigId: 'relay-video', executionProfile: selected.executionProfile, videoCapability: previous }];
+    const before = structuredClone(input);
+    const references = ['general/saved-relay', `relay-video/${id}`];
+    for (const reference of references) {
+      const effective = resolveVideoModelCapability(reference, input)!;
+      expect(effective).toMatchObject(current);
+      expect(effective).toMatchObject({ durations: [duration], minDuration: duration, maxDuration: duration, defaultDuration: duration });
+      effective.durations!.push(99);
+      expect(resolveVideoModelCapability(reference, input)?.durations).toEqual([duration]);
+    }
+    expect(input).toEqual(before);
+
+    const customized = { ...previous, maxImageReferences: previous.maxImageReferences! + 1 };
+    selected.videoCapability = customized;
+    input.generalModels[0].videoCapability = customized;
+    for (const reference of references) expect(resolveVideoModelCapability(reference, input)).toMatchObject(customized);
+
+    const customProfile = structuredClone(selected.executionProfile!);
+    customProfile.protocol!.submit.path = '/custom/videos';
+    selected.executionProfile = customProfile;
+    selected.videoCapability = previous;
+    input.generalModels[0].executionProfile = customProfile;
+    input.generalModels[0].videoCapability = previous;
+    for (const reference of references) expect(resolveVideoModelCapability(reference, input)).toMatchObject(previous);
+
+    const partial = { minDuration: previous.minDuration, maxDuration: previous.maxDuration };
+    selected.executionProfile = before.providers['relay-video'].selectedModels![0].executionProfile;
+    selected.videoCapability = partial;
+    input.generalModels[0].executionProfile = selected.executionProfile;
+    input.generalModels[0].videoCapability = partial;
+    for (const reference of references) {
+      expect(resolveVideoModelCapability(reference, input)).toMatchObject(partial);
+      expect(resolveVideoModelCapability(reference, input)?.durations).toBeUndefined();
+    }
   });
 
   it('仅为万象完整内置协议恢复缺失能力，不覆盖同名自定义连接或显式比例', () => {

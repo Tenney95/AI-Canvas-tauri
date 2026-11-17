@@ -230,7 +230,7 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'completed', url: 'https://cdn.example/legacy-ratio.mp4' })));
     if (modelId.startsWith('sd-')) fetchMock.mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { headers: { 'Content-Type': 'video/mp4' } }));
     vi.stubGlobal('fetch', fetchMock);
-    await expect(generateVideo({ ...params, seedanceDuration: 10, seedanceResolution: '720p', seedanceRatio: ratio }))
+    await expect(generateVideo({ ...params, seedanceDuration: modelId === 'sd-2.5-c1' ? 30 : 10, seedanceResolution: '720p', seedanceRatio: ratio }))
       .resolves.toMatchObject({ url: modelId.startsWith('sd-') ? 'data:video/mp4;base64,AQID' : 'https://cdn.example/legacy-ratio.mp4' });
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       'https://relayonapi.com/v1/videos', 'https://relayonapi.com/v1/videos/legacy-ratio-task',
@@ -241,7 +241,7 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
       .toEqual(['16:9']);
   });
 
-  it.each([15, 20, 25, 30])('H3 %s 秒使用当前视频组 Key，按原任务鉴权下载，界面 2K 映射为请求 2k', async (duration) => {
+  it.each([15, 20, 25, 30])('H3 旧档位 %s 秒仅 15 秒提交并按原任务鉴权取件，其余在提交前拒绝', async (duration) => {
     const params = configure('minimax-h3');
     useAppStore.setState((state) => ({ currentProjectId: 'relayon-h3-project', nodes: [{
       id: 'relayon-h3-node', type: 'ai-video', position: { x: 0, y: 0 },
@@ -256,6 +256,13 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
       .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { headers: { 'Content-Type': 'video/mp4' } }));
     vi.stubGlobal('fetch', fetchMock);
     try {
+      if (duration !== 15) {
+        await expect(generateVideo({ ...params, nodeId: 'relayon-h3-node', seedanceDuration: duration,
+          seedanceResolution: '2K', seedanceRatio: '4:3' })).rejects.toThrow(/时长|秒/);
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(getPendingTasksForProject('relayon-h3-project')).toEqual([]);
+        return;
+      }
       const result = await generateVideo({ ...params, nodeId: 'relayon-h3-node', seedanceDuration: duration,
         seedanceResolution: '2K', seedanceRatio: '4:3' });
       expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({ model: 'minimax-h3',
@@ -294,19 +301,19 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
       .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { headers: { 'Content-Type': 'video/mp4' } }));
     vi.stubGlobal('fetch', fetchMock);
     try {
-      await expect(generateVideo({ ...params, prompt: '图片1与图片2保持外观', seedanceDuration: 10,
+      await expect(generateVideo({ ...params, prompt: '图片1与图片2保持外观', seedanceDuration: 15,
         seedanceResolution: '720p', seedanceRatio: '1:1', referenceMedia: [
           { kind: 'image', role: 'reference', origin: 'connection', url: 'https://cdn.example/i.png' },
           { kind: 'image', role: 'reference', origin: 'connection', url: 'https://cdn.example/i2.png' },
         ] })).resolves.toMatchObject({ url: 'data:video/mp4;base64,AQID' });
       expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({ model: 'sd-2.0-c3', prompt: '@图1与@图2保持外观',
-        duration: 10, resolution: '720p', aspect_ratio: '1:1', references: [
+        duration: 15, resolution: '720p', aspect_ratio: '1:1', references: [
           { type: 'image', url: 'https://cdn.example/i.png' }, { type: 'image', url: 'https://cdn.example/i2.png' },
         ] });
     } finally { image.mockRestore(); media.mockRestore(); constraints.mockRestore(); }
   });
 
-  it.each([5, 10, 15])('C3 当前不接音频，即使时长 %s 合法也在上传与提交前拒绝', async (duration) => {
+  it.each([5, 10, 15])('C3 的 %s 秒音频输入优先校验素材限制，在上传与提交前拒绝', async (duration) => {
     const params = configure('sd-2.0-c3');
     const image = vi.spyOn(imageUtils, 'resolveImageUrlArray');
     const media = vi.spyOn(uploadService, 'resolveMediaReferenceUrl');
@@ -324,18 +331,23 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
     } finally { image.mockRestore(); media.mockRestore(); }
   });
 
-  it.each(['sd-2.0-c2', 'sd-2.0-c3'])('%s 的非档位时长在任何上传和提交之前拒绝', async (modelId) => {
+  it.each([
+    ['sd-2.0-c1', 10], ['sd-2.0-c2', 5], ['sd-2.0-c3', 10], ['minimax-h3', 20],
+    ['sd-2.5-c1', 7], ['sd-2.5-c2', 7], ['sd-2.5-c3', 7],
+  ] as const)('%s 历史输入保留的 %s 秒在任何上传和提交之前拒绝', async (modelId, duration) => {
     const params = configure(modelId);
     const image = vi.spyOn(imageUtils, 'resolveImageUrlArray');
+    const media = vi.spyOn(uploadService, 'resolveMediaReferenceUrl');
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     try {
-      await expect(generateVideo({ ...params, seedanceDuration: 7, seedanceResolution: '720p', seedanceRatio: '16:9',
+      await expect(generateVideo({ ...params, seedanceDuration: duration, seedanceResolution: '720p', seedanceRatio: '16:9',
         referenceMedia: [{ kind: 'image', role: 'reference', origin: 'connection', url: 'data:image/png;base64,YQ==' }],
       })).rejects.toThrow(/时长|秒/);
       expect(image).not.toHaveBeenCalled();
+      expect(media).not.toHaveBeenCalled();
       expect(fetchMock).not.toHaveBeenCalled();
-    } finally { image.mockRestore(); }
+    } finally { image.mockRestore(); media.mockRestore(); }
   });
 
   it.each(['sd-2.5-c1', 'sd-2.5-c2', 'sd-2.5-c3'])('%s 沿用 2.5 C1 顶层参数提交 30 秒／21:9 并保持当前连接身份', async (modelId) => {
@@ -355,7 +367,7 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it.each(['sd-2.5-c2', 'sd-2.5-c3'])('%s 接收 7 秒及音视频参考，不套用 2.0 C2／C3 的限制', async (modelId) => {
+  it.each(['sd-2.5-c2', 'sd-2.5-c3'])('%s 固定 30 秒并保留音视频参考，不套用 2.0 C2／C3 的素材限制', async (modelId) => {
     const params = configure(modelId);
     const image = vi.spyOn(imageUtils, 'resolveImageUrlArray').mockImplementation(async (urls) => urls);
     const media = vi.spyOn(uploadService, 'resolveMediaReferenceUrl').mockImplementation(async (url) => url);
@@ -365,7 +377,7 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
       .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { headers: { 'Content-Type': 'video/mp4' } }));
     vi.stubGlobal('fetch', fetchMock);
     try {
-      const result = await generateVideo({ ...params, prompt: '图片1参考视频1与音频1', seedanceDuration: 7,
+      const result = await generateVideo({ ...params, prompt: '图片1参考视频1与音频1', seedanceDuration: 30,
         seedanceResolution: '720p', seedanceRatio: '21:9', referenceMedia: [
           { kind: 'image', role: 'reference', origin: 'connection', url: 'https://cdn.example/i.png' },
           { kind: 'video', role: 'reference', origin: 'connection', url: 'https://cdn.example/v.mp4' },
@@ -373,7 +385,7 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
         ] });
       expect(result.url).toBe('data:video/mp4;base64,AQID');
       expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({ model: modelId,
-        prompt: '@图1参考@视频1与@音频1', seconds: '7', resolution: '720p', aspect_ratio: '21:9', references: [
+        prompt: '@图1参考@视频1与@音频1', seconds: '30', resolution: '720p', aspect_ratio: '21:9', references: [
           { type: 'image', url: 'https://cdn.example/i.png', role: 'reference' },
           { type: 'video', url: 'https://cdn.example/v.mp4' }, { type: 'audio', url: 'https://cdn.example/a.mp3' },
         ] });
@@ -461,7 +473,7 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     try {
-      await expect(generateVideo({ ...params, seedanceDuration: 5, seedanceResolution: '720p', seedanceRatio: '16:9',
+      await expect(generateVideo({ ...params, seedanceDuration: 15, seedanceResolution: '720p', seedanceRatio: '16:9',
         referenceMedia: [{ kind: 'video', role: 'reference', origin: 'connection', url: 'https://cdn.example/not-allowed.mp4' }],
       })).rejects.toThrow(/视频|video/);
       expect(media).not.toHaveBeenCalled();
@@ -490,7 +502,7 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
     vi.stubGlobal('fetch', fetchMock);
     try {
       await generateVideo({ ...params, prompt: '@{image-b:图片 B} 跟随 @{audio-a:声音 A}，再看 @{image-a:图片 A}',
-        seedanceDuration: 5, seedanceResolution: '720p', seedanceRatio: '9:16' });
+        seedanceDuration: 15, seedanceResolution: '720p', seedanceRatio: '9:16' });
       const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
       expect(body).toMatchObject({ model: 'sd-2.0-c2', prompt: '@图1 跟随 @音频1，再看 @图2', references: [
         { type: 'image', url: 'https://cdn.example/b.png' }, { type: 'image', url: 'https://cdn.example/a.png' },
@@ -519,7 +531,7 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
     vi.stubGlobal('fetch', fetchMock);
     try {
       await generateVideo({ model: `general/${model.id}`, provider: 'general', prompt: '保持图片1的原始编号',
-        seedanceDuration: 10, seedanceResolution: '720p', seedanceRatio: '16:9',
+        seedanceDuration: 15, seedanceResolution: '720p', seedanceRatio: '16:9',
         referenceMedia: [{ kind: 'image', role: 'reference', origin: 'connection', url: 'https://cdn.example/person.png' }] });
       expect(fetchMock.mock.calls[0][0]).toBe('https://relayonapi.com/v1/custom/videos');
       expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).prompt).toBe('保持图片1的原始编号');
@@ -533,7 +545,7 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     try {
-      await expect(generateVideo({ ...params, seedanceDuration: 10, seedanceRatio: '16:9',
+      await expect(generateVideo({ ...params, seedanceDuration: 15, seedanceRatio: '16:9',
         referenceMedia: [{ kind: 'image', role: 'first_frame', origin: 'connection', url: 'data:image/png;base64,YQ==' }],
       })).rejects.toThrow('首尾帧');
       expect(image).not.toHaveBeenCalled();

@@ -48,7 +48,7 @@ function withoutDimensionPresets(value: ReturnType<typeof getGrsaiImageCapabilit
   return result;
 }
 
-// 用户补充的 SD 文档及 H3 30 秒要求有意更新了七款视频合同；只还原这些明确差异，
+// 用户补充的 SD 文档及 2026-11-17 秒数表有意更新了七款视频合同；只还原这些明确差异，
 // 普通2.6独立尺寸同样只还原已确认的像素差异，原摘要继续锁住其余字段和旧协议。
 // 新合同另由逐字段用例验证，不用重新生成摘要掩盖未声明的变化。
 function relayonBeforeDocumentCorrection() {
@@ -83,6 +83,12 @@ function relayonBeforeDocumentCorrection() {
       delete capability.durations;
       capability.minDuration = 4;
       capability.defaultDuration = 4;
+    }
+    if (model.id === 'sd-2.0-c1' || model.id === 'sd-2.5-c1') {
+      // 秒数表改为固定 15／30 秒；历史摘要仍验证此前完整合同，不更新原摘要常量。
+      delete capability.durations;
+      capability.minDuration = model.id === 'sd-2.0-c1' ? 10 : 4;
+      capability.defaultDuration = model.id === 'sd-2.0-c1' ? 10 : 4;
     }
     if (model.id === 'sd-2.0-c3') capability.maxAudioReferences = 3;
     if (model.id.endsWith('-A') || model.id === 'sd-2.5-c1') capability.supportsAudio = true;
