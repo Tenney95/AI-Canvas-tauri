@@ -532,12 +532,15 @@ async function resolvePromptReferences(
   preserveBindings = false,
   preferLocalImages = false,
   cameraSettings?: CameraGenerationSettings,
+  signal?: AbortSignal,
 ): Promise<PromptMediaReferences> {
+  signal?.throwIfAborted();
   const store = useAppStore.getState();
   const { nodes } = store;
   rawPrompt = expandShotlistRowMentions(rawPrompt, nodes, { cameraSettings });
   assertNoComfyRefmodMentions(rawPrompt);
   const globalAssets = await loadGlobalDramaAssetsForPrompt(rawPrompt, store);
+  signal?.throwIfAborted();
   const imageEntries: PromptImageEntry[] = [];
   const mediaReferences: MediaReference[] = [];
   // groups: 1=@asset  2,3=@drama  4,5=@node
@@ -547,7 +550,8 @@ async function resolvePromptReferences(
   for (const image of parseChatImageReferences(rawPrompt)) {
     if (chatImages.has(image.fileName)) continue;
     if (!store.currentProjectId) throw new Error('缺少参考图所属项目');
-    chatImages.set(image.fileName, await readChatImageReference(store.currentProjectId, image.fileName));
+    chatImages.set(image.fileName, await readChatImageReference(store.currentProjectId, image.fileName, signal));
+    signal?.throwIfAborted();
   }
 
   const assetImageMap = new Map<string, string>();
@@ -559,9 +563,11 @@ async function resolvePromptReferences(
     const category = getFileCategory(name);
     if (extractMediaReferences && (category === 'video' || category === 'audio') && !assetMediaMap.has(m[1])) {
       assetMediaMap.set(m[1], { kind: category, url: await getAssetUrlFromPath(p), filePath: p });
+      signal?.throwIfAborted();
     }
     if (category === 'image' && !assetImageMap.has(m[1])) {
-      const dataUrl = await readFileToDataUrl(p);
+      const dataUrl = await readFileToDataUrl(p, signal ? { signal } : undefined);
+      signal?.throwIfAborted();
       if (dataUrl) assetImageMap.set(m[1], dataUrl);
     }
   }
@@ -576,6 +582,7 @@ async function resolvePromptReferences(
         const sbNode = nodes.find((n) => n.id === nodeId);
         if (sbNode && (sbNode.data.type as string) === 'ai-storyboard') {
           const url = await resolveStoryboardCellImage(sbNode.data as BaseNodeData, cellIdx);
+          signal?.throwIfAborted();
           if (url) sbCellImageMap.set(rawNodeId, url);
         }
       }
@@ -593,6 +600,7 @@ async function resolvePromptReferences(
       asset,
       nodes as Array<{ id: string; data?: Record<string, unknown> }>,
     );
+    signal?.throwIfAborted();
     if (merged) dramaMergedMap.set(m[1], merged);
   }
 
@@ -876,12 +884,14 @@ async function resolvePromptReferences(
       const url = preferLocalImages && entry.filePath && isRemoteMediaUrl(entry.url)
         ? await getAssetUrlFromPath(entry.filePath)
         : await resolveNodeImageUrl(entry.url, entry.filePath);
+      signal?.throwIfAborted();
       let resolvedUrl = url;
       try {
         resolvedUrl = await mergePromptImageOverlays(url, entry);
       } catch (err) {
         console.error('[aiService] Failed to merge overlays:', err);
       }
+      signal?.throwIfAborted();
       const hasOverlays = Boolean(entry.mattingMask || entry.annotation || entry.annotationLayer);
       const sourceUrl = !preferLocalImages && !hasOverlays && entry.sourceUrl?.trim()
         ? entry.sourceUrl.trim()
@@ -889,7 +899,7 @@ async function resolvePromptReferences(
       const reachableSourceUrl = sourceUrl && (
         sourceUrl === entry.url
           ? url === sourceUrl
-          : await imageUrlReachable(sourceUrl)
+          : await imageUrlReachable(sourceUrl, undefined, signal)
       )
         ? sourceUrl
         : undefined;
@@ -904,6 +914,7 @@ async function resolvePromptReferences(
       } satisfies MediaReference;
     }),
   );
+  signal?.throwIfAborted();
 
   const media = toLegacyReferenceMedia(mergeMediaReferences(imageReferences, mediaReferences));
   const segments: PromptMediaSegment[] = [];
@@ -940,9 +951,9 @@ async function resolvePromptReferences(
 /** 图片生成兼容入口：图片 URL 独立提取，视频/音频仍按旧行为内联到 prompt。 */
 export async function resolvePromptWithImageRefs(
   rawPrompt: string,
-  options: { preferLocalImages?: boolean; cameraSettings?: CameraGenerationSettings } = {},
+  options: { preferLocalImages?: boolean; cameraSettings?: CameraGenerationSettings; signal?: AbortSignal } = {},
 ): Promise<{ prompt: string; imageUrls: string[] }> {
-  const result = await resolvePromptReferences(rawPrompt, false, false, options.preferLocalImages, options.cameraSettings);
+  const result = await resolvePromptReferences(rawPrompt, false, false, options.preferLocalImages, options.cameraSettings, options.signal);
   return { prompt: result.prompt, imageUrls: options.preferLocalImages
     ? getMediaReferenceUrls(result.references, 'image', 'local') : result.imageUrls };
 }
@@ -952,9 +963,10 @@ export async function resolvePromptWithMediaRefs(rawPrompt: string, options: {
   preserveBindings?: boolean;
   preferLocalMedia?: boolean;
   cameraSettings?: CameraGenerationSettings;
+  signal?: AbortSignal;
 } = {}): Promise<PromptMediaReferences> {
   // 图片仍经过既有蒙版/标注合成；不能用原 filePath 覆盖已生成的本地合成图。
-  const resolved = await resolvePromptReferences(rawPrompt, true, options.preserveBindings, options.preferLocalMedia, options.cameraSettings);
+  const resolved = await resolvePromptReferences(rawPrompt, true, options.preserveBindings, options.preferLocalMedia, options.cameraSettings, options.signal);
   if (!options.preferLocalMedia) return resolved;
   const references = await Promise.all(resolved.references.map(async (reference) =>
     reference.filePath && isRemoteMediaUrl(reference.url)

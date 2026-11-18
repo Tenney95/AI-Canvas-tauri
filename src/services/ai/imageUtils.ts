@@ -164,18 +164,40 @@ export async function loadImage(src: string): Promise<HTMLImageElement> {
 }
 
 /** ComfyUI 原生读取后探测解码，其他来源沿用原来的 <img> 可达性检查。 */
-export function imageUrlReachable(url: string, timeoutMs = 6000): Promise<boolean> {
+export async function imageUrlReachable(url: string, timeoutMs = 6000, signal?: AbortSignal): Promise<boolean> {
+  signal?.throwIfAborted();
   if (shouldLoadNativeComfyImage(url)) {
-    return loadNativeComfyImage(url, AbortSignal.timeout(timeoutMs)).then(() => true, () => false);
+    const timeout = AbortSignal.timeout(timeoutMs);
+    try {
+      await loadNativeComfyImage(url, signal ? AbortSignal.any([signal, timeout]) : timeout);
+      signal?.throwIfAborted();
+      return true;
+    } catch {
+      signal?.throwIfAborted();
+      return false;
+    }
   }
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     if (typeof Image === 'undefined') { resolve(true); return; }
     const img = new Image();
-    let settled = false;
-    const finish = (v: boolean) => { if (!settled) { settled = true; clearTimeout(timer); resolve(v); } };
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      img.onload = img.onerror = null;
+    };
+    const finish = (reachable: boolean) => {
+      cleanup();
+      resolve(reachable);
+    };
+    const abort = () => {
+      cleanup();
+      img.removeAttribute('src');
+      reject(signal?.reason);
+    };
     const timer = setTimeout(() => finish(false), timeoutMs);
     img.onload = () => finish(true);
     img.onerror = () => finish(false);
+    signal?.addEventListener('abort', abort, { once: true });
     img.src = url;
   });
 }

@@ -178,7 +178,7 @@ function createStore(nodes: TestNode[], getRevision: () => number): TestStore {
 function installStoreMock(store: TestStore) {
   const useAppStore = Object.assign(
     <T,>(selector: (state: TestStore) => T) => selector(store),
-    { getState: () => store },
+    { getState: () => store, subscribe: () => () => {} },
   );
   vi.doMock('../../src/store/useAppStore', () => ({
     generateId: () => 'generated',

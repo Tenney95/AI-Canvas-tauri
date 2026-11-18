@@ -56,7 +56,7 @@ describe('超长生图提示词的用户选择', () => {
     const { result } = await openChoice();
     expect(mocks.inspect).toHaveBeenCalledWith(expect.objectContaining({ imageOutputFormat,
       ...(imageOutputFormat === 'gif' ? { imageFrameCount: 9, imageFrameDurationMs: 200, imageTransparent: false } : {}),
-    }), 2);
+    }), 2, expect.any(AbortSignal));
     chooseImagePromptTruncation();
     await expect(result).resolves.toEqual({ success: true });
   });
@@ -66,7 +66,7 @@ describe('超长生图提示词的用户选择', () => {
       outpaintInput: { url: 'asset://localhost/padded.png', width: 1600, height: 900 },
     });
     const { result } = await openChoice();
-    expect(mocks.inspect).toHaveBeenCalledWith(expect.objectContaining({ image_urls: ['asset://localhost/padded.png'] }), 2);
+    expect(mocks.inspect).toHaveBeenCalledWith(expect.objectContaining({ image_urls: ['asset://localhost/padded.png'] }), 2, expect.any(AbortSignal));
     expect(mocks.execute).not.toHaveBeenCalled();
     chooseImagePromptTruncation();
     await expect(result).resolves.toEqual({ success: true });
@@ -96,7 +96,7 @@ describe('超长生图提示词的用户选择', () => {
     const original = useAppStore.getState().nodes[0];
     const { result } = await openChoice();
     expect(mocks.execute).not.toHaveBeenCalled();
-    expect(mocks.inspect).toHaveBeenCalledWith(expect.objectContaining({ imageSize: '2K' }), 2);
+    expect(mocks.inspect).toHaveBeenCalledWith(expect.objectContaining({ imageSize: '2K' }), 2, expect.any(AbortSignal));
     closeImagePromptOverflow(true);
     await expect(result).resolves.toMatchObject({ success: false });
     expect(mocks.execute).not.toHaveBeenCalled();
@@ -191,6 +191,41 @@ describe('超长生图提示词的用户选择', () => {
     expect(getImagePromptOverflow()).toBeNull();
     await expect(result).resolves.toMatchObject({ success: false });
     expect(mocks.execute).not.toHaveBeenCalled();
+  });
+
+  it('输入改动后立即取消预检并允许重试，旧预检迟到时不能影响新选择', async () => {
+    let finishInspection!: (overflow: ImagePromptOverflowError) => void;
+    mocks.inspect.mockReturnValueOnce(new Promise((resolve) => { finishInspection = resolve; }));
+    const first = executeGenerationWithImagePromptChoice('image-node');
+    const signal: AbortSignal = mocks.inspect.mock.calls[0][2];
+    useAppStore.getState().updateNodeDataTransient('image-node', { prompt: '修改后的原文' });
+    expect(signal.aborted).toBe(true);
+    const { result: second } = await openChoice();
+    finishInspection(new ImagePromptOverflowError('gpt-image-2.6', '旧预检', 1));
+    await expect(first).resolves.toMatchObject({ success: false });
+    expect(getImagePromptOverflow()?.overflow.prompt).toBe(fullPrompt);
+    chooseImagePromptTruncation();
+    await expect(second).resolves.toEqual({ success: true });
+    expect(mocks.execute).toHaveBeenCalledOnce();
+  });
+
+  it('创建优化节点时同步修改生图输入会取消选择并清理忙碌状态', async () => {
+    const { result } = await openChoice();
+    const unsubscribe = useAppStore.subscribe((state) => {
+      if (!state.nodes.some((node) => node.data.type === 'ai-text')) return;
+      unsubscribe();
+      state.updateNodeDataTransient('image-node', { prompt: '同步更新的要求' });
+    });
+    try {
+      await optimizeImagePrompt('general/text-model');
+      await expect(result).resolves.toMatchObject({ success: false });
+      expect(getImagePromptOverflow()).toBeNull();
+      expect(useAppStore.getState().nodes.find((node) => node.data.type === 'ai-text')?.data.status).toBe('idle');
+      expect(mocks.stream).not.toHaveBeenCalled();
+      expect(mocks.execute).not.toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+    }
   });
 
   it('优化中取消会中止文本请求并清理节点忙碌状态', async () => {

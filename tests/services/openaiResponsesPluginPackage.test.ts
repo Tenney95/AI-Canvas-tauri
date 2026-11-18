@@ -1,25 +1,60 @@
-/** 实际独立交付物位于源码仓库旁；普通源码 CI 不要求本机插件目录存在。 */
-import { existsSync, readFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { Script } from 'node:vm';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parsePluginBundle } from '../../src/services/plugins/pluginManifest';
 import { buildChatApiRequest } from '../../src/services/ai/chatApiProtocol';
 
-const directory = new URL('../../../plugins/openai-responses/', import.meta.url);
-describe.runIf(existsSync(new URL('manifest.json', directory)))('independent Responses plugin package', () => {
+const execFileAsync = promisify(execFile);
+const pluginCli = fileURLToPath(new URL('../../scripts/plugin-dev.mjs', import.meta.url));
+
+describe('independent Responses plugin package', () => {
+  const packageDirectory = process.env.AI_CANVAS_RESPONSES_PLUGIN_DIR;
+  let temporary: string | undefined;
+  let text: string;
+  let source: string;
+  let manifest: ReturnType<typeof parsePluginBundle>;
+
+  beforeAll(async () => {
+    let directory: string;
+    if (packageDirectory !== undefined) {
+      directory = resolve(packageDirectory);
+    } else {
+      temporary = await mkdtemp(join(tmpdir(), 'ai-canvas-responses-package-'));
+      directory = join(temporary, 'plugin');
+    }
+    const args = packageDirectory === undefined ? ['init', directory, 'protocol'] : ['check', directory];
+    await execFileAsync(process.execPath, [pluginCli, ...args], { windowsHide: true, timeout: 20000 });
+    [text, source] = await Promise.all([
+      readFile(join(directory, 'manifest.json'), 'utf8'),
+      readFile(join(directory, 'main.js'), 'utf8'),
+    ]);
+    manifest = parsePluginBundle(text, source);
+  }, 25000);
+
+  afterAll(async () => {
+    if (temporary) await rm(temporary, { recursive: true, force: true });
+  });
+
   it('ships a standalone permission-free preset package with a no-op entry', () => {
-    const text = readFileSync(new URL('manifest.json', directory), 'utf8');
-    const source = readFileSync(new URL('main.js', directory), 'utf8');
-    const manifest = parsePluginBundle(text, source);
-    expect(manifest).toMatchObject({ id: 'ai-canvas.openai-responses', apiVersion: 2, permissions: [], requiredCapabilities: ['model.protocolPresets'],
+    const id = packageDirectory !== undefined ? 'ai-canvas.openai-responses' : 'com.example.openai-responses';
+    expect(manifest).toMatchObject({ id, apiVersion: 2, permissions: [], requiredCapabilities: ['model.protocolPresets'],
       contributes: { nodeTools: [], modelProtocols: [{ id: 'responses', category: 'text', adapter: 'openai-responses' }] } });
-    const definitions: unknown[] = [];
-    new Script(source).runInNewContext({ definePlugin: (value: unknown) => definitions.push(value) });
-    expect(JSON.stringify(definitions)).toBe('[{"tools":{}}]');
+    const entry = new Script(`const definitions = [];
+      const definePlugin = (value) => definitions.push(value);
+      ${source}
+      JSON.stringify(definitions);`);
+    expect(entry.runInNewContext(Object.create(null), {
+      timeout: 1000,
+      contextCodeGeneration: { strings: false, wasm: false },
+    })).toBe('[{"tools":{}}]');
     expect(text + source).not.toMatch(/AI_CANVAS_MCP_TOKEN|apiKey|[A-Z]:\\/u);
   });
   it('binds to the host encoder that preserves all five image inputs', () => {
-    const manifest = parsePluginBundle(readFileSync(new URL('manifest.json', directory), 'utf8'), readFileSync(new URL('main.js', directory), 'utf8'));
     const images = Array.from({ length: 5 }, (_, i) => `data:image/png;base64,${i}AAA`);
     const request = buildChatApiRequest({ protocol: manifest.contributes.modelProtocols![0].adapter, apiKey: '', baseUrl: 'https://api.example/v1', model: 'configured-model', stream: false,
       messages: [{ role: 'system', content: '逐张分析' }, { role: 'user', content: [{ type: 'text', text: '五张图片' }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))] }] });

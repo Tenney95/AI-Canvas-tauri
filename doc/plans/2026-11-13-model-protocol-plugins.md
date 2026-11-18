@@ -34,6 +34,8 @@ node scripts/plugin-dev.mjs check ../plugins/openai-responses
 
 两套类型检查和实际插件目录 `check` 均通过。侧车插件包用例仅在独立包存在时运行，普通仓库 CI 不会要求外部插件预装。本次独立包存在，该组实际执行且通过。未运行全仓 lint 或全量 CI。
 
+当前源码检查使用 CLI 构建临时协议模板，始终验证空权限入口和五图编码，结束后清理临时目录。验证实际交付物时，将 `AI_CANVAS_RESPONSES_PLUGIN_DIR` 设为可信插件目录或分发 ZIP 的解包目录，再运行 `npm test -- tests/services/openaiResponsesPluginPackage.test.ts`。指定目录缺失或包无效时测试失败。
+
 `git diff --check` 通过；所有本次改动/新增文本及独立交付文件已严格按 UTF-8 解码核对，无替换字符。ZIP 已检查三个预期条目、CRC 和逐字节内容，插件文件不含凭据或绝对本地路径。
 
 Windows 本地打包已实际运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-local-windows.ps1 -NoOpen`，通过 `tsc -b`、Vite 生产构建、MCP 适配器构建，以及 Rust 1.100.0 的完整默认功能 release 编译和 NSIS 打包。安装器清单包含 DirectML.dll 与 MCP 适配器，安装包 PE 头、大小、SHA-256 及运行 DLL 哈希已核对；本地包未签名、不生成自动更新产物。重复启动器的并发锁拒绝和脚本语法、编码检查通过。产物及构建记录位于同级 `../packages/`，入口见[打包与发版流程](../打包与发版流程.md#windows-一键本地打包)。
