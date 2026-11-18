@@ -112,6 +112,28 @@ describe('通用音频模型参考素材的火山 TOS 路由', () => {
     expect(mocks.asyncTask).toHaveBeenCalledOnce();
   });
 
+  it.each(['volcengine', 'custom-openai'])('按顺序解析 %s 音频，共用预算且取消后不解析下一项', async (catalogId) => {
+    configure('audio-connection', catalogId);
+    const controller = new AbortController();
+    let complete!: (value: string) => void;
+    mocks.resolve.mockReturnValueOnce(new Promise<string>((resolve) => { complete = resolve; }));
+    const generating = generateAudio(params, controller.signal);
+    await vi.waitFor(() => expect(mocks.resolve).toHaveBeenCalledOnce());
+    expect(mocks.protocol).not.toHaveBeenCalled();
+    controller.abort();
+    complete('data:audio/wav;base64,YWJj');
+    await expect(generating).rejects.toMatchObject({ name: 'AbortError' });
+    expect(mocks.resolve).toHaveBeenCalledOnce();
+    expect(mocks.protocol).not.toHaveBeenCalled();
+  });
+
+  it('自定义音频连接的全部引用共享同一个 Data URL 预算对象', async () => {
+    configure('audio-connection', 'custom-openai');
+    await generateAudio(params);
+    expect(mocks.resolve).toHaveBeenCalledTimes(2);
+    expect(mocks.resolve.mock.calls[0][1].dataUrlBudget).toBe(mocks.resolve.mock.calls[1][1].dataUrlBudget);
+  });
+
   it('TOS 解析失败时沿用上游错误，不绕过上传提交音频生成', async () => {
     configure('my-ark-audio', 'volcengine');
     mocks.resolve.mockRejectedValue(new Error('请配置北京私有 TOS'));

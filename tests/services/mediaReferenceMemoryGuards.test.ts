@@ -28,6 +28,7 @@ describe('媒体引用内存守卫接线', () => {
     expect(audioSource).toContain('for (const reference of audioReferences)');
     expect(audioSource).toContain("mode: provider ? 'publicUrl' : 'dataUrl', kind: 'audio', signal, dataUrlBudget: budget");
     expect(audioSource).toContain('...(provider ? { provider } : {})');
+    expect(audioSource).toContain("if (signal?.aborted) throw signal.reason ?? new DOMException('请求已取消', 'AbortError')");
     expect(audioSource).not.toMatch(
       /Promise\.all\(references\.filter\(\(reference\) => reference\.kind === 'audio'\)/,
     );
