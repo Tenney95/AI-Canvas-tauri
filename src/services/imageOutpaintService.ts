@@ -6,7 +6,8 @@ import { t } from '../i18n';
 import { useAppStore } from '../store/useAppStore';
 import { derivedNodePlacement, generateId } from '../store/store.utils';
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation, type CanvasDerivationGuard } from './canvasDerivationGuard';
-import { executeGeneration, type GenerationResult } from './generationService';
+import type { GenerationResult } from './generationService';
+import { executeGenerationWithImagePromptChoice } from './imagePromptOverflowService';
 
 export async function startImageOutpaint(
   sourceNodeId: string,
@@ -56,6 +57,5 @@ export async function startImageOutpaint(
   } finally {
     completeCanvasDerivation(derivation);
   }
-  // 新节点交给执行器自己的输入、项目、任务回执及交付守卫。
-  return executeGeneration(nodeId);
+  return executeGenerationWithImagePromptChoice(nodeId);
 }

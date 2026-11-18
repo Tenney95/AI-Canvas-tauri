@@ -1,7 +1,9 @@
 import { t } from '../i18n';
-import { useAppStore } from '../store/useAppStore';
+import { useAppStore, type AppState } from '../store/useAppStore';
 import { derivedNodePlacement, generateId } from '../store/store.utils';
 import type { BaseNodeData, ImagePostProcess } from '../types';
+import { isShotRowBlank } from '../types/shotlist';
+import { parseDramaMentionId } from '../types/dramaAssets';
 import { resolveGenerationNodeData } from '../utils/nodeGeneration';
 import { resolveAssistantModel, streamAssistantReply } from './ai/assistantStream';
 import { inspectImagePromptLength } from './ai/generateImage';
@@ -12,11 +14,12 @@ import { buildPanoramaPrompt } from './ai/panoramaPrompt';
 import { resolveImageParameterCapability } from './ai/mediaModelCapabilities';
 import { resolveConfiguredImageOutput } from './ai/imageOutputParameters';
 import { resolveConfiguredImageBackground, resolveConfiguredImageQuality } from './ai/modelCapabilityValidation';
+import { findDramaAsset } from './dramaAssetPrompt';
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from './canvasDerivationGuard';
 import { executeGeneration, type GenerationResult } from './generationService';
 import { resolveGenerationSelection } from './generationInput';
 import { resolveProjectGenerationPrompt } from './projectSettingsService';
-import { applyGenerationCameraPrompt } from './shotlistPromptService';
+import { applyGenerationCameraPrompt, expandShotlistRowMentions } from './shotlistPromptService';
 
 export interface ImagePromptOverflowView {
   nodeId: string;
@@ -40,6 +43,102 @@ let pending: PendingChoice | null = null;
 const listeners = new Set<() => void>();
 const owners = new Set<string>();
 const emit = () => listeners.forEach((listener) => listener());
+
+// 引用读取内容和媒体字段，轮询状态由任务运行时管理。
+const REFERENCE_FIELDS = [
+  'type', 'label', 'output', 'imageUrl', 'thumbnailUrl', 'audioUrl', 'videoUrl', 'filePath', 'sourceUrl',
+  'mediaVersion', 'mattingMask', 'annotation', 'annotationLayer', 'directorCaptureUrls', 'storyboardRows',
+  'storyboardCols', 'storyboardOverrides', 'storyboardRowPositions', 'storyboardColPositions',
+  'shotlistRows', 'shotlistCinematography', 'shotlistProductionSource',
+] as const satisfies readonly (keyof BaseNodeData)[];
+
+function captureReferenceInputs(initial: AppState, nodeId: string) {
+  const references: { id: string; index: number; node: AppState['nodes'][number] | undefined }[] = [];
+  const trackedNodes = new Map<string, AppState['nodes'][number] | undefined>();
+  const incoming: string[] = [];
+  let usesProjectAssets = false;
+  let usesGlobalAssets = false;
+
+  const trackNode = (id: string) => {
+    if (trackedNodes.has(id)) return trackedNodes.get(id);
+    const index = initial.nodes.findIndex((node) => node.id === id);
+    const node = initial.nodes[index];
+    trackedNodes.set(id, node);
+    references.push({ id, index, node });
+    return node;
+  };
+
+  for (const edge of initial.edges) {
+    if (edge.target !== nodeId) continue;
+    incoming.push(edge.source);
+    trackNode(edge.source);
+  }
+
+  return {
+    trackNode,
+    trackPrompt(prompt: string) {
+      for (const match of prompt.matchAll(/@\{([^:]+):([^}]+)\}/g)) {
+        const id = match[1].split('/cell/', 1)[0];
+        const data = trackNode(id)?.data;
+        if (data?.type !== 'ai-shotlist') continue;
+        for (const row of data.shotlistRows ?? []) {
+          if (row.frame && !isShotRowBlank(row)) trackNode(row.frame.nodeId);
+        }
+      }
+      for (const match of prompt.matchAll(/@drama\{([^:]+):([^}]+)\}/g)) {
+        const { assetId, referenceImageId, mergeAll, actionId, voiceClipId } = parseDramaMentionId(match[1]);
+        if (assetId.startsWith('global/')) {
+          usesGlobalAssets = true;
+          continue;
+        }
+        usesProjectAssets = true;
+        const asset = findDramaAsset(initial.dramaAssets, assetId);
+        if (!asset || actionId !== undefined || voiceClipId !== undefined) continue;
+        const images = asset.referenceImages;
+        if (mergeAll && asset.kind === 'character' && images) {
+          for (const image of images) if (image.sourceNodeId) trackNode(image.sourceNodeId);
+        }
+        const image = referenceImageId !== undefined
+          ? images?.find((item) => item.id === referenceImageId)
+          : images?.find((item) => item.id === asset.primaryReferenceImageId) ?? images?.[0];
+        const id = image?.sourceNodeId || (referenceImageId === undefined ? asset.imageNodeId : undefined);
+        if (id) trackNode(id);
+      }
+    },
+    isCurrent(current: AppState): boolean {
+      if (usesProjectAssets && current.dramaAssets !== initial.dramaAssets) return false;
+      if (usesGlobalAssets && (current.globalCharacters !== initial.globalCharacters
+        || current.globalScenes !== initial.globalScenes || current.globalProps !== initial.globalProps)) return false;
+      if (current.edges !== initial.edges) {
+        let index = 0;
+        for (const edge of current.edges) {
+          if (edge.target === nodeId && edge.source !== incoming[index++]) return false;
+        }
+        if (index !== incoming.length) return false;
+      }
+      if (current.nodes === initial.nodes) return true;
+      for (let offset = 0; offset < references.length; offset++) {
+        const saved = references[offset];
+        if (current.nodes[saved.index]?.id !== saved.id) {
+          saved.index = -1;
+          for (let index = 0; index < current.nodes.length; index++) {
+            if (current.nodes[index].id !== saved.id) continue;
+            saved.index = index;
+            break;
+          }
+        }
+        const live = current.nodes[saved.index];
+        if (live === saved.node) continue;
+        if (!live || !saved.node || live.type !== saved.node.type) return false;
+        if (live.data === saved.node.data) continue;
+        for (const field of REFERENCE_FIELDS) {
+          if (!Object.is(live.data[field], saved.node.data[field])) return false;
+        }
+      }
+      return true;
+    },
+  };
+}
 
 export const getImagePromptOverflow = () => pending?.view ?? null;
 export function subscribeImagePromptOverflow(listener: () => void): () => void {
@@ -68,7 +167,7 @@ function requireFreshChoice(): PendingChoice | null {
   const choice = pending;
   if (!choice) return null;
   if (choice.fresh()) return choice;
-  choice.finish();
+  choice.controller.abort();
   useAppStore.getState().showToast(t('画布或生成输入已变化，请重新生成'), 'info');
   return null;
 }
@@ -195,22 +294,25 @@ export async function executeGenerationWithImagePromptChoice(
   const controller = new AbortController();
   let guard = registerCanvasDerivation(initial, nodeId, { onCancel: () => controller.abort() });
   let released = false;
+  let writing = false;
+  let unsubscribe: (() => void) | undefined;
+  let referenceInputs: ReturnType<typeof captureReferenceInputs> | undefined;
   const releaseChoice = () => {
     if (released) return;
     released = true;
+    unsubscribe?.();
     if (guard) completeCanvasDerivation(guard);
     owners.delete(key);
   };
-  let nodeInputs = new Map(initial.nodes.map((node) => [node.id, node.data]));
   const settings = initial.projects.find((project) => project.id === initial.currentProjectId)?.settings;
-  const fresh = () => {
-    const current = useAppStore.getState();
+  const isFresh = (current: AppState) => {
     return !controller.signal.aborted && !!guard && isCanvasDerivationFresh(guard, current)
-      && current.nodes.length === nodeInputs.size && current.nodes.every((node) => node.data === nodeInputs.get(node.id))
       && current.nodes.find((node) => node.id === nodeId)?.data === source.data
       && current.config === initial.config && current.customStyles === initial.customStyles
-      && current.projects.find((project) => project.id === initial.currentProjectId)?.settings === settings;
+      && current.projects.find((project) => project.id === initial.currentProjectId)?.settings === settings
+      && referenceInputs?.isCurrent(current) !== false;
   };
+  const fresh = () => isFresh(useAppStore.getState());
   try {
     const rawPrompt = overridePrompt ?? data.prompt ?? '';
     const selected = resolveGenerationSelection(data, initial, rawPrompt);
@@ -218,13 +320,20 @@ export async function executeGenerationWithImagePromptChoice(
       releaseChoice();
       return await executeGeneration(nodeId, overridePrompt, postProcess, passData);
     }
+    referenceInputs = captureReferenceInputs(initial, nodeId);
     let prompt = resolveProjectGenerationPrompt({ prompt: rawPrompt, data, settings, customStyles: initial.customStyles });
-    if (data.type === 'ai-image') prompt = applyGenerationCameraPrompt(prompt, initial.nodes, data.cameraSettings);
+    if (data.type === 'ai-image') prompt = applyGenerationCameraPrompt(prompt, initial.nodes, data.cameraSettings, undefined, referenceInputs.trackNode);
     const aspectRatio = data.type === 'ai-animation' ? resolveAnimationSheetAspectRatio(data.animationFrames ?? 8, selected.provider)
       : data.aspectRatio || (data.type === 'ai-panorama' ? '2:1' : '1:1');
     if (data.type === 'ai-animation') prompt = buildAnimationSpritePrompt(prompt, data.animationAction ?? 'idle',
       data.animationFrames ?? 8, aspectRatio, animationProcessing({ ...data, animationSheet: undefined }));
     if (data.type === 'ai-panorama') prompt = buildPanoramaPrompt(prompt);
+    referenceInputs.trackPrompt(expandShotlistRowMentions(prompt, initial.nodes, {
+      cameraSettings: source.data.cameraSettings, onReadNode: referenceInputs.trackNode,
+    }));
+    unsubscribe = useAppStore.subscribe((current) => {
+      if (!writing && !isFresh(current)) controller.abort();
+    });
     const capability = data.type === 'ai-image' ? resolveImageParameterCapability(selected.model, selected.provider, initial.config) : undefined;
     const overflow = await inspectImagePromptLength({ prompt, model: selected.model, provider: selected.provider, nodeId, aspectRatio,
       imageSize: data.imageSize || '2K',
@@ -252,7 +361,6 @@ export async function executeGenerationWithImagePromptChoice(
       return { success: false, message };
     }
     const replacement = await new Promise<string | undefined>((resolve) => {
-      let writing = false;
       const defaultModelId = resolveAssistantModel(initial.currentProjectId)?.selectionId ?? '';
       const choice: PendingChoice = {
         view: { nodeId, overflow, textModelId: initial.config.generalModels?.some((model) => model.id === defaultModelId && model.category === 'text')
@@ -264,22 +372,20 @@ export async function executeGenerationWithImagePromptChoice(
           writing = true;
           try {
             write();
-            nodeInputs = new Map(useAppStore.getState().nodes.map((node) => [node.id, node.data]));
             guard = registerCanvasDerivation(useAppStore.getState(), nodeId, { onCancel: () => controller.abort() });
-          } finally { writing = false; }
+          } finally {
+            writing = false;
+            if (!fresh()) controller.abort();
+          }
         },
         finish(value) {
           if (pending !== choice) return;
-          unsubscribe();
           pending = null; emit();
           controller.signal.removeEventListener('abort', abort);
           resolve(value);
         },
       };
       const abort = () => choice.finish();
-      const unsubscribe = useAppStore.subscribe(() => {
-        if (pending === choice && !writing && !fresh()) controller.abort();
-      });
       controller.signal.addEventListener('abort', abort, { once: true });
       pending = choice; emit();
     });

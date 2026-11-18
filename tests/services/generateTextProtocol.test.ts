@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateText, generateTextResult } from '../../src/services/ai/generateText';
 import { useAppStore } from '../../src/store/useAppStore';
 import { resolvePromptWithMediaRefs } from '../../src/services/ai/promptResolver';
+import * as imageUtils from '../../src/services/ai/imageUtils';
+import * as promptResolver from '../../src/services/ai/promptResolver';
 import type { ModelExecutionProfile } from '../../src/types/aiTypes';
 import type { WorkflowDefinition } from '../../src/types';
 import { getPendingTasksForProject } from '../../src/services/pollManager';
@@ -31,16 +33,21 @@ beforeEach(() => {
   protocolNative.desktop = false; protocolNative.invoke.mockReset(); revokePluginProtocolPresets();
 });
 
-it('uses a verified plugin for five-image text generation and rejects a result after revocation', async () => {
+function installResponsesPlugin(catalogId: 'custom-openai' | 'volcengine' = 'custom-openai') {
   const reference = { pluginId: 'example.responses', presetId: 'responses' };
   const plugin: InstalledPlugin = { id: reference.pluginId, enabled: true, source: 'definePlugin({tools:{}});', sourceDigest: 'a'.repeat(64), revisionDigest: 'b'.repeat(64), installedAt: 1, updatedAt: 1,
     manifest: { apiVersion: 2, requiredCapabilities: ['model.protocolPresets'], id: reference.pluginId, name: 'Responses', version: '1.0.0', category: 'utility', runtime: 'javascript', entry: 'main.js', permissions: [],
       contributes: { nodeTools: [], modelProtocols: [{ id: 'responses', name: 'Responses', category: 'text', adapter: 'openai-responses' }] } } };
-  useAppStore.setState((state) => ({ installedPlugins: [plugin], config: { ...state.config, providers: { p: { name: 'p', apiKey: 'key', baseUrl: 'https://gateway.example/v1' } },
+  useAppStore.setState((state) => ({ installedPlugins: [plugin], config: { ...state.config, providers: { p: { name: 'p', catalogId, apiKey: 'key', baseUrl: 'https://gateway.example/v1' } },
     generalModels: [{ id: 'plugin-model', name: 'plugin model', modelId: 'configured-model', category: 'text', providerConfigId: 'p', executionProfile: { preset: 'plugin', plugin: reference } }] } }));
   protocolNative.desktop = true;
   protocolNative.invoke.mockResolvedValue({ pluginId: plugin.id, exists: true, enabled: true, snapshotVerified: true, healthCode: 'ready', activeSourceDigest: plugin.sourceDigest,
     activeRevisionDigest: plugin.revisionDigest, dependencyFingerprint: 'c'.repeat(64), modelProtocols: plugin.manifest.contributes.modelProtocols });
+  return plugin;
+}
+
+it('uses a verified plugin for five-image text generation and rejects a result after revocation', async () => {
+  const plugin = installResponsesPlugin();
   const payload = { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: '五图齐全' }] }] };
   const fetch = vi.fn().mockResolvedValue(jsonResponse(payload)); vi.stubGlobal('fetch', fetch);
   const params = { provider: 'general', model: 'general/plugin-model', prompt: '分析五图', imageUrls: Array.from({ length: 5 }, (_, i) => `data:image/png;base64,${i}AAA`) };
@@ -52,6 +59,59 @@ it('uses a verified plugin for five-image text generation and rejects a result a
   useAppStore.setState({ installedPlugins: [] }); fetch.mockClear();
   await expect(generateText(params)).rejects.toThrow('未安装');
   expect(fetch).not.toHaveBeenCalled();
+});
+
+describe('Volcengine text-node media preparation with a protocol preset', () => {
+  const params = { provider: 'general', model: 'general/plugin-model', prompt: '分析参考图',
+    imageUrls: ['data:image/png;base64,AQID'] };
+
+  it.each(['disabled', 'unavailable'] as const)('rejects a %s plugin before reading or uploading reference images', async (state) => {
+    const plugin = installResponsesPlugin('volcengine');
+    if (state === 'disabled') useAppStore.setState({ installedPlugins: [{ ...plugin, enabled: false }] });
+    else protocolNative.invoke.mockResolvedValueOnce({ pluginId: plugin.id, healthCode: 'invalid' });
+    const resolvePrompt = vi.spyOn(promptResolver, 'resolvePromptToChatContent');
+    const upload = vi.spyOn(imageUtils, 'resolveContentImageUrls');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await expect(generateText(params)).rejects.toThrow(state === 'disabled' ? '未启用' : '活动版本不可用');
+      expect(resolvePrompt).not.toHaveBeenCalled();
+      expect(upload).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      resolvePrompt.mockRestore();
+      upload.mockRestore();
+    }
+  });
+
+  it.each(['plugin', 'caller'] as const)('cancels an in-flight reference upload when the %s cancels', async (source) => {
+    const plugin = installResponsesPlugin('volcengine');
+    const caller = new AbortController();
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const resolvePrompt = vi.spyOn(promptResolver, 'resolvePromptToChatContent');
+    const upload = vi.spyOn(imageUtils, 'resolveContentImageUrls').mockImplementationOnce((_content, _provider, signal) =>
+      new Promise((_, reject) => signal?.addEventListener('abort', () => reject(signal.reason), { once: true })));
+    try {
+      const result = generateText({ ...params, signal: caller.signal });
+      const rejected = expect(result).rejects.toMatchObject({ name: 'AbortError' });
+      await vi.waitFor(() => expect(upload).toHaveBeenCalledOnce());
+      const signal = upload.mock.calls[0][2];
+      expect(signal).toBeInstanceOf(AbortSignal);
+      expect(resolvePrompt).toHaveBeenCalledWith(params.prompt, { signal });
+      expect(protocolNative.invoke).toHaveBeenCalledWith('get_plugin_registration_status', { pluginId: plugin.id });
+      expect(protocolNative.invoke.mock.invocationCallOrder[0]).toBeLessThan(resolvePrompt.mock.invocationCallOrder[0]);
+      if (source === 'plugin') revokePluginProtocolPresets(plugin.id);
+      else caller.abort();
+      await rejected;
+      expect(signal?.aborted).toBe(true);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      caller.abort();
+      resolvePrompt.mockRestore();
+      upload.mockRestore();
+    }
+  });
 });
 
 it('sends all five reference images through the native Responses text-node path', async () => {

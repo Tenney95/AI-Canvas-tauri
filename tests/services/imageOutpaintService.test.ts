@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
   generate: vi.fn(),
 }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => mocks.state } }));
-vi.mock('../../src/services/generationService', () => ({ executeGeneration: mocks.generate }));
+vi.mock('../../src/services/imagePromptOverflowService', () => ({ executeGenerationWithImagePromptChoice: mocks.generate }));
 vi.mock('../../src/store/store.utils', () => ({
   generateId: () => 'expanded',
   derivedNodePlacement: (node: Node<BaseNodeData>) => ({ position: { x: node.position.x + 320, y: node.position.y }, parentId: node.parentId }),

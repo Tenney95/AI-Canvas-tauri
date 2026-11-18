@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAppStore } from '../../src/store/useAppStore';
 import { ImagePromptOverflowError } from '../../src/services/ai/imagePromptLimits';
 import type { StreamingCallOptions } from '../../src/services/ai/assistantStream';
+import { startImageOutpaint } from '../../src/services/imageOutpaintService';
 
 const mocks = vi.hoisted(() => ({ inspect: vi.fn(), execute: vi.fn(), stream: vi.fn(), model: vi.fn() }));
 vi.mock('../../src/services/ai/generateImage', () => ({ inspectImagePromptLength: mocks.inspect, generateImage: vi.fn(), generateImagesBatch: vi.fn() }));
@@ -72,6 +73,25 @@ describe('超长生图提示词的用户选择', () => {
     expect(useAppStore.getState().nodes[0].data.imageUrl).toBe('old.png');
   });
 
+  it('首次扩图超限时先等待选择，返回编辑打开新增的扩图节点', async () => {
+    const result = startImageOutpaint('image-node', 'old.png', 'data:image/png;base64,cGFk', {
+      model: 'general/image-model', provider: 'general', prompt: '延展背景', size: '16:9', width: 1600, height: 900,
+    });
+    await vi.waitFor(() => expect(getImagePromptOverflow()).not.toBeNull());
+    const outpaintNodeId = getImagePromptOverflow()!.nodeId;
+    expect(outpaintNodeId).not.toBe('image-node');
+    expect(mocks.inspect).toHaveBeenCalledOnce();
+    expect(mocks.inspect.mock.calls[0][0]).toMatchObject({
+      nodeId: outpaintNodeId, image_urls: ['data:image/png;base64,cGFk'],
+    });
+    expect(mocks.execute).not.toHaveBeenCalled();
+    closeImagePromptOverflow(true);
+    await expect(result).resolves.toMatchObject({ success: false });
+    expect(useAppStore.getState().activeNodeId).toBe(outpaintNodeId);
+    expect(useAppStore.getState().nodes).toHaveLength(2);
+    expect(mocks.execute).not.toHaveBeenCalled();
+  });
+
   it('等待选择和返回精简均不提交，保留原图与原文', async () => {
     const original = useAppStore.getState().nodes[0];
     const { result } = await openChoice();
@@ -126,8 +146,12 @@ describe('超长生图提示词的用户选择', () => {
   });
 
   it.each(['project', 'input', 'reference'] as const)('%s 变化使等待的选择失效', async (change) => {
-    if (change === 'reference') useAppStore.getState().addNode({ id: 'reference', type: 'ai-text',
-      position: { x: 0, y: 0 }, data: { type: 'ai-text', label: '参考正文', output: '旧正文' } });
+    if (change === 'reference') {
+      const state = useAppStore.getState();
+      state.addNode({ id: 'reference', type: 'ai-text',
+        position: { x: 0, y: 0 }, data: { type: 'ai-text', label: '参考正文', output: '旧正文' } });
+      state.updateNodeDataTransient('image-node', { prompt: '参考 @{reference:参考正文}' });
+    }
     const { result } = await openChoice();
     if (change === 'project') useAppStore.setState({ currentProjectId: 'other-project' });
     else useAppStore.getState().updateNodeDataTransient(change === 'input' ? 'image-node' : 'reference',
@@ -135,6 +159,37 @@ describe('超长生图提示词的用户选择', () => {
     await expect(result).resolves.toMatchObject({ success: false });
     expect(getImagePromptOverflow()).toBeNull();
     chooseImagePromptTruncation();
+    expect(mocks.execute).not.toHaveBeenCalled();
+  });
+
+  it('预检与选择期间，无关 RunningHub 任务推进和交付均不影响生图', async () => {
+    const store = useAppStore.getState();
+    store.addNode({ id: 'video', type: 'ai-video', position: { x: 320, y: 0 },
+      data: { type: 'ai-video', label: 'RunningHub 视频', provider: 'runninghub', status: 'loading' } });
+    let finishInspection!: (overflow: ImagePromptOverflowError) => void;
+    mocks.inspect.mockReturnValueOnce(new Promise((resolve) => { finishInspection = resolve; }));
+    const result = executeGenerationWithImagePromptChoice('image-node');
+    store.updateNodeDataTransient('video', { runninghubStage: '运行中' });
+    finishInspection(new ImagePromptOverflowError('gpt-image-2.6', fullPrompt, 32_000));
+    await vi.waitFor(() => expect(getImagePromptOverflow()?.nodeId).toBe('image-node'));
+    store.updateNodeDataTransient('video', { runninghubStage: '已完成', status: 'success', videoUrl: 'finished.mp4' });
+    expect(getImagePromptOverflow()?.nodeId).toBe('image-node');
+    chooseImagePromptTruncation();
+    await expect(result).resolves.toEqual({ success: true });
+    expect(mocks.execute).toHaveBeenCalledOnce();
+  });
+
+  it('被引用节点的轮询状态可推进，替换引用素材会取消选择', async () => {
+    const store = useAppStore.getState();
+    store.addNode({ id: 'video', type: 'ai-video', position: { x: 320, y: 0 },
+      data: { type: 'ai-video', label: 'RunningHub 视频', provider: 'runninghub', status: 'loading', videoUrl: 'previous.mp4' } });
+    store.updateNodeDataTransient('image-node', { prompt: '参考 @{video:视频}' });
+    const { result } = await openChoice();
+    store.updateNodeDataTransient('video', { runninghubStage: '运行中' });
+    expect(getImagePromptOverflow()?.nodeId).toBe('image-node');
+    store.updateNodeDataTransient('video', { videoUrl: 'replacement.mp4' });
+    expect(getImagePromptOverflow()).toBeNull();
+    await expect(result).resolves.toMatchObject({ success: false });
     expect(mocks.execute).not.toHaveBeenCalled();
   });
 
