@@ -37,7 +37,7 @@ function jsonResponse(body: unknown): Response {
 describe('MiniMax 官方本地候选目录', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('新建无 Key 时列出六个候选，刷新不调用假设的 models 接口或声称远端验证成功', async () => {
+  it('新建无 Key 时列出八个候选，刷新不调用假设的 models 接口或声称远端验证成功', async () => {
     const fetch = vi.fn();
     vi.stubGlobal('fetch', fetch);
     const definition = getProviderDefinition('minimax')!;
@@ -50,9 +50,11 @@ describe('MiniMax 官方本地候选目录', () => {
     });
     expect(result.source).toBe('local-manifest');
     expect(result.warning).toContain('未验证 API Key');
-    expect(result.models).toHaveLength(6);
+    expect(result.models).toHaveLength(8);
     expect(result.models.every((model) => model.provider === 'minimax-international')).toBe(true);
     expect(result.models.map((model) => model.id)).toContain('speech-2.8-hd');
+    expect(result.models.filter((model) => model.category === 'image').map((model) => model.id))
+      .toEqual(['MiniMax-H3-Image', 'MiniMax-H3-Image-Highspeed']);
     expect(result.models.some((model) => model.id === 'old-stale')).toBe(false);
     expect(fetch).not.toHaveBeenCalled();
   });

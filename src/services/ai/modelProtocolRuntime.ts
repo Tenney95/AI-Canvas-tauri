@@ -25,7 +25,7 @@ import {
   type ModelProtocolVariables,
 } from './modelProtocol';
 import { isRecord } from './modelProtocolShared';
-import { getHttpResponseError } from './httpUtils';
+import { getHttpResponseError, type HttpResponseError } from './httpUtils';
 import { PollTaskFailedError, isPollTimeoutError } from '../pollTask';
 import { REFERENCE_PROTOCOL_VARIABLES } from './modelProtocolVariables';
 import { readModelProtocolPathValues } from './modelProtocolResponse';
@@ -37,7 +37,8 @@ import { RELAYON_VIDEO_RESULT_URL_PATHS, usesRelayonModelProtocol, resolveRelayo
 import { normalizeRelayonVideoSubmitResponse } from './providers/relayonTaskIdentity';
 import { resolveRelayonImageBaseUrl } from './relayonProviderGroups';
 import { createMediaDownloadAccess, sanitizeMediaResultUrls } from './mediaDownloadAccess';
-import { assertMinimaxQueryResponse, assertMinimaxResponse, getMinimaxMediaAccessHint, usesMinimaxModelProtocol } from './providers/minimaxModelManifest';
+import { assertMinimaxQueryResponse, assertMinimaxResponse, getMinimaxErrorCodeMessage, getMinimaxMediaAccessHint,
+  resolveMinimaxBaseUrl, usesMinimaxImageModelProtocol, usesMinimaxModelProtocol } from './providers/minimaxModelManifest';
 import { ModelProtocolHttpError } from './modelProtocolHttp';
 import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from '../projectExecutionContext';
 import { assertNativeVideoSubmissionInput, captureNativeVideoSubmissionBaseline, isNativeVideoSubmissionGuard, type NativeMediaSubmissionPreparation } from '../nativeVideoSubmission';
@@ -382,6 +383,22 @@ export function retainCompletedMediaResults(
   return Object.assign(urls, { mediaDownloadAccess: access, ...(receipt ? { taskReceipt: receipt } : {}) });
 }
 
+/** 原生回执确认未受理后，只显示受控原因，不带回上游正文、凭据或地址。 */
+function nativeMinimaxRejection(error: HttpResponseError): ModelProtocolHttpError {
+  const codeMatch = /\((\d{4,5})\)\s*$|（业务码 (\d{4,5})）：/.exec(error.message);
+  const code = Number(codeMatch?.[1] ?? codeMatch?.[2]);
+  const knownCodeMessage = getMinimaxErrorCodeMessage(code);
+  const defaultCode = ({ 400: 2013, 401: 1004, 402: 1008, 429: 1002 } as Record<number, number>)[error.status];
+  const reason = getMinimaxMediaAccessHint(error.message) ?? knownCodeMessage
+    ?? getMinimaxErrorCodeMessage(defaultCode)
+    ?? (error.status === 403 ? '请检查当前 API Key 的模型调用权限'
+      : error.status === 422 ? '请检查提示词和参考素材是否符合模型要求'
+        : '平台已明确拒绝请求，请核对当前连接与模型参数');
+  const status = [error.status !== 200 ? `HTTP ${error.status}` : '', knownCodeMessage ? `业务码 ${code}` : ''].filter(Boolean);
+  return new ModelProtocolHttpError(error.status, `MiniMax 请求失败${status.length ? `（${status.join('，')}）` : ''}：${reason}`,
+    error instanceof ModelProtocolHttpError ? error.retryAfterMs : undefined, true);
+}
+
 export async function runConfiguredModelProtocol(
   options: RunConfiguredModelProtocolOptions,
 ): Promise<MediaProtocolUrls> {
@@ -403,8 +420,11 @@ export async function runConfiguredModelProtocol(
   const configuredBaseUrl = provider.baseUrl?.trim()
     || (options.category === 'image' ? getProviderDefinition(options.model.providerConfigId, provider)?.defaultBaseUrl : undefined)
     || '';
-  const baseUrl = catalogId === 'relayonapi' && options.category === 'image' && options.useRelayonImageApi
-    ? resolveRelayonImageBaseUrl(configuredBaseUrl) : configuredBaseUrl;
+  const usesMinimaxImageProtocol = catalogId === 'minimax' && options.category === 'image'
+    && usesMinimaxImageModelProtocol(options.model.modelId, profile);
+  const baseUrl = usesMinimaxImageProtocol ? resolveMinimaxBaseUrl(configuredBaseUrl)
+    : catalogId === 'relayonapi' && options.category === 'image' && options.useRelayonImageApi
+      ? resolveRelayonImageBaseUrl(configuredBaseUrl) : configuredBaseUrl;
   if (!baseUrl) throw new Error(`模型“${options.model.name}”未配置接口地址`);
   const assertPrivatePoll = (value: unknown) => {
     const serialized = JSON.stringify(value);
@@ -576,13 +596,17 @@ export async function runConfiguredModelProtocol(
     const receivedId = rawError instanceof Error ? (rawError as Error & { nativeTaskId?: unknown }).nativeTaskId : undefined;
     const error = usesVolcengineTos ? redactVolcengineError(rawError, provider.apiKey) : rawError;
     if (error instanceof Error && ['NativeMediaTaskPending', 'NativeMediaTaskDelivered', 'NativeMediaTaskFailed'].includes(error.name)) throw error;
-    if (nativeTask) {
-      if (!nativeRemoteId && isSafeNativeProtocolTaskId(receivedId, [provider.apiKey || ''])) nativeRemoteId = receivedId;
-      await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease, nativeRemoteId ? { taskId: nativeRemoteId }
-        : !nativeSent || getHttpResponseError(error)?.definitiveFailure ? { notStarted: true } : { unknown: true }).catch(() => undefined);
-      throw createNativeMediaPendingError(nativeTask, error);
-    }
     const httpError = getHttpResponseError(error);
+    if (nativeTask) {
+      const prepared = nativeTask;
+      if (!nativeRemoteId && isSafeNativeProtocolTaskId(receivedId, [provider.apiKey || ''])) nativeRemoteId = receivedId;
+      const retained = await recordNativeMediaSubmission(prepared.operationId, prepared.lease, nativeRemoteId ? { taskId: nativeRemoteId }
+        : !nativeSent || httpError?.definitiveFailure ? { notStarted: true } : { unknown: true }).catch(() => prepared);
+      if (usesMinimaxProtocol && options.category !== 'audio' && retained.status === 'failed' && httpError?.definitiveFailure) {
+        throw nativeMinimaxRejection(httpError);
+      }
+      throw createNativeMediaPendingError(retained, error);
+    }
     const hint = usesMinimaxProtocol && httpError ? getMinimaxMediaAccessHint(httpError.message) : undefined;
     const failure = hint && httpError ? new ModelProtocolHttpError(httpError.status, hint,
       httpError instanceof ModelProtocolHttpError ? httpError.retryAfterMs : undefined, httpError.definitiveFailure) : error;

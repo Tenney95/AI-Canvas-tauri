@@ -4,8 +4,11 @@ import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { CanvasContext } from '../../src/types/project';
 import type { NativeMediaSubmissionPreparation } from '../../src/types/media';
+import type { GeneralModelConfig } from '../../src/types';
 import { createNativeProject, readNativeProjectCapture, saveNativeCanvas } from '../../src/services/indexedDb/nativeProjectRepository';
 import { listNativeMediaTasks } from '../../src/services/indexedDb/nativeMediaTaskRepository';
+import { runConfiguredModelProtocol } from '../../src/services/ai/modelProtocolRuntime';
+import { MINIMAX_BASE_URL, resolveMinimaxExecutionProfile } from '../../src/services/ai/providers/minimaxModelManifest';
 
 const driver = vi.hoisted(() => ({ context: undefined as CanvasContext | undefined, state: {} as Record<string, unknown>, revision: 0,
   fetch: vi.fn(), save: vi.fn(), capture: vi.fn(), deliver: vi.fn() }));
@@ -18,7 +21,7 @@ vi.mock('../../src/services/nativeVideoSubmission', () => ({ isNativeVideoSubmis
   captureNativeVideoSubmissionBaseline: async () => ({ inputFingerprint: 'a'.repeat(64), canvasRevision: driver.revision }),
   assertNativeVideoSubmissionInput: async () => {},
 }));
-vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: driver.fetch }));
+vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: driver.fetch, logAiResponse: vi.fn() }));
 vi.mock('../../src/services/fileService', async (original) => ({ ...await original<typeof import('../../src/services/fileService')>(), persistMediaUrlToProjectData: driver.save }));
 vi.mock('../../src/services/nativeMediaLocalResult', () => ({ readNativeMediaLocalResult: async () => {}, captureNativeMediaLocalResult: driver.capture }));
 vi.mock('../../src/services/nativeVolcengineRecovery', () => ({ resumeNativeVolcengineTask: driver.deliver }));
@@ -69,6 +72,30 @@ async function fixture(category: 'audio' | 'video' = 'audio') {
   return { context, input: { apiKey: 'synthetic-key', baseUrl: 'https://general.example/v1', modelName, prompt: '合成输入',
     resultField, providerConfigId: 'custom', nodeId: category, modelRef: 'general/model', beforeSubmit: async () => {} } };
 }
+
+it.each([422, 504])('MiniMax 原生提交 HTTP %i 区分确认拒绝与结果未知', async (status) => {
+  const { context, input } = await fixture('video');
+  const modelId = 'MiniMax-H3-Max';
+  const model: GeneralModelConfig = { id: 'model', modelId, name: modelId, category: 'video', providerConfigId: input.providerConfigId,
+    executionProfile: resolveMinimaxExecutionProfile(modelId) };
+  driver.state.config = { providers: { [input.providerConfigId]: { catalogId: 'minimax', baseUrl: MINIMAX_BASE_URL, apiKey: 'synthetic-key' } },
+    generalModels: [model] };
+  driver.fetch.mockResolvedValueOnce(Response.json({ error: { message: 'upstream private text https://example.com/private (1026)' } }, { status }));
+
+  const result = runConfiguredModelProtocol({ model, category: 'video', nodeId: input.nodeId, beforeSubmit: input.beforeSubmit,
+    variables: { model: modelId, prompt: input.prompt, duration: 10, seedanceResolution: '480P', aspectRatio: '16:9',
+      referenceImageUrls: [], referenceVideoUrls: [], referenceAudioUrls: [] } });
+  if (status === 422) {
+    await expect(result).rejects.toMatchObject({ name: 'ModelProtocolHttpError', status: 422, definitiveFailure: true,
+      message: 'MiniMax 请求失败（HTTP 422，业务码 1026）：输入内容未通过平台审核' });
+  } else await expect(result).rejects.toMatchObject({ name: 'NativeMediaTaskPending', remoteTaskKnown: false });
+  const [record] = await listNativeMediaTasks(context.projectId);
+  expect(record.status).toBe(status === 422 ? 'failed' : 'outcome-unknown');
+  expect(record.remoteTaskId).toBeUndefined();
+  expect(driver.fetch).toHaveBeenCalledExactlyOnceWith(`${MINIMAX_BASE_URL}/v2/video_generation`, expect.objectContaining({ method: 'POST' }));
+  expect(driver.deliver).not.toHaveBeenCalled();
+});
+
 it('完整解析多个原ID与每项多个URL，不能悄悄省略无效候选', () => {
   expect(nativeGeneralTaskIds({ data: [{ task_id: 'original-a' }, { task_id: 'original-b' }], task_id: 'original-a' })).toEqual(['original-a', 'original-b']);
   expect(nativeGeneralTaskUrls({ result: { audios: [{ url: ['https://cdn.example/a.wav', 'https://cdn.example/b.wav'] }, { url: 'https://cdn.example/c.wav' }] } }, 'audios')).toHaveLength(3);

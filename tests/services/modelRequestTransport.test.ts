@@ -30,7 +30,7 @@ import { getImageSizePresets } from '../../src/services/ai/modelSizeProfiles';
 import { analyzeModelProtocolExamples } from '../../src/services/ai/modelProtocolImport';
 import { useAppStore } from '../../src/store/useAppStore';
 import { createImageQuickAdaptTemplate } from '../../src/services/ai/imageModelTemplates';
-import { uploadToRemote } from '../../src/services/uploadService';
+import { uploadMinimaxImageReference, uploadToRemote } from '../../src/services/uploadService';
 import { clearProjectTasks, getPendingTasksForProject, removePendingTask } from '../../src/services/pollManager';
 import { LIBAPI_MODEL_MANIFEST } from '../../src/services/ai/providers/libapiModelManifest';
 import { AIGCSI_BASE_URL, AIGCSI_MODEL_MANIFEST } from '../../src/services/ai/providers/aigcsiModelManifest';
@@ -68,7 +68,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('MiniMax 官方素材直传与语音交付', () => {
+describe('MiniMax 官方素材直传与媒体交付', () => {
   function configureMinimax(id = 'speech-2.8-hd') {
     const selected = structuredClone(MINIMAX_MODEL_MANIFEST.find((item) => item.id === id)!);
     clearProjectTasks('minimax-audio-project');
@@ -77,7 +77,7 @@ describe('MiniMax 官方素材直传与语音交付', () => {
       baseUrl: MINIMAX_BASE_URL, selectedModels: [selected],
     });
     const model = useAppStore.getState().config.generalModels!.find((item) => item.providerConfigId === 'my-minimax')!;
-    const nodeType = selected.category === 'video' ? 'ai-video' as const : 'ai-audio' as const;
+    const nodeType = selected.category === 'video' ? 'ai-video' : selected.category === 'image' ? 'ai-image' : 'ai-audio';
     useAppStore.setState({ currentProjectId: 'minimax-audio-project', nodes: [{ id: 'minimax-audio-node', type: nodeType,
       position: { x: 0, y: 0 }, data: { type: nodeType, label: '官方媒体', status: 'loading' } }] });
     return { provider: 'general', model: `general/${model.id}`, nodeId: 'minimax-audio-node', prompt: '欢迎来到创作画布' };
@@ -125,6 +125,55 @@ describe('MiniMax 官方素材直传与语音交付', () => {
       `${MINIMAX_BASE_URL}/v1/files/upload`, `${MINIMAX_BASE_URL}/v1/files/upload`, 'https://api.minimax.io/v1/files/upload',
     ]);
     expect(transportMocks.corsSafeFetch.mock.calls[2][1].headers).toEqual({ Authorization: 'Bearer minimax-rotated-fixture' });
+  });
+
+  it('同一张本地图的图片编辑与视频上传分别使用自己的缓存和文件 ID', async () => {
+    configureMinimax('MiniMax-H3-Image');
+    const source = `data:image/png;base64,${btoa('minimax-image-purpose')}`;
+    for (const fileId of ['2101', '2102']) transportMocks.corsSafeFetch.mockResolvedValueOnce(
+      jsonResponse({ file: { file_id: fileId }, base_resp: { status_code: 0 } }),
+    );
+    await expect(uploadToRemote(source, 'my-minimax', 'image')).resolves.toBe('mm_file://2101');
+    await expect(uploadMinimaxImageReference(source, 'my-minimax')).resolves.toBe('mm_file://2102');
+    await expect(uploadMinimaxImageReference(source, 'my-minimax')).resolves.toBe('mm_file://2102');
+    await expect(uploadToRemote(source, 'my-minimax', 'image')).resolves.toBe('mm_file://2101');
+    await expect(uploadMinimaxImageReference('mm_file://2101', 'my-minimax')).rejects.toThrow('本机文件或可公开访问');
+    expect(transportMocks.corsSafeFetch.mock.calls.map(([url, init]) => [url, (init.body as FormData).get('purpose')]))
+      .toEqual([
+        [`${MINIMAX_BASE_URL}/v1/files/upload`, 'video_generation_input'],
+        [`${MINIMAX_BASE_URL}/v1/files/upload`, 'image_generation_input'],
+      ]);
+  });
+
+  it('H3 Image 文生图提交文生图端点，保留多张结果中成功的图片', async () => {
+    const params = configureMinimax('MiniMax-H3-Image');
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [
+      { url: 'https://cdn.example/minimax-image.png' }, { error: { code: '1027' } },
+    ] }));
+    const result = await generateImagesBatch({ ...params, imageSize: '2K', aspectRatio: '16:9' }, 2);
+    const [url, init] = transportMocks.corsSafeFetch.mock.calls[0];
+    expect(url).toBe(`${MINIMAX_BASE_URL}/v1/images/generations`);
+    const body = JSON.parse(init.body as string);
+    expect(body).toMatchObject({ model: 'MiniMax-H3-Image', area: '2K', aspect_ratio: '16:9', n: 2, response_format: 'url' });
+    expect(body).not.toHaveProperty('images');
+    expect(result).toMatchObject({ requestedCount: 2, failedCount: 1, results: [{ url: 'https://cdn.example/minimax-image.png' }] });
+  });
+
+  it('H3 Image 高速版按参考图顺序提交编辑端点，私有素材使用图片上传用途', async () => {
+    const params = configureMinimax('MiniMax-H3-Image-Highspeed');
+    const source = `data:image/png;base64,${btoa('minimax-image-edit')}`;
+    const remote = 'https://cdn.example/reference.png';
+    transportMocks.corsSafeFetch
+      .mockResolvedValueOnce(jsonResponse({ file: { file_id: '2201' }, base_resp: { status_code: 0 } }))
+      .mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.example/minimax-edit.png' }] }));
+    await expect(generateImagesBatch({ ...params, imageSize: '1K', aspectRatio: '1:1', image_urls: [source, remote] }, 1))
+      .resolves.toMatchObject({ results: [{ url: 'https://cdn.example/minimax-edit.png' }] });
+    const [[uploadUrl, uploadInit], [editUrl, editInit]] = transportMocks.corsSafeFetch.mock.calls;
+    expect(uploadUrl).toBe(`${MINIMAX_BASE_URL}/v1/files/upload`);
+    expect((uploadInit.body as FormData).get('purpose')).toBe('image_generation_input');
+    expect(editUrl).toBe(`${MINIMAX_BASE_URL}/v1/images/edits`);
+    expect(JSON.parse(editInit.body as string)).toMatchObject({ model: 'MiniMax-H3-Image-Highspeed',
+      images: [{ image_url: 'mm_file://2201' }, { image_url: remote }] });
   });
 
   it('上传业务失败和非法格式明确报错，不回退 Uguu', async () => {

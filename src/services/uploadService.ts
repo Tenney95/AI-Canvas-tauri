@@ -70,6 +70,8 @@ interface UploadIdentity {
   source?: { digest: string; bytes: number };
 }
 
+type MinimaxFilePurpose = 'video_generation_input' | 'image_generation_input';
+
 type UploadConnection = Readonly<Pick<ApiProviderConfig, 'catalogId' | 'baseUrl' | 'apiKey' | 'imageHosting' | 'tosUpload'> & {
   kind: MediaDataUrlKind;
   globalImageHosting?: { provider: PublicImageHostingProvider; config: ImageHostingConfig };
@@ -670,13 +672,15 @@ async function readMinimaxUploadResponse(response: Response, signal?: AbortSigna
   }
 }
 
-/** 官方素材直传失败不回退公共图床；私有引用只交付给本次连接的 H3 请求。 */
-async function uploadToMinimax(url: string, connection: UploadConnection, kind: MediaDataUrlKind, signal?: AbortSignal, source?: UploadIdentity['source']): Promise<string> {
+/** 官方素材直传失败不回退公共图床；私有引用只交付给本次连接及上传用途。 */
+async function uploadToMinimax(url: string, connection: UploadConnection, kind: MediaDataUrlKind,
+  purpose: MinimaxFilePurpose, signal?: AbortSignal, source?: UploadIdentity['source']): Promise<string> {
   const apiKey = connection.apiKey?.trim();
   if (!apiKey) throw new Error('MiniMax 素材上传失败：请在「设置 → API Key → MiniMax 官方」填写当前连接的 Key');
   const baseUrl = resolveMinimaxBaseUrl(connection.baseUrl);
   const { blob, ext } = await urlToBlob(url, kind, undefined, signal, source);
-  const limitMb = kind === 'image' ? 30 : kind === 'video' ? 50 : kind === 'audio' ? 15 : 0;
+  const limitMb = purpose === 'image_generation_input' ? 64
+    : kind === 'image' ? 30 : kind === 'video' ? 50 : kind === 'audio' ? 15 : 0;
   if (!limitMb) throw new Error('MiniMax 官方上传仅支持图片、视频或音频参考');
   if (!blob.size || blob.size > limitMb * 1024 * 1024) throw new Error(`MiniMax ${mediaKindLabel(kind)}必须为非空文件，单个文件不能超过 ${limitMb} MB`);
   const mimeExtension = ext.toLowerCase().split(';')[0];
@@ -687,10 +691,14 @@ async function uploadToMinimax(url: string, connection: UploadConnection, kind: 
   const allowed = kind === 'image' ? ['jpg', 'png', 'webp', 'heic', 'heif'] : kind === 'video' ? ['mp4', 'mov'] : ['mp3', 'wav'];
   if (!allowed.includes(filenameExt)) throw new Error(`MiniMax ${mediaKindLabel(kind)}格式不支持，请改用${kind === 'image' ? ' JPG / PNG / WebP / HEIC / HEIF' : kind === 'video' ? ' MP4 / MOV' : ' MP3 / WAV'}`);
   const form = new FormData();
-  form.append('purpose', 'video_generation_input');
+  form.append('purpose', purpose);
   form.append('file', blob, `reference.${filenameExt}`);
   const response = await corsSafeFetch(`${baseUrl}/v1/files/upload`, {
     method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form, signal,
+  }).catch((error: unknown) => {
+    signal?.throwIfAborted();
+    if (error instanceof Error && error.name === 'AbortError') throw error;
+    throw new Error('MiniMax 官方参考素材上传失败，本轮尚未提交生成请求。请检查连接后重试。', { cause: error });
   });
   const payload = await readMinimaxUploadResponse(response, signal);
   assertMinimaxResponse(payload);
@@ -910,15 +918,42 @@ function setCachedUrl(key: string, remoteUrl: string, persist = true) {
  * @param provider 连接身份；图片优先使用显式配置的图床，否则沿用厂商上传策略
  * @returns 公网 URL；MiniMax 官方返回仅供该连接生成请求使用的 mm_file 引用
  */
-export async function uploadToRemote(
+export function uploadToRemote(
   url: string,
   provider = '',
   kind: MediaDataUrlKind = 'image',
   signal?: AbortSignal,
 ): Promise<string> {
+  return uploadReference(url, provider, kind, signal);
+}
+
+/** H3 Image 的私有文件 ID 与视频参考用途隔离，只接受本机素材或公网 HTTPS 引用。 */
+export function uploadMinimaxImageReference(url: string, provider: string, signal?: AbortSignal): Promise<string> {
+  return uploadReference(url, provider, 'image', signal, 'image_generation_input');
+}
+
+async function uploadReference(
+  url: string,
+  provider: string,
+  kind: MediaDataUrlKind,
+  signal?: AbortSignal,
+  minimaxPurpose: MinimaxFilePurpose = 'video_generation_input',
+): Promise<string> {
   const providerConfig = useAppStore.getState().config.providers[provider];
   const policy = getProviderPolicy(resolveProviderCatalogId(provider, providerConfig));
   const usesTos = policy.upload === 'volcengine-tos';
+  const isMinimaxImage = minimaxPurpose === 'image_generation_input';
+  if (isMinimaxImage) {
+    signal?.throwIfAborted();
+    if (policy.upload !== 'minimax') throw new Error('H3 Image 参考素材需要使用 MiniMax 官方连接');
+    if (!isLocalImageUrl(url)) {
+      if (isRemoteMediaUrl(url)) {
+        const reference = new URL(url);
+        if (reference.protocol === 'https:' && !reference.username && !reference.password) return url;
+      }
+      throw new Error('MiniMax 参考图须为本机文件或可公开访问的 HTTPS 地址');
+    }
+  }
   // 已入库的方舟 Asset ID 是官方逻辑引用，不是待下载的本地 asset protocol。
   if (usesTos && /^asset:\/\/(?!localhost$)[a-zA-Z0-9][a-zA-Z0-9_-]{0,255}$/i.test(url)) {
     signal?.throwIfAborted();
@@ -940,7 +975,7 @@ export async function uploadToRemote(
   }
   const identity = await cacheKey(url, provider, kind, connection, signal);
   assertUploadConnection(provider, connection);
-  const { key } = identity;
+  const key = isMinimaxImage ? `${identity.key}:image_generation_input` : identity.key;
 
   // 查缓存（内存 → localStorage），命中且未过期则直接返回
   const cached = identity.cacheable ? getCachedUrl(key, !usesTos) : null;
@@ -981,7 +1016,7 @@ export async function uploadToRemote(
       : upload === 'libapi'
       ? await uploadToLibapi(url, connection, kind, operationSignal, identity.source)
       : upload === 'minimax'
-      ? await uploadToMinimax(url, connection, kind, operationSignal, identity.source)
+      ? await uploadToMinimax(url, connection, kind, minimaxPurpose, operationSignal, identity.source)
       : upload === 'apimart'
       ? await uploadToApimart(url, connection, operationSignal, identity.source)
       : await uploadToUguu(url, kind, operationSignal, identity.source));

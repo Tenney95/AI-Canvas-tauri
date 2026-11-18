@@ -2,19 +2,22 @@ import { describe, expect, it } from 'vitest';
 import {
   MINIMAX_BASE_URL, MINIMAX_MODEL_MANIFEST, assertMinimaxResponse, assertMinimaxQueryResponse,
   getMinimaxAudioCapability, minimaxAudioVariables, minimaxVideoVariables, resolveMinimaxBaseUrl,
-  resolveMinimaxExecutionProfile, usesMinimaxModelProtocol, usesMinimaxResolvedVideoPoll,
+  resolveMinimaxExecutionProfile, resolveMinimaxImageExecutionProfile, usesMinimaxImageModelProtocol,
+  usesMinimaxModelProtocol, usesMinimaxResolvedVideoPoll,
   getMinimaxMediaAccessHint,
 } from '../../src/services/ai/providers/minimaxModelManifest';
 import { resolveCanonicalVideoRequest } from '../../src/services/ai/videoRequestResolver';
 import { buildModelProtocolRequest, resolveModelExecutionProfile, validateModelExecutionProtocol } from '../../src/services/ai/modelProtocol';
+import { assertModelCapabilityProtocol } from '../../src/services/ai/modelCapabilityValidation';
 import { resolvePoll } from '../../src/services/ai/modelProtocolPoll';
 import type { MediaReference } from '../../src/types/aiTypes';
 
 describe('MiniMax 官方目录与协议', () => {
-  it('只列出四种 H3 和两种 Speech，不携带凭据或冒充远端目录', () => {
+  it('列出官方视频、语音和图片型号，不携带凭据或冒充远端目录', () => {
     expect(MINIMAX_MODEL_MANIFEST.map((model) => [model.id, model.category])).toEqual([
       ['MiniMax-H3', 'video'], ['MiniMax-H3-Highspeed', 'video'], ['MiniMax-H3-Lite', 'video'], ['MiniMax-H3-Max', 'video'],
       ['speech-2.8-hd', 'audio'], ['speech-2.8-turbo', 'audio'],
+      ['MiniMax-H3-Image', 'image'], ['MiniMax-H3-Image-Highspeed', 'image'],
     ]);
     for (const model of MINIMAX_MODEL_MANIFEST) {
       expect(validateModelExecutionProtocol(model.executionProfile!.protocol!)).toEqual([]);
@@ -74,6 +77,32 @@ describe('MiniMax 官方目录与协议', () => {
     expect(usesMinimaxResolvedVideoPoll({ ...poll, url: `${poll.url}?key=fixture` }, 'original-task')).toBe(false);
     expect(usesMinimaxResolvedVideoPoll({ ...poll, headers: { 'X-Extra': 'fixture' } }, 'original-task')).toBe(false);
     expect(usesMinimaxResolvedVideoPoll({ ...poll, resultUrlPath: 'another.url' }, 'original-task')).toBe(false);
+  });
+});
+
+describe('MiniMax 官方图片', () => {
+  it.each(['MiniMax-H3-Image', 'MiniMax-H3-Image-Highspeed'])('%s 的目录能力与编辑合同一致', (id) => {
+    const model = MINIMAX_MODEL_MANIFEST.find((item) => item.id === id)!;
+    expect(model.imageCapability).toMatchObject({ resolutions: ['1K', '2K', '4K'], defaultResolution: '4K',
+      defaultRatio: 'auto', supportsImageReference: true, maxImageReferences: 16, supportsBatch: true, maxBatchCount: 10 });
+    expect(() => assertModelCapabilityProtocol(model)).not.toThrow();
+    const edit = resolveMinimaxImageExecutionProfile(id, model.executionProfile, 16)!;
+    const generation = resolveMinimaxImageExecutionProfile(id, edit, 0)!;
+    expect(usesMinimaxImageModelProtocol(id, edit)).toBe(true);
+    expect(usesMinimaxModelProtocol(id, generation)).toBe(true);
+    expect(edit.protocol!.submit.path).toBe('/v1/images/edits');
+    expect(generation.protocol!.submit.path).toBe('/v1/images/generations');
+    expect(model.executionProfile!.protocol!.submit.path).toBe('/v1/images/edits');
+  });
+
+  it('不重写显式自定义协议，也不将未知型号识别为官方图片协议', () => {
+    const id = 'MiniMax-H3-Image';
+    const profile = resolveMinimaxImageExecutionProfile(id, undefined, 1)!;
+    expect(usesMinimaxImageModelProtocol(id.toLowerCase(), profile)).toBe(false);
+    expect(resolveMinimaxImageExecutionProfile('MiniMax-H3', undefined, 1)).toBeUndefined();
+    profile.protocol!.submit.path = '/my-image-edits';
+    expect(usesMinimaxModelProtocol(id, profile)).toBe(false);
+    expect(resolveMinimaxImageExecutionProfile(id, profile, 0)).toBe(profile);
   });
 });
 

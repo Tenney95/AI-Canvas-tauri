@@ -365,7 +365,7 @@ const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = ([
   },
   {
     id: 'minimax', name: 'MiniMax 官方', badgeText: 'MM', authType: 'api-key', catalogAdapter: 'local-manifest',
-    description: '官方 H3 视频与 Speech 2.8 语音；参考素材上传到当前官方连接。国内与国际连接分别配置密钥。',
+    description: '支持 H3 视频、H3 Image 图片和 Speech 2.8 语音。本地参考素材上传到当前官方连接，国内与国际连接分别配置密钥。',
     defaultBaseUrl: MINIMAX_BASE_URL, allowCustomBaseUrl: true, externalUrl: 'https://platform.minimax.cn',
     credentials: [{ ...API_KEY_FIELD, placeholder: '填写 MiniMax 官方 API Key' },
       { key: 'baseUrl', label: '接口地址', required: false, placeholder: MINIMAX_BASE_URL }],
@@ -687,7 +687,8 @@ export function resolveProviderImageModelForValidation(
 function inferModelCategory(modelId: string): GeneralModelCategory {
   const id = modelId.toLowerCase();
   if (/tts|speech|audio|music|voice|whisper|transcri/.test(id)) return 'audio';
-  // minimax-h3 及其 Context-IR / Regeneration 变体均为视频生成模型；
+  if (/minimax[-\s_.]?h3[-\s_.]?image/.test(id)) return 'image';
+  // 普通 minimax-h3 及其视频 Context-IR / Regeneration 变体按视频识别；
   // 中转站/自定义目录可能返回 MiniMax_H3、MiniMax H3 等写法，统一按分隔符变体识别。
   if (/video|seedance|sora|veo|kling|hailuo|wan\d|skyreels|vidu|minimax[-\s_.]?h3/.test(id)) return 'video';
   if (/image|seedream|imagen|flux|banana|midjourney|recraft|dall-e/.test(id)) return 'image';

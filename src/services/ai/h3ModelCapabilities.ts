@@ -308,7 +308,7 @@ function normalizeModelId(value: string): string {
 /** Context-IR 返回文本，Regeneration 需要源任务；两者不能冒充普通视频生成模型。 */
 export function inferH3ModelVariant(modelId: string, name = ''): H3ModelVariant | undefined {
   const value = normalizeModelId(`${modelId} ${name}`);
-  if (/(?:context-?ir|regeneration|video-?regeneration)/.test(value)) return undefined;
+  if (/(?:context-?ir|regeneration|h3[-/]*image)/.test(value)) return undefined;
   if (!/(?:minimax|hailuo)[-/]*h3|h3[-/]*(?:minimax|hailuo)/.test(value)) return undefined;
   return /(?:^|[-/])h3[-/]*max(?:-|\/|$)/.test(value) ? 'h3-max' : 'h3-standard';
 }

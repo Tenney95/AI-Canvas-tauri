@@ -193,11 +193,13 @@ describe('MiniMax H3 capability templates', () => {
     })).toBeUndefined();
   });
 
-  it('does not treat Context-IR or Regeneration as ordinary video generation', () => {
+  it('does not treat Context-IR, Regeneration or H3 Image as ordinary video generation', () => {
     expect(inferH3ModelVariant('MiniMax-H3')).toBe('h3-standard');
     expect(inferH3ModelVariant('minimax/hailuo-h3-max')).toBe('h3-max');
     expect(inferH3ModelVariant('MiniMax-H3-Context-IR')).toBeUndefined();
     expect(inferH3ModelVariant('MiniMax-H3-Regeneration')).toBeUndefined();
+    expect(inferH3ModelVariant('MiniMax-H3-Image')).toBeUndefined();
+    expect(inferH3ModelVariant('MiniMax-H3-Image-Highspeed')).toBeUndefined();
   });
 
   it('preserves explicit configuration and exposes all six templates', () => {

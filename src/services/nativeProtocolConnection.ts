@@ -4,10 +4,19 @@ import type { GeneralModelConfig } from '../types';
 import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
 import { resolveGeneralModelConnection } from './ai/helpers';
 import { getProviderDefinition, resolveCccGeminiImageExecutionProfile } from './ai/providerCatalogService';
+import { resolveProviderCatalogId } from './ai/providerPolicies';
+import { resolveMinimaxExecutionProfile } from './ai/providers/minimaxModelManifest';
 
 export function resolveNativeProtocolConnection(record: NativeMediaTaskRecord) {
-  const general = record.modelRef?.startsWith('general/') ? resolveGeneralModelConnection(record.modelRef, { forRecovery: true }) : undefined;
-  if (record.modelRef?.startsWith('general/')) return general?.providerConfigId === record.providerConfigId ? general : undefined;
+  if (record.modelRef?.startsWith('general/')) {
+    const general = resolveGeneralModelConnection(record.modelRef, { forRecovery: true });
+    if (!general || general.providerConfigId !== record.providerConfigId) return undefined;
+    if (record.category !== 'video' || general.model.category !== 'video' || general.model.executionProfile
+      || resolveProviderCatalogId(general.providerConfigId, general.provider) !== 'minimax') return general;
+    // 与提交使用同一缺省合同；调用方仍须核对原回执的协议摘要才能查询。
+    const executionProfile = resolveMinimaxExecutionProfile(general.model.modelId);
+    return executionProfile ? { ...general, model: { ...general.model, executionProfile } } : general;
+  }
   if (record.recovery?.kind !== 'general-protocol' || !record.recovery.modelId) return undefined;
   const provider = useAppStore.getState().config.providers[record.providerConfigId];
   if (!provider) return undefined;

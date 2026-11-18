@@ -56,9 +56,15 @@ import { compileVideoReferencePrompt } from './referencePrompt';
 import { isNativeVideoSubmissionGuard } from '../nativeVideoSubmission';
 import { isNativeCharacterImageSubmissionGuard, runNativeCharacterImageTask } from '../nativeCharacterImageTask';
 import { isCharacterImageTaskContext } from '../characterImageTaskContext';
+import { uploadMinimaxImageReference } from '../uploadService';
 import { assertImageOutputInput, resolveConfiguredImageOutput, resolveImageOutputCapability } from './imageOutputParameters';
 import { isOpenAIPaintMaskContract } from './characterImageMask';
 import { assertImagePromptLength, imagePromptCharacterCount, imagePromptCharacterLimit, ImagePromptOverflowError } from './imagePromptLimits';
+import {
+  MINIMAX_IMAGE_PROMPT_LIMIT, MINIMAX_IMAGE_REFERENCE_LIMIT, resolveMinimaxBaseUrl,
+  resolveMinimaxImageExecutionProfile, usesMinimaxImageModelProtocol,
+} from './providers/minimaxModelManifest';
+import { mapReferenceImagesInOrder } from './referenceImageUpload';
 
 const RELAYON_FILE_IMAGE_BUDGET = {
   maxImages: RELAYON_IMAGE_REFERENCE_LIMIT,
@@ -270,7 +276,7 @@ export async function inspectImagePromptLength(
   const state = useAppStore.getState();
   const definition = getProviderDefinition(connectionId, state.config.providers[connectionId]);
   const limit = imagePromptCharacterLimit(modelId, generalModel?.executionProfile?.preset, definition?.id);
-  if (limit === undefined) return;
+  if (limit === undefined && definition?.id !== 'minimax') return;
   const prepared = await runImageBatch(params, 1, undefined, undefined, true);
   if (prepared.limit !== undefined && imagePromptCharacterCount(prepared.prompt) > prepared.limit) {
     return new ImagePromptOverflowError(prepared.modelName, prepared.prompt, prepared.limit, inputCharacters);
@@ -348,6 +354,9 @@ async function runImageBatch(
   }
   const catalogModel = providerDefinition?.models?.find((item) => item.id === modelName);
   const selectedModel = providerConfig?.selectedModels?.find((item) => item.id === modelName);
+  const isMinimaxImage = !params.workflowId && providerDefinition?.id === 'minimax' && catalogModel?.category === 'image';
+  const minimaxProfile = isMinimaxImage ? resolveMinimaxImageExecutionProfile(modelName,
+    generalModel?.executionProfile ?? selectedModel?.executionProfile, 1) : undefined;
   const isSora2uImage = !params.workflowId && providerDefinition?.id === 'sora2u';
   const sora2uExecutionProfile = isSora2uImage ? resolveSora2uImageExecutionProfile(modelName,
     generalModel?.executionProfile ?? selectedModel?.executionProfile ?? catalogModel?.executionProfile) : undefined;
@@ -362,7 +371,7 @@ async function runImageBatch(
   const cccExecutionProfile = isCccImage ? resolveCccGeminiImageExecutionProfile(
     modelName, generalModel?.executionProfile ?? selectedModel?.executionProfile,
   ) : undefined;
-  const effectiveProfile = cccExecutionProfile ?? sora2uExecutionProfile ?? toapisContract?.executionProfile
+  const effectiveProfile = cccExecutionProfile ?? minimaxProfile ?? sora2uExecutionProfile ?? toapisContract?.executionProfile
     ?? relayonContract?.executionProfile ?? characterRoute?.profile ?? generalModel?.executionProfile;
   if (isCccImage && /^(?:gemini-.*image|nano-banana)/i.test(modelName)
     && (!effectiveProfile || effectiveProfile.preset === 'openai-image' || effectiveProfile.preset === 'openai-gpt-image')) {
@@ -371,6 +380,7 @@ async function runImageBatch(
   // 直连节点仍绑定原连接；只为已配置协议构造本轮执行描述，不写入或迁移用户配置。
   const declarativeModel: GeneralModelConfig | undefined = generalModel ?? (isCccImage
     || !params.workflowId && providerDefinition?.id === 'relayonapi' && effectiveProfile
+    || isMinimaxImage && effectiveProfile
     || isSora2uImage && effectiveProfile ? {
     id: modelName, modelId: modelName, name: selectedModel?.name ?? catalogModel?.name ?? modelName,
     category: 'image', providerConfigId: connectionId,
@@ -404,11 +414,13 @@ async function runImageBatch(
       provider: connectionId, executionProfile: effectiveProfile,
       imageReferenceRequestMode: generalModel.imageReferenceRequestMode, imageCapability: declaredCapability });
   }
-  if (configuredCapability && generalModel) {
+  if (configuredCapability && (generalModel || isMinimaxImage)) {
     ({ imageSize, aspectRatio } = resolveConfiguredImageParameters(configuredCapability,
       { imageSize: params.imageSize, aspectRatio: params.aspectRatio, imageQuality, imageBackground, count: requestedCount }));
   }
   const executionProfile = builtInContract ? undefined : effectiveProfile;
+  const usesMinimaxImageProtocol = isMinimaxImage && usesMinimaxImageModelProtocol(modelName, executionProfile);
+  if (usesMinimaxImageProtocol) resolveMinimaxBaseUrl(providerConfig?.baseUrl);
   const usesLibapiProtocol = isLibapi && usesLibapiModelProtocol(modelName, executionProfile);
   const usesRelayonProtocol = providerDefinition?.id === 'relayonapi'
     && usesRelayonModelProtocol(modelName, executionProfile);
@@ -456,7 +468,7 @@ async function runImageBatch(
     ? { prompt: rawPrompt, imageUrls: [] }
     : localMedia
     ? { prompt: localMedia.prompt, imageUrls: getMediaReferenceUrls(localMedia.references, 'image', 'local') }
-    : await resolvePromptWithImageRefs(rawPrompt, { preferLocalImages: usesImageMultipart || usesCustomImageFiles || usesImageDataUrls || usesVolcengineTos || referencesUseRequestFiles || providerDefinition?.id === 'toapis' || isLibapi || !!providerConfig?.imageHosting?.enabled, cameraSettings });
+    : await resolvePromptWithImageRefs(rawPrompt, { preferLocalImages: usesImageMultipart || usesCustomImageFiles || usesImageDataUrls || usesVolcengineTos || usesMinimaxImageProtocol || referencesUseRequestFiles || providerDefinition?.id === 'toapis' || isLibapi || !!providerConfig?.imageHosting?.enabled, cameraSettings });
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
 
   // 仅归一同一节点的来源别名；裸 URL 或其他节点仍可能明确需要未标注的原图。
@@ -493,17 +505,19 @@ async function runImageBatch(
     styleAsFirst,
     aspectRatio,
   );
-  const limit = params.workflowId ? undefined : imagePromptCharacterLimit(modelName, executionProfile?.preset, providerDefinition?.id);
+  if (usesMinimaxImageProtocol) prompt = prompt.trim();
+  const limit = usesMinimaxImageProtocol ? MINIMAX_IMAGE_PROMPT_LIMIT
+    : params.workflowId ? undefined : imagePromptCharacterLimit(modelName, executionProfile?.preset, providerDefinition?.id);
   if (inspectOnly) return { prompt, modelName, limit };
   if (!params.workflowId) {
     if (limit !== undefined && params.imagePromptResolution) {
       if (params.imagePromptResolution.original !== prompt) throw new Error(t('画布或生成输入已变化，请重新生成'));
-      prompt = params.imagePromptResolution.replacement;
+      prompt = usesMinimaxImageProtocol ? params.imagePromptResolution.replacement.trim() : params.imagePromptResolution.replacement;
     }
     assertImagePromptLength(modelName, prompt, limit, imagePromptCharacterCount(params.prompt));
   }
   // 原生图片按显式模型能力校验，不用通用“多数模型前 10 项”的提示猜测其上限。
-  if (!usesGoogleImageParts) warnIfTooManyReferences({ image: allImageUrls.length });
+  if (!usesGoogleImageParts && !usesMinimaxImageProtocol) warnIfTooManyReferences({ image: allImageUrls.length });
 
   // Dreamina：CLI 端本地化图片，不走图床上传
   if (provider === 'dreamina') {
@@ -561,12 +575,29 @@ async function runImageBatch(
   if (providerDefinition?.id === 'toapis') assertToapisImageInput(modelName, allImageUrls.length, requestedCount);
   if (usesLibapiProtocol) assertLibapiImageInput(modelName, allImageUrls.length, requestedCount);
   const libapiExecutionProfile = usesLibapiProtocol ? libapiImageExecutionProfile(modelName, allImageUrls.length) : undefined;
+  const minimaxImageExecutionProfile = usesMinimaxImageProtocol
+    ? resolveMinimaxImageExecutionProfile(modelName, executionProfile, allImageUrls.length) : undefined;
   const relayonExecutionProfile = usesRelayonProtocol
     ? resolveRelayonImageExecutionProfile(modelName, executionProfile, allImageUrls.length, imageBackground, imageOutput) : undefined;
   const aigcsiExecutionProfile = usesAigcsiProtocol ? aigcsiImageExecutionProfile(allImageUrls.length) : undefined;
   // 方舟固定接收 URL；历史模型的 Base64/multipart 偏好不能绕过专用 TOS 上传。
   // multipart 直接读取原始参考图，避免本地图片先上传图床再下载回来的额外网络依赖。
-  if (usesSora2uProtocol) {
+  if (usesMinimaxImageProtocol) {
+    if (!prompt) throw new Error('提示词不能为空');
+    if (allImageUrls.length > MINIMAX_IMAGE_REFERENCE_LIMIT) {
+      throw new Error(`MiniMax 图片最多支持 ${MINIMAX_IMAGE_REFERENCE_LIMIT} 张参考图`);
+    }
+    const assertOriginalConnection = () => {
+      if (useAppStore.getState().config.providers[connectionId] !== providerConfig) {
+        throw new Error('MiniMax 官方连接在准备参考图期间已变化，请重新生成');
+      }
+    };
+    allImageUrls = await mapReferenceImagesInOrder(allImageUrls, (url) => {
+      assertOriginalConnection();
+      return uploadMinimaxImageReference(url, connectionId, signal);
+    }, signal);
+    assertOriginalConnection();
+  } else if (usesSora2uProtocol) {
     if (allImageUrls.length > SORA2U_IMAGE_REFERENCE_LIMIT) throw new Error('Sora2U 图片模型最多支持 4 张参考图');
     // 混合来源整组内联，保留参考图顺序，不猜服务端两个数组的合并顺序。
     if (allImageUrls.some((url) => !isRemoteMediaUrl(url) || !/^https:\/\//i.test(url))) {
@@ -700,7 +731,8 @@ async function runImageBatch(
         height: dimensions.height,
         n: requestedCount,
         batchCount: requestedCount,
-        imageUrls: providerDefinition?.id === 'toapis' ? toapisImageReferences(modelName, allImageUrls) : allImageUrls,
+        imageUrls: usesMinimaxImageProtocol ? allImageUrls.map((image_url) => ({ image_url }))
+          : providerDefinition?.id === 'toapis' ? toapisImageReferences(modelName, allImageUrls) : allImageUrls,
         referenceUrls: allImageUrls.some((url) => isRemoteMediaUrl(url) && /^https:\/\//i.test(url))
           ? allImageUrls.filter((url) => isRemoteMediaUrl(url) && /^https:\/\//i.test(url)) : undefined,
         inlineReferences: allImageUrls.some((url) => /^data:image\//i.test(url))
@@ -710,7 +742,7 @@ async function runImageBatch(
       };
       const urls = await runConfiguredModelProtocol({
         model: { ...gm,
-          executionProfile: libapiExecutionProfile ?? relayonExecutionProfile ?? aigcsiExecutionProfile ?? executionProfile,
+          executionProfile: minimaxImageExecutionProfile ?? libapiExecutionProfile ?? relayonExecutionProfile ?? aigcsiExecutionProfile ?? executionProfile,
           imageCapability: configuredCapability },
         category: 'image',
         nodeId: params.nodeId,

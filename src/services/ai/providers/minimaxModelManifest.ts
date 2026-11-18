@@ -1,6 +1,6 @@
-/** MiniMax 官方视频与语音合同（2026-11-05），真实生成待桌面验收。 */
+/** MiniMax 官方视频、图片与语音合同。 */
 import type { ProviderModelSelection } from '../../../types';
-import type { AudioModelCapability, ModelExecutionProfile, ResolvedModelProtocolPoll } from '../../../types/aiTypes';
+import type { AudioModelCapability, ImageModelCapability, ModelExecutionProfile, ResolvedModelProtocolPoll } from '../../../types/aiTypes';
 import { createH3QuickAdaptTemplate } from '../h3ModelCapabilities';
 import { comparableProtocol } from '../modelProtocol';
 import { ModelProtocolHttpError } from '../modelProtocolHttp';
@@ -11,6 +11,9 @@ import { PollTaskFailedError } from '../../pollTask';
 
 export const MINIMAX_BASE_URL = 'https://api.minimax.cn';
 const OFFICIAL_ORIGINS = new Set([MINIMAX_BASE_URL, 'https://api.minimax.io']);
+const IMAGE_MODELS = new Set(['MiniMax-H3-Image', 'MiniMax-H3-Image-Highspeed']);
+export const MINIMAX_IMAGE_PROMPT_LIMIT = 32_000;
+export const MINIMAX_IMAGE_REFERENCE_LIMIT = 16;
 const SPEECH_MODELS = new Set(['speech-2.8-hd', 'speech-2.8-turbo']);
 const MEDIA_UNREACHABLE = 'MiniMax 无法读取参考素材。请重新上传到当前 MiniMax 连接，或检查素材地址是否允许外部服务器访问；不要直接重复生成。';
 
@@ -42,6 +45,36 @@ function videoModel(id: string): ProviderModelSelection {
     videoCapability: capability, executionProfile: template.executionProfile };
 }
 
+const IMAGE_CAPABILITY: ImageModelCapability = {
+  resolutions: ['1K', '2K', '4K'], defaultResolution: '4K',
+  ratios: ['auto', '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '21:9', '9:21', '3:1', '1:3'],
+  defaultRatio: 'auto',
+  supportsImageReference: true, maxImageReferences: MINIMAX_IMAGE_REFERENCE_LIMIT,
+  supportsBatch: true, maxBatchCount: 10,
+};
+
+function imageProfile(hasReferences: boolean): ModelExecutionProfile {
+  return { preset: 'custom', protocol: {
+    version: 2, mode: 'sync', auth: { type: 'bearer' },
+    submit: { method: 'POST', path: hasReferences ? '/v1/images/edits' : '/v1/images/generations',
+      pathMode: 'origin', bodyEncoding: 'json', body: {
+        model: '{{model}}', prompt: '{{prompt}}', n: '{{n}}', area: '{{imageSize}}', aspect_ratio: '{{aspectRatio}}',
+        output_format: 'png', response_format: 'url', ...(hasReferences ? { images: '{{imageUrls}}' } : {}),
+      } },
+    response: { type: 'json', errorPath: 'error.message', result: { urlPath: 'data.*.url', mimeType: 'image/png' } },
+  } };
+}
+
+const IMAGE_EDIT_PROFILE = imageProfile(true);
+const IMAGE_GENERATION_PROFILE = imageProfile(false);
+const IMAGE_PROTOCOLS = new Set([comparableProtocol(IMAGE_EDIT_PROFILE), comparableProtocol(IMAGE_GENERATION_PROFILE)]);
+
+function imageModel(id: string): ProviderModelSelection {
+  return { id, name: id, provider: 'minimax', category: 'image', inputModalities: ['text', 'image'],
+    description: 'MiniMax 官方文生图、参考图编辑，支持 1K／2K／4K',
+    imageCapability: structuredClone(IMAGE_CAPABILITY), executionProfile: structuredClone(IMAGE_EDIT_PROFILE) };
+}
+
 /** 普通语音合成不上传参考音频克隆；可填平台已有的系统或自建音色 ID。 */
 export function getMinimaxAudioCapability(modelId: string): AudioModelCapability | undefined {
   if (!SPEECH_MODELS.has(modelId)) return undefined;
@@ -67,6 +100,7 @@ function speechModel(id: string): ProviderModelSelection {
 export const MINIMAX_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
   ...['MiniMax-H3', 'MiniMax-H3-Highspeed', 'MiniMax-H3-Lite', 'MiniMax-H3-Max'].map(videoModel),
   ...[...SPEECH_MODELS].map(speechModel),
+  ...[...IMAGE_MODELS].map(imageModel),
 ];
 const MODEL_BY_ID = new Map(MINIMAX_MODEL_MANIFEST.map((model) => [model.id, model]));
 
@@ -77,9 +111,24 @@ export function resolveMinimaxExecutionProfile(modelId: string, profile?: ModelE
 }
 
 export function usesMinimaxModelProtocol(modelId: string, profile?: ModelExecutionProfile): boolean {
+  if (IMAGE_MODELS.has(modelId)) return usesMinimaxImageModelProtocol(modelId, profile);
   const known = MODEL_BY_ID.get(modelId);
   const actual = comparableProtocol(profile);
   return !!known && actual !== undefined && actual === comparableProtocol(known.executionProfile);
+}
+
+export function usesMinimaxImageModelProtocol(modelId: string, profile?: ModelExecutionProfile): boolean {
+  if (!IMAGE_MODELS.has(modelId)) return false;
+  const actual = comparableProtocol(profile);
+  return actual !== undefined && IMAGE_PROTOCOLS.has(actual);
+}
+
+/** 图片目录使用可声明参考能力的编辑合同，无参考图时才切换到文生图端点。 */
+export function resolveMinimaxImageExecutionProfile(
+  modelId: string, profile: ModelExecutionProfile | undefined, referenceCount: number,
+): ModelExecutionProfile | undefined {
+  if (!IMAGE_MODELS.has(modelId) || profile && !usesMinimaxImageModelProtocol(modelId, profile)) return profile;
+  return structuredClone(referenceCount > 0 ? IMAGE_EDIT_PROFILE : IMAGE_GENERATION_PROFILE);
 }
 
 /** 官方多模态合同只转换参数，不重排或替换已上传的素材引用。 */
@@ -143,6 +192,10 @@ const REJECTED_CODES: Readonly<Record<number, string>> = {
   2043: '当前模型不支持该音色', 2049: 'API Key 无效', 2053: '积分不足',
   2054: '音色不存在', 2056: '套餐资源限制', 2057: '当前密钥不适用该接口',
 };
+export function getMinimaxErrorCodeMessage(code: number): string | undefined {
+  return REJECTED_CODES[code];
+}
+
 function isUnreachableMedia(message: unknown): boolean {
   return typeof message === 'string' && /media\s+url\s+unreachable|(?:media|image|video|audio).{0,20}(?:unreachable|unable to (?:fetch|access))|素材.{0,8}无法访问/i.test(message);
 }
@@ -161,8 +214,9 @@ export function assertMinimaxResponse(payload: unknown, requireBusinessStatus = 
     || !Number.isInteger(payload.base_resp.status_code)) throw new Error('MiniMax 响应缺少有效业务状态码');
   const code = payload.base_resp.status_code as number;
   if (code === 0) return;
-  const detail = isUnreachableMedia(payload.base_resp.status_msg) ? MEDIA_UNREACHABLE : REJECTED_CODES[code];
-  const definitive = REJECTED_CODES[code] !== undefined;
+  const rejected = getMinimaxErrorCodeMessage(code);
+  const detail = isUnreachableMedia(payload.base_resp.status_msg) ? MEDIA_UNREACHABLE : rejected;
+  const definitive = rejected !== undefined;
   throw new ModelProtocolHttpError(200, `MiniMax ${definitive ? '请求失败' : '状态待确认'}（业务码 ${code}）：${detail ?? '平台未确认处理结果，请保留原任务核对'}`,
     undefined, definitive);
 }

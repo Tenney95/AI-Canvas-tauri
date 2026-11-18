@@ -43,7 +43,7 @@ const POLICY_OVERRIDES: Record<string, PolicyOverrides> = {
   xai: { syncGeneralModels: true },
   google: { syncGeneralModels: true },
   minimax: { syncGeneralModels: true, upload: 'minimax',
-    modelMenuGroup: { scope: 'connection', description: '使用当前 MiniMax 官方连接中的视频与语音模型' } },
+    modelMenuGroup: { scope: 'connection', description: '使用当前 MiniMax 官方连接中的图片、视频和语音模型' } },
   sora2u: { syncGeneralModels: true, publicUploadFallback: 'deny',
     modelMenuGroup: { scope: 'connection', description: 'Seedance 视频与图片模型' } },
   cccapi: { syncGeneralModels: true, publicUploadFallback: 'deny',
