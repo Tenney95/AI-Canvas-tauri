@@ -15,10 +15,12 @@ import { registerNodePolling, cleanupNodePolling, getPendingTasksForProject, get
 import { uploadRunningHubMedia } from './runninghubClient';
 import { saveRunningHubOutputs, RunningHubTaskFailed, type RunningHubReferences } from './runninghubWorkflow';
 import { getRunningHubModel, isLegacyRunningHubModel, parseRunningHubModelParameter, runningHubFrameRole, type RunningHubModelDefinition, type RunningHubModelValue } from './runninghubModelManifest';
+import { parseRunningHubModelOutputs, readRunningHubModelStatus } from './runninghubModelResult';
 import { mapImageDimensions } from '../../aiDimensions';
 import { isNativeWorkflowExecution, nativeWorkflowDigest } from '../../nativeWorkflowExecution';
 import { isSafeNativeProtocolTaskId } from '../../nativeProtocolContext';
 export type { RunningHubConnection } from '../../../types/runninghub';
+export { parseRunningHubModelOutputs } from './runninghubModelResult';
 
 class RunningHubModelRequestError extends HttpResponseError {
   constructor(status: number, definitiveFailure = classifyHttpResponseFailure(status, undefined), message = `RunningHub 模型请求失败（HTTP ${status}）`) {
@@ -194,25 +196,6 @@ export async function buildRunningHubModelRequest(
   return body;
 }
 
-export function parseRunningHubModelOutputs(results: unknown, kind: RunningHubMediaKind): RunningHubOutput[] {
-  if (!Array.isArray(results)) throw new Error('RunningHub 已完成但未返回产物数组');
-  const outputs: RunningHubOutput[] = [];
-  for (const result of results) {
-    if (!record(result) || typeof result.url !== 'string') continue;
-    let url: URL;
-    try { url = new URL(result.url); } catch { continue; }
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) continue;
-    const format = String(result.outputType || url.pathname.split('.').pop() || '').toLowerCase().replace(/^\./, '');
-    const resultKind = /^(image|png|jpg|jpeg|webp|gif|bmp|tiff|avif)$/.test(format) ? 'image'
-      : /^(video|mp4|webm|mov|mkv|avi)$/.test(format) ? 'video'
-        : /^(audio|mp3|wav|flac|ogg|m4a|aac|pcm|opus)$/.test(format) ? 'audio' : undefined;
-    if ((resultKind && resultKind !== kind) || /^(json|txt|obj|glb|gltf|zip)$/.test(format)) continue;
-    outputs.push({ url: result.url, kind });
-  }
-  if (!outputs.length) throw new Error('RunningHub 未返回所选类型的媒体产物，任务已保留');
-  return outputs;
-}
-
 export async function queryRunningHubModel(connection: RunningHubConnection, taskIds: string[], kind: RunningHubMediaKind, signal?: AbortSignal, onStatus?: (stage: string) => void): Promise<RunningHubOutput[]> {
   const outputs: RunningHubOutput[] = [];
   for (const taskId of taskIds) {
@@ -221,8 +204,8 @@ export async function queryRunningHubModel(connection: RunningHubConnection, tas
         signal, interval: 3000, maxDuration: 2 * 60 * 60 * 1000, timeoutMsg: 'RunningHub 查询超时，任务已保留，可继续查询',
         fetchState: () => modelRequest(connection, 'query', { taskId }, signal),
         isComplete: (task) => {
-          const status = String(task.status ?? '').toUpperCase();
-          if (['FAILED', 'CANCELED', 'CANCELLED'].includes(status)) throw new RunningHubTaskFailed('RunningHub 模型任务失败或已取消');
+          const status = readRunningHubModelStatus(task.status);
+          if (status === 'FAILED') throw new RunningHubTaskFailed('RunningHub 模型任务失败或已取消');
           if (status === 'SUCCESS') return parseRunningHubModelOutputs(task.results, kind);
           if (!['QUEUED', 'RUNNING'].includes(status)) throw new Error('RunningHub 返回未知状态，任务已保留');
           onStatus?.(status === 'QUEUED' ? '排队中' : '生成中'); return null;

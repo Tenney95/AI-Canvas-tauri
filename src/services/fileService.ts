@@ -10,6 +10,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { isLocalMediaUrl, isRemoteMediaUrl, localMediaUrlToPath } from '../utils/mediaUrl';
 import { shouldLoadNativeComfyImage } from './comfyImageSource';
 import { corsSafeFetch } from './ai/httpTransport';
+import type { MediaDownloadRequest } from './ai/mediaDownloadAccess';
 import { downloadGithubBytes, githubMirrorUrl } from './githubDownloadService';
 import { identifyAsset, getRelativeAssetPath } from './fs/assetIndex';
 import { readAssetTextFile } from './fs/assetTextFiles';
@@ -469,10 +470,19 @@ export async function downloadGeneratedImageToPath(url: string, destinationPath:
   const request = options?.mediaDownloadAccess
     ? await (await import('./ai/mediaDownloadAccess')).resolveMediaDownloadRequest(url, options.mediaDownloadAccess)
     : { url };
-  const result = await runNativeFileTransfer('download_file_streamed', {
-    ...request, destinationPath, expectedMediaKind: 'image',
-  }, options);
+  const result = await downloadRemoteMediaToPath(request, destinationPath, 'image', options);
   return result.path;
+}
+
+function downloadRemoteMediaToPath(
+  request: MediaDownloadRequest,
+  destinationPath: string,
+  expectedMediaKind: 'image' | 'video' | undefined,
+  options?: FileTransferOptions,
+): Promise<NativeFileTransferResult> {
+  return runNativeFileTransfer('download_file_streamed', {
+    ...request, destinationPath, ...(expectedMediaKind ? { expectedMediaKind } : {}),
+  }, options);
 }
 
 /** 引用迁移成功后再次验证两份内容，才允许将源文件放入回收站。 */
@@ -1227,15 +1237,10 @@ export async function downloadUrlAndSave(
       generatedImage ? fileName.replace(/\.[^.]+$/, '') : fileName,
       async () => {
         const destPath = await resolveUniqueDestPath(dataDir, fileName, true);
-        const downloaded = await runNativeFileTransfer(
-          sourcePath ? 'copy_file_streamed' : 'download_file_streamed',
-          sourcePath ? { sourcePath, destinationPath: destPath } : {
-            ...remoteRequest, destinationPath: destPath,
-            ...(fallbackPrefix.includes('video') ? { expectedMediaKind: 'video' } : {}),
-            ...(generatedImage ? { expectedMediaKind: 'image' } : {}),
-          },
-          options,
-        );
+        const expectedMediaKind = generatedImage ? 'image' : fallbackPrefix.includes('video') ? 'video' : undefined;
+        const downloaded = sourcePath
+          ? await runNativeFileTransfer('copy_file_streamed', { sourcePath, destinationPath: destPath }, options)
+          : await downloadRemoteMediaToPath(remoteRequest, destPath, expectedMediaKind, options);
         const actualExtension = generatedImage && downloaded.contentType ? MIME_TO_EXT[downloaded.contentType] : undefined;
         const currentExtension = /\.[^./\\]+$/.exec(downloaded.path)?.[0].toLowerCase();
         if (!actualExtension || currentExtension === actualExtension

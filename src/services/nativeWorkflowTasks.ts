@@ -304,9 +304,7 @@ export async function resumeNativeWorkflowTask(operationId: string, externalSign
             for (const file of task.outputs) await readNativeMediaLocalResult(record.canvasId, file);
           } else ({ record, receipt } = await retainNativeWorkflowTaskOutputs(record, taskId, { outputs: files }));
         } catch (error) {
-          const { RunningHubTaskFailed } = await import('./ai/providers/runninghubWorkflow');
-          const { WorkflowApiTaskFailed } = await import('./workflowApi/workflowApiAdapter');
-          if (!task.outputs && (error instanceof PollTaskFailedError || error instanceof RunningHubTaskFailed || error instanceof WorkflowApiTaskFailed)) {
+          if (!task.outputs && error instanceof PollTaskFailedError) {
             ({ record, receipt } = await retainNativeWorkflowTaskOutputs(record, taskId, { failed: true })); continue;
           }
           throw error;

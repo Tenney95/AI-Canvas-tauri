@@ -59,6 +59,8 @@ import {
   generateApimartImagesBatch,
   generateApimartVideo,
 } from '../../src/services/ai/apimartGen';
+import { queryApimartImageResult } from '../../src/services/ai/apimartImageResult';
+import { queryCompatibleImageTask } from '../../src/services/ai/asyncMediaResult';
 import { buildApimartSeedanceRequest, isApimartSeedanceModel } from '../../src/services/ai/apimartVideoModels';
 import { apimartMediaProviderAdapter } from '../../src/services/ai/providers/apimartMedia';
 import { APIMART_OMNI_MODELS, APIMART_UPDATED_VIDEO_MODELS, getApimartSeedanceCapability } from '../../src/services/ai/apimartVideoModels';
@@ -1033,6 +1035,39 @@ describe('APIMart MiniMax-H3 video', () => {
 
 describe('媒体任务交付回执', () => {
   beforeEach(() => { vi.clearAllMocks(); pollingMocks.receipts.clear(); vi.unstubAllGlobals(); });
+
+  it('通用异步查询保留 result.data 的有序链接和内联候选', async () => {
+    const url = 'https://cdn.example/image.png?fields=a,b&signature=fixture';
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
+      status: 'completed', data: { result: { data: [{ url }, { b64_json: 'AQID' }] } },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(queryCompatibleImageTask('key', 'https://api.example/v1/', 'original', { maxDuration: 1000 }))
+      .resolves.toEqual([url, 'data:image/png;base64,AQID']);
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith('https://api.example/v1/tasks/original?language=zh', expect.objectContaining({
+      headers: { Authorization: 'Bearer key' },
+    }));
+  });
+
+  it('首次取图与原任务续查保留同样的有序候选，续查不再次提交', async () => {
+    const urls = ['https://cdn.example/first.png?fields=a,b&signature=fixture', 'https://cdn.example/second.png'];
+    const payload = { data: { status: 'completed', result: { images: [{ url: urls[0] }, {}, { url: [urls[1], ''] }] } } };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: [{ task_id: 'image-original' }] }))
+      .mockResolvedValueOnce(jsonResponse(payload))
+      .mockResolvedValueOnce(jsonResponse(payload));
+    vi.stubGlobal('fetch', fetchMock);
+    const initial = await generateApimartImagesBatch('key', 'https://api.example/v1', 'gpt-image', 'prompt', '2K', '1:1',
+      { width: 2048, height: 2048 }, [], 2);
+    const resumed = await queryApimartImageResult('key', 'https://api.example/v1', 'image-original');
+    expect(initial.results.map((item) => item.url)).toEqual(urls);
+    expect(resumed).toEqual(urls);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(fetchMock.mock.calls.slice(1).map(([url]) => url)).toEqual([
+      'https://api.example/v1/tasks/image-original?language=zh',
+      'https://api.example/v1/tasks/image-original?language=zh',
+    ]);
+  });
 
   it('图片拿到结果后保留真实 ID，等待调用方保存和回填确认', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ data: [{ task_id: 'image-delivery' }] }))

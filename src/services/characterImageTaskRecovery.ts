@@ -6,7 +6,9 @@ import type { ModelProtocolVariables } from './ai/modelProtocolTypes';
 import { useAppStore } from '../store/useAppStore';
 import { executeCharacterImageTask, validateCharacterImageTaskRecovery, type CharacterImageExecutionOutputs } from './characterImageTaskContext';
 import { pollTask, PollTaskFailedError } from './pollTask';
-import { fetchApimartTask } from './ai/apimartGen';
+import { queryApimartImageResult } from './ai/apimartImageResult';
+import { queryCompatibleImageTask } from './ai/asyncMediaResult';
+import { createCccImageResultPoll, queryCccImageResult } from './ai/cccImageResult';
 import { pollResolvedModelProtocol, resolvePoll } from './ai/modelProtocolPoll';
 import { captureNativeProtocolContext, nativeProtocolQueryPaths, nativeProtocolQueryDigest, resolveNativeProtocolContext } from './nativeModelProtocolTask';
 import { submitModelProtocol } from './ai/modelProtocol';
@@ -71,26 +73,22 @@ export async function queryCharacterImageOriginal(query: Query, task: Task, oper
   }
   if (query.kind === 'builtin' && query.builtinMode === 'ccc') {
     if (getProviderDefinition(query.connectionId, provider)?.id !== 'cccapi') throw new Error('原 CCC 图片连接身份无效');
-    const result = await pollResolvedModelProtocol({ method: 'GET', url: `${query.providerBase}/tasks/${encodeURIComponent(task.taskId)}`,
-      auth: { type: 'bearer' }, statusPath: 'data.status', successValues: ['completed'], failureValues: ['failed'],
-      resultUrlPath: 'data.result.images.*.url', intervalMs: 3000, maxDurationMs: 60 * 60 * 1000 }, apiKey, signal, baseUrl);
-    if (!result.urls?.length) throw new Error('原 CCC 图片任务没有返回可保存的结果');
-    return result.urls.map((url) => ({ url }));
+    const poll = createCccImageResultPoll(query.providerBase, task.taskId, { maxDurationMs: 60 * 60 * 1000 });
+    const urls = await queryCccImageResult(poll, apiKey, signal, baseUrl);
+    if (!urls.length) throw new Error('原 CCC 图片任务没有返回可保存的结果');
+    return urls.map((url) => ({ url }));
   }
-  if (query.kind === 'apimart' || query.kind === 'general-async') {
-    if (query.kind === 'apimart' && query.connectionId !== 'apimart') throw new Error('原 APIMart 连接身份无效');
-    const { nativeGeneralTaskUrls } = await import('./nativeGeneralAsyncTask');
-    const urls = await pollTask<Awaited<ReturnType<typeof fetchApimartTask>>, string[]>({
-      fetchState: () => fetchApimartTask(apiKey, query.providerBase, encodeURIComponent(task.taskId), signal, true),
-      isComplete: (value) => {
-        if (!['completed', 'succeeded', 'success'].includes((value.status ?? '').toLowerCase())) return null;
-        const results = nativeGeneralTaskUrls(value, 'images');
-        return results.length ? results : null;
-      },
-      isFailed: (value) => ['failed', 'error', 'cancelled', 'canceled'].includes((value.status ?? '').toLowerCase()) ? '原图片任务已确认失败' : null,
-      interval: 3000, maxDuration: 60 * 60 * 1000, signal, onFetchError: 'throw',
+  if (query.kind === 'apimart') {
+    if (query.connectionId !== 'apimart') throw new Error('原 APIMart 连接身份无效');
+    const urls = await queryApimartImageResult(apiKey, query.providerBase, task.taskId, {
+      signal, interval: 3000, maxDuration: 60 * 60 * 1000, onFetchError: 'throw',
     });
-    if (!urls.length) throw new Error('原图片任务没有返回可保存的结果');
+    return urls.map((url) => ({ url }));
+  }
+  if (query.kind === 'general-async') {
+    const urls = await queryCompatibleImageTask(apiKey, query.providerBase, task.taskId, {
+      signal, maxDuration: 60 * 60 * 1000,
+    });
     return urls.map((url) => ({ url }));
   }
   throw new Error('原同步图片请求没有可续查的远端任务，不会重新生成');

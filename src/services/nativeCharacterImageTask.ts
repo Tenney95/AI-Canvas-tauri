@@ -9,7 +9,7 @@ import { hasControlCharacters } from '../utils/controlCharacters';
 import { getHttpResponseError } from './ai/httpUtils';
 import { PollTaskFailedError } from './pollTask';
 import { getAssetUrlFromPath, getProjectDataDir, isTauriEnv, joinPath } from './fileService';
-import { saveCharacterVisualResult } from './fs/characterVisualFiles';
+import { isCharacterVisualCandidateExtension, saveCharacterVisualResult } from './fs/characterVisualFiles';
 import { EXCHANGE, REVISIONS, ROOTS, TRANSFER, assertNoPendingNativeSharedSync, increment,
   isNativeProjectId, openNativeProjectDatabase, transact } from './indexedDb/nativeProjectRepository';
 import { sha256BytesHex } from './mediaDataUrl';
@@ -114,7 +114,8 @@ function validate(row: Receipt | undefined): Receipt {
     || row.status === 'completed' && !row.outputs.length
     || row.outputs.some((output) => !output || Object.keys(output).some((key) => !outputFields.has(key))
       || !integer(output.index) || output.index >= MAX_CHARACTER_OUTPUTS || !integer(output.bytes) || output.bytes === 0 || !validSize(output)
-      || !/\.(?:png|jpg|webp)$/.test(output.relativePath) || !isNativeMediaContentPath(output.relativePath, output.sha256))) throw invalid();
+      || !isNativeMediaContentPath(output.relativePath, output.sha256)
+      || !isCharacterVisualCandidateExtension(output.relativePath.split('.').at(-1)))) throw invalid();
   if (new Set(row.outputs.map((output) => output.index)).size !== row.outputs.length) throw invalid();
   if (row.recovery) {
     validateCharacterImageTaskRecovery(row.recovery);

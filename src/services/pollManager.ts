@@ -18,6 +18,8 @@ import { applyImageBatchResults, imageBatchArtifactId } from './imageBatchServic
 import { mapImageDimensions } from './aiDimensions';
 import { parseMultiPathResponse } from './ai/helpers';
 import { extractApimartUrls, fetchApimartTask, pollRunningHubTask, type ApimartTaskResult } from './pollManagerQueries';
+import { queryApimartImageResult } from './ai/apimartImageResult';
+import { queryCompatibleImageTask } from './ai/asyncMediaResult';
 import { resolveComfyOutputUrl, sanitizeComfyOutputFile, type ComfyOutputFile, type ComfyOutputKind, type ComfyOutputs } from './comfyOutputs';
 import { ComfyOutputUnavailableError, ComfyPendingError, ComfyQueryAuthorizationError, getComfyQueryAuthorizationMessage, pollComfyHistory, pollComfyTextHistory } from './comfyPolling';
 import { maybeAutoReleaseComfyMemory } from './comfyMemory';
@@ -1598,8 +1600,13 @@ async function resumeApimart(task: PendingTask, parentSignal?: AbortSignal): Pro
       task = { ...task, mediaDownloadAccess };
       updatePendingTask(nodeId, { mediaDownloadAccess }, task.taskId, task.attemptId);
     }
-    const settled = await settleMediaTaskQueries(taskIds.map((taskId) => (batchSignal: AbortSignal) => (
-      pollTask<ApimartTaskResult, string[]>({
+    const settled = await settleMediaTaskQueries(taskIds.map((taskId) => (batchSignal: AbortSignal) => {
+      if (nodeType === 'ai-image' || nodeType === 'ai-panorama') {
+        return queryApimartImageResult(apiKey, baseUrl, taskId, {
+          interval: 3000, maxDuration: MEDIA_POLL_MAX_DURATION_MS, signal: batchSignal,
+        });
+      }
+      return pollTask<ApimartTaskResult, string[]>({
         fetchState: async (querySignal) => {
           try { return await fetchApimartTask(apiKey, baseUrl, taskId, querySignal, true); }
           catch (error) { if (nodeType === 'ai-video' && isPollTimeoutError(error)) throw new PollTimeoutError(); throw error; }
@@ -1616,8 +1623,8 @@ async function resumeApimart(task: PendingTask, parentSignal?: AbortSignal): Pro
         maxDuration: MEDIA_POLL_MAX_DURATION_MS,
         onFetchError: 'throw',
         signal: batchSignal,
-      })
-    )), signal);
+      });
+    }), signal);
     const uncertain = settled.find((result) => result.status === 'rejected' && !(result.reason instanceof PollTaskFailedError));
     if (uncertain?.status === 'rejected') throw uncertain.reason;
     const urls = settled.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
@@ -2063,39 +2070,43 @@ async function resumeGeneral(task: PendingTask, parentSignal?: AbortSignal): Pro
   const query = guardVideoTaskQuery(task, signal);
 
   try {
-    const { url } = await pollTask<Record<string, unknown>, { url: string }>({
-      fetchState: async (querySignal) => {
-        const pollResp = await corsSafeFetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
-          headers: { Authorization: `Bearer ${apiKey}` },
-          signal: querySignal,
-        });
-        if ([408, 504].includes(pollResp.status)) throw new PollTimeoutError();
-        if (!pollResp.ok) throw new Error(`HTTP ${pollResp.status}`);
-        return (await pollResp.json()) as Record<string, unknown>;
-      },
-      isComplete: (raw) => {
-        const t = (raw.data ?? raw) as Record<string, unknown>;
-        if (t.status === 'completed') {
-          const resolved = parseMultiPathResponse(
-            (t.result ?? raw) as Record<string, unknown>,
-            resultField,
-          );
-          if (resolved) return { url: resolved };
-          throw new Error('任务完成但未返回结果');
-        }
-        return null;
-      },
-      isFailed: (raw) => {
-        const t = (raw.data ?? raw) as Record<string, unknown>;
-        return t.status === 'failed' || t.status === 'error' || t.status === 'cancelled'
-          ? `任务失败: ${t.status}`
-          : null;
-      },
-      interval: 3000,
-      maxDuration: MEDIA_POLL_MAX_DURATION_MS,
-      onFetchError: 'throw',
-      signal,
-    });
+    const url = resultField === 'images'
+      ? (await queryCompatibleImageTask(apiKey, baseUrl, taskId, {
+        maxDuration: MEDIA_POLL_MAX_DURATION_MS, signal, allowPartial: true,
+      }))[0]
+      : (await pollTask<Record<string, unknown>, { url: string }>({
+          fetchState: async (querySignal) => {
+            const pollResp = await corsSafeFetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
+              headers: { Authorization: `Bearer ${apiKey}` },
+              signal: querySignal,
+            });
+            if ([408, 504].includes(pollResp.status)) throw new PollTimeoutError();
+            if (!pollResp.ok) throw new Error(`HTTP ${pollResp.status}`);
+            return (await pollResp.json()) as Record<string, unknown>;
+          },
+          isComplete: (raw) => {
+            const t = (raw.data ?? raw) as Record<string, unknown>;
+            if (t.status === 'completed') {
+              const resolved = parseMultiPathResponse(
+                (t.result ?? raw) as Record<string, unknown>,
+                resultField,
+              );
+              if (resolved) return { url: resolved };
+              throw new Error('任务完成但未返回结果');
+            }
+            return null;
+          },
+          isFailed: (raw) => {
+            const t = (raw.data ?? raw) as Record<string, unknown>;
+            return t.status === 'failed' || t.status === 'error' || t.status === 'cancelled'
+              ? `任务失败: ${t.status}`
+              : null;
+          },
+          interval: 3000,
+          maxDuration: MEDIA_POLL_MAX_DURATION_MS,
+          onFetchError: 'throw',
+          signal,
+      })).url;
     markMediaTaskDeliveryPending(task, signal, [url]);
     if (await deliverMediaMessageResult(task, [url], signal)) return;
     await applyNodeResult(nodeId, url, label, query.isCurrent, undefined, task.videoGeneration, task.mediaDownloadAccess, signal);

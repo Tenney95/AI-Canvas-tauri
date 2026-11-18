@@ -16,6 +16,10 @@ export function isCharacterVisualInputUrl(value: string | undefined): value is s
   return !!value && (isTauriAssetUrl(value) || /^(?:blob:|data:image\/(?:png|jpeg|webp|gif|avif|svg\+xml);base64,)/i.test(value));
 }
 
+export function isCharacterVisualCandidateExtension(extension: string | undefined): boolean {
+  return extension !== undefined && /^(?:png|jpg|webp|gif|svg)$/.test(extension);
+}
+
 /** 这里只读取图片元数据，原始 SVG 仍按字节保存，预览由 img 的图片上下文处理。 */
 function characterVisualSvgRoot(bytes: Uint8Array): string | undefined {
   if (!bytes.length || bytes.length > 32 * 1024 * 1024) return undefined;
@@ -65,7 +69,7 @@ export async function saveCharacterVisualResult(
     const dimensions = parseRasterImageDimensions(svgRoot
       ? new TextEncoder().encode(svgRoot.slice(0, 256 * 1024))
       : bytes.subarray(0, 256 * 1024));
-    if (!['png', 'jpg', 'webp', 'gif', 'svg'].includes(format.extension)
+    if (!isCharacterVisualCandidateExtension(format.extension)
       || !dimensions || dimensions.width * dimensions.height > 64 * 1024 * 1024) {
       throw new Error(t('原候选图片文件不可用'));
     }

@@ -16,7 +16,7 @@ import { findUnusedReferenceVariables } from '../ai/modelProtocolRuntime';
 import { resolveDeclaredWorkflowInputs, validateDeclarativeWorkflowManifest, workflowApiOutputKind } from './workflowApiDefinition';
 import { corsSafeFetch } from '../ai/httpTransport';
 import { buildSameOriginUrl } from '../ai/modelProtocolRequest';
-import { pollTask } from '../pollTask';
+import { pollTask, PollTaskFailedError } from '../pollTask';
 import {
   cancelNodePolling, cleanupNodePolling, getPendingTasksForProject, registerNodePolling,
   removePendingTask, savePendingTask, updatePendingTask,
@@ -36,7 +36,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-export class WorkflowApiTaskFailed extends Error {}
+export class WorkflowApiTaskFailed extends PollTaskFailedError {
+  override name = 'Error';
+}
 class WorkflowApiRequestError extends Error {
   readonly retryable: boolean;
   readonly rejected: boolean;

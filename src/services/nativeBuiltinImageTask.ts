@@ -17,7 +17,7 @@ import { configValuesEqual } from './configPatch';
 import { projectModelSourceToken } from './projectModelComparisonMaterial';
 import { sha256BytesHex } from './mediaDataUrl';
 import { getHttpResponseError } from './ai/httpUtils';
-import { pollResolvedModelProtocol } from './ai/modelProtocol';
+import { createCccImageResultPoll, queryCccImageResult } from './ai/cccImageResult';
 import { createMediaDownloadAccess } from './ai/mediaDownloadAccess';
 import { pollTask, PollTaskFailedError } from './pollTask';
 import { isSafeNativeProtocolTaskId } from './nativeProtocolContext';
@@ -280,11 +280,10 @@ export async function resumeNativeBuiltinImageTask(operationId: string, signal?:
           let baseUrl = provider?.baseUrl?.trim() || '';
           if (!baseUrl) { const { getProviderDefinition } = await import('./ai/providerCatalogService'); baseUrl = getProviderDefinition(record.providerConfigId, provider)?.defaultBaseUrl || ''; }
           if (!provider?.apiKey || normalizeNativeMediaProviderBase(baseUrl) !== record.providerBase) throw new Error('原 CCC 连接已变化，请恢复原连接后查询');
-          const result = await pollResolvedModelProtocol({ method: 'GET', url: `${record.providerBase}/tasks/${encodeURIComponent(original.taskId)}`,
-            auth: { type: 'bearer' }, statusPath: 'data.status', successValues: ['completed'], failureValues: ['failed'],
-            resultUrlPath: 'data.result.images.*.url', intervalMs: 3000,
-            ...(options.retainOnly ? { maxAttempts: 1, maxDurationMs: 15_000 } : { maxDurationMs: 60 * 60 * 1000 }) }, provider.apiKey, signal, record.providerBase);
-          if (!result.urls?.length) throw new Error('原 CCC 任务没有返回完整结果'); urls = result.urls;
+          const poll = createCccImageResultPoll(record.providerBase, original.taskId,
+            options.retainOnly ? { maxAttempts: 1, maxDurationMs: 15_000 } : { maxDurationMs: 60 * 60 * 1000 });
+          urls = await queryCccImageResult(poll, provider.apiKey, signal, record.providerBase);
+          if (!urls.length) throw new Error('原 CCC 任务没有返回完整结果');
         } else return fail();
       } catch (error) {
         if (!(error instanceof PollTaskFailedError)) throw error;

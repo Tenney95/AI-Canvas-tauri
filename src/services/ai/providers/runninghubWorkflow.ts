@@ -7,14 +7,16 @@ import { resolveRunningHubParameters, runningHubFieldValue, runningHubParameterK
 import { runningHubConnection, isRunningHubWorkflow, saveCloudWorkflowOutputs, getCloudWorkflowPersistedOutput } from '../../workflowExecutionService';
 import { runningHubSiteId } from '../../runninghubSiteCredentials';
 import { runningHubRequest, uploadRunningHubMedia, RunningHubRequestError } from './runninghubClient';
-import { pollTask } from '../../pollTask';
+import { pollTask, PollTaskFailedError } from '../../pollTask';
 import { cancelNodePolling, cleanupNodePolling, getPendingTasksForProject, registerNodePolling, removePendingTask, savePendingTask, updatePendingTask } from '../../pollManager';
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../../canvasDerivationGuard';
 import { resolveRunningHubInputRouting, splitRunningHubPrompt, type RunningHubInputRouting } from './runninghubWorkflowInputs';
 import { resolveWorkflowSeed } from '../../workflowSeed';
 import { isNativeWorkflowExecution, nativeWorkflowDigest } from '../../nativeWorkflowExecution';
 
-export class RunningHubTaskFailed extends Error {}
+export class RunningHubTaskFailed extends PollTaskFailedError {
+  override name = 'Error';
+}
 export type RunningHubReferences = Partial<Record<RunningHubMediaKind, string[]>>;
 
 /** 云适配器已保存全部产物，调用方直接使用保存结果，避免再次下载 asset URL。 */

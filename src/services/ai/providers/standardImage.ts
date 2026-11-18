@@ -14,11 +14,11 @@ import {
 } from '../helpers';
 import { runBatchTasks } from '../batchUtils';
 import { useAppStore } from '../../../store/useAppStore';
-import { pollResolvedModelProtocol } from '../modelProtocol';
+import { createCccImageResultPoll, queryCccImageResult } from '../cccImageResult';
 import { PollTaskFailedError } from '../../pollTask';
 import { cleanupNodePolling, pauseMediaTask, registerNodePolling, removeFailedMediaTask, removePendingTask, savePendingTask, updatePendingTask, VIDEO_POLL_MAX_DURATION_MS } from '../../pollManager';
 import type { ImageReferenceRequestMode } from '../../../types';
-import type { BatchImageResult, ImageGenerationResult, MediaTaskReceipt, ResolvedModelProtocolPoll } from '../../../types/aiTypes';
+import type { BatchImageResult, ImageGenerationResult, MediaTaskReceipt } from '../../../types/aiTypes';
 import { buildStandardImageRequestBody } from '../imageParameterMappings';
 import { prepareReferenceImageUpload } from '../referenceImageUpload';
 import { redactModelProtocolError, throwIfDefinitiveModelResponseFailure } from '../modelProtocolHttp';
@@ -274,11 +274,7 @@ async function generateCccImagesBatch(
         failedCount: Math.max(0, requestedCount - urls.length) };
     }
     // 同一连接解析出的 ID 只用于查询该次提交，绝不按缺少的图片数量重发生成。
-    const polls: ResolvedModelProtocolPoll[] = taskIds.map((taskId) => ({
-      method: 'GET', url: `${params.baseUrl.replace(/\/+$/, '')}/tasks/${encodeURIComponent(taskId)}`,
-      auth: { type: 'bearer' }, statusPath: 'data.status', successValues: ['completed'], failureValues: ['failed'],
-      resultUrlPath: 'data.result.images.*.url', intervalMs: 3000, maxDurationMs: VIDEO_POLL_MAX_DURATION_MS,
-    }));
+    const polls = taskIds.map((taskId) => createCccImageResultPoll(params.baseUrl, taskId, { maxDurationMs: VIDEO_POLL_MAX_DURATION_MS }));
     if (params.nodeId) receipt = updatePendingTask(params.nodeId, { taskId: taskIds[0], taskIds,
       protocolPoll: polls[0], protocolPolls: polls, submitted: true }, receipt?.taskId, receipt?.attemptId) ?? receipt;
     const failedIds = new Set<string>();
@@ -287,14 +283,9 @@ async function generateCccImagesBatch(
     const batchQuerySignal = signal ? AbortSignal.any([signal, queryController.signal]) : queryController.signal;
     const completed = await runBatchTasks(polls.length, 3, async (index) => {
       try {
-        const result = await pollResolvedModelProtocol(polls[index], params.apiKey, batchQuerySignal, params.baseUrl, (raw) => {
-          const payload = raw as { data?: { status?: string; error?: { message?: unknown } }; error?: { message?: unknown } } | null;
-          if (payload?.data?.status !== 'failed') return;
-          const detail = payload.data.error?.message ?? payload.error?.message;
-          throw new PollTaskFailedError(typeof detail === 'string' && detail.trim() ? `CCC 图片任务失败：${detail}` : 'CCC 图片任务失败');
-        });
-        if (!result.urls?.length) throw new Error('CCC 任务完成但未返回图片');
-        return result.urls;
+        const urls = await queryCccImageResult(polls[index], params.apiKey, batchQuerySignal, params.baseUrl, true);
+        if (!urls.length) throw new Error('CCC 任务完成但未返回图片');
+        return urls;
       } catch (error) {
         if (error instanceof PollTaskFailedError) failedIds.add(taskIds[index]);
         else {

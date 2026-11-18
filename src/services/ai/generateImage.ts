@@ -639,7 +639,7 @@ export async function generateImagesBatch(
     const hasExplicitStandardRequestMode = allImageUrls.length > 0
       && imageReferenceRequestMode !== undefined
       && usesStandardImageRequest;
-    if (!hasExplicitStandardRequestMode && (!characterWorkbench || usesRelayonImageFiles)) {
+    if (!hasExplicitStandardRequestMode) {
       const variables = {
         model: gm.modelId,
         prompt,
