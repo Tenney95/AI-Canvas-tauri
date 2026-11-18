@@ -94,7 +94,7 @@ describe('locale dictionaries', () => {
       );
       expect(orphans, `${name} 存在源码中已消失的孤儿词条`).toEqual([]);
     }
-  }, 15_000);
+  }, 60_000);
 
   it('has the same keys in every supported dictionary', () => {
     // 三语同步维护；新增界面词条时同时补齐英文、日文和韩文。

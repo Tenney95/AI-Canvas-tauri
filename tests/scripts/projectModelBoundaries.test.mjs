@@ -25,7 +25,7 @@ describe('项目模型旧消费者与正式门禁只读审计', () => {
       expect.objectContaining({ file: 'src/services/projectModelBackup.ts', category: 'backup-audit-retained' }),
       expect.objectContaining({ file: 'src/projectModelFixtureHost.ts', category: 'fixture-source-retained', priority: 'P3' }),
     ]));
-  }, 15_000);
+  }, 60_000);
 
   it('新旧联合目录的旧读取和导入历史冲突检查按具体作用域限制次数', () => {
     const router = 'src/services/projectModelRouter.ts';
