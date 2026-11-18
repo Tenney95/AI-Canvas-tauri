@@ -169,23 +169,6 @@ const SERIES_ASSET_EXTRACTION_ACTIONS: Array<{
   { kind: 'prop', label: '提取道具', icon: 'lucide:briefcase-business' },
 ];
 
-function createWorkbenchArticleController() {
-  type Access = Required<Pick<Parameters<typeof createWorkbenchArticleSession>[0], 'readTarget' | 'applyTarget' | 'getExecution'>>;
-  let access: Access | undefined;
-  const current = () => {
-    if (!access) throw new Error('文章所在的项目或编辑位置已变化，请重新选择文章');
-    return access;
-  };
-  return {
-    ...createWorkbenchArticleSession({
-      readTarget: (target) => current().readTarget(target),
-      applyTarget: (captured, text) => current().applyTarget(captured, text),
-      getExecution: () => current().getExecution(),
-    }),
-    bindAccess(next: Access) { access = next; },
-  };
-}
-
 function toCreativeDraft(value: EpisodeCreativeInfo | undefined): CreativeDraft {
   return {
     ...EMPTY_CREATIVE_DRAFT,
@@ -1169,11 +1152,12 @@ export default function ScriptWorkbench({
       version: JSON.stringify([document.revision, document.acceptedSequence]) };
   };
   const [articleRevision, setArticleRevision] = useState({ original: 0, outlineDocument: 0 });
+  const readArticleTargetRef = useRef(readArticleTarget);
   const articleApplyingRef = useRef(false);
   const applyArticleTarget = (captured: WorkbenchArticleCapture, text: string): void => {
     // 先让新稿与编辑版本同步到视图，再向独立窗口回复，避免旧编辑器抢先继续输入。
     flushSync(() => {
-      const latest = articleAccessRef.current.readTarget(captured.target);
+      const latest = readArticleTargetRef.current(captured.target);
       if (latest.key !== captured.key || latest.version !== captured.version || latest.content !== captured.content) {
         throw new Error(t('文章已变化，请重新生成，当前草稿已保留'));
       }
@@ -1201,16 +1185,15 @@ export default function ScriptWorkbench({
       selection: executionSelection, modelId: assistantModelId, profile: assistantTeamProfile,
       mode: assistantConversation?.agentMode ?? teamMode };
   };
-  const articleAccessRef = useRef({ readTarget: readArticleTarget, applyTarget: applyArticleTarget, readExecution: readArticleExecution });
-  const [articleAssistant] = useState(createWorkbenchArticleController);
+  const [articleAssistant] = useState(() => createWorkbenchArticleSession());
   const [, refreshArticleAssistant] = useState(0);
   useEffect(() => articleAssistant.subscribe(() => refreshArticleAssistant((version) => version + 1)), [articleAssistant]);
   useEffect(() => () => articleAssistant.cancel(), [articleAssistant]);
-  const articleOutlineDocumentId = outlineDocuments?.getSummary().documentId;
-  const articleOutlineDocumentSelected = outlineDocuments?.getSummary().selected;
-  const articleOriginalDocumentId = originalWriting?.summary().documentId;
+  const outlineDocumentId = outlineDocuments?.getSummary().documentId;
+  const outlineDocumentSelected = outlineDocuments?.getSummary().selected;
+  const originalDocumentId = originalWriting?.summary().documentId;
   useEffect(() => { articleAssistant.cancel(); }, [articleAssistant, contextReady, currentEpisodeId, activeTab, series?.exchangeEpoch,
-    articleOutlineDocumentId, articleOutlineDocumentSelected, articleOriginalDocumentId]);
+    outlineDocumentId, outlineDocumentSelected, originalDocumentId]);
 
   const snapshot: ScriptWorkbenchSnapshot = {
     schemaVersion: 2, windowContext: captureProjectWindowContext(useAppStore.getState(), currentEpisodeId),
@@ -1659,8 +1642,8 @@ export default function ScriptWorkbench({
     }
   };
   useLayoutEffect(() => {
-    articleAccessRef.current = { readTarget: readArticleTarget, applyTarget: applyArticleTarget, readExecution: readArticleExecution };
-    articleAssistant.bindAccess({ readTarget: readArticleTarget, applyTarget: applyArticleTarget, getExecution: readArticleExecution });
+    readArticleTargetRef.current = readArticleTarget;
+    articleAssistant.setTargetAccess({ readTarget: readArticleTarget, applyTarget: applyArticleTarget, getExecution: readArticleExecution });
     snapshotRef.current = snapshot;
     onCloseRequestRef.current = onCloseRequest;
     onPageVisibilityChangeRef.current = onPageVisibilityChange;

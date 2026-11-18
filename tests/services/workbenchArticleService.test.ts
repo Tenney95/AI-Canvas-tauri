@@ -25,7 +25,7 @@ vi.mock('../../src/services/chat/agentScheduler', () => ({ cancelScheduledAgentE
 import { createWorkbenchArticleSession } from '../../src/services/workbenchArticleService';
 
 const target: WorkbenchArticleTarget = { kind: 'outline', episodeId: 'episode' };
-function session(content = '原稿', getExecution?: Parameters<typeof createWorkbenchArticleSession>[0]['getExecution']) {
+function session(content = '原稿', getExecution?: NonNullable<Parameters<typeof createWorkbenchArticleSession>[0]>['getExecution']) {
   let current: WorkbenchArticleCapture = { target, projectId: 'episode', key: 'series:epoch:episode:outline',
     label: '本集大纲', content, version: 1 };
   const apply = vi.fn();
@@ -71,6 +71,30 @@ beforeEach(() => {
 });
 
 describe('工作台文章改写', () => {
+  it('提交视图后接入的团队和单模型选择均使用最新执行入口', async () => {
+    const editor = createWorkbenchArticleSession();
+    const source: WorkbenchArticleCapture = { target, projectId: 'episode', key: 'article', label: '大纲', content: '原稿', version: 1 };
+    const apply = vi.fn();
+    editor.setTargetAccess({ readTarget: () => source, applyTarget: apply,
+      getExecution: () => ({ ...teamExecution(), selection: { kind: 'single' }, modelId: 'general/old' }) });
+    const execution = teamExecution();
+    editor.setTargetAccess({ readTarget: () => source, applyTarget: apply, getExecution: () => execution });
+    mocks.startTeam.mockImplementationOnce(async (input: { requestId: string }) => completeTeam(input.requestId));
+    const candidate = await editor.handle({ type: 'article_generate', target, instruction: '整理结构' });
+    expect(candidate).toMatchObject({ text: '团队修改后的完整文章' });
+    expect(mocks.startTeam).toHaveBeenCalledWith(expect.objectContaining({ projectId: execution.projectId,
+      conversationId: execution.conversationId, mode: execution.mode, templateId: execution.selection.templateId, profile }));
+    expect(mocks.model).not.toHaveBeenCalled();
+    await editor.handle({ type: 'article_discard_candidate' });
+    editor.setTargetAccess({ readTarget: () => source, applyTarget: apply,
+      getExecution: () => ({ ...teamExecution(), selection: { kind: 'single' }, modelId: 'general/new' }) });
+    await editor.handle({ type: 'article_generate', target, instruction: '精简' });
+    expect(mocks.model).toHaveBeenCalledExactlyOnceWith('episode', 'general/new');
+    expect(mocks.startTeam).toHaveBeenCalledOnce();
+    expect(apply).not.toHaveBeenCalled();
+    editor.dispose();
+  });
+
   it('单模型沿用显式选择，不借用其他模型或团队运行器', async () => {
     const { editor } = session('原稿', () => ({ ...teamExecution(), selection: { kind: 'single' }, modelId: 'general/chosen' }));
     await editor.handle({ type: 'article_generate', target, instruction: '增强冲突' });
@@ -215,6 +239,28 @@ describe('工作台文章改写', () => {
     expect(mocks.cancelScheduled).toHaveBeenCalledWith(taskId);
     expect(mocks.readArtifact).not.toHaveBeenCalled(); expect(apply).not.toHaveBeenCalled();
     expect(mocks.listeners.size).toBe(0);
+    editor.dispose();
+  });
+
+  it('提交视图后接入编辑器，回执和采用始终使用最新入口', async () => {
+    const editor = createWorkbenchArticleSession();
+    await expect(editor.handle({ type: 'article_generate', target, instruction: '增强冲突' })).rejects.toThrow('当前没有可编辑的文章');
+    const source: WorkbenchArticleCapture = { target, projectId: 'episode', key: 'article', label: '本集大纲', content: '原稿', version: 1 };
+    const oldApply = vi.fn();
+    editor.setTargetAccess({ readTarget: () => source, applyTarget: oldApply });
+    const result = deferred<string>();
+    mocks.stream.mockReturnValueOnce(result.promise);
+    const generating = editor.handle({ type: 'article_generate', target, instruction: '精简' });
+    await vi.waitFor(() => expect(mocks.stream).toHaveBeenCalledOnce());
+    const newApply = vi.fn();
+    editor.setTargetAccess({ readTarget: () => ({ ...source, content: '继续手写', version: 2 }), applyTarget: newApply });
+    result.resolve('迟到的旧结果');
+    await expect(generating).rejects.toThrow('已变化');
+    const candidate = await editor.handle({ type: 'article_generate', target, instruction: '精简' });
+    if (typeof candidate === 'boolean') throw new Error('Expected article candidate');
+    await editor.handle({ type: 'article_apply', candidateId: candidate.id });
+    expect(oldApply).not.toHaveBeenCalled();
+    expect(newApply).toHaveBeenCalledWith(expect.objectContaining({ content: '继续手写', version: 2 }), '修改后的完整文章');
     editor.dispose();
   });
 

@@ -44,6 +44,7 @@ import WorkbenchArticleAssistant from '../../src/components/workbench/WorkbenchA
 type Element = ReactElement<Record<string, unknown> & { children?: unknown }>;
 let props: ComponentProps<typeof WorkbenchArticleAssistant>;
 let tree: unknown;
+let renderedKey: string | null | undefined;
 const dispatch = vi.fn<(action: ScriptWorkbenchAction) => Promise<unknown>>();
 const candidate = { id: 'candidate-a', text: '修改后的文章候选', targetLabel: '第1集 · 本集剧本' };
 
@@ -59,11 +60,18 @@ function text(node: unknown): string {
   return node && typeof node === 'object' && 'props' in node ? text((node as Element).props.children) : '';
 }
 function render() {
+  const scoped = WorkbenchArticleAssistant(props);
+  if (renderedKey !== scoped.key) {
+    effects.forEach((effect) => effect.cleanup?.());
+    values.length = effects.length = pendingEffects.length = 0;
+    renderedKey = scoped.key;
+  }
+  const renderEditor = scoped.type as (props: typeof scoped.props) => unknown;
   stateIndex = effectIndex = 0;
-  tree = WorkbenchArticleAssistant(props);
+  tree = renderEditor(scoped.props);
   pendingEffects.splice(0).forEach((effect) => effect());
   stateIndex = effectIndex = 0;
-  tree = WorkbenchArticleAssistant(props);
+  tree = renderEditor(scoped.props);
 }
 async function settle() { await new Promise<void>((resolve) => setImmediate(resolve)); render(); }
 function editor(): ComponentProps<'textarea'> {
@@ -91,6 +99,7 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
+  renderedKey = undefined;
   values.length = effects.length = pendingEffects.length = 0;
   motion.reduced = false;
   dispatch.mockReset().mockImplementation(async (action) => action.type === 'article_generate' ? candidate : true);
@@ -176,5 +185,20 @@ describe('工作台文章 AI 修改', () => {
     expect(text(tree)).not.toContain(candidate.text);
     expect(dispatch.mock.calls.map(([action]) => action.type)).toEqual(['article_generate', 'article_cancel']);
     expect(button('按要求修改当前文章').props.disabled).toBe(false);
+  });
+
+  it('切换文章时清空预览，旧采用回执不覆盖新文章的输入', async () => {
+    const applied = deferred<boolean>();
+    render(); writeInstruction('精简对白'); click('按要求修改当前文章'); await settle();
+    dispatch.mockImplementation(async (action) => action.type === 'article_apply' ? applied.promise : true);
+    click('采用到草稿');
+    props = { ...props, targetKey: 'article-b', target: { kind: 'script', episodeId: 'episode-b' } };
+    render();
+    expect(editor().value).toBe('');
+    expect(text(tree)).not.toContain(candidate.text);
+    writeInstruction('新文章的修改要求');
+    applied.resolve(true); await settle();
+    expect(editor().value).toBe('新文章的修改要求');
+    expect(text(tree)).not.toContain('修改已进入草稿，请保存当前文章。');
   });
 });
