@@ -5,6 +5,7 @@
 //! 后续读取只接受安全相对路径。这里不会执行包内脚本，也不会把智能体内容注册成插件。
 
 use crate::path_policy::{authorize_path, ensure_trusted_caller, simplify_verbatim, PathAccess};
+use crate::registry_write::{write_registry_file, RegistryWriteErrors, RegistryWriteMode};
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -272,21 +273,18 @@ fn write_registry<R: Runtime>(app: &AppHandle<R>, registry: &SourceRegistry) -> 
         serde_json::to_vec(registry).map_err(|_| "无法序列化智能体来源注册表".to_string())?;
     let temporary = directory.join(REGISTRY_TEMP_FILE_NAME);
     let backup = directory.join(REGISTRY_BACKUP_FILE_NAME);
-    fs::write(&temporary, body).map_err(|_| "无法写入智能体来源注册表".to_string())?;
-
-    if !file.exists() {
-        return fs::rename(&temporary, &file).map_err(|_| "无法提交智能体来源注册表".to_string());
-    }
-
-    let _ = fs::remove_file(&backup);
-    fs::rename(&file, &backup).map_err(|_| "无法准备智能体来源注册表更新".to_string())?;
-    if let Err(_error) = fs::rename(&temporary, &file) {
-        let _ = fs::rename(&backup, &file);
-        let _ = fs::remove_file(&temporary);
-        return Err("无法提交智能体来源注册表".to_string());
-    }
-    let _ = fs::remove_file(&backup);
-    Ok(())
+    write_registry_file(
+        &file,
+        &temporary,
+        &backup,
+        &body,
+        RegistryWriteMode::FixedTemporary,
+        RegistryWriteErrors {
+            write: "无法写入智能体来源注册表",
+            prepare: "无法准备智能体来源注册表更新",
+            commit: "无法提交智能体来源注册表",
+        },
+    )
 }
 
 fn load_source<R: Runtime>(app: &AppHandle<R>, source_id: &str) -> Result<StoredSource, String> {

@@ -5,6 +5,7 @@
 //! 插件执行前必须重新核对私有快照的 SHA-256。
 
 use crate::path_policy::{ensure_trusted_caller, is_link_or_reparse, simplify_verbatim};
+use crate::registry_write::{write_registry_file, RegistryWriteErrors, RegistryWriteMode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -2027,21 +2028,18 @@ fn write_registry_at(private_dir: &Path, registry: &PluginRegistry) -> Result<()
     if body.len() as u64 > MAX_REGISTRY_BYTES {
         return Err("插件信任注册表超过大小限制".to_string());
     }
-    fs::write(&temporary, body).map_err(|_| "无法写入插件信任注册表".to_string())?;
-
-    if !file.exists() {
-        return fs::rename(&temporary, &file).map_err(|_| "无法提交插件信任注册表".to_string());
-    }
-
-    let _ = fs::remove_file(&backup);
-    fs::rename(&file, &backup).map_err(|_| "无法准备插件信任注册表更新".to_string())?;
-    if fs::rename(&temporary, &file).is_err() {
-        let _ = fs::rename(&backup, &file);
-        let _ = fs::remove_file(&temporary);
-        return Err("无法提交插件信任注册表".to_string());
-    }
-    let _ = fs::remove_file(&backup);
-    Ok(())
+    write_registry_file(
+        &file,
+        &temporary,
+        &backup,
+        &body,
+        RegistryWriteMode::FixedTemporary,
+        RegistryWriteErrors {
+            write: "无法写入插件信任注册表",
+            prepare: "无法准备插件信任注册表更新",
+            commit: "无法提交插件信任注册表",
+        },
+    )
 }
 
 fn revision_directory(private_dir: &Path, plugin_id: &str, digest: &str) -> PathBuf {

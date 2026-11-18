@@ -49,6 +49,8 @@ mod muse;
 mod xiaohongshu_reference;
 #[path = "files/transfer.rs"]
 mod file_transfer;
+#[path = "files/registry_write.rs"]
+mod registry_write;
 #[path = "files/native_project_media.rs"]
 mod native_project_media;
 #[path = "files/object_storage/mod.rs"]

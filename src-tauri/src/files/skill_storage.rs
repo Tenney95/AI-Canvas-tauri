@@ -6,6 +6,7 @@ use crate::path_policy::{
     ensure_trusted_caller, is_link_or_reparse, reauthorize_existing_plain_directory_with_roots,
     PathAccess,
 };
+use crate::registry_write::{write_registry_file, RegistryWriteErrors, RegistryWriteMode};
 use crate::skill_archive::{safe_archive_path, MAX_ENTRIES, MAX_EXPANDED_BYTES, MAX_FILE_BYTES};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -221,33 +222,18 @@ fn write_registry(directory: &Path, registry: &Registry) -> Result<(), String> {
     let file = directory.join("sources.json");
     let temporary = directory.join(format!("{}.tmp", new_source_id()));
     let backup = directory.join("sources.json.bak");
-    let result = (|| {
-        let mut output = OpenOptions::new().write(true).create_new(true).open(&temporary)
-            .map_err(|_| "无法保存 Skill 来源注册表")?;
-        output.write_all(&bytes).and_then(|_| output.sync_all()).map_err(|_| "无法保存 Skill 来源注册表")?;
-        drop(output);
-        match fs::symlink_metadata(&file) {
-            Ok(_) => {
-                plain_file(&file)?;
-                match fs::symlink_metadata(&backup) {
-                    Ok(_) => { plain_file(&backup)?; fs::remove_file(&backup).map_err(|_| "无法更新 Skill 来源注册表")?; },
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
-                    Err(_) => return Err("无法更新 Skill 来源注册表".into()),
-                }
-                fs::rename(&file, &backup).map_err(|_| "无法更新 Skill 来源注册表")?;
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
-            Err(_) => return Err("无法更新 Skill 来源注册表".into()),
-        }
-        if fs::rename(&temporary, &file).is_err() {
-            if !file.exists() && plain_file(&backup).is_ok() { let _ = fs::rename(&backup, &file); }
-            return Err("无法提交 Skill 来源注册表".into());
-        }
-        if plain_file(&backup).is_ok() { let _ = fs::remove_file(&backup); }
-        Ok(())
-    })();
-    if result.is_err() && plain_file(&temporary).is_ok() { let _ = fs::remove_file(&temporary); }
-    result
+    write_registry_file(
+        &file,
+        &temporary,
+        &backup,
+        &bytes,
+        RegistryWriteMode::ExclusiveSynced(plain_file),
+        RegistryWriteErrors {
+            write: "无法保存 Skill 来源注册表",
+            prepare: "无法更新 Skill 来源注册表",
+            commit: "无法提交 Skill 来源注册表",
+        },
+    )
 }
 
 fn new_source_id() -> String {
