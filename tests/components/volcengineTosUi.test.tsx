@@ -58,6 +58,8 @@ import VolcengineTosSettings from '../../src/components/settings/VolcengineTosSe
 
 type Element = ReactElement<Record<string, unknown>>;
 let tree: unknown;
+let renderedKey: string | null | undefined;
+const cleanups: Array<() => void> = [];
 function elements(value: unknown): Element[] {
   if (Array.isArray(value)) return value.flatMap(elements);
   if (!value || typeof value !== 'object' || !('props' in value)) return [];
@@ -69,7 +71,16 @@ function text(value: unknown): string {
   if (value && typeof value === 'object' && 'props' in value) return text((value as Element).props.children);
   return typeof value === 'string' || typeof value === 'number' ? String(value) : '';
 }
-function render() { driver.cursor = 0; tree = VolcengineAssetLibraryPanel({ onOpenProviderSettings: driver.openSettings }); }
+function render() {
+  const scoped = VolcengineAssetLibraryPanel({ onOpenProviderSettings: driver.openSettings });
+  if (renderedKey !== scoped.key) {
+    cleanups.splice(0).forEach((cleanup) => cleanup());
+    driver.slots = [];
+    renderedKey = scoped.key;
+  }
+  driver.cursor = 0;
+  tree = (scoped.type as (props: typeof scoped.props) => unknown)(scoped.props);
+}
 function button(label: string) {
   const element = elements(tree).find((item) => item.type === 'button' && text(item.props.children) === label);
   if (!element) throw new Error(`Missing button: ${label}`);
@@ -99,12 +110,14 @@ function connection(): ApiProviderConfig {
 async function mount(providers: Record<string, ApiProviderConfig> = { 'volcengine-custom': connection() }) {
   driver.state = { config: { providers }, openApiKeySettings: driver.openSettings } as unknown as AppState;
   driver.captureEffects = true; render(); driver.captureEffects = false;
-  driver.effects.splice(0).forEach((effect) => { effect(); });
+  driver.effects.splice(0).forEach((effect) => { const cleanup = effect(); if (cleanup) cleanups.push(cleanup); });
   await settle();
 }
 function uploadDialog() { click('上传素材'); choose('素材组', 'group-1'); }
 
 beforeEach(() => {
+  cleanups.splice(0).forEach((cleanup) => cleanup());
+  renderedKey = undefined;
   driver.slots = []; driver.cursor = 0; driver.effects = []; driver.captureEffects = false;
   vi.clearAllMocks();
   driver.upload.mockReset().mockResolvedValue({ id: 'asset-1' });
@@ -240,6 +253,23 @@ describe('火山人像库 TOS 上传入口', () => {
     expect(text(tree)).not.toContain('portrait.png');
     click('保存'); await settle();
     expect(driver.upload).not.toHaveBeenCalled();
+  });
+
+  it('切换连接时关闭上传草稿，中止上传并忽略迟到的旧回执', async () => {
+    await mount(); uploadDialog(); choose('素材来源', 'url');
+    input('素材 URL', 'https://media.example/reference.png');
+    let complete!: (value: { id: string }) => void;
+    driver.upload.mockReturnValueOnce(new Promise<{ id: string }>((resolve) => { complete = resolve; }));
+    click('保存');
+    const signal = driver.upload.mock.calls[0][1].signal as AbortSignal;
+    expect(signal.aborted).toBe(false);
+    await mount({ 'another-volcengine': connection() });
+    expect(signal.aborted).toBe(true);
+    expect(text(tree)).not.toContain('素材 URL');
+    uploadDialog();
+    complete({ id: 'old-provider-asset' }); await settle();
+    expect(text(tree)).toContain('尚未选择文件');
+    expect(text(tree)).not.toContain('素材入库任务已提交');
   });
 });
 

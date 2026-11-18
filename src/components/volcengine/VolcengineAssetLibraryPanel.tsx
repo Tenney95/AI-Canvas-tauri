@@ -37,11 +37,21 @@ function inferAssetType(url: string): AssetType | undefined {
   return undefined;
 }
 
-export default function VolcengineAssetLibraryPanel({ compact = false, onCountChange, onOpenProviderSettings }: { compact?: boolean; onCountChange?: (count: number) => void; onOpenProviderSettings?: () => void }) {
-  const t = useT();
+interface VolcengineAssetLibraryPanelProps {
+  compact?: boolean;
+  onCountChange?: (count: number) => void;
+  onOpenProviderSettings?: () => void;
+}
+
+export default function VolcengineAssetLibraryPanel(props: VolcengineAssetLibraryPanelProps) {
   const providerId = useAppStore((state) => state.config.providers.volcengine
     && (!state.config.providers.volcengine.catalogId || state.config.providers.volcengine.catalogId === 'volcengine')
     ? 'volcengine' : Object.entries(state.config.providers).find(([, item]) => item.catalogId === 'volcengine')?.[0]);
+  return <AssetLibraryContent key={providerId ?? ''} providerId={providerId} {...props} />;
+}
+
+function AssetLibraryContent({ providerId, compact = false, onCountChange, onOpenProviderSettings }: VolcengineAssetLibraryPanelProps & { providerId?: string }) {
+  const t = useT();
   const provider = useAppStore((state) => providerId ? state.config.providers[providerId] : undefined);
   const [groups, setGroups] = useState<VolcengineAssetGroup[]>([]);
   const [assets, setAssets] = useState<VolcengineAsset[]>([]);
