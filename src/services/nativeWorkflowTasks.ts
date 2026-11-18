@@ -4,7 +4,7 @@ import { isCharacterImageTaskContext } from './characterImageTaskContext';
 import type { MediaKind, NativeMediaLocalOutput, NativeMediaSubmissionPreparation } from '../types/media';
 import type { CloudWorkflowOutput } from '../types/workflowApi';
 import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
-import { prepareNativeMediaTask, claimNativeMediaRecovery, listNativeMediaTasks, normalizeNativeMediaProviderBase, recordNativeMediaSubmission } from './indexedDb/nativeMediaTaskRepository';
+import { prepareNativeMediaTask, claimNativeMediaRecovery, isNativeMediaLeaseCurrent, listNativeMediaTasks, normalizeNativeMediaProviderBase, recordNativeMediaSubmission } from './indexedDb/nativeMediaTaskRepository';
 import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from './projectExecutionContext';
 import { captureNativeVideoSubmissionBaseline, assertNativeVideoSubmissionInput, isNativeVideoSubmissionGuard } from './nativeVideoSubmission';
 import { nativeWorkflowDigest } from './nativeWorkflowExecution';
@@ -273,6 +273,21 @@ export async function resumeNativeWorkflowTask(operationId: string, externalSign
   externalSignal?.addEventListener('abort', abort, { once: true }); if (externalSignal?.aborted) controller.abort();
   const assertCurrent = () => { controller.signal.throwIfAborted(); if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) throw new Error('原画布已切换，原工作流回执及产物保留'); };
   const unsubscribe = useAppStore.subscribe(() => { try { assertCurrent(); } catch { controller.abort(); } });
+  const comfyVideoTaskIds = receipt.descriptor.adapter === 'comfyui' && record.category === 'video' && record.origin?.deliveryMode !== 'chat'
+    ? new Set(receipt.tasks.map((task) => task.taskId)) : undefined;
+  const markComfyVideoSaving = async () => {
+    if (!comfyVideoTaskIds) return;
+    if (!await isNativeMediaLeaseCurrent(record)) throw new Error('原 ComfyUI 视频任务已变化，原回执保留');
+    assertCurrent();
+    const store = useAppStore.getState();
+    const node = store.nodes.find((item) => item.id === record.nodeId);
+    if (node?.type !== 'ai-video' || node.data.role === 'source' || node.data.status !== 'loading') return;
+    const progress = store.comfyNodeProgress[node.id];
+    const sameCanvasProgress = progress?.projectId === record.canvasId ? progress : undefined;
+    if (sameCanvasProgress && (!sameCanvasProgress.promptId || !comfyVideoTaskIds.has(sameCanvasProgress.promptId))) return;
+    if (node.data.mediaTaskStage !== 'saving') store.updateNodeDataTransient(node.id, { mediaTaskStage: 'saving' });
+    if (sameCanvasProgress) store.clearComfyNodeProgress(node.id, sameCanvasProgress.requestId);
+  };
   try {
     if (!record.localResults) {
       for (const taskId of receipt.tasks.map((task) => task.taskId)) {
@@ -281,6 +296,7 @@ export async function resumeNativeWorkflowTask(operationId: string, externalSign
         if (task.outputs) { try { for (const file of task.outputs) await readNativeMediaLocalResult(record.canvasId, file); continue; } catch { assertCurrent(); } }
         try {
           const outputs = await queryNativeWorkflowOriginal(receipt.descriptor, task, receipt.operationId, controller.signal); assertCurrent();
+          await markComfyVideoSaving();
           const files = await saveOutputs(record, outputs, controller.signal, assertCurrent, await workflowDownloadAccess(receipt.descriptor));
           if (task.outputs) {
             const signature = (values: NativeMediaLocalOutput[]) => values.map((file) => `${file.category}:${file.sha256}:${file.bytes}`).sort().join('|');
@@ -304,6 +320,7 @@ export async function resumeNativeWorkflowTask(operationId: string, externalSign
         failedTasks: summary.failedTasks, failedSubmissions: summary.failedSubmissions, unknownSubmissions: summary.unknownSubmissions,
         notStartedSubmissions: summary.notStartedSubmissions } });
     }
+    await markComfyVideoSaving();
     const files = nativeMediaLocalOutputs(record); for (const file of files) await readNativeMediaLocalResult(record.canvasId, file);
     assertCurrent();
     if (record.origin?.deliveryMode === 'chat') { const { commitNativeMediaMessageDelivery } = await import('./nativeMediaDelivery'); await commitNativeMediaMessageDelivery(record, files[0].relativePath, { signal: controller.signal }); }

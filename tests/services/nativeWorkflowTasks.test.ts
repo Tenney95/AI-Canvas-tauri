@@ -71,6 +71,51 @@ it('正常提交后自动查询全部候选并交付原对话，不要求再点�
   expect(record).toMatchObject({ status: 'delivered', remoteTaskId: 'original-prompt', origin: { messageId: 'original-message' } });
   expect(record.localResults).toEqual([output('a'), output('b')]);
 });
+it('新项目 ComfyUI 视频在落盘前切换保存中，保存失败后续取同一个 prompt', async () => {
+  const { context, descriptor } = await fixture();
+  const nodeId = 'video-node', promptId = 'original-video-prompt';
+  const video = { id: nodeId, type: 'ai-video', data: { status: 'loading', mediaTaskStage: undefined as string | undefined } };
+  const progress: Partial<Record<string, { projectId: string; requestId: string; promptId: string }>> = {
+    [nodeId]: { projectId: context.canvasId, requestId: 'original-progress', promptId },
+  };
+  const clearProgress = vi.fn(() => { delete progress[nodeId]; });
+  const commit = vi.fn(async () => {});
+  const workflow = { id: descriptor.workflowId, category: 'ai-video', adapterType: 'comfyui', fileContent: '{}' };
+  const videoDescriptor = { ...descriptor, category: 'video' as const,
+    digest: await nativeWorkflowDigest(['comfyui-native-media-v1', workflow.id, workflow.fileContent, undefined, 'video']) };
+  driver.state = { ...driver.state, nodes: [video], workflows: [workflow], comfyNodeProgress: progress, clearComfyNodeProgress: clearProgress,
+    updateNodeDataTransient: (_id: string, patch: { mediaTaskStage: string }) => { Object.assign(video.data, patch); }, commitNativeMediaResult: commit };
+  driver.query.mockImplementation(async (_base: string, taskId: string, _message: string, extract: (outputs: ComfyOutputs) => unknown) => {
+    expect(taskId).toBe(promptId);
+    expect(video.data.mediaTaskStage).toBeUndefined();
+    return extract({ save: { videos: [{ filename: 'movie.mp4', type: 'output' }] } });
+  });
+  const file = { ...output('a'), relativePath: `media/${'a'.repeat(64)}.mp4`, category: 'video' as const };
+  driver.capture.mockResolvedValue(file);
+  driver.persist.mockImplementation(async (url: string) => {
+    expect(url).toBe(`${base}/view?filename=movie.mp4&type=output`);
+    expect(video.data.mediaTaskStage).toBe('saving');
+    expect(progress[nodeId]).toBeUndefined();
+    return { filePath: file.relativePath };
+  }).mockImplementationOnce(async () => {
+    expect(video.data.mediaTaskStage).toBe('saving');
+    throw new Error('fixture: save directory temporarily unavailable');
+  });
+  const submit = vi.fn(async () => ({ taskId: promptId }));
+  await expect(submitNativeWorkflowTask({ nodeId, descriptor: videoDescriptor, requestMaterial: {}, beforeSubmit: () => {}, submit }))
+    .rejects.toMatchObject({ name: 'NativeMediaTaskPending' });
+  const [record] = await listNativeMediaTasks(context.projectId);
+  expect(record).toMatchObject({ status: 'submitted', remoteTaskId: promptId });
+  expect(commit).not.toHaveBeenCalled();
+  expect(clearProgress).toHaveBeenCalledExactlyOnceWith(nodeId, 'original-progress');
+
+  video.data.mediaTaskStage = undefined;
+  await resumeNativeWorkflowTask(record.operationId);
+  expect(commit).toHaveBeenCalledWith(expect.objectContaining({ operationId: record.operationId }), file.relativePath,
+    context, expect.any(AbortSignal));
+  expect(driver.query).toHaveBeenCalledTimes(2);
+  expect(submit).toHaveBeenCalledOnce();
+});
 it('任务候选已保存后重启可在原workflow和凭据均移除时离线交付，不重复POST或查询', async () => {
   const { context, nodeId, descriptor } = await fixture();
   let record = await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId, providerConfigId: 'comfyui', providerBase: base,
