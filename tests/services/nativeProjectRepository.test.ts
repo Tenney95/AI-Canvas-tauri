@@ -1,11 +1,12 @@
 /** 仓储测试仅使用独立 fake IndexedDB，不操作真实项目。 */
 import { webcrypto } from 'node:crypto';
-import { IDBFactory } from 'fake-indexeddb';
+import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createNativeProject, readNativeProject, readNativeProjectByCanvasId, listNativeProjectIdentities,
   listNativeEpisodes, convertNativeProjectToSeries, createNativeEpisode, saveNativeCanvas, saveNativeEpisodeContent,
   reorderNativeEpisodes, deleteNativeEpisode, readNativeProjectCapture, readNativeProjectSelection, readNativeProjectContent,
-  readNativeEpisodeContent, saveNativeProjectContent, saveNativeProjectView, deleteNativeProject,
+  readNativeEpisodeContent, saveNativeProjectContent, saveNativeProjectView, deleteNativeProject, transitionNativeProjectRecycle,
+  openNativeProjectDatabase, transact, RETIRED, EXCHANGE,
   updateNativeProjectMetadata, updateNativeEpisodeMetadata, updateNativeEpisodeComposite, NATIVE_PROJECT_DATABASE_NAME } from '../../src/services/indexedDb/nativeProjectRepository';
 import { prepareNativeProjectExport, advanceNativeProjectExport, readNativeProjectExport, prepareNativeProjectImport,
   advanceNativeProjectImport, commitNativeProjectImport, replaceNativeContentWithRecovery,
@@ -17,8 +18,19 @@ import { readNativeProjectExchange, verifiedExchange } from '../../src/services/
 
 const id = (prefix: 'p2' | 'e2' | 'c2', digit: string) => `${prefix}-${digit.repeat(8)}-${digit.repeat(4)}-4${digit.repeat(3)}-8${digit.repeat(3)}-${digit.repeat(12)}`;
 let factory: IDBFactory;
-beforeEach(() => { factory = new IDBFactory(); vi.stubGlobal('crypto', webcrypto); });
+beforeEach(() => { factory = new IDBFactory(); vi.stubGlobal('crypto', webcrypto); vi.stubGlobal('IDBKeyRange', IDBKeyRange); });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+async function readRetiredProject(projectId: string): Promise<unknown> {
+  const db = (await openNativeProjectDatabase(false, { factory }))!;
+  try {
+    return await transact(db, 'readonly', { factory }, (tx) => new Promise((resolve, reject) => {
+      const request = tx.objectStore(RETIRED).get(projectId);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    }), [RETIRED]);
+  } finally { db.close(); }
+}
 
 describe('独立新项目仓储', () => {
   it('无媒体更新原子保存恢复点，过期预览和媒体引用不能覆盖结果', async () => {
@@ -318,6 +330,74 @@ describe('独立新项目仓储', () => {
       episodeId: id('e2', '2'), canvasId: id('c2', '5'), name: '复用集' }, { factory })).rejects.toThrow('identity-conflict');
     await expect(createNativeEpisode({ projectId: next.project.id, expectedProjectEpoch: next.project.epoch,
       episodeId: id('e2', '6'), canvasId: id('c2', '3'), name: '复用画布' }, { factory })).rejects.toThrow('identity-conflict');
+  });
+
+  it('只有提交明确的整项目删除才登记回收请求，请求只能被认领一次', async () => {
+    const { project } = await createNativeProject({ name: '待回收' }, { factory });
+    const requestId = crypto.randomUUID();
+    const input = { projectId: project.id, expectedProjectEpoch: project.epoch, expectedChangeRevision: 0, recycleRequestId: requestId, now: 200 };
+
+    await expect(deleteNativeProject({ ...input, expectedChangeRevision: 1 }, { factory })).rejects.toThrow('project-version-conflict');
+    expect(await readRetiredProject(project.id)).toBeUndefined();
+    expect(await transitionNativeProjectRecycle(project.id, requestId, 'pending', 'recycling', { factory })).toBe(false);
+
+    await deleteNativeProject(input, { factory });
+    expect(await readNativeProject(project.id, { factory })).toBeNull();
+    expect(await readRetiredProject(project.id)).toEqual({ id: project.id, projectId: project.id, kind: 'project', deletedAt: 200,
+      recycle: { requestId, phase: 'pending', projectEpoch: project.epoch, storageRootRef: project.storageRootRef } });
+    expect(await transitionNativeProjectRecycle(project.id, crypto.randomUUID(), 'pending', 'recycling', { factory })).toBe(false);
+    expect(await transitionNativeProjectRecycle(project.id, requestId, 'pending', 'recycled', { factory })).toBe(false);
+
+    const concurrentClaims = await Promise.all([1, 2].map(() =>
+      transitionNativeProjectRecycle(project.id, requestId, 'pending', 'recycling', { factory })));
+    expect(concurrentClaims.filter(Boolean)).toHaveLength(1);
+    expect(await transitionNativeProjectRecycle(project.id, requestId, 'recycling', 'recycled', { factory })).toBe(true);
+    expect(await transitionNativeProjectRecycle(project.id, requestId, 'recycling', 'retained', { factory })).toBe(false);
+    expect(await readRetiredProject(project.id)).toMatchObject({ recycle: { requestId, phase: 'recycled' } });
+  });
+
+  it('回收请求不能附加到没有明确回收意图的项目墓碑', async () => {
+    const { project } = await createNativeProject({ name: '仅删除记录' }, { factory });
+    await deleteNativeProject({ projectId: project.id, expectedProjectEpoch: project.epoch, expectedChangeRevision: 0, now: 200 }, { factory });
+    expect(await transitionNativeProjectRecycle(project.id, crypto.randomUUID(), 'pending', 'recycling', { factory })).toBe(false);
+    expect(await readRetiredProject(project.id)).toEqual({ id: project.id, projectId: project.id, kind: 'project', deletedAt: 200 });
+  });
+
+  it('回收墓碑写入失败时，回滚事务中已排队的项目和画布删除', async () => {
+    const { project, canvas } = await createNativeProject({ name: '墓碑冲突' }, { factory });
+    const occupied = { id: project.id, projectId: project.id, kind: 'project', deletedAt: 100 };
+    const db = (await openNativeProjectDatabase(false, { factory }))!;
+    try {
+      await transact(db, 'readwrite', { factory }, (tx) => new Promise((resolve, reject) => {
+        const request = tx.objectStore(RETIRED).add(occupied);
+        request.onsuccess = () => resolve(undefined);
+        request.onerror = () => reject(request.error);
+      }), [RETIRED]);
+    } finally { db.close(); }
+    await expect(deleteNativeProject({ projectId: project.id, expectedProjectEpoch: project.epoch, expectedChangeRevision: 0,
+      recycleRequestId: crypto.randomUUID() }, { factory })).rejects.toMatchObject({ name: 'ConstraintError' });
+    expect(await readNativeProject(project.id, { factory })).toMatchObject({ project, canvas });
+    expect(await readRetiredProject(project.id)).toEqual(occupied);
+  });
+
+  it('逻辑删除不等待原媒体任务，未结束的任务阻止认领目录回收', async () => {
+    const { project } = await createNativeProject({ name: '在途媒体' }, { factory });
+    const db = (await openNativeProjectDatabase(false, { factory }))!;
+    try {
+      const operationId = crypto.randomUUID();
+      await transact(db, 'readwrite', { factory }, (tx) => new Promise((resolve, reject) => {
+        const request = tx.objectStore(EXCHANGE).add({ projectId: `media-task:${operationId}`,
+          ownerProjectId: project.id, kind: 'native-media-task-v1', operationId, status: 'submitted' });
+        request.onsuccess = () => resolve(undefined);
+        request.onerror = () => reject(request.error);
+      }), [EXCHANGE]);
+    } finally { db.close(); }
+    const requestId = crypto.randomUUID();
+    await deleteNativeProject({ projectId: project.id, expectedProjectEpoch: project.epoch, expectedChangeRevision: 0, recycleRequestId: requestId }, { factory });
+    expect(await readNativeProject(project.id, { factory })).toBeNull();
+    await expect(transitionNativeProjectRecycle(project.id, requestId, 'pending', 'recycling', { factory })).rejects.toThrow('project-media-task-pending');
+    expect(await readRetiredProject(project.id)).toMatchObject({ recycle: { requestId, phase: 'pending' } });
+    expect(await transitionNativeProjectRecycle(project.id, requestId, 'pending', 'retained', { factory })).toBe(true);
   });
 
   it('存在传输 journal 时阻止整项目删除，保留交换记录与身份墓碑', async () => {

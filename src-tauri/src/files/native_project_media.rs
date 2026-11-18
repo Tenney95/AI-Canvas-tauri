@@ -6,11 +6,13 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{Manager, Runtime, Webview};
-use crate::path_policy::{authorize_path, ensure_local_frontend_caller, ensure_trusted_caller, is_link_or_reparse as is_link, verified_user_storage_root, PathAccess};
+use crate::path_policy::{authorize_path, canonicalize_simplified, ensure_local_frontend_caller, ensure_trusted_caller, is_link_or_reparse as is_link, verified_user_storage_root, PathAccess};
 
 const ERROR: &str = "新项目素材目录不可用或归属未能确认，原有文件已保留";
+const RECYCLE_ERROR: &str = "项目素材目录未能确认已移入系统回收站";
 const REGISTRY_DIR: &str = "native-project-media-roots";
 const MAX_PROJECT_NAME_BYTES: usize = 160;
+const MAX_RECYCLE_ASSET_ROOTS: usize = 4096;
 
 /// 由主窗口的已核验联合目录提供；独立搜索窗口不能自行登记作品。
 #[derive(Default)]
@@ -18,6 +20,21 @@ pub struct AssetSearchNativeRoots(Mutex<HashSet<String>>);
 
 #[derive(Default)]
 pub struct VideoEditorNativeRoot(Mutex<Option<VideoEditorLease>>);
+
+/// 来自既有目录设置同步。仅用于保护显式登记的素材引用，不授予文件权限。
+#[derive(Default)]
+pub struct NativeProjectRecycleRoots(Mutex<Option<Vec<PathBuf>>>);
+
+pub(crate) fn sync_project_recycle_roots<R: Runtime>(app: &tauri::AppHandle<R>, directories: &[String], base: Option<&str>) {
+    let state = app.try_state::<NativeProjectRecycleRoots>();
+    let protected = state.as_ref().and_then(|state| state.0.lock().ok());
+    // 核对及回收持有相同锁，防止素材根配置在两步之间生效。
+    crate::path_policy::set_user_storage_root(app, base);
+    if let Some(mut roots) = protected {
+        *roots = (directories.len() <= MAX_RECYCLE_ASSET_ROOTS).then(|| directories.iter().map(|path| path.trim())
+            .filter(|path| !path.is_empty() && Some(*path) != base.map(str::trim)).map(PathBuf::from).collect());
+    }
+}
 
 struct VideoEditorLease { project_id: String, canvas_id: String, session_id: String }
 
@@ -224,6 +241,11 @@ fn read_creation_intent(lock: &fs::File) -> Result<Option<Binding>, String> {
 
 /// 根来自原生配置；已有绑定的目录不可随显示名改变，未知目录不会被接管。
 fn bind_root(base: &Path, registry: &Path, project_id: &str, create: bool, project_name: Option<&str>) -> Result<PathBuf, String> {
+    with_bound_root(base, registry, project_id, create, project_name, Ok)
+}
+
+fn with_bound_root<T>(base: &Path, registry: &Path, project_id: &str, create: bool, project_name: Option<&str>,
+    use_root: impl FnOnce(PathBuf) -> Result<T, String>) -> Result<T, String> {
     if !valid_id(project_id, "p2") { return Err(ERROR.into()); }
     plain_chain(base)?; plain_chain(registry)?;
     let marker = registry.join(format!("{project_id}.json"));
@@ -301,7 +323,8 @@ fn bind_root(base: &Path, registry: &Path, project_id: &str, create: bool, proje
         None => return Err(ERROR.into()),
     };
     plain_chain(&target)?;
-    Ok(target)
+    // 调用方可在原生归属锁尚未释放时使用已核对的根。
+    use_root(target)
 }
 
 fn media_base<R: Runtime>(app: &tauri::AppHandle<R>, create: bool) -> Result<PathBuf, String> {
@@ -353,6 +376,86 @@ pub fn claim_native_project_media_root<R: Runtime>(webview: Webview<R>, project_
 #[tauri::command]
 pub fn resolve_native_project_media_root<R: Runtime>(webview: Webview<R>, project_id: String) -> Result<String, String> {
     media_root(&webview, &project_id, false, false, None)
+}
+
+fn check_recycle_root(target: &Path, authorized: &Path, expected_path: &str) -> Result<(), String> {
+    if target != authorized || target.to_str() != Some(expected_path) { return Err(ERROR.into()); }
+    plain_chain(target)
+}
+
+fn recycle_roots_overlap(left: &Path, right: &Path) -> bool {
+    #[cfg(windows)]
+    let (left, right) = (PathBuf::from(left.to_string_lossy().to_lowercase()), PathBuf::from(right.to_string_lossy().to_lowercase()));
+    left.starts_with(&right) || right.starts_with(&left)
+}
+
+fn check_protected_recycle_roots(target: &Path, protected_roots: &[PathBuf]) -> Result<(), String> {
+    for path in protected_roots {
+        if !path.is_absolute() { return Err(ERROR.into()); }
+        // 再解析一次，避免目录登记之后新增或改指的文件夹链接绕过保护。
+        let resolved = canonicalize_simplified(path).map_err(|_| ERROR)?;
+        if recycle_roots_overlap(target, &resolved) { return Err("项目目录仍被资源库引用，原有文件已保留".into()); }
+    }
+    Ok(())
+}
+
+/// 实际回收前仍须使用主窗口、当前储存根及同一份原生目录登记。
+pub(crate) fn recycle_native_project_media_root<R: Runtime>(webview: &Webview<R>, project_id: &str, expected_path: &str) -> Result<(), String> {
+    if !root_caller_allowed(webview.label(), false, false) { return Err(ERROR.into()); }
+    ensure_trusted_caller(webview).map_err(|_| ERROR)?;
+    let app = webview.app_handle();
+    let base = media_base(app, false)?;
+    let registry = crate::project_model_safety::private_root(app)?.join(REGISTRY_DIR);
+    with_bound_root(&base, &registry, project_id, false, None, |target| {
+        let roots = app.try_state::<NativeProjectRecycleRoots>().ok_or(ERROR)?;
+        let protected = roots.0.lock().map_err(|_| ERROR)?;
+        check_protected_recycle_roots(&target, protected.as_deref().ok_or(ERROR)?)?;
+        if media_base(app, false)? != base || target.parent() != Some(base.as_path()) { return Err(ERROR.into()); }
+        let authorized = authorize_path(app, expected_path, PathAccess::Write).map_err(|_| ERROR)?;
+        check_recycle_root(&target, &authorized, expected_path)?;
+        move_owned_root_to_recycle_bin(&target)?;
+        match fs::symlink_metadata(&target) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(RECYCLE_ERROR.into()),
+        }
+    })
+}
+
+#[cfg(windows)]
+fn move_owned_root_to_recycle_bin(target: &Path) -> Result<(), String> {
+    use std::{os::windows::ffi::OsStrExt, path::{Component, Prefix}};
+    use windows::{core::PCWSTR, Win32::{
+        Foundation::RPC_E_CHANGED_MODE,
+        System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_APARTMENTTHREADED},
+        UI::Shell::{FileOperation, IFileOperation, IShellItem, SHCreateItemFromParsingName,
+            FOF_NOERRORUI, FOF_SILENT, FOFX_EARLYFAILURE, FOFX_RECYCLEONDELETE},
+    }};
+    if !matches!(target.components().next(), Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_))) {
+        return Err(RECYCLE_ERROR.into());
+    }
+    let wide: Vec<u16> = target.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    // 仅在本次初始化成功时平衡 COM 引用，已经初始化的异线程模型保持原状。
+    let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    if initialized.is_err() && initialized != RPC_E_CHANGED_MODE { return Err(RECYCLE_ERROR.into()); }
+    // FOFX_RECYCLEONDELETE 要求回收；不给 Shell 确认永久删除，也不作永久删除兜底。
+    let aborted = (|| -> windows::core::Result<bool> {
+        // SAFETY: COM 已初始化，wide 在 Shell 解析路径期间保持有效且以 NUL 结尾。
+        unsafe {
+            let operation: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
+            operation.SetOperationFlags(FOFX_RECYCLEONDELETE | FOFX_EARLYFAILURE | FOF_NOERRORUI | FOF_SILENT)?;
+            let item: IShellItem = SHCreateItemFromParsingName(PCWSTR(wide.as_ptr()), None)?;
+            operation.DeleteItem(&item, None)?;
+            operation.PerformOperations()?;
+            Ok(operation.GetAnyOperationsAborted()?.as_bool())
+        }
+    })();
+    if initialized.is_ok() { unsafe { CoUninitialize() }; }
+    if matches!(aborted, Ok(false)) { Ok(()) } else { Err(RECYCLE_ERROR.into()) }
+}
+
+#[cfg(not(windows))]
+fn move_owned_root_to_recycle_bin(target: &Path) -> Result<(), String> {
+    trash::delete(target).map_err(|_| RECYCLE_ERROR.into())
 }
 
 #[tauri::command]
@@ -893,6 +996,38 @@ mod tests {
     fn fixture() -> PathBuf {
         let root = std::env::temp_dir().join(format!("native-media-{}-{:?}", std::process::id(), std::thread::current().id()));
         fs::create_dir(&root).unwrap(); root.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn windows_media_project_recycle_requires_exact_root_and_rejects_protected_aliases() {
+        let root = canonicalize_simplified(&fixture()).unwrap();
+        let base = root.join("base");
+        let registry = root.join("registry");
+        let other = root.join("other");
+        for path in [&base, &registry, &other] { fs::create_dir(path).unwrap(); }
+        let target = bind_root(&base, &registry, PROJECT, true, Some("回收验证")).unwrap();
+        let expected = target.to_str().unwrap();
+        let child = target.join("images");
+        fs::create_dir(&child).unwrap();
+        with_bound_root(&base, &registry, PROJECT, false, None, |owned| {
+            assert!(check_recycle_root(&owned, &owned, expected).is_ok());
+            assert!(check_recycle_root(&owned, &other, expected).is_err());
+            assert!(check_recycle_root(&owned, &owned, child.to_str().unwrap()).is_err());
+            assert!(check_protected_recycle_roots(&owned, &[other.clone()]).is_ok());
+            assert!(check_protected_recycle_roots(&owned, &[base.clone()]).is_err());
+            assert!(check_protected_recycle_roots(&owned, &[child.clone()]).is_err());
+            #[cfg(unix)]
+            {
+                let alias = other.join("asset-alias");
+                std::os::unix::fs::symlink(&child, &alias).unwrap();
+                assert!(check_protected_recycle_roots(&owned, &[alias]).is_err());
+            }
+            // 归属锁覆盖最终动作，其他原生绑定读取不能在核对及回收之间进入。
+            assert!(bind_root(&base, &registry, PROJECT, false, None).is_err());
+            Ok(())
+        }).unwrap();
+        assert!(target.is_dir());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(windows)]

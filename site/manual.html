@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="AI Canvas 0.11.8 操作说明书：内置中转素材上传修复、万象视频文件提交、Sora2U 图片原序内联及 HTTPS 素材限制；保留私有 TOS、剧本工作台和保存恢复操作。">
-<title>AI Canvas 0.11.8 · 操作说明书</title>
+<meta name="description" content="AI Canvas 0.11.9 操作说明书，涵盖桌面项目素材回收、MiniMax 官方 H3 Image 生图、视频任务续查及模型协议配置。">
+<title>AI Canvas 0.11.9 · 操作说明书</title>
 <style>
 /* Standalone document: a small copy of the application's base.css color tokens. */
 :root{color-scheme:dark;--theme-bg:#0a0a0f;--theme-surface:#14141c;--theme-card:#1a1a26;--theme-border:#2a2a3a;--theme-hover:#252535;--theme-text:#dddde4;--theme-text-secondary:#8888a0;--brand:#6366f1;--brand-light:#818cf8;--brand-pale:#a5b4fc;--node-markdown:#a855f7;--success:#22c55e;--success-bg:rgba(16,185,129,.15);--warning:#f97316;--warning-bg:rgba(249,115,22,.15);--danger:#ef4444;--white:#fff;--black-alpha-30:rgba(0,0,0,.3)}
@@ -34,7 +34,7 @@ dialog .character-actions-shot{width:1912px}
 <body>
 <a class="skip" href="#main">跳到正文</a>
 <nav class="toc" aria-label="说明书目录">
-<div class="toc-head"><strong>AI Canvas</strong><button class="action toc-toggle" id="toc-toggle" type="button" aria-expanded="true" aria-controls="toc-links">收起目录</button></div><small>0.11.3 · 操作说明书<br>从素材整理到逐镜制作</small>
+<div class="toc-head"><strong>AI Canvas</strong><button class="action toc-toggle" id="toc-toggle" type="button" aria-expanded="true" aria-controls="toc-links">收起目录</button></div><small>0.11.9 · 操作说明书<br>从素材整理到逐镜制作</small>
 <a class="back" href="index.html">← 返回软件首页</a>
 <label for="search">查找章节或操作</label><input id="search" type="search" placeholder="如：文件夹、回收站、视频批次" autocomplete="off" aria-describedby="search-status" aria-controls="search-results toc-links">
 <p id="search-status" class="search-status" role="status">支持空格分隔关键词；Ctrl + F 查找全文。</p>
@@ -47,6 +47,9 @@ dialog .character-actions-shot{width:1912px}
 <a href="#connection">06 · 添加厂商与模型</a><a href="#provider-sites">↳ 国内 / 国际站切换</a><a href="#image-quick-templates">↳ 图片快速模板</a><a href="#connection-transfer">↳ JSON 文件导入导出</a><a href="#import">07 · 接口说明与手动配置</a><a href="#protocol">08 · 调用协议与视频预设</a><a href="#protocol-json-editor">↳ JSON 变量插入与预览</a><a href="#variables">09 · 变量与结果路径</a><a href="#sync">10 · 同步图像接口示例</a><a href="#async">11 · 异步视频接口示例</a><a href="#async-download">↳ 完成后同源下载</a><a href="#api-check">12 · 验证与接口排错</a>
 <div class="group">日常制作与维护</div>
 <a href="#comfy">13 · 本地与云端工作流</a><a href="#comfy-install">↳ 安装官方 ComfyUI</a><a href="#assets">14 · 资源库、文件夹与创作资产</a><a href="#asset-image-batch-reverse">↳ 批量反推提示词与标签</a><a href="#assistant">15 · AI 助手与任务</a><a href="#ai-app">↳ AI 应用节点</a><a href="#director">16 · 分镜制作与 3D 导演台</a><a href="#plugins">17 · 插件与 MCP 控制</a><a href="#mcp-ai-app">↳ 调用 AI 应用动作</a><a href="#storage">18 · 保存、备份与迁移</a><a href="#shortcuts">19 · 快捷键速查</a><a href="#faq">20 · 常见问题</a><a href="#checklist">21 · 使用前检查单</a><a href="#appearance">22 · 外观主题与预设</a><a href="#about">说明书范围与版本</a>
+<div class="group">0.11.9 更新入口</div>
+<a href="#updates-0-11-9">↳ 项目素材回收与 MiniMax 生图</a>
+<a href="#project-recycle-0-11-9">↳ 删除项目与素材回收</a><a href="#minimax-image-0-11-9">↳ MiniMax 官方生图与视频续查</a><a href="#model-protocols-0-11-9">↳ 协议预设与渠道变化</a>
 <div class="group">0.11.8 更新入口</div>
 <a href="#updates-0-11-8">↳ 内置中转素材上传修复</a>
 <a href="#builtin-upload-0-11-8">↳ 八家内置中转与上传限制</a><a href="#relayon-upload-0-11-8">↳ 万象视频参考文件</a><a href="#sora-upload-0-11-8">↳ Sora2U 图片顺序与大小</a>
@@ -102,9 +105,10 @@ dialog .character-actions-shot{width:1912px}
 <div class="eyebrow">AI CANVAS · USER MANUAL</div>
 <h1>AI Canvas 操作说明书<br>从首次生成到完整创作</h1>
 <p>从启动页选择项目，在资源库整理素材，再用无限画布连接文本、图像、视频与音频。按步骤完成首次出图、剧本分集、逐镜生成和剪辑；需要接入自己的服务时，查阅接口与工作流示例。</p>
-<span class="badge">0.11.8 说明书</span><span class="badge">2026-11-17 内容核对</span><span class="badge">截图内嵌 · 可离线阅读</span>
+<span class="badge">0.11.9 说明书</span><span class="badge">2026-11-18 内容核对</span><span class="badge">截图内嵌 · 可离线阅读</span>
 </header>
 <div class="actions"><button class="action" id="print" type="button">打印 / 保存为 PDF</button><button class="action" id="theme" type="button" aria-pressed="false">切换深色阅读</button><a class="action" href="#project-settings">先看项目设置 →</a><a class="action" href="#connection">直接看自定义接口 →</a></div>
+<aside class="tip"><b>0.11.9 · 项目素材回收与 MiniMax 生图</b>。查看<a href="#project-recycle-0-11-9">整项目删除与目录回收</a>及<a href="#minimax-image-0-11-9">官方连接拉取新模型与视频续查</a>。</aside>
 <aside class="tip"><b>0.11.8 · 内置中转素材上传修复：</b><a href="#builtin-upload-0-11-8">八家内置中转</a>使用已接入的自身上传或请求内联，已有连接无需重新添加；查看<a href="#relayon-upload-0-11-8">万象视频文件</a>和<a href="#sora-upload-0-11-8">Sora2U 图片顺序与大小</a>。只有 HTTPS 合同的路径不能用本地素材转图床补齐，自定义连接保持原设置；公开状态与验收边界见<a href="#about">版本范围</a>。</aside>
 <aside class="tip"><b>0.11.7 · 参考素材直传与剧本改写：</b>先配置<a href="#reference-upload-0-11-7">私有 TOS 或兼容上传服务</a>，再按<a href="#relayon-specs-0-11-7">万象当前图片规格与视频秒数</a>生成；工作台可<a href="#article-rewrite-0-11-7">预览 AI 改写、采用到草稿并调整分栏</a>。保存或目录异常按<a href="#storage-recovery-0-11-7">排错步骤</a>处理，旧项目不自动迁移；发布及验收边界见<a href="#about">版本范围</a>。</aside>
 <aside class="tip"><b>0.11.6 · 全页剧本工作台与大纲资料：</b>启动页右键项目可直达创作页面，顶部切换画布；大纲资料栏支持 MD／TXT 编辑和 PDF、PPT／PPTX、DOCX 本地只读预览，智能体中心可管理上传的 Skill。本版修复顶栏拖窗，标题与空白可拖动，按钮照常点击。详见<a href="#updates-0-11-6">该版操作入口</a>；发布状态和未验收边界见<a href="#about">版本范围</a>。</aside>
@@ -1159,7 +1163,20 @@ dialog .character-actions-shot{width:1912px}
 <p>ComfyUI H3 低显存优化默认关闭，启用前核对工作流和后端插件。Windows 更新受保护目录时按需请求同账户 UAC，标准用户不能通过另一个管理员账户继续安装。以上能力须在桌面端按实际工作流验收。</p>
 </section>
 
+<section id="updates-0-11-9"><h2>0.11.9 · 项目素材回收与 MiniMax 生图</h2>
+<h3 id="project-recycle-0-11-9">删除整个新结构项目并回收素材</h3>
+<ol class="steps"><li>在桌面项目库打开新结构项目卡片的删除弹窗。删除整个普通项目或整部剧时，确认按钮为 <b>删除并回收素材</b>。</li><li>应用移除项目记录，再核对素材目录并将符合条件的目录移入系统回收站。如果目录仍有共享引用、关联恢复点或在途任务，或者归属无法核对、系统回收失败，目录保留在原处，界面会提示结果。</li><li>从系统回收站可以还原素材目录。恢复已删除的项目记录需要项目备份。</li></ol>
+<p>该流程适用于升级后从桌面项目库发起的整项目删除。单集删除及助手／MCP 删除保留素材目录，升级前已删除项目留下的目录保持原样。</p>
+<h3 id="minimax-image-0-11-9">MiniMax 官方生图与视频续查</h3>
+<ol class="steps"><li>打开<b>设置 → API Key</b>，编辑 MiniMax 官方连接并拉取模型。勾选 <code>MiniMax-H3-Image</code> 或 <code>MiniMax-H3-Image-Highspeed</code> 后保存。</li><li>在画布选择对应图片模型，设置 1K、2K 或 4K，可文生图或添加参考图做编辑。费用与可用性由当前官方账户决定。</li></ol>
+<p>视频节点会区分参考素材上传失败、平台明确拒绝与提交结果待确认。收到待确认提示时，先核对服务商任务记录。已有任务 ID 且连接匹配时，可按原任务继续查询并取回结果。</p>
+<h3 id="model-protocols-0-11-9">协议预设、GPT Images 与 Sora2U</h3>
+<p>自定义连接和文本模型支持选择 OpenAI Responses，已安装的插件也可提供模型协议预设。已接入的 GPT Images 模型在提交前检查提示词长度，超限时可查看提交内容并选择处理方式。</p>
+<p>Sora2U 已退出内置厂商和新生成模型菜单。旧内置连接可续查已受理任务。显式配置的自定义连接继续使用原协议。</p>
+</section>
+
 <section id="updates-0-11-8"><h2>0.11.8 · 内置中转素材上传修复</h2>
+<aside class="tip">本节记录 0.11.8 的上传行为。0.11.9 的 Sora2U 状态见<a href="#model-protocols-0-11-9">协议预设、GPT Images 与 Sora2U</a>。</aside>
 <p>本版集中修复参考素材仍进入连接图床或全局 Uguu 的问题，已有内置连接无需重新添加。以下说明以当前已提交源码为依据；真实厂商上传、付费生成、桌面升级和跨平台使用仍需按实际组合验收，安装包公开状态以<a href="https://github.com/Tenney95/AI-Canvas-tauri/releases/tag/v0.11.8">对应 GitHub Release</a>为准。</p>
 <h3 id="builtin-upload-0-11-8">八家内置中转使用自身上传，不再回退图床</h3>
 <p>APIMart、ToAPIs、LibAPI、CCC API、Amam、GRSAI、Sora2U、万象均按真实连接类型使用已接入的上传或请求内联。旧连接图床、全局图床和旧图床上传缓存不能抢先替代这些通道；厂商上传失败、取消或输入不受支持时停止，不切换公共图床重试，也不自动重投生成。</p>
@@ -1177,6 +1194,7 @@ dialog .character-actions-shot{width:1912px}
 <h3 id="relayon-upload-0-11-8">万象：参考视频文件随模型请求提交</h3>
 <ol class="steps"><li>在已有万象连接中选择模型，再引用当前能力允许的图片、视频或音频。优先使用本地副本；支持的文件随生成请求提交，不先上传到公共图床。</li><li>A 系列、2.0 C1 和 H3 在既有能力允许时支持三类文件；2.0 C2／C3 仅接收当前允许的图片／音频，不能据此开启原先受限的类型或角色。</li><li>2.5 C 系列仅本地图片有已接入的文件合同，视频／音频需使用当前支持的 HTTPS 地址；本地视频／音频会在生成前明确停止。四款官转保留既有文生能力，不套入其他系列的参考功能。</li><li>本版不改变型号时长、参考数量或角色限制。输入、读取或上传失败时不提交生成；已有任务仍沿原身份查询和取回，不重新创建任务。</li></ol>
 <h3 id="sora-upload-0-11-8">Sora2U：保留参考图顺序，核对四张与 20 MiB 上限</h3>
+<p>以下为 0.11.8 的操作记录。0.11.9 的连接与任务续查范围见<a href="#model-protocols-0-11-9">本版说明</a>。</p>
 <ol class="steps"><li>选择 <b>Gemini Image</b> 或 <b>Kontext Image</b>，从旧节点或通用模型入口引用图片，无需重新添加连接；每次最多 <b>4 张参考图</b>。</li><li>全部为 HTTPS 图片时直接使用 URL 数组，不额外下载。只要含本地图片或 data URL，就将整组参考按原序准备为图片内联，避免跨字段合并导致参考编号错位；HTTPS 本地资产地址也须先读取。</li><li>内联解码后图片内容合计不得超过 <b>20 MiB</b>，按图片字节计算而非 Base64 字符串长度。超限、远程下载失败或本地读取失败会停止，不转公共图床，也不提交生成。</li><li>纯 HTTPS 图片进入 <code>reference_urls</code>，内联图片进入 <code>references</code> 字符串数组；不会把 Base64 当成 URL。用户修改过的调用协议保持原值，排错时应同时核对自己的字段配置。</li></ol>
 <p>火山私有 TOS、图片格式与固定视频秒数、文章改写和保存恢复属于此前版本功能，继续按<a href="#updates-0-11-7">0.11.7 说明</a>使用。本版不升级数据库或自动迁移旧项目；升级前仍应备份。</p>
 </section>
@@ -1340,8 +1358,8 @@ dialog .character-actions-shot{width:1912px}
 </section>
 
 <section id="about"><h2>说明书范围与版本</h2>
-<p>本说明书面向 <b>0.11.8「内置中转素材上传修复」</b>，<b>2026-11-17</b> 按已提交源码补充八家内置中转的上传边界、万象视频文件提交与 Sora2U 图片内联。0.11.7 及此前章节、既有正式版本锚点与十一张内嵌截图继续保留。安装包是否已公开，以<a href="https://github.com/Tenney95/AI-Canvas-tauri/releases/tag/v0.11.8">对应 GitHub Release</a>为准；截图用于辨认位置，不代表所有按钮与最新界面完全一致。</p>
-<p>发布准备、源码检查记录与验收缺口见<a href="https://github.com/Tenney95/AI-Canvas-tauri/blob/master/doc/plans/2026-11-17-release-0.11.8.md">0.11.8 发布计划</a>；目标提交仍须取得同标签、同 SHA、同次尝试的质量与产物证明，未预写为公开完成。原有应用数据库沿用 <b>v27</b>，新项目使用独立项目库；新结构项目包为 <b>v4</b>，旧 <b>v1–v3</b> 包继续兼容。正式迁移开关保持关闭，不自动迁移真实旧项目。升级前备份项目与应用数据，安装旧程序不能直接读取新结构或借此回退数据。Windows Legacy 不含本地 ONNX 与自动更新；macOS 仅 Apple Silicon 临时签名，下载后可能需要在系统安全设置中允许打开，Linux 安装包暂停。多窗口、云同步、剪辑、真实模型及各平台安装升级按发布计划分别验收；自动化检查和说明书更新不能代替这些桌面验收。</p>
+<p>本说明书面向 <b>0.11.9「项目素材回收与 MiniMax 生图」</b>，<b>2026-11-18</b> 核对桌面项目删除和回收、MiniMax 官方生成入口和协议预设。0.11.8 及此前章节保留既有锚点与十一张内嵌截图。安装包及公开状态见<a href="https://github.com/Tenney95/AI-Canvas-tauri/releases/tag/v0.11.9">对应 GitHub Release</a>。截图可用于辨认功能位置，部分控件请以当前桌面界面为准。</p>
+<p>发布范围与验收安排见<a href="https://github.com/Tenney95/AI-Canvas-tauri/blob/master/doc/plans/2026-11-18-release-0.11.9.md">0.11.9 发布计划</a>。原有应用数据库沿用 <b>v27</b>，新项目使用独立项目库。新结构项目包为 <b>v4</b>，旧 <b>v1–v3</b> 包继续兼容。正式迁移开关保持关闭。旧版程序只能读取原有项目结构，升级前请备份项目与应用数据，回退时从备份恢复。Windows Legacy 不含本地 ONNX 与自动更新。macOS 仅 Apple Silicon 临时签名，下载后可能需要在系统安全设置中允许打开。Linux 安装包暂停。项目素材回收、多窗口、云同步、剪辑、真实模型及各平台安装升级以桌面端实际验收为准。</p>
 <h3 id="source-updates-0-10-19">0.10.19 范围与兼容提示</h3>
 <ul><li>武器仍为道具子类型，数据库维持 v26；旧客户端不支持新武器字段，团队应统一升级。</li><li>本集清单和资产库分别管理；提取不直接入库，角色引用不自动加入武器参考。</li><li>项目云同步仍为手动，不共享全局资产，也未新增自动监听或删除传播。</li></ul>
 <h3 id="source-updates-0-10-18">0.10.18「项目资产云同步与万象分组」范围与兼容提示</h3>
@@ -1357,7 +1375,7 @@ dialog .character-actions-shot{width:1912px}
 <p>内容依据当前版本的启动页、资源库、设置界面、应用帮助与相关操作实现核对。接口示例用于本地配置校验，<b>未调用真实厂商接口</b>；所有 example.com 地址与示例模型 ID 均为占位内容。按钮准备草稿、创建节点、实际模型生成和媒体保存是不同步骤，请按各章检查实际结果。</p>
 <p class="small">页面所需样式、脚本和十一张截图均在当前 HTML 内，无外部字体或 CDN 依赖。可直接双击离线打开；点击“返回软件首页”需同时保留 site 目录中的首页。打印按钮使用浏览器打印功能，可选择保存为 PDF。</p>
 </section>
-<footer>AI Canvas · 0.11.3 操作说明书 · 2026-11-12 增量核对<br>从一个节点开始，逐步完成你的创作。</footer>
+<footer>AI Canvas · 0.11.9 操作说明书 · 2026-11-18 增量核对<br>从一个节点开始，逐步完成你的创作。</footer>
 </main>
 <dialog id="zoom" aria-label="放大界面截图"><button class="action" id="zoom-close" type="button">关闭放大图（Esc）</button><div class="zoom-box"></div></dialog>
 <script>

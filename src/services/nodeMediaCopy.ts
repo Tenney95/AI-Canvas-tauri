@@ -5,6 +5,7 @@ import type { BaseNodeData } from '../types';
 import * as files from './fileService';
 import { isTauriEnv } from './fs/core';
 import { localMediaUrlToPath } from '../utils/mediaUrl';
+import { usesTrashPath } from './fs/undoTrashJournal';
 
 // Serialize allocation + native copy: concurrent pastes must not select the same destination.
 let copyQueue: Promise<unknown> = Promise.resolve();
@@ -12,6 +13,7 @@ const pinnedPaths = new Map<string, number>();
 const stagedPaths = new WeakMap<BaseNodeData, string[]>();
 const keyOf = (path: string) => path.replace(/\\/g, '/');
 export const isNodeMediaCopySource = (path: string) => pinnedPaths.has(keyOf(path));
+export const isNodeMediaCopySourceTree = (directory: string) => usesTrashPath(directory, new Set(pinnedPaths.keys()));
 
 async function discardFiles(paths: string[]): Promise<void> {
   for (const path of paths) {
@@ -37,7 +39,8 @@ export function needsNodeMediaCopy(data: BaseNodeData): boolean {
 
 /** Stage independent files before publishing any copied node. Failure never falls back to sharing. */
 export async function copyNodeMedia(data: BaseNodeData, projectId: string): Promise<BaseNodeData> {
-  const paths = [data.filePath, localMediaUrlToPath(data.outpaintInput?.url), ...(data.storyboardOverrides ?? []).map((cell) => cell?.filePath)]
+  const paths = [data.filePath, ...[data.imageUrl, data.videoUrl, data.audioUrl, data.thumbnailUrl, data.outpaintInput?.url].map(localMediaUrlToPath),
+    ...(data.storyboardOverrides ?? []).flatMap((cell) => [cell?.filePath, localMediaUrlToPath(cell?.url)])]
     .filter((path): path is string => !!path);
   for (const path of paths) pinnedPaths.set(keyOf(path), (pinnedPaths.get(keyOf(path)) ?? 0) + 1);
   const task = copyQueue.then(async () => {

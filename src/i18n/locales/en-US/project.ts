@@ -43,6 +43,14 @@ const project = {
     'The series and its {count} episode records will be removed; historical receipts and media files will be kept. This cannot be directly undone.',
   '将移除此项目的项目记录；历史回执和素材文件保留。本操作不能直接撤销。':
     'The project record will be removed; historical receipts and media files will be kept. This cannot be directly undone.',
+  '将移除整部剧及其 {count} 个分集的项目记录。': 'The series and its {count} episode records will be removed.',
+  '将移除此项目的项目记录。': 'The project record will be removed.',
+  '符合条件的素材目录将移入系统回收站。受到保护或回收失败时，素材目录会保留。项目记录不能直接撤销。':
+    'Eligible media folders will move to the system trash. The folder stays in place if protected or if recycling fails. Project records cannot be restored from this dialog.',
+  '删除并回收素材': 'Delete and recycle media',
+  '项目已删除，素材已移入系统回收站': 'Project deleted. Media moved to the system trash.',
+  '项目已删除，素材目录已保留': 'Project deleted. The media folder was kept.',
+  '项目已删除，素材回收结果待核对': 'Project deleted. Check the system trash to confirm whether the media was moved.',
   '正在删除': 'Deleting',
   '确认删除': 'Delete',
   '今天 {time}': 'Today {time}',

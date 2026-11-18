@@ -9,7 +9,9 @@ import { getBaseDir, getProjectDataDir, joinPath } from './fileService';
 import { invoke } from '@tauri-apps/api/core';
 import { configValuesEqual } from './configPatch';
 import { listProjectCatalog } from './projectModelRouter';
+import { GENERAL_ASSISTANT_SCOPE_ID } from './chat/assistantScope';
 import { readNativeProjectCapture, listNativeRetiredCanvasIds, type NativeProjectAggregate } from './indexedDb/nativeProjectRepository';
+import { listProjectImportRecoveries } from './indexedDb/projectImportRepository';
 import { projectNativeCatalogEntry, type NativeProjectViewItem } from '../store/nativeProjectView';
 import {
   getProjectById, getAllGlobalCharacters, getAllGlobalDramaAssets,
@@ -25,22 +27,54 @@ export const assetUsagePathKey = (value: string) => {
   const path = (localMediaUrlToPath(value) ?? value).replace(/\\/g, '/').replace(/^\/\/\?\/UNC\//i, '//').replace(/^\/\/\?\//, '').replace(/\/+$/, '');
   return /^[a-z]:\//i.test(path) || path.startsWith('//') ? path.toLowerCase() : path;
 };
+type AssetUsageProbe = Exclude<AssetUsageTarget, { kind: 'file' }>
+  | (Extract<AssetUsageTarget, { kind: 'file' }> & { directoryAssetIds?: ReadonlySet<string> });
+
+function fileTreePathKey(value: string): string | undefined {
+  const source = localMediaUrlToPath(value) ?? value;
+  const path = source === '/' ? '/' : assetUsagePathKey(source);
+  const drive = /^[a-z]:/i.exec(path)?.[0];
+  if (path.includes('\0') || drive && path.length > 2 && path[2] !== '/') return undefined;
+  const prefix = drive ?? (path.startsWith('//') ? '//' : path.startsWith('/') ? '/' : undefined);
+  if (!prefix) return undefined;
+  const parts: string[] = [];
+  for (const part of path.slice(prefix.length).split('/')) {
+    if (part === '..') {
+      if (parts.length > (prefix === '//' ? 2 : 0)) parts.pop();
+    } else if (part && part !== '.') parts.push(part);
+  }
+  const key = (drive ? `${drive}/` : prefix) + parts.join('/');
+  return typeof navigator !== 'undefined' && /mac|darwin/i.test(navigator.platform) ? key.normalize('NFC').toLowerCase() : key;
+}
+
+/** 整目录回收同时保护父目录引用、目录本身和内部文件。 */
+export function assetUsageFileTreesOverlap(left: string, right: string): boolean {
+  const a = fileTreePathKey(left), b = fileTreePathKey(right);
+  if (!a || !b) return false;
+  return a === b || a.startsWith(b.endsWith('/') ? b : `${b}/`) || b.startsWith(a.endsWith('/') ? a : `${a}/`);
+}
+
 const check = (signal?: AbortSignal) => { if (signal?.aborted) throw new DOMException(t('素材查询已取消'), 'AbortError'); };
 
 /** 只匹配稳定身份、精确路径及真实 @drama 协议，不按名称猜测。 */
-export function matchesAssetUsage(value: unknown, target: AssetUsageTarget | readonly AssetUsageTarget[], context: {
+export function matchesAssetUsage(value: unknown, target: AssetUsageProbe | readonly AssetUsageProbe[], context: {
   root?: string; roots?: ReadonlyMap<string, string>; ownerId?: string; global?: boolean; nodeIds?: ReadonlySet<string>;
   projectKinds?: ReadonlyMap<string, DramaAssetKind>; globalKinds?: ReadonlyMap<string, DramaAssetKind>;
   projectAssets?: ReadonlyMap<string, unknown>; globalAssets?: ReadonlyMap<string, unknown>; nodes?: ReadonlyMap<string, unknown>;
 } = {}): boolean {
   if (!('kind' in target)) return target.some((entry) => matchesAssetUsage(value, entry, context));
+  const matchesPath = (value: string): boolean => target.kind === 'file' && (target.directoryAssetIds
+    ? assetUsageFileTreesOverlap(value, target.path) : assetUsagePathKey(value) === assetUsagePathKey(target.path));
   const seen = new WeakSet<object>();
   const visit = (item: unknown, inheritedRoot: string | undefined): boolean => {
     if (typeof item === 'string') {
       if (target.kind === 'file') {
-        if (assetUsagePathKey(item) === assetUsagePathKey(target.path)) return true;
+        if (matchesPath(item) || target.directoryAssetIds?.has(item)) return true;
         for (const match of item.matchAll(/@asset\{([^}\r\n]+)\}/g)) {
-          try { if (assetUsagePathKey(decodeURIComponent(match[1])) === assetUsagePathKey(target.path)) return true; }
+          try {
+            const value = decodeURIComponent(match[1]);
+            if (matchesPath(value) || target.directoryAssetIds?.has(value)) return true;
+          }
           catch { /* 损坏 token 不按显示名或部分路径猜测。 */ }
         }
         for (const match of item.matchAll(/@\{([^:}\r\n]+):[^}\r\n]+\}/g)) if (context.nodeIds?.has(match[1])) return true;
@@ -90,9 +124,12 @@ export function matchesAssetUsage(value: unknown, target: AssetUsageTarget | rea
     const root = typeof data.storageRootRef === 'string' && context.roots ? context.roots.get(data.storageRootRef) : inheritedRoot;
     if (target.kind === 'file') {
       if (target.assetId && (data.assetId === target.assetId || data.imageAssetId === target.assetId)) return true;
+      if (target.directoryAssetIds && root && [data.relativePath, data.imageRelativePath, data.filePath, data.imageFilePath]
+        .some((path) => typeof path === 'string' && path && !fileTreePathKey(path) && !/^[a-z][a-z0-9+.-]*:/i.test(path)
+          && matchesPath(joinPath(root, path)))) return true;
       for (const relative of [data.relativePath, data.imageRelativePath]) {
         if (root && typeof relative === 'string' && !relative.split(/[\\/]/).some((part) => !part || part === '..' || part === '.' || part.includes(':'))
-          && assetUsagePathKey(joinPath(root, relative)) === assetUsagePathKey(target.path)) return true;
+          && matchesPath(joinPath(root, relative))) return true;
       }
       if (!context.global && context.nodeIds && [data.imageNodeId, data.sourceNodeId].some((id) => typeof id === 'string' && context.nodeIds!.has(id))) return true;
     } else {
@@ -120,9 +157,20 @@ export function matchesAssetUsage(value: unknown, target: AssetUsageTarget | rea
 }
 
 /** 读取失败即失败，不将未知持久化记录当作“未使用”。 */
-export async function loadAssetUsage(target: AssetUsageTarget | readonly AssetUsageTarget[], signal?: AbortSignal): Promise<AssetUsageReport> {
+export function loadAssetDirectoryUsage(path: string, assetIds: ReadonlySet<string>, retiredConversationIds: ReadonlySet<string>): Promise<AssetUsageReport> {
+  if (!fileTreePathKey(path)) throw new Error('无法确认待回收的项目目录');
+  return loadAssetUsage({ kind: 'file', path, name: '', directoryAssetIds: assetIds }, undefined, retiredConversationIds);
+}
+
+export async function loadAssetUsage(target: AssetUsageProbe | readonly AssetUsageProbe[], signal?: AbortSignal,
+  retiredConversationIds?: ReadonlySet<string>): Promise<AssetUsageReport> {
   check(signal);
   const targets = 'kind' in target ? [target] : target;
+  const directories = targets.flatMap((entry) => entry.kind === 'file' && entry.directoryAssetIds ? [entry.path] : []);
+  const assertIndependentRoot = (root: string | null | undefined) => {
+    if (directories.length && (!root || !fileTreePathKey(root))) throw new Error('无法核对其他项目素材目录');
+    if (root && directories.some((directory) => assetUsageFileTreesOverlap(root, directory))) throw new Error('目录仍由其他项目使用');
+  };
   if (targets.some((entry) => entry.kind === 'creative' && entry.scope === 'project' && !entry.ownerId)) throw new Error(t('项目资产缺少所属项目，请重新选择'));
   const { useAppStore } = await import('../store/useAppStore');
   const initial = useAppStore.getState();
@@ -149,6 +197,7 @@ export async function loadAssetUsage(target: AssetUsageTarget | readonly AssetUs
     nativeCaptures.set(entry.project.id, { aggregate: capture.aggregate, changeRevision: capture.changeRevision, retired });
   }
   const storedProjects = new Map<string, { nodes: unknown[]; dramaAssets?: unknown }>();
+  const storedLegacyProjects = new Map<string, unknown>();
   for (const project of projects.values()) {
     const binding = (project as NativeProjectViewItem).nativeView;
     if (binding) {
@@ -163,6 +212,7 @@ export async function loadAssetUsage(target: AssetUsageTarget | readonly AssetUs
       const stored = await getProjectById(project.id); check(signal);
       if (!stored || !Array.isArray(stored.nodes)) throw new Error(t('项目引用读取不完整，请重试'));
       storedProjects.set(project.id, { nodes: stored.nodes, dramaAssets: stored.dramaAssets });
+      if (directories.length) storedLegacyProjects.set(project.id, stored);
     }
   }
   const storedGlobals = [...await getAllGlobalCharacters(), ...await getAllGlobalDramaAssets()]; check(signal);
@@ -188,6 +238,22 @@ export async function loadAssetUsage(target: AssetUsageTarget | readonly AssetUs
     scenes: [...initial.globalScenes, ...storedGlobals.filter((card) => card.kind === 'scene')], props: [...initial.globalProps, ...storedGlobals.filter((card) => card.kind === 'prop')] });
   const locations = new Map<string, AssetUsageLocation>();
   const add = (location: AssetUsageLocation) => { const previous = locations.get(location.key); locations.set(location.key, previous?.live ? previous : location); };
+  const scanConversationsAndTasks = async (id: string, projectId: string, projectName: string, matches: (value: unknown) => boolean) => {
+    const conversations = [...await getProjectConversations(id), ...await getTrashConversations(id)]; check(signal);
+    for (const conversation of conversations) {
+      let offset = 0;
+      while (true) {
+        const page = await getConversationMessages(conversation.id, offset, 200); check(signal);
+        for (const message of page.messages) if (matches(message)) add({ key: `chat:${message.id}`, kind: 'chat',
+          projectId, projectName, name: conversation.title || t('对话记录') });
+        offset += page.messages.length;
+        if (offset >= page.total) break;
+        if (!page.messages.length) throw new Error(t('项目引用读取不完整，请重试'));
+      }
+    }
+    for (const task of await getProjectAgentTasks(id)) if (matches(task)) add({ key: `task:${task.id}`, kind: 'task',
+      projectId, projectName, name: t('助手任务') });
+  };
   const nativeRoots = new Map<string, Map<string, string>>();
   const needsFileRoots = targets.some((item) => item.kind === 'file');
   for (const [ownerId, capture] of nativeCaptures) {
@@ -195,11 +261,13 @@ export async function loadAssetUsage(target: AssetUsageTarget | readonly AssetUs
     if (!view) throw new Error(t('项目引用读取不完整，请重试'));
     const primary = await getProjectDataDir(view.id); check(signal);
     if (!primary && needsFileRoots) throw new Error(t('项目素材目录读取不完整，请重试'));
+    assertIndependentRoot(primary);
     const roots = new Map<string, string>();
     if (primary) roots.set(capture.aggregate.project.storageRootRef, primary);
     for (const binding of capture.aggregate.project.storageBindings) if (binding.rootRef !== capture.aggregate.project.storageRootRef && needsFileRoots) {
       const root = await invoke<string>('resolve_native_project_media_subroot', { projectId: ownerId, rootRef: binding.rootRef, create: false }); check(signal);
       if (!root) throw new Error(t('项目素材目录读取不完整，请重试'));
+      assertIndependentRoot(root);
       roots.set(binding.rootRef, root);
     }
     nativeRoots.set(ownerId, roots);
@@ -215,11 +283,19 @@ export async function loadAssetUsage(target: AssetUsageTarget | readonly AssetUs
     const primaryRoot = aggregate ? roots?.get(aggregate.project.storageRootRef) : undefined;
     const root = binding ? (canvas ? roots?.get(canvas.storageRootRef) : primaryRoot) : await getProjectDataDir(project.id); check(signal);
     if (binding && needsFileRoots && !root) throw new Error(t('项目素材目录读取不完整，请重试'));
+    assertIndependentRoot(root);
     rootsByProject.set(project.id, root ?? undefined);
     const ownerId = project.parentId ?? project.id;
     const library = record(storedProjects.get(ownerId)).dramaAssets;
     const context = { root: root ?? undefined, roots, ownerId, projectKinds: kinds(library), globalKinds, globalAssets, projectAssets: assetMap(library),
       nodes: new Map((stored.nodes as unknown[]).map((node) => [String(record(node).id), node] as const)), nodeIds: new Set<string>() };
+    if (directories.length && !binding) {
+      const recoveries = !project.parentId ? await listProjectImportRecoveries(project.id) : [];
+      check(signal);
+      if (matchesAssetUsage([storedLegacyProjects.get(project.id), recoveries], target, context)) {
+        add({ key: `legacy-content:${project.id}`, kind: 'creative', projectId: project.id, projectName: project.name, name: t('项目资料') });
+      }
+    }
     const outputIds = (nodes: unknown[]) => new Set(nodes.filter((item) => {
       const node = record(item); const data = record(node.data); const type = String(node.type ?? data.type ?? '');
       const media = type.includes('video') ? { videoUrl: data.videoUrl } : type.includes('audio') ? { audioUrl: data.audioUrl } : { imageUrl: data.imageUrl, thumbnailUrl: data.thumbnailUrl };
@@ -269,20 +345,7 @@ export async function loadAssetUsage(target: AssetUsageTarget | readonly AssetUs
       if (!page.nextCursor) throw new Error(t('项目引用读取不完整，请重试'));
       cursor = page.nextCursor;
     } while (cursor);
-    const conversations = [...await getProjectConversations(project.id), ...await getTrashConversations(project.id)]; check(signal);
-    for (const conversation of conversations) {
-      let offset = 0;
-      while (true) {
-        const page = await getConversationMessages(conversation.id, offset, 200); check(signal);
-        for (const message of page.messages) if (matchesAssetUsage(message, target, context)) add({ key: `chat:${message.id}`, kind: 'chat',
-          projectId: project.id, projectName: project.name, name: conversation.title || t('对话记录') });
-        offset += page.messages.length;
-        if (offset >= page.total) break;
-        if (!page.messages.length) throw new Error(t('项目引用读取不完整，请重试'));
-      }
-    }
-    for (const task of await getProjectAgentTasks(project.id)) if (matchesAssetUsage(task, target, context)) add({ key: `task:${task.id}`, kind: 'task',
-      projectId: project.id, projectName: project.name, name: t('助手任务') });
+    await scanConversationsAndTasks(project.id, project.id, project.name, (value) => matchesAssetUsage(value, target, context));
     for (const editor of await listVideoEditorProjectsByProject(project.id)) if (matchesAssetUsage(editor, target, context)) add({ key: `video-editor:${editor.id}`, kind: 'video-editor',
       projectId: project.id, projectName: project.name, nodeId: editor.nodeId, name: t('剪辑工程') });
   }
@@ -319,23 +382,14 @@ export async function loadAssetUsage(target: AssetUsageTarget | readonly AssetUs
         if (!page.nextCursor) throw new Error(t('项目引用读取不完整，请重试'));
         cursor = page.nextCursor;
       } while (cursor);
-      const conversations = [...await getProjectConversations(id), ...await getTrashConversations(id)]; check(signal);
-      for (const conversation of conversations) {
-        let offset = 0;
-        while (true) {
-          const page = await getConversationMessages(conversation.id, offset, 200); check(signal);
-          for (const message of page.messages) if (matches(message)) add({ key: `chat:${message.id}`, kind: 'chat',
-            projectId: view.id, projectName: view.name, name: conversation.title || t('对话记录') });
-          offset += page.messages.length;
-          if (offset >= page.total) break;
-          if (!page.messages.length) throw new Error(t('项目引用读取不完整，请重试'));
-        }
-      }
-      for (const task of await getProjectAgentTasks(id)) if (matches(task)) add({ key: `task:${task.id}`, kind: 'task',
-        projectId: view.id, projectName: view.name, name: t('助手任务') });
+      await scanConversationsAndTasks(id, view.id, view.name, matches);
       for (const editor of await listVideoEditorProjectsByProject(id)) if (matches(editor)) add({ key: `video-editor:${editor.id}`, kind: 'video-editor',
         projectId: view.id, projectName: view.name, name: t('剪辑工程') });
     }
+  }
+  if (directories.length) {
+    await scanConversationsAndTasks(GENERAL_ASSISTANT_SCOPE_ID, GENERAL_ASSISTANT_SCOPE_ID, t('AI 助手'),
+      (value) => matchesAssetUsage(value, target, { globalKinds, globalAssets }));
   }
   const latest = useAppStore.getState();
   if (latest.currentProjectId === 'default') {
@@ -346,8 +400,12 @@ export async function loadAssetUsage(target: AssetUsageTarget | readonly AssetUs
   }
   const liveOwner = latest.projects.find((project) => project.id === latest.currentProjectId)?.parentId ?? latest.currentProjectId ?? undefined;
   const liveRoot = latest.currentProjectId ? rootsByProject.get(latest.currentProjectId) ?? await getProjectDataDir(latest.currentProjectId) : null;
+  if (latest.currentProjectId) assertIndependentRoot(liveRoot);
   const liveContext = { root: liveRoot ?? undefined, ownerId: liveOwner, projectKinds: kinds(latest.dramaAssets), globalKinds,
     projectAssets: assetMap(latest.dramaAssets), globalAssets };
+  if (directories.length && matchesAssetUsage([latest.edges, latest.groups], target, liveContext)) add({
+    key: 'live-canvas-media', kind: 'creative', projectId: latest.currentProjectId ?? undefined, name: t('项目资料'), live: true,
+  });
   for (const [index, snapshot] of latest.history.entries()) {
     const context = { ...liveContext, nodes: new Map(snapshot.nodes.map((source) => [source.id, source] as const)) };
     for (const node of snapshot.nodes) {
@@ -356,15 +414,18 @@ export async function loadAssetUsage(target: AssetUsageTarget | readonly AssetUs
         projectName: latest.projectName, name: `${t('画布撤销记录')} · ${node.data.label || node.id}`, live: true });
     }
   }
-  for (const message of latest.messages) if (matchesAssetUsage(message, target, liveContext)) add({
+  for (const message of latest.messages) if (!retiredConversationIds?.has(message.conversationId) && matchesAssetUsage(message, target, liveContext)) add({
     key: `chat:${message.id}`, kind: 'chat', projectId: latest.currentProjectId ?? undefined, projectName: latest.projectName, name: t('对话记录'), live: true,
   });
   const globalCards = [...storedGlobals, ...latest.globalCharacters, ...latest.globalScenes, ...latest.globalProps]; check(signal);
   for (const card of globalCards) if (matchesAssetUsage(card, target, { global: true, globalKinds })) add({ key: `global:${card.kind}:${card.id}`,
     kind: 'creative', name: card.name, projectName: t('全局创作资产') });
-  for (const workflow of await getAllWorkflows()) if (matchesAssetUsage(workflow, target, { globalKinds })) add({ key: `workflow:${workflow.id}`, kind: 'workflow', name: workflow.name });
+  const workflowReferences = (workflow: { fileContent?: string; editableContent?: string }): unknown => directories.length
+    ? [workflow, ...[workflow.fileContent, workflow.editableContent].flatMap((source) => source?.trim() ? [JSON.parse(source) as unknown] : [])]
+    : workflow;
+  for (const workflow of await getAllWorkflows()) if (matchesAssetUsage(workflowReferences(workflow), target, { globalKinds })) add({ key: `workflow:${workflow.id}`, kind: 'workflow', name: workflow.name });
   for (const preset of await getAllPresets()) if (matchesAssetUsage(preset, target, { globalKinds })) add({ key: `preset:${preset.id}`, kind: 'preset', name: preset.name });
-  for (const workflow of latest.workflows) if (matchesAssetUsage(workflow, target, { globalKinds })) add({ key: `workflow:${workflow.id}`, kind: 'workflow', name: workflow.name, live: true });
+  for (const workflow of latest.workflows) if (matchesAssetUsage(workflowReferences(workflow), target, { globalKinds })) add({ key: `workflow:${workflow.id}`, kind: 'workflow', name: workflow.name, live: true });
   for (const preset of latest.userPresets) if (matchesAssetUsage(preset, target, { globalKinds })) add({ key: `preset:${preset.id}`, kind: 'preset', name: preset.name, live: true });
   const base = await getBaseDir(); check(signal);
   for (const details of await getAssetImageRecords(signal)) if (matchesAssetUsage(details, target, { root: base ?? undefined, globalKinds })) {
@@ -377,6 +438,15 @@ export async function loadAssetUsage(target: AssetUsageTarget | readonly AssetUs
       || !configValuesEqual([...retired].sort(), [...captured.retired].sort())) throw new Error(t('项目引用已变化，请刷新使用位置'));
   }
   if (useAppStore.getState().currentProjectId !== initial.currentProjectId) throw new Error(t('画布项目已变化，请刷新使用位置'));
+  if (directories.length) {
+    const finalCatalog = await listProjectCatalog();
+    const current = useAppStore.getState();
+    const watched = ['projects', 'nodes', 'edges', 'groups', 'history', 'messages', 'conversations', 'dramaAssets', 'globalCharacters', 'globalScenes',
+      'globalProps', 'workflows', 'userPresets'] as const;
+    if (current.currentProjectId !== initial.currentProjectId || current.projectLoadStatus !== 'ready'
+      || watched.some((key) => initial[key] !== current[key])
+      || !configValuesEqual(catalog, finalCatalog)) throw new Error('项目引用在核对期间发生变化');
+  }
   const result = [...locations.values()].sort((a, b) => a.key.localeCompare(b.key));
   return { locations: result, signature: JSON.stringify(result.map(({ key }) => key)) };
 }

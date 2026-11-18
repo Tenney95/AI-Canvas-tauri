@@ -29,6 +29,7 @@ const projectIdPattern = new RegExp(`^p2-${uuid}$`);
 const canvasIdPattern = new RegExp(`^c2-${uuid}$`);
 const episodeIdPattern = new RegExp(`^e2-${uuid}$`);
 const rootRefPattern = new RegExp(`^r2-${uuid}$`);
+const recycleRequestIdPattern = new RegExp(`^${uuid}$`);
 
 /** 前缀用于定位候选库，不能作为旧库没有同名记录的证明。 */
 export const isNativeProjectId = (id: unknown): id is string => typeof id === 'string' && projectIdPattern.test(id);
@@ -1035,16 +1036,32 @@ options: NativeProjectOptions = {}): Promise<NativeProjectAggregate> {
   });
 }
 
-/** 删除整个独立库聚合；待续媒体回执、身份墓碑及归档审计保留，不删除文件系统内容。 */
-export async function deleteNativeProject(input: { projectId: string; expectedProjectEpoch: number; expectedChangeRevision: number; now?: number },
+type NativeProjectRecyclePhase = 'pending' | 'recycling' | 'recycled' | 'retained';
+
+interface NativeProjectRetirement {
+  id: string;
+  projectId: string;
+  kind: 'project';
+  deletedAt: number;
+  recycle?: { requestId: string; phase: NativeProjectRecyclePhase; projectEpoch: number; storageRootRef: string };
+}
+
+/** 删除独立库聚合，保留身份墓碑和审计；桌面显式回收请求与逻辑删除同事务提交。 */
+export async function deleteNativeProject(input: { projectId: string; expectedProjectEpoch: number; expectedChangeRevision: number;
+  recycleRequestId?: string; now?: number },
   options: NativeProjectOptions = {}): Promise<void> {
   const fixed = structuredClone(input), now = timestamp(fixed.now);
+  const recycleRequestId = fixed.recycleRequestId;
   if (!isNativeProjectId(fixed.projectId) || !Number.isSafeInteger(fixed.expectedProjectEpoch) || fixed.expectedProjectEpoch < 0
-    || !Number.isSafeInteger(fixed.expectedChangeRevision) || fixed.expectedChangeRevision < 0) return fail('invalid-identity');
+    || !Number.isSafeInteger(fixed.expectedChangeRevision) || fixed.expectedChangeRevision < 0
+    || recycleRequestId !== undefined && (typeof recycleRequestId !== 'string' || !recycleRequestIdPattern.test(recycleRequestId))) {
+    return fail('invalid-identity');
+  }
   const database = await openNativeProjectDatabase(false, options);
   if (!database) return fail('project-not-found');
   try {
     await transact(database, 'readwrite', options, async (tx) => {
+      if (recycleRequestId !== undefined && tx.durability !== 'strict') return fail('strict-durability-unavailable');
       // 整项目删除不等待远端任务结算；删除权威项目/画布并留墓碑，迟到结果仍只能保留原回执。
       const current = await readInTransaction(tx, fixed.projectId);
       if (!current) return fail('project-not-found');
@@ -1058,17 +1075,48 @@ export async function deleteNativeProject(input: { projectId: string; expectedPr
         && !(entry.kind === 'project-model-import' && entry.phase === 'finalized')
         && !(entry.kind === 'native-content-recovery' && entry.phase === 'ready')
         && !(entry.kind === 'native-shared-sync' && ['finalized', 'aborted'].includes(entry.phase ?? '')))) return fail('project-transfer-present');
+      const retirement: NativeProjectRetirement = { id: fixed.projectId, projectId: fixed.projectId, kind: 'project', deletedAt: now };
+      if (recycleRequestId !== undefined) retirement.recycle = { requestId: recycleRequestId, phase: 'pending',
+        projectEpoch: current.project.epoch, storageRootRef: current.project.storageRootRef };
       await Promise.all([
         request(tx.objectStore(ROOTS).delete(fixed.projectId)), request(tx.objectStore(CONTENTS).delete(fixed.projectId)),
         request(tx.objectStore(REVISIONS).delete(fixed.projectId)),
-        request(tx.objectStore(RETIRED).add({ id: fixed.projectId, projectId: fixed.projectId, kind: 'project', deletedAt: now })),
+        request(tx.objectStore(RETIRED).add(retirement)),
         ...current.episodes.flatMap((episode) => [request(tx.objectStore(EPISODES).delete(episode.id)),
           request(tx.objectStore(EPISODE_CONTENTS).delete(episode.id)),
           request(tx.objectStore(RETIRED).add({ id: episode.id, projectId: fixed.projectId, kind: 'episode', deletedAt: now }))]),
         ...current.canvases.flatMap((canvas) => [request(tx.objectStore(CANVASES).delete(canvas.id)),
           request(tx.objectStore(RETIRED).add({ id: canvas.id, projectId: fixed.projectId, kind: 'canvas', deletedAt: now }))]),
       ]);
-    });
+    }, STORES, recycleRequestId !== undefined);
+  } finally { database.close(); }
+}
+
+/** 同一墓碑上的明确请求只能认领一次；旧记录不会通过状态迁移补出回收请求。 */
+export async function transitionNativeProjectRecycle(projectId: string, requestId: string, expected: 'pending' | 'recycling',
+  next: 'recycling' | 'recycled' | 'retained', options: NativeProjectOptions = {}): Promise<boolean> {
+  const legalTransition = expected === 'pending' && (next === 'recycling' || next === 'retained')
+    || expected === 'recycling' && (next === 'recycled' || next === 'retained');
+  if (!legalTransition || !isNativeProjectId(projectId) || typeof requestId !== 'string' || !recycleRequestIdPattern.test(requestId)) return false;
+  const database = await openNativeProjectDatabase(false, options);
+  if (!database) return false;
+  try {
+    return await transact(database, 'readwrite', options, async (tx) => {
+      if (tx.durability !== 'strict') return fail('strict-durability-unavailable');
+      const retired = tx.objectStore(RETIRED);
+      const [existing, tombstone] = await Promise.all([
+        request(tx.objectStore(ROOTS).get(projectId)),
+        request(retired.get(projectId)) as Promise<NativeProjectRetirement | undefined>,
+      ]);
+      const recycle = tombstone?.recycle;
+      if (existing !== undefined || !tombstone || tombstone.id !== projectId || tombstone.projectId !== projectId || tombstone.kind !== 'project'
+        || !Number.isSafeInteger(tombstone.deletedAt) || tombstone.deletedAt < 0 || !recycle || recycle.requestId !== requestId
+        || recycle.phase !== expected || !Number.isSafeInteger(recycle.projectEpoch) || recycle.projectEpoch < 0
+        || typeof recycle.storageRootRef !== 'string' || !rootRefPattern.test(recycle.storageRootRef)) return false;
+      if (next === 'recycling') await assertNoPendingNativeMediaTasks(tx, projectId);
+      await request(retired.put({ ...tombstone, recycle: { ...recycle, phase: next } } satisfies NativeProjectRetirement));
+      return true;
+    }, [ROOTS, RETIRED, EXCHANGE], true);
   } finally { database.close(); }
 }
 

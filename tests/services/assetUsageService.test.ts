@@ -2,8 +2,10 @@
  * assetUsageService — 回归测试：asset usage identity matching。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { GENERAL_ASSISTANT_SCOPE_ID } from '../../src/services/chat/assistantScope';
 import type { AssetUsageTarget } from '../../src/types/assetUsage';
 const io = vi.hoisted(() => ({ projects: vi.fn(), project: vi.fn(), globals: vi.fn(), details: vi.fn(), nativeCapture: vi.fn(), retired: vi.fn(), history: vi.fn(),
+  conversations: vi.fn(), trashConversations: vi.fn(), messages: vi.fn(), tasks: vi.fn(),
   nativeCatalog: [] as unknown[],
   state: { value: {} as Record<string, unknown> } }));
 vi.mock('@tauri-apps/api/core', async (importOriginal) => ({
@@ -19,18 +21,48 @@ vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => i
 vi.mock('../../src/services/indexedDbService', () => ({
   getAllProjects: io.projects, getProjectById: io.project, getAllGlobalCharacters: io.globals,
   getAllGlobalDramaAssets: async () => [], getHistoryEntriesPage: io.history,
-  getProjectConversations: async () => [], getTrashConversations: async () => [], getConversationMessages: async () => ({ messages: [], total: 0 }),
-  getProjectAgentTasks: async () => [], listVideoEditorProjectsByProject: async () => [], getAllWorkflows: async () => [], getAllPresets: async () => [], getAssetImageRecords: io.details,
+  getProjectConversations: io.conversations, getTrashConversations: io.trashConversations, getConversationMessages: io.messages,
+  getProjectAgentTasks: io.tasks, listVideoEditorProjectsByProject: async () => [], getAllWorkflows: async () => [], getAllPresets: async () => [], getAssetImageRecords: io.details,
 }));
-import { loadAssetUsage, matchesAssetUsage } from '../../src/services/assetUsageService';
+import { assetUsageFileTreesOverlap, loadAssetDirectoryUsage, loadAssetUsage, matchesAssetUsage } from '../../src/services/assetUsageService';
 const file: AssetUsageTarget = { kind: 'file', path: 'D:/media/a b.png', assetId: 'file-a', name: '图' };
 beforeEach(() => {
   vi.clearAllMocks(); io.projects.mockResolvedValue([{ id: 'project', name: '项目' }]); io.globals.mockResolvedValue([]); io.details.mockResolvedValue([]);
   io.nativeCatalog = []; io.retired.mockResolvedValue([]); io.history.mockResolvedValue({ records: [], hasMore: false });
+  io.conversations.mockResolvedValue([]); io.trashConversations.mockResolvedValue([]); io.messages.mockResolvedValue({ messages: [], total: 0 });
+  io.tasks.mockResolvedValue([]);
   io.state.value = { currentProjectId: 'project', projects: [{ id: 'project', name: '项目' }], projectName: '项目', nodes: [],
     dramaAssets: { characters: [], scenes: [], props: [] }, globalCharacters: [], globalScenes: [], globalProps: [], history: [], messages: [], workflows: [], userPresets: [] };
 });
 describe('asset usage identity matching', () => {
+  it('checks a whole directory by absolute path ancestry, encoded mentions and owned asset IDs', () => {
+    const target = { kind: 'file' as const, path: 'D:/data/retired', name: '', directoryAssetIds: new Set(['asset-owned']) };
+    expect(matchesAssetUsage({ filePath: 'd:\\DATA\\retired\\images\\asset.png' }, target)).toBe(true);
+    expect(matchesAssetUsage(`参考 @asset{${encodeURIComponent('D:/data/retired/refs/图.png')}}`, target)).toBe(true);
+    expect(matchesAssetUsage({ imageAssetId: 'asset-owned' }, target)).toBe(true);
+    expect(matchesAssetUsage({ imageRelativePath: '../retired/refs/图.png' }, target, { root: 'D:/data/active' })).toBe(true);
+    expect(matchesAssetUsage({ filePath: 'D:/data/retired-other/asset.png' }, target)).toBe(false);
+    expect(assetUsageFileTreesOverlap('D:/data', target.path)).toBe(true);
+    expect(assetUsageFileTreesOverlap('D:/data/retired-other', target.path)).toBe(false);
+  });
+
+  it('protects persisted general assistant messages and tasks when checking a directory for recycling', async () => {
+    io.projects.mockResolvedValue([]);
+    Object.assign(io.state.value, { currentProjectId: null, projects: [], projectLoadStatus: 'ready', edges: [], groups: [], conversations: [] });
+    io.conversations.mockResolvedValue([{ id: 'general' }]);
+    io.trashConversations.mockResolvedValue([{ id: 'general-trash' }]);
+    io.messages.mockImplementation(async (id: string) => ({ messages: [{ id, content: `@asset{${encodeURIComponent(file.path)}}` }], total: 1 }));
+    io.tasks.mockResolvedValue([{ id: 'general-task', input: { assetId: 'owned' } }]);
+
+    expect((await loadAssetUsage(file)).locations).toEqual([]);
+    expect(io.conversations).not.toHaveBeenCalled();
+    const report = await loadAssetDirectoryUsage('D:/media', new Set(['owned']), new Set());
+    expect(io.conversations).toHaveBeenCalledWith(GENERAL_ASSISTANT_SCOPE_ID);
+    expect(io.trashConversations).toHaveBeenCalledWith(GENERAL_ASSISTANT_SCOPE_ID);
+    expect(io.tasks).toHaveBeenCalledWith(GENERAL_ASSISTANT_SCOPE_ID);
+    expect(report.locations.map(({ key }) => key)).toEqual(['chat:general', 'chat:general-trash', 'task:general-task']);
+  });
+
   it('matches encoded asset tokens and exact local identities without matching names or partial paths', () => {
     expect(matchesAssetUsage(`参考 @asset{${encodeURIComponent(file.path)}}`, file)).toBe(true);
     expect(matchesAssetUsage('参考 @asset{D%3A%2Fmedia%2Fother%2Fa%20b.png}', file)).toBe(false);

@@ -1,1 +1,1 @@
-AI Canvas v0.11.8 - 内置中转素材上传修复
+AI Canvas v0.11.9 - 项目素材回收与 MiniMax 生图

@@ -9,6 +9,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 import { GENERAL_ASSISTANT_SCOPE_ID } from '../services/chat/assistantScope';
 import { listTopLevelProjects, resolveOpenTargetId, seriesOwnerId } from '../store/store.utils';
+import type { NativeProjectViewItem } from '../store/nativeProjectView';
 import type { CanvasProject } from '../types';
 import * as fileService from '../services/fileService';
 import { calcFixedPosition } from '../utils/popupPosition';
@@ -151,6 +152,8 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
   const topLevelProjects = useMemo(() => listTopLevelProjects(projects), [projects]);
   const activeProjectId = currentProjectId ? seriesOwnerId(projects, currentProjectId) : null;
   const deleteEpisodeCount = deleteTarget ? projects.filter((project) => project.parentId === deleteTarget.id).length : 0;
+  const deleteBinding = (deleteTarget as Partial<NativeProjectViewItem> | null)?.nativeView;
+  const recycleMediaOnDelete = isTauri && deleteBinding?.episodeId === null;
 
   const deletableProjectCount = useMemo(
     () => topLevelProjects.filter((project) => project.id !== 'default').length,
@@ -331,7 +334,8 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
     if (!deleteTarget || isDeleting) return;
     setIsDeleting(true);
     try {
-      await deleteProject(deleteTarget.id);
+      if (recycleMediaOnDelete) await deleteProject(deleteTarget.id, { recycleMedia: true });
+      else await deleteProject(deleteTarget.id);
       setDeleteTarget(null);
     } finally {
       setIsDeleting(false);
@@ -827,7 +831,12 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
                     ? t('删除整部剧“{name}”？', { name: deleteTarget.name })
                     : t('删除“{name}”？', { name: deleteTarget.name })}</h3>
                   <p id="delete-project-description" className="mt-1.5 text-xs leading-5 text-canvas-text-secondary">
-                    {deleteEpisodeCount > 0
+                    {recycleMediaOnDelete ? <>
+                      {deleteEpisodeCount > 0
+                        ? t('将移除整部剧及其 {count} 个分集的项目记录。', { count: deleteEpisodeCount })
+                        : t('将移除此项目的项目记录。')}{' '}
+                      {t('符合条件的素材目录将移入系统回收站。受到保护或回收失败时，素材目录会保留。项目记录不能直接撤销。')}
+                    </> : deleteEpisodeCount > 0
                       ? t('将移除整部剧及其 {count} 个分集的项目记录；历史回执和素材文件保留。本操作不能直接撤销。', { count: deleteEpisodeCount })
                       : t('将移除此项目的项目记录；历史回执和素材文件保留。本操作不能直接撤销。')}
                   </p>
@@ -850,7 +859,7 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
                   className="inline-flex h-9 items-center gap-2 rounded-md bg-red-500 px-3.5 text-xs font-medium text-white transition-colors hover:bg-red-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/60 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {isDeleting ? <Icon icon="mdi:loading" width="16" height="16" className="animate-spin" aria-hidden="true" /> : null}
-                  {isDeleting ? t('正在删除') : t('确认删除')}
+                  {isDeleting ? t('正在删除') : recycleMediaOnDelete ? t('删除并回收素材') : t('确认删除')}
                 </button>
               </div>
             </motion.div>

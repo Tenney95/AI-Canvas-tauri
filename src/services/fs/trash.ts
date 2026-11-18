@@ -162,17 +162,18 @@ export async function resolveNodeUndoTrashPaths(
 }
 
 /** 将文件或目录移入系统回收站；显式删除使用 throwOnError，避免失败被当作成功。 */
-export async function moveToTrash(filePath: string, options?: { throwOnError?: boolean }): Promise<void> {
+export async function moveToTrash(filePath: string, options?: { throwOnError?: boolean; nativeProjectId?: string }): Promise<void> {
+  const strict = options?.throwOnError || options?.nativeProjectId !== undefined;
   if (!isTauriEnv()) {
-    if (options?.throwOnError) throw new Error('系统回收站仅在桌面应用中可用');
+    if (strict) throw new Error('系统回收站仅在桌面应用中可用');
     return;
   }
   try {
-    await invoke('move_to_trash', { path: filePath });
-    if (options?.throwOnError) notifyProjectDiskChanged();
-    if (!options?.throwOnError) console.log('[fileService] Moved to trash:', filePath);
+    await invoke('move_to_trash', { path: filePath, ...(options?.nativeProjectId !== undefined ? { nativeProjectId: options.nativeProjectId } : {}) });
+    if (strict) notifyProjectDiskChanged();
+    else console.log('[fileService] Moved to trash:', filePath);
   } catch (err) {
-    if (options?.throwOnError) throw err;
+    if (strict) throw err;
     console.warn('[fileService] Failed to move to trash:', filePath, err);
   }
 }

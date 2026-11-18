@@ -355,7 +355,7 @@ fn sync_authorized_directories(
     directories: Vec<String>,
     base_data_dir: Option<String>,
 ) -> Result<Vec<String>, String> {
-    path_policy::set_user_storage_root(&app, base_data_dir.as_deref());
+    native_project_media::sync_project_recycle_roots(&app, &directories, base_data_dir.as_deref());
 
     let fs_scope = app.fs_scope();
     let asset_scope = app.state::<tauri::scope::Scopes>();
@@ -1620,7 +1620,11 @@ async fn move_to_trash(
     app: tauri::AppHandle,
     webview: tauri::Webview,
     path: String,
+    native_project_id: Option<String>,
 ) -> Result<(), String> {
+    if let Some(project_id) = native_project_id {
+        return native_project_media::recycle_native_project_media_root(&webview, &project_id, &path);
+    }
     path_policy::ensure_trusted_caller(&webview)?;
     let target = path_policy::authorize_path(&app, &path, path_policy::PathAccess::Read)?;
     trash::delete(&target).map_err(|e| format!("移动文件到回收站失败: {}", e))
@@ -2076,6 +2080,7 @@ pub fn run() {
         .manage(path_policy::UserStorageRoot::default())
         .manage(native_project_media::AssetSearchNativeRoots::default())
         .manage(native_project_media::VideoEditorNativeRoot::default())
+        .manage(native_project_media::NativeProjectRecycleRoots::default())
         .manage(billing::BillingStoragePath::default())
         .manage(project_model_safety::ProjectModelMaintenanceState::default())
         .register_uri_scheme_protocol("project-model-maintenance", project_model_safety::handle_protocol)

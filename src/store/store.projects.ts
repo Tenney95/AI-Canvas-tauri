@@ -1048,7 +1048,7 @@ export interface ProjectSlice {
   beginNativeMediaSubmissionPreparation: (expected: import('../types/project').CanvasContext) => Promise<NativeMediaSubmissionPreparation>;
   /** 复制项目（含分集、对话与素材），复制完不切画布。 */
   duplicateProject: (id: string) => Promise<string | undefined>;
-  deleteProject: (id: string) => Promise<void>;
+  deleteProject: (id: string, options?: { recycleMedia?: boolean }) => Promise<void>;
   /** 成功返回实际打开的项目 ID；captureSnapshot 仅项目库使用，signal 只在本次加载内存中保留。 */
   switchProject: (id: string, options?: { captureSnapshot?: boolean; signal?: AbortSignal }) => Promise<string | undefined>;
   /** 保存当前画布后返回启动页；保存失败不卸载当前画布。 */
@@ -2989,7 +2989,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     }
   },
 
-  deleteProject: async (id) => {
+  deleteProject: async (id, options) => {
     const state = get();
     const target = state.projects.find((project) => project.id === id);
     if (!target) return;
@@ -3008,6 +3008,9 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       const assertCurrent = () => { if (sequence !== projectSwitchSequence || get().currentProjectId !== activeId) throw new Error('项目已切换，删除已停止'); };
       const previousContext = get().projectExecutionContext;
       let previousRevision: number | undefined, writeStarted = false;
+      let projectDeleted = false;
+      const recycleRequestId = options?.recycleMedia === true && !native.episodeId && fileService.isTauriEnv()
+        ? crypto.randomUUID() : undefined;
       projectImportsApplying.add(native.projectId);
       if (activeOwner) set({ switchingProjectName: '正在删除项目', projectExecutionContext: null });
       try {
@@ -3015,6 +3018,9 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         if (!capture) throw new Error('项目不存在');
         previousRevision = capture.changeRevision;
         assertCurrent();
+        const recycle = recycleRequestId ? await import('../services/fs/nativeProjectRecycle') : undefined;
+        const recycleRoot = recycle ? await recycle.readNativeProjectRecycleRoot(native.projectId) : undefined;
+        if (recycle) assertCurrent();
         if (native.episodeId) {
           const episode = capture.aggregate.episodes.find((item) => item.id === native.episodeId);
           const body = capture.aggregate.episodeContents.find((item) => item.episodeId === native.episodeId);
@@ -3030,7 +3036,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           ids.forEach((canvasId) => { cancelProjectCanvasDerivations(canvasId); stopProjectAgentTasks(canvasId); });
           writeStarted = true;
           await deleteNativeProject({ projectId: native.projectId, expectedProjectEpoch: capture.aggregate.project.epoch,
-            expectedChangeRevision: capture.changeRevision });
+            expectedChangeRevision: capture.changeRevision, ...(recycleRequestId ? { recycleRequestId } : {}) });
+          projectDeleted = true;
           stopPollingForDeletedProjects(ids);
         }
         const catalog = await loadProjectCatalog();
@@ -3052,6 +3059,16 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           set((current) => ({ projects: current.projects.filter((item) => nativeBinding(item)?.projectId !== native.projectId),
             ...(activeOwner ? { currentProjectId: null, projectExecutionContext: undefined, projectName: '', nodes: [], edges: [], groups: [],
               history: [], historyIndex: -1, selectedNodeIds: [], activeConversationId: null, projectLoadStatus: 'ready' as const } : {}) }));
+          if (recycle && recycleRequestId) {
+            const result = await recycle.recycleRetiredNativeProjectDirectory(native.projectId, recycleRequestId, recycleRoot, () => {
+              if (sequence !== projectSwitchSequence || get().projects.some((item) => nativeBinding(item)?.projectId === native.projectId)) {
+                throw new Error('项目状态已变化，停止素材回收');
+              }
+            });
+            if (result === 'recycled') get().showToast(t('项目已删除，素材已移入系统回收站'));
+            else get().showToast(result === 'retained' ? t('项目已删除，素材目录已保留')
+              : t('项目已删除，素材回收结果待核对'), 'info');
+          }
         }
       } catch (error) {
         if (activeOwner && get().currentProjectId === activeId && sequence === projectSwitchSequence) {
@@ -3063,7 +3080,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
             ? { projectLoadStatus: 'ready', projectExecutionContext: previousContext }
             : { projectLoadStatus: 'error', projectExecutionContext: null });
         }
-        get().showToast(error instanceof Error ? error.message : '删除失败，原数据已保留', 'error');
+        get().showToast(recycleRequestId && projectDeleted ? t('项目已删除，素材目录已保留')
+          : error instanceof Error ? error.message : '删除失败，原数据已保留', 'error');
       } finally {
         projectImportsApplying.delete(native.projectId);
         if (activeOwner) set({ switchingProjectName: null });
