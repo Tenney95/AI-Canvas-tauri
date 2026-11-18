@@ -4,7 +4,7 @@
 import { memo, useState, type ReactNode } from 'react';
 import { RotateCw } from 'lucide-react';
 import { useAppStore } from '../../../store/useAppStore';
-import { discardMediaTask, getPendingTasksForProject, hasMuseQueryIdentity, resumeMediaNodeTask } from '../../../services/pollManager';
+import { discardMediaTask, getNativeComfyVideoRecovery, getPendingTasksForProject, hasMuseQueryIdentity, resumeMediaNodeTask, resumeNativeComfyVideoFromNode } from '../../../services/pollManager';
 import { COMFY_OUTPUT_UNAVAILABLE_MESSAGE, COMFY_TEXT_OUTPUT_UNAVAILABLE_MESSAGE, getComfyQueryAuthorizationMessage } from '../../../services/comfyPolling';
 import { useT } from '../../../i18n';
 import { GenerationWaitTime } from './NodeGenerationProgress';
@@ -16,26 +16,42 @@ function MediaTaskStatus({ nodeId, overlay = false, children }: { nodeId: string
   const taskState = useAppStore((state) => state.nodes.find((node) => node.id === nodeId)?.data.mediaTaskState);
   const videoPaused = useAppStore((state) => state.nodes.find((node) => node.id === nodeId)?.data.videoTaskState === 'paused');
   const loading = useAppStore((state) => state.nodes.find((node) => node.id === nodeId)?.data.status === 'loading');
+  const nativeOperationId = useAppStore((state) => getNativeComfyVideoRecovery(nodeId, state));
   const showToast = useAppStore((state) => state.showToast);
   const [busy, setBusy] = useState(false);
   const [confirmedIdentity, setConfirmedIdentity] = useState<string>();
   const task = projectId && (taskState || videoPaused) ? getPendingTasksForProject(projectId).find((item) => item.nodeId === nodeId
     || item.mediaContext?.canvasNodeId === nodeId) : undefined;
-  if (!task || loading || (!taskState && !videoPaused)) return null;
+  if (loading || (!taskState && !videoPaused) || (!task && !nativeOperationId)) return null;
 
-  const canQuery = hasMuseQueryIdentity(task)
-    || task.submitted && !!task.taskId && !task.mediaSubmissionUncertain && task.mediaRecoveryState !== 'submit_unknown';
-  const deliveryPending = taskState === 'delivery_pending' || task.mediaRecoveryState === 'delivery_pending';
-  const authorizationMessage = getComfyQueryAuthorizationMessage(task.comfyQueryHttpStatus);
+  const deliveryPending = taskState === 'delivery_pending' || task?.mediaRecoveryState === 'delivery_pending';
+  const resumeLabel = t(deliveryPending && (!task || task.taskType === 'comfyui' && task.nodeType === 'ai-video')
+    ? '继续保存' : '继续查询 / 保存');
+  const resume = () => {
+    if (busy) return;
+    const result = task ? resumeMediaNodeTask(task.nodeId)
+      : nativeOperationId ? resumeNativeComfyVideoFromNode(nodeId, nativeOperationId) : undefined;
+    if (!result) return;
+    setBusy(true);
+    void result.catch(() => {
+      showToast(t(deliveryPending ? '媒体已生成，保存或回填尚未完成；可继续取回原结果。'
+        : '暂时无法继续查询，请检查连接配置'), 'error');
+    }).finally(() => setBusy(false));
+  };
+
+  const canQuery = task ? hasMuseQueryIdentity(task)
+    || task.submitted && !!task.taskId && !task.mediaSubmissionUncertain && task.mediaRecoveryState !== 'submit_unknown'
+    : !!nativeOperationId;
+  const authorizationMessage = getComfyQueryAuthorizationMessage(task?.comfyQueryHttpStatus);
   const message = !canQuery
     ? t('提交状态未知，请到对应平台核对；应用不会自动重新生成。')
-    : task.taskType === 'comfyui' && task.comfyRecoveryState === 'output_unavailable'
+    : task?.taskType === 'comfyui' && task.comfyRecoveryState === 'output_unavailable'
       ? t(task.nodeType === 'ai-text' ? COMFY_TEXT_OUTPUT_UNAVAILABLE_MESSAGE : COMFY_OUTPUT_UNAVAILABLE_MESSAGE)
-      : (authorizationMessage ? t(authorizationMessage) : task.videoRecoveryMessage) || (deliveryPending
-        ? task.nodeType === 'ai-text' ? t('文本已生成，回填或保存尚未完成；可继续取回原结果。')
+      : (authorizationMessage ? t(authorizationMessage) : task?.videoRecoveryMessage) || (deliveryPending
+        ? task?.nodeType === 'ai-text' ? t('文本已生成，回填或保存尚未完成；可继续取回原结果。')
           : t('媒体已生成，保存或回填尚未完成；可继续取回原结果。')
         : t('查询已暂停，任务已保留'));
-  const diagnostic = task.mediaFailureDiagnostic;
+  const diagnostic = task?.mediaFailureDiagnostic;
   const httpStatus = (diagnostic?.kind === 'http' || diagnostic?.kind === 'persistence') && typeof diagnostic.httpStatus === 'number'
     && Number.isInteger(diagnostic.httpStatus) && diagnostic.httpStatus >= 400 && diagnostic.httpStatus <= 599
     ? diagnostic.httpStatus : undefined;
@@ -58,7 +74,7 @@ function MediaTaskStatus({ nodeId, overlay = false, children }: { nodeId: string
         : httpStatus === 404 || httpStatus === 410 ? '下载地址已失效或资源不存在（HTTP {status}），可继续查询原任务'
           : '媒体下载失败（HTTP {status}），原任务已保留', { status: httpStatus })
       : persistenceMessages[diagnostic.failureKind ?? 'unknown']
-    : diagnostic?.kind === 'canvas_changed' || task.mediaRecoveryReason === 'canvas_changed'
+    : diagnostic?.kind === 'canvas_changed' || task?.mediaRecoveryReason === 'canvas_changed'
       ? t('画布已变化，结果未回填；请在原节点继续取回')
     : httpStatus !== undefined
     ? t(httpStatus === 504 || httpStatus === 408 ? '等待服务商响应超时（HTTP {status}）'
@@ -66,8 +82,8 @@ function MediaTaskStatus({ nodeId, overlay = false, children }: { nodeId: string
         : httpStatus >= 500 ? '服务商或网关返回异常（HTTP {status}）' : '接口请求被拒绝（HTTP {status}）', { status: httpStatus })
     : diagnostic?.kind === 'timeout' ? t('等待服务商响应超时，尚未确认最终结果')
       : diagnostic?.kind === 'network' ? t('网络连接中断，未收到完整结果') : undefined;
-  const kind = task.nodeType === 'ai-text' ? 'text' : task.nodeType === 'ai-audio' ? 'audio' : task.nodeType === 'ai-video' ? 'video' : 'image';
-  const identity = JSON.stringify([task.projectId, task.nodeId, task.taskId, task.attemptId]);
+  const kind = !task || task.nodeType === 'ai-video' ? 'video' : task.nodeType === 'ai-text' ? 'text' : task.nodeType === 'ai-audio' ? 'audio' : 'image';
+  const identity = task ? JSON.stringify([task.projectId, task.nodeId, task.taskId, task.attemptId]) : undefined;
   return <div className={overlay ? 'generation-progress-overlay generation-progress-overlay--interactive nodrag nopan text-center'
     : 'ui-card nodrag nopan flex flex-wrap items-center gap-2 p-2'} role="status"
     onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}
@@ -76,7 +92,7 @@ function MediaTaskStatus({ nodeId, overlay = false, children }: { nodeId: string
       <span className={`break-words text-canvas-text-secondary${overlay ? ' line-clamp-3 text-[11px]' : ' text-xs'}`} title={message}>{message}</span>
       {diagnosticMessage && <span className={`break-words text-canvas-text-secondary${overlay ? ' text-[11px]' : ' text-xs'}`} title={diagnosticMessage}>{diagnosticMessage}</span>}
       <GenerationWaitTime nodeId={nodeId} />
-      {!canQuery && !overlay && <details className="text-xs text-canvas-text-secondary">
+      {task && !canQuery && !overlay && <details className="text-xs text-canvas-text-secondary">
         <summary className="cursor-pointer">{t('在平台确认任务结束后解除限制')}</summary>
         <p className="my-2">{t('解除本地记录不会取消平台任务。')}</p>
         <label className="flex items-start gap-2"><input type="checkbox" checked={confirmedIdentity === identity}
@@ -91,15 +107,8 @@ function MediaTaskStatus({ nodeId, overlay = false, children }: { nodeId: string
     {!canQuery && overlay && <button type="button" className={`ui-btn ui-btn--sm ui-btn--node-${kind} shrink-0`}
       onClick={() => useAppStore.getState().openNodeDialog(nodeId)}>{t('查看任务详情')}</button>}
     {canQuery && <button type="button" className={`ui-btn ui-btn--sm ui-btn--node-${kind} shrink-0`} disabled={busy}
-      aria-label={t('继续查询 / 保存')}
-      onClick={() => {
-        if (busy) return;
-        setBusy(true);
-        void resumeMediaNodeTask(task.nodeId).catch(() => {
-          showToast(t('暂时无法继续查询，请检查连接配置'), 'error');
-        }).finally(() => setBusy(false));
-      }}>
-      <RotateCw size={14} aria-hidden="true" />{t('继续查询 / 保存')}
+      aria-label={resumeLabel} onClick={resume}>
+      <RotateCw size={14} aria-hidden="true" />{resumeLabel}
     </button>}
     {children}
   </div>;

@@ -11,8 +11,8 @@ const transportMocks = vi.hoisted(() => ({
 vi.mock('../../src/services/ai/httpTransport', () => transportMocks);
 
 import { streamAssistantReply } from '../../src/services/ai/assistantStream';
-import { generateImage, generateImagesBatch } from '../../src/services/ai/generateImage';
-import { inspectImagePromptLength } from '../../src/services/ai/generateImage';
+import { generateImage, generateImagesBatch, inspectImagePromptLength } from '../../src/services/ai/generateImage';
+import { registerCharacterImageTaskContext } from '../../src/services/characterImageTaskContext';
 import { generateText } from '../../src/services/ai/generateText';
 import { reversePromptAndTags } from '../../src/services/ai/reversePrompt';
 import { generateVideo } from '../../src/services/ai/generateVideo';
@@ -968,6 +968,40 @@ describe('ToAPIs 参考素材上传与图片提交', () => {
     expect(JSON.parse(String(calls[1][1].body))).toMatchObject({ model: 'gpt-image-2', resolution: '2k', size: '16:9', n: 1,
       reference_images: ['https://cdn.example/toapis-image-ref'] });
     expect(JSON.parse(String(calls[1][1].body))).not.toHaveProperty('image_urls');
+  });
+
+  it('角色工作台按 ToAPIs 原协议提交，登记任务 ID 后再查询图片', async () => {
+    const params = configure();
+    const reference = 'https://cdn.example/role-reference.png';
+    const result = 'https://cdn.example/role-candidate.png';
+    const taskId = 'toapis-role-task';
+    const delivered = new Error('角色候选已交付');
+    const received = vi.fn(async (_taskId: string) => {});
+    const destination = registerCharacterImageTaskContext({ assertCurrent: () => {}, execute: async (plan) => {
+      expect(plan.recovery).toMatchObject({ kind: 'protocol', providerBase: 'https://toapis.cn/v1' });
+      const outputs = await plan.execute(async () => {}, received, 'toapis-role-operation');
+      expect(outputs).toEqual([{ url: result }]);
+      throw delivered;
+    } });
+    transportMocks.corsSafeFetch
+      .mockResolvedValueOnce(jsonResponse({ id: taskId, status: 'queued' }))
+      .mockImplementationOnce(async () => {
+        expect(received).toHaveBeenCalledExactlyOnceWith(taskId, { submit: { id: taskId } });
+        return jsonResponse({ status: 'completed', result: { data: [{ url: result }] } });
+      });
+
+    try {
+      await expect(generateImagesBatch({ ...params, characterWorkbench: 'global', image_urls: [reference],
+        imageSize: '2k', aspectRatio: '16:9' }, 1, undefined, destination.beforeSubmit)).rejects.toBe(delivered);
+      const calls = transportMocks.corsSafeFetch.mock.calls;
+      expect(calls.map(([url, init]) => [init.method, url])).toEqual([
+        ['POST', 'https://toapis.cn/v1/images/generations'],
+        ['GET', `https://toapis.cn/v1/images/generations/${taskId}`],
+      ]);
+      expect(JSON.parse(String(calls[0][1].body))).toMatchObject({ reference_images: [reference] });
+    } finally {
+      destination.release();
+    }
   });
 
   it('本连接未配置 Key 时不借用 APIMart 或其他连接 Key', async () => {

@@ -6,8 +6,8 @@ import { retainNativeImageBatchTask, sealNativeImageBatchSubmissions } from './i
 import { APIMART_IMAGE_BATCH_PROTOCOL, MAX_NATIVE_IMAGE_BATCH_RESULTS, nativeImageBatchResults, nativeImageBatchSettled } from './nativeImageBatch';
 import { APIMART_BASE_URL } from '../constants/api';
 import { sha256BytesHex } from './mediaDataUrl';
-import { pollTask, PollTaskFailedError } from './pollTask';
-import { fetchApimartTask, extractApimartImageUrls, type ApimartTaskResult } from './ai/apimartGen';
+import { PollTaskFailedError } from './pollTask';
+import { queryApimartImageResult } from './ai/apimartImageResult';
 import { createMediaDownloadAccess } from './ai/mediaDownloadAccess';
 import { persistMediaUrlToProjectData } from './fileService';
 import { captureNativeMediaLocalResult, readNativeMediaLocalResult } from './nativeMediaLocalResult';
@@ -47,15 +47,8 @@ export async function resumeNativeApimartImageBatch(operationId: string, externa
       try {
         if (!provider?.apiKey || normalizeNativeMediaProviderBase(baseUrl) !== record.providerBase
           || await sha256BytesHex(new TextEncoder().encode(APIMART_IMAGE_BATCH_PROTOCOL)) !== record.protocolDigest) throw new Error('原APIMart连接或图片批次协议已变化，尚未保存的候选需恢复原连接后继续查询；不会重新生成');
-        const urls = await pollTask<ApimartTaskResult<{ images?: Array<{ url?: string | string[] }> }>, string[]>({
-          fetchState: (signal) => fetchApimartTask(provider.apiKey!, baseUrl, taskId, signal, true),
-          isComplete: (result) => {
-            if (result.status !== 'completed') return null;
-            const values = extractApimartImageUrls(result.result);
-            if (!values.length || values.length > MAX_NATIVE_IMAGE_BATCH_RESULTS) throw new Error('原图片任务候选数量异常，未截断交付');
-            return values;
-          }, isFailed: (result) => ['failed', 'cancelled', 'error'].includes(result.status ?? '') ? 'APIMart已确认原图片任务失败' : null,
-          interval: 2000, maxDuration: VIDEO_POLL_MAX_DURATION_MS, signal: controller.signal, onFetchError: 'throw',
+        const urls = await queryApimartImageResult(provider.apiKey, baseUrl, taskId, {
+          interval: 2000, maxDuration: VIDEO_POLL_MAX_DURATION_MS, signal: controller.signal,
         });
         if (nativeImageBatchResults(record).length - (task.results?.length ?? 0) + urls.length > MAX_NATIVE_IMAGE_BATCH_RESULTS) throw new Error('原批次候选超过安全上限，全部taskID保留，未截断交付');
         const files: NativeMediaLocalResult[] = [];

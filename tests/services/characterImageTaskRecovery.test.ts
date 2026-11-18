@@ -5,11 +5,16 @@ import { registerCharacterImageTaskContext } from '../../src/services/characterI
 import { PollTaskFailedError } from '../../src/services/pollTask';
 
 const driver = vi.hoisted(() => ({
-  state: { config: { providers: { gateway: { apiKey: 'secret-key', baseUrl: 'https://gateway.example/v1' } }, generalModels: [] }, workflows: [] },
-  submit: vi.fn(), poll: vi.fn(), fetch: vi.fn(), protocols: [] as NormalizedModelExecutionProtocol[], events: [] as string[],
+  state: { config: { providers: {
+    gateway: { apiKey: 'secret-key', baseUrl: 'https://gateway.example/v1' },
+    apimart: { apiKey: 'fixture-key', baseUrl: 'https://apimart.example/v1' },
+  }, generalModels: [] }, workflows: [] },
+  submit: vi.fn(), poll: vi.fn(), queryApimartImageResult: vi.fn(), queryWorkflow: vi.fn(),
+  protocols: [] as NormalizedModelExecutionProtocol[], events: [] as string[],
 }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => driver.state } }));
-vi.mock('../../src/services/ai/apimartGen', () => ({ fetchApimartTask: driver.fetch }));
+vi.mock('../../src/services/ai/apimartImageResult', () => ({ fetchApimartTask: vi.fn(), queryApimartImageResult: driver.queryApimartImageResult }));
+vi.mock('../../src/services/nativeWorkflowTasks', () => ({ assertWorkflowContract: vi.fn(), queryNativeWorkflowOriginal: driver.queryWorkflow }));
 vi.mock('../../src/services/ai/modelProtocol', () => ({ submitModelProtocol: driver.submit }));
 vi.mock('../../src/services/ai/modelProtocolPoll', () => ({
   pollResolvedModelProtocol: driver.poll,
@@ -68,6 +73,20 @@ describe('character image protocol receipts', () => {
     expect(driver.submit).not.toHaveBeenCalled(); expect(driver.poll).not.toHaveBeenCalled();
   });
 
+  it('uses the shared APIMart image query for saved role tasks without resubmitting', async () => {
+    driver.queryApimartImageResult.mockResolvedValueOnce(['https://files.example/one.png', 'https://files.example/two.png']);
+    const original: CharacterImageTaskRecovery = { version: 1, kind: 'apimart', connectionId: 'apimart',
+      providerBase: 'https://apimart.example/v1', modelRef: 'apimart/gemini-3.1-flash-lite-image', configurationDigest: 'a'.repeat(64),
+      expectedCount: 1, tasks: [{ taskId: 'original-apimart-task' }] };
+    const signal = new AbortController().signal;
+    await expect(recoverCharacterImageTask(original, 'operation', signal)).resolves.toEqual([
+      { url: 'https://files.example/one.png' }, { url: 'https://files.example/two.png' },
+    ]);
+    expect(driver.queryApimartImageResult).toHaveBeenCalledExactlyOnceWith('fixture-key', 'https://apimart.example/v1',
+      'original-apimart-task', { signal, interval: 3000, maxDuration: 60 * 60 * 1000, onFetchError: 'throw' });
+    expect(driver.submit).not.toHaveBeenCalled();
+  });
+
   it('returns already completed candidates for retention if a later original task cannot be queried', async () => {
     const original = receipt(); original.tasks.push({ taskId: 'job-2', recoveryContext: { submit: { data: { task_id: 'job-2' } } } });
     driver.poll.mockResolvedValueOnce({ urls: ['https://files.example/first.png'] }).mockRejectedValueOnce(new Error('offline'));
@@ -82,5 +101,20 @@ describe('character image protocol receipts', () => {
     const results = await recoverCharacterImageTask(original, 'operation');
     expect(results.map((item) => item.url)).toEqual(['https://files.example/second.png']);
     expect(results.incomplete).toBeUndefined(); expect(driver.submit).not.toHaveBeenCalled();
+  });
+
+  it.each(['runninghub-workflow', 'workflow-api'] as const)('settles a confirmed %s failure as terminal', async (adapter) => {
+    const Failure = adapter === 'runninghub-workflow'
+      ? (await import('../../src/services/ai/providers/runninghubWorkflow')).RunningHubTaskFailed
+      : (await import('../../src/services/workflowApi/workflowApiAdapter')).WorkflowApiTaskFailed;
+    const failure = new Failure('原工作流已取消');
+    driver.queryWorkflow.mockRejectedValueOnce(failure);
+    const origin = 'https://workflow.example';
+    const original: CharacterImageTaskRecovery = { version: 1, kind: 'workflow', connectionId: adapter, providerBase: origin,
+      modelRef: 'workflow/original', configurationDigest: 'a'.repeat(64), expectedCount: 1, tasks: [{ taskId: 'original-workflow-task' }],
+      workflow: { adapter, category: 'image', connectionId: adapter, providerBase: origin, digest: 'b'.repeat(64), workflowId: 'original' } };
+    await expect(recoverCharacterImageTask(original, 'operation')).rejects.toBeInstanceOf(PollTaskFailedError);
+    expect(driver.queryWorkflow).toHaveBeenCalledTimes(1);
+    expect(driver.submit).not.toHaveBeenCalled();
   });
 });

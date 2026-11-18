@@ -18,9 +18,12 @@ import { applyImageBatchResults, imageBatchArtifactId } from './imageBatchServic
 import { mapImageDimensions } from './aiDimensions';
 import { parseMultiPathResponse } from './ai/helpers';
 import { extractApimartUrls, fetchApimartTask, pollRunningHubTask, type ApimartTaskResult } from './pollManagerQueries';
+import { queryApimartImageResult } from './ai/apimartImageResult';
+import { queryCompatibleImageTask } from './ai/asyncMediaResult';
 import { resolveComfyOutputUrl, sanitizeComfyOutputFile, type ComfyOutputFile, type ComfyOutputKind, type ComfyOutputs } from './comfyOutputs';
 import { ComfyOutputUnavailableError, ComfyPendingError, ComfyQueryAuthorizationError, getComfyQueryAuthorizationMessage, pollComfyHistory, pollComfyTextHistory } from './comfyPolling';
 import { maybeAutoReleaseComfyMemory } from './comfyMemory';
+import { COMFY_QUERY_TIMEOUT_MS } from './comfyQuery';
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from './canvasDerivationGuard';
 import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from './projectExecutionContext';
 import { pollResolvedModelProtocol } from './ai/modelProtocol';
@@ -33,6 +36,7 @@ import {
   type FlowMusicTaskState,
 } from './ai/apimartAudio';
 import type { BaseNodeData, NodeType } from '../types';
+import type { CanvasContext } from '../types/project';
 import type { MediaDownloadAccess, MediaTaskContext, MediaTaskReceipt, ResolvedModelProtocolPoll } from '../types/aiTypes';
 import { createMediaDownloadAccess, sanitizeMediaDownloadAccess, sanitizeMediaResultUrls } from './ai/mediaDownloadAccess';
 import { getHttpResponseError } from './ai/httpUtils';
@@ -528,9 +532,90 @@ export async function resumeNativeMediaLocalDelivery(canvasId: string, nodeId?: 
     isMediaOperationActive(projectId, targetId) || runtime.pollingProjects.get(targetId) === projectId && abortControllers.has(targetId) });
 }
 
+// 只投影当前画布的提示；恢复时仍以原生账本和原任务租约为准。
+let nativeComfyVideoRecovery: { context: CanvasContext; operations: Map<string, string> } | undefined;
+
+export function getNativeComfyVideoRecovery(nodeId: string, state = useAppStore.getState()): string | undefined {
+  const recovery = nativeComfyVideoRecovery;
+  if (recovery && isProjectExpectedContextCurrent(recovery.context, state, { checkCanvasRevision: false })) {
+    return recovery.operations.get(nodeId);
+  }
+}
+
+export function showNativeComfyVideoRecovery(context: CanvasContext, nodeId: string, operationId: string, saving: boolean): void {
+  const store = useAppStore.getState();
+  if (!isProjectExpectedContextCurrent(context, store, { checkCanvasRevision: false })) return;
+  const node = store.nodes.find((item) => item.id === nodeId);
+  if (node?.type !== 'ai-video' || node.data.role === 'source') return;
+  if (!nativeComfyVideoRecovery || !isProjectExpectedContextCurrent(nativeComfyVideoRecovery.context, context, { checkCanvasRevision: false })) {
+    nativeComfyVideoRecovery = { context, operations: new Map() };
+  }
+  nativeComfyVideoRecovery.operations.set(nodeId, operationId);
+  store.updateNodeDataTransient(nodeId, { status: node.data.status === 'success' ? 'success' : 'idle', error: undefined,
+    mediaTaskState: saving ? 'delivery_pending' : 'paused', mediaTaskStage: undefined });
+}
+
+async function restoreNativeComfyVideoRecoveries(context: CanvasContext): Promise<void> {
+  const { isNativeMediaTaskSuperseded, listNativeMediaTasks } = await import('./indexedDb/nativeMediaTaskRepository');
+  const records = await listNativeMediaTasks(context.projectId);
+  if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) return;
+  for (const record of records) {
+    if (record.canvasId !== context.canvasId || record.projectEpoch !== context.projectEpoch || record.canvasEpoch !== context.canvasEpoch
+      || record.episodeId !== context.episodeId || record.category !== 'video' || record.providerConfigId !== 'comfyui'
+      || record.recovery?.kind !== 'workflow' || record.origin?.deliveryMode === 'chat' || record.status !== 'submitted'
+      || !record.remoteTaskId || isMediaOperationActive(context.canvasId, record.nodeId)
+      || isNativeMediaTaskSuperseded(record, records) || getNativeComfyVideoRecovery(record.nodeId)) continue;
+    showNativeComfyVideoRecovery(context, record.nodeId, record.operationId, !!record.localResults?.length);
+  }
+}
+
+export async function resumeNativeComfyVideoFromNode(nodeId: string, operationId: string): Promise<void> {
+  const store = useAppStore.getState(), context = captureLegacyCanvasContext(store);
+  const node = store.nodes.find((item) => item.id === nodeId);
+  if (!context || node?.type !== 'ai-video' || node.data.role === 'source'
+    || getNativeComfyVideoRecovery(nodeId) !== operationId || isMediaOperationActive(context.canvasId, nodeId)) {
+    throw new Error('原 ComfyUI 视频任务已变化或正在处理');
+  }
+  const wasSaving = node.data.mediaTaskState === 'delivery_pending';
+  const release = registerMediaNodeOperation(nodeId, true);
+  const signal = registerNodePolling(nodeId);
+  try {
+    store.updateNodeDataTransient(nodeId, { status: 'loading', mediaTaskState: undefined, mediaTaskStage: 'querying' });
+    const { resumeNativeWorkflowTask } = await import('./nativeWorkflowTasks');
+    await resumeNativeWorkflowTask(operationId, signal);
+    const current = useAppStore.getState();
+    if (release.isCurrent() && getNativeComfyVideoRecovery(nodeId, current) === operationId) {
+      nativeComfyVideoRecovery?.operations.delete(nodeId);
+      if (current.nodes.find((item) => item.id === nodeId)?.data.status === 'loading') {
+        current.updateNodeDataTransient(nodeId, { status: node.data.status, mediaTaskStage: undefined });
+      }
+    }
+  } catch (error) {
+    const { listNativeMediaTasks } = await import('./indexedDb/nativeMediaTaskRepository');
+    const records = await listNativeMediaTasks(context.projectId).catch(() => undefined);
+    if (release.isCurrent() && getNativeComfyVideoRecovery(nodeId) === operationId) {
+      const current = useAppStore.getState();
+      const live = current.nodes.find((item) => item.id === nodeId);
+      const record = records?.find((item) => item.operationId === operationId);
+      if (records && (!record || record.status === 'failed' || record.status === 'delivered')) {
+        nativeComfyVideoRecovery?.operations.delete(nodeId);
+        if (live?.data.status === 'loading') current.updateNodeDataTransient(nodeId, {
+          status: record?.status === 'delivered' ? node.data.status : 'error', mediaTaskStage: undefined,
+        });
+      } else {
+        showNativeComfyVideoRecovery(context, nodeId, operationId, wasSaving || live?.data.mediaTaskStage === 'saving');
+      }
+    }
+    throw error;
+  } finally {
+    cleanupNodePolling(nodeId, signal);
+    release();
+  }
+}
+
 const nativeCanvasReadiness = new Map<string, Promise<void>>();
 /** 只订阅本次画布权威身份及忙标记，不按每次 Store 更新重扫账本。 */
-function resumeNativeMediaWhenReady(context: import('../types/project').CanvasContext): Promise<void> {
+function resumeNativeMediaWhenReady(context: CanvasContext): Promise<void> {
   const key = `${context.projectId}/${context.canvasId}/${context.runtimeEpoch}`;
   const existing = nativeCanvasReadiness.get(key); if (existing) return existing;
   const work = new Promise<void>((resolve, reject) => {
@@ -541,7 +626,7 @@ function resumeNativeMediaWhenReady(context: import('../types/project').CanvasCo
         || !isProjectExpectedContextCurrent(context, actual, { checkCanvasRevision: false })) { unsubscribe(); resolve(); return; }
       if (!isProjectExpectedContextCurrent(context, state, { checkCanvasRevision: false })) return;
       unsubscribe();
-      void resumeNativeMediaLocalDelivery(context.canvasId).then(resolve, reject);
+      void resumeNativeMediaLocalDelivery(context.canvasId).finally(() => restoreNativeComfyVideoRecoveries(context)).then(resolve, reject);
     };
     unsubscribe = useAppStore.subscribe(inspect); inspect();
   }).finally(() => { if (nativeCanvasReadiness.get(key) === work) nativeCanvasReadiness.delete(key); });
@@ -852,21 +937,24 @@ export function registerPendingTaskContextGuard(task: Pick<PendingTask, 'project
 }
 
 /** 保留远端身份；旧请求、删除节点和切换后的回调不能改写当前节点。 */
-export function pauseVideoNodeTask(nodeId: string, expectedTaskId?: string, error?: unknown, reason?: keyof typeof VIDEO_PAUSE_MESSAGES): VideoPollingPausedError | undefined {
-  const task = loadAll().find((item) => item.nodeId === nodeId);
+export function pauseVideoNodeTask(nodeId: string, expectedTaskId?: string, error?: unknown,
+  reason?: keyof typeof VIDEO_PAUSE_MESSAGES, expectedReceipt?: MediaTaskReceipt): VideoPollingPausedError | undefined {
+  const task = loadAll().find((item) => item.nodeId === nodeId && (!expectedReceipt || matchesReceipt(item, expectedReceipt)));
   if (!task || !isRecoverableVideoTask(task) || (expectedTaskId !== undefined && task.taskId !== expectedTaskId)) return undefined;
   const comfyQueryHttpStatus = task.taskType === 'comfyui'
     ? error instanceof ComfyQueryAuthorizationError ? error.status : task.comfyQueryHttpStatus : undefined;
+  const deliveryPending = reason === 'delivery_pending' || (reason === 'canvas_changed'
+    && task.taskType === 'comfyui' && task.comfyRecoveryState === 'save_pending' && !!task.comfyOutputFile);
   updatePendingTask(nodeId, {
     videoRecoveryState: 'paused',
     videoRecoveryMessage: error instanceof MediaPersistenceError ? error.message : reason ? VIDEO_PAUSE_MESSAGES[reason] : undefined,
-    mediaRecoveryState: reason === 'delivery_pending' ? 'delivery_pending' : 'query_paused',
+    mediaRecoveryState: deliveryPending ? 'delivery_pending' : 'query_paused',
     mediaRecoveryReason: reason ?? 'query_interrupted',
     comfyQueryHttpStatus,
-  }, task.taskId);
+  }, task.taskId, task.attemptId);
   if (isCurrentVideoTask(task)) {
     useAppStore.getState().updateNodeDataTransient(nodeId, { status: 'idle', error: undefined, videoTaskState: 'paused',
-      mediaTaskState: reason === 'delivery_pending' ? 'delivery_pending' : 'paused', mediaTaskStage: undefined,
+      mediaTaskState: deliveryPending ? 'delivery_pending' : 'paused', mediaTaskStage: undefined,
       generationStartedAt: task.videoGenerationStartedAt });
   }
   return new VideoPollingPausedError(receiptForTask(task), getComfyQueryAuthorizationMessage(comfyQueryHttpStatus));
@@ -955,6 +1043,11 @@ export function prepareVideoNodeGeneration(nodeId: string): void {
 /** 再次生成是显式的新任务；先保留旧任务，不能覆盖其唯一恢复身份。 */
 export function prepareMediaNodeGeneration(nodeId: string): void {
   const store = useAppStore.getState();
+  const nativeRecoveryState = getNativeComfyVideoRecovery(nodeId, store)
+    && store.nodes.find((node) => node.id === nodeId)?.data.mediaTaskState;
+  if (nativeRecoveryState === 'paused' || nativeRecoveryState === 'delivery_pending') {
+    throw new Error('该节点还有未交付的 ComfyUI 视频，请先继续保存');
+  }
   const task = loadAll().find((item) => item.nodeId === nodeId && item.projectId === store.currentProjectId);
   if (!task) return;
   if (task.terminalFailure) { removeFailedMediaTask(receiptForTask(task)); return; }
@@ -1507,8 +1600,13 @@ async function resumeApimart(task: PendingTask, parentSignal?: AbortSignal): Pro
       task = { ...task, mediaDownloadAccess };
       updatePendingTask(nodeId, { mediaDownloadAccess }, task.taskId, task.attemptId);
     }
-    const settled = await settleMediaTaskQueries(taskIds.map((taskId) => (batchSignal: AbortSignal) => (
-      pollTask<ApimartTaskResult, string[]>({
+    const settled = await settleMediaTaskQueries(taskIds.map((taskId) => (batchSignal: AbortSignal) => {
+      if (nodeType === 'ai-image' || nodeType === 'ai-panorama') {
+        return queryApimartImageResult(apiKey, baseUrl, taskId, {
+          interval: 3000, maxDuration: MEDIA_POLL_MAX_DURATION_MS, signal: batchSignal,
+        });
+      }
+      return pollTask<ApimartTaskResult, string[]>({
         fetchState: async (querySignal) => {
           try { return await fetchApimartTask(apiKey, baseUrl, taskId, querySignal, true); }
           catch (error) { if (nodeType === 'ai-video' && isPollTimeoutError(error)) throw new PollTimeoutError(); throw error; }
@@ -1525,8 +1623,8 @@ async function resumeApimart(task: PendingTask, parentSignal?: AbortSignal): Pro
         maxDuration: MEDIA_POLL_MAX_DURATION_MS,
         onFetchError: 'throw',
         signal: batchSignal,
-      })
-    )), signal);
+      });
+    }), signal);
     const uncertain = settled.find((result) => result.status === 'rejected' && !(result.reason instanceof PollTaskFailedError));
     if (uncertain?.status === 'rejected') throw uncertain.reason;
     const urls = settled.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
@@ -1827,6 +1925,8 @@ async function resumeComfyUI(task: PendingTask, parentSignal?: AbortSignal): Pro
         : ['image'];
   const extract = (outputs: ComfyOutputs) => resolveComfyOutputUrl(baseUrl, outputs, kinds);
   let resultReceived = false;
+  const autoRelease = () => maybeAutoReleaseComfyMemory(baseUrl, useAppStore.getState().config.comfyMemoryPolicy ?? 'smart',
+    nodeType === 'ai-video' ? AbortSignal.timeout(COMFY_QUERY_TIMEOUT_MS) : undefined).catch(() => {});
 
   try {
     beginComfyNodeDelivery(nodeId, taskId);
@@ -1879,10 +1979,8 @@ async function resumeComfyUI(task: PendingTask, parentSignal?: AbortSignal): Pro
     if (nodeType === 'ai-video') {
       updatePendingTask(nodeId, { videoRecoveryState: 'paused' }, taskId, task.attemptId);
     }
-    await maybeAutoReleaseComfyMemory(
-      baseUrl,
-      useAppStore.getState().config.comfyMemoryPolicy ?? 'smart',
-    ).catch(() => {});
+    if (nodeType === 'ai-video') void autoRelease();
+    else await autoRelease();
     if (await deliverMediaMessageResult(task, [url], signal)) return;
     await applyNodeResult(nodeId, url, label, isCurrent, undefined, task.videoGeneration, task.mediaDownloadAccess, signal);
     signal.throwIfAborted();
@@ -1904,6 +2002,11 @@ async function resumeComfyUI(task: PendingTask, parentSignal?: AbortSignal): Pro
       }
       return;
     }
+    if (nodeType === 'ai-video' && resultReceived) {
+      // 保留已识别的视频，即使画布版本已变，也只结束这个原任务自己的等待状态。
+      pauseVideoNodeTask(nodeId, taskId, err, err instanceof CanvasResultStaleError ? 'canvas_changed' : 'delivery_pending', receiptForTask(task));
+      return;
+    }
     if (err instanceof ComfyPendingError) {
       // 图片/音频切走后仍需恢复入口；视频另用 canvas_changed 保留本地交付状态。
       if (!(err instanceof CanvasResultStaleError) || nodeType !== 'ai-video') {
@@ -1918,13 +2021,9 @@ async function resumeComfyUI(task: PendingTask, parentSignal?: AbortSignal): Pro
       if (nodeType === 'ai-video' && pauseVideoNodeTask(nodeId, taskId, err, err instanceof CanvasResultStaleError ? 'canvas_changed' : 'query_interrupted')) return;
       if (isCurrent()) useAppStore.getState().updateNodeDataTransient(nodeId, { status: 'error', error: err.message });
     } else {
-      await maybeAutoReleaseComfyMemory(
-        baseUrl,
-        useAppStore.getState().config.comfyMemoryPolicy ?? 'smart',
-      ).catch(() => {});
-      if (isCurrent()) {
-        if (nodeType === 'ai-video' && resultReceived && !(err instanceof PollTaskFailedError)
-          && pauseVideoNodeTask(nodeId, taskId, err, 'delivery_pending')) return;
+      if (nodeType === 'ai-video') void autoRelease();
+      else await autoRelease();
+      if (nodeType === 'ai-video' ? isCurrentMediaTask(task, signal) : isCurrent()) {
         if (resultReceived && !(err instanceof PollTaskFailedError)) {
           updatePendingTask(nodeId, { comfyRecoveryState: 'save_pending' }, taskId, task.attemptId);
           pauseMediaTask(receiptForTask(task), err, 'delivery_pending');
@@ -1971,39 +2070,43 @@ async function resumeGeneral(task: PendingTask, parentSignal?: AbortSignal): Pro
   const query = guardVideoTaskQuery(task, signal);
 
   try {
-    const { url } = await pollTask<Record<string, unknown>, { url: string }>({
-      fetchState: async (querySignal) => {
-        const pollResp = await corsSafeFetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
-          headers: { Authorization: `Bearer ${apiKey}` },
-          signal: querySignal,
-        });
-        if ([408, 504].includes(pollResp.status)) throw new PollTimeoutError();
-        if (!pollResp.ok) throw new Error(`HTTP ${pollResp.status}`);
-        return (await pollResp.json()) as Record<string, unknown>;
-      },
-      isComplete: (raw) => {
-        const t = (raw.data ?? raw) as Record<string, unknown>;
-        if (t.status === 'completed') {
-          const resolved = parseMultiPathResponse(
-            (t.result ?? raw) as Record<string, unknown>,
-            resultField,
-          );
-          if (resolved) return { url: resolved };
-          throw new Error('任务完成但未返回结果');
-        }
-        return null;
-      },
-      isFailed: (raw) => {
-        const t = (raw.data ?? raw) as Record<string, unknown>;
-        return t.status === 'failed' || t.status === 'error' || t.status === 'cancelled'
-          ? `任务失败: ${t.status}`
-          : null;
-      },
-      interval: 3000,
-      maxDuration: MEDIA_POLL_MAX_DURATION_MS,
-      onFetchError: 'throw',
-      signal,
-    });
+    const url = resultField === 'images'
+      ? (await queryCompatibleImageTask(apiKey, baseUrl, taskId, {
+        maxDuration: MEDIA_POLL_MAX_DURATION_MS, signal, allowPartial: true,
+      }))[0]
+      : (await pollTask<Record<string, unknown>, { url: string }>({
+          fetchState: async (querySignal) => {
+            const pollResp = await corsSafeFetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
+              headers: { Authorization: `Bearer ${apiKey}` },
+              signal: querySignal,
+            });
+            if ([408, 504].includes(pollResp.status)) throw new PollTimeoutError();
+            if (!pollResp.ok) throw new Error(`HTTP ${pollResp.status}`);
+            return (await pollResp.json()) as Record<string, unknown>;
+          },
+          isComplete: (raw) => {
+            const t = (raw.data ?? raw) as Record<string, unknown>;
+            if (t.status === 'completed') {
+              const resolved = parseMultiPathResponse(
+                (t.result ?? raw) as Record<string, unknown>,
+                resultField,
+              );
+              if (resolved) return { url: resolved };
+              throw new Error('任务完成但未返回结果');
+            }
+            return null;
+          },
+          isFailed: (raw) => {
+            const t = (raw.data ?? raw) as Record<string, unknown>;
+            return t.status === 'failed' || t.status === 'error' || t.status === 'cancelled'
+              ? `任务失败: ${t.status}`
+              : null;
+          },
+          interval: 3000,
+          maxDuration: MEDIA_POLL_MAX_DURATION_MS,
+          onFetchError: 'throw',
+          signal,
+      })).url;
     markMediaTaskDeliveryPending(task, signal, [url]);
     if (await deliverMediaMessageResult(task, [url], signal)) return;
     await applyNodeResult(nodeId, url, label, query.isCurrent, undefined, task.videoGeneration, task.mediaDownloadAccess, signal);

@@ -45,11 +45,11 @@ import { isNativeWorkflowExecution, nativeWorkflowDigest } from './nativeWorkflo
 let nodeClassCache: { baseUrl: string; classes: Set<string>; fetchedAt: number } | null = null;
 const NODE_CLASS_CACHE_TTL = 30_000;
 
-async function applyConfiguredComfyMemoryPolicy(baseUrl: string): Promise<void> {
+async function applyConfiguredComfyMemoryPolicy(baseUrl: string, signal?: AbortSignal): Promise<void> {
   const policy = useAppStore.getState().config.comfyMemoryPolicy ?? 'smart';
   if (policy === 'smart') return;
   try {
-    await maybeAutoReleaseComfyMemory(baseUrl, policy);
+    await maybeAutoReleaseComfyMemory(baseUrl, policy, signal);
   } catch (error) {
     console.warn(
       '[ComfyUI] 自动释放资源失败',
@@ -1770,7 +1770,7 @@ export async function executeComfyUIVideoGenerate(
   promptMedia: { imageUrls?: string[]; videoUrls?: string[] } = {},
   /** 仅调用方显式传入时启用；普通节点生成沿用既有流程。 */
   beforeSubmit?: () => void | Promise<void>,
-): Promise<{ url: string }> {
+): Promise<{ url: string; taskReceipt?: MediaTaskReceipt }> {
   const {
     workflowId, workflowInputs, prompt,
     videoResolution = 832, videoFps = 24, videoFrames = 77, seedanceDuration,
@@ -1910,13 +1910,18 @@ export async function executeComfyUIVideoGenerate(
     const result = await pollComfyUIHistoryForVideo(baseUrl, promptId, signal);
     // 远端完成不等于已交付：调用方保存文件并回填节点后才清理任务。
     // 保存期间退出应用或画布变更时，仍可按原 promptId 续取视频。
-    if (params.nodeId && projectId) {
+    let taskReceipt: MediaTaskReceipt | undefined;
+    if (pendingReceipt) {
       retainPending = true;
-      updatePendingTask(params.nodeId, { videoRecoveryState: 'paused', comfyRecoveryState: 'save_pending',
-        comfyOutputFile: result.file }, promptId, pendingReceipt?.attemptId);
+      taskReceipt = updatePendingTask(pendingReceipt.nodeId, {
+        videoRecoveryState: 'paused', comfyRecoveryState: 'save_pending',
+        mediaRecoveryState: 'delivery_pending', comfyOutputFile: result.file,
+      }, promptId, pendingReceipt.attemptId);
+      if (!taskReceipt) throw new Error('ComfyUI 回执所属记录已变化，请在服务端核对原任务');
     }
-    await applyConfiguredComfyMemoryPolicy(baseUrl);
-    return { url: result.url };
+    // 可选显存释放的响应不能阻塞下载和回填。
+    void withComfyQueryTimeout((releaseSignal) => applyConfiguredComfyMemoryPolicy(baseUrl, releaseSignal)).catch(() => {});
+    return { url: result.url, ...(taskReceipt ? { taskReceipt } : {}) };
   } catch (error) {
     const interrupted = interruptedComfySubmission(pendingReceipt, submittedTaskId);
     if (interrupted) {
@@ -1937,7 +1942,7 @@ export async function executeComfyUIVideoGenerate(
       if (paused) throw paused;
     }
     if (submittedTaskId && !(error instanceof ComfyPendingError) && !signal?.aborted) {
-      await applyConfiguredComfyMemoryPolicy(comfyUrl);
+      void withComfyQueryTimeout((releaseSignal) => applyConfiguredComfyMemoryPolicy(comfyUrl, releaseSignal)).catch(() => {});
     }
     throw error;
   } finally {

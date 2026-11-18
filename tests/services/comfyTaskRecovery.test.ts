@@ -420,13 +420,40 @@ describe('ComfyUI 任务恢复合同', () => {
     configureVideo();
     const result = await executeComfyUIVideoGenerate(params);
     expect(result.url).toBe(`${task.baseUrl}/view?filename=out.mp4&subfolder=video&type=output`);
-    expect(pending()[0]).toMatchObject({ taskId: 'prompt-1', videoRecoveryState: 'paused' });
+    const retained = pending()[0];
+    expect(retained).toMatchObject({ taskId: 'prompt-1', videoRecoveryState: 'paused',
+      comfyRecoveryState: 'save_pending', mediaRecoveryState: 'delivery_pending',
+      comfyOutputFile: { filename: 'out.mp4', subfolder: 'video', type: 'output' },
+    });
+    expect(result.taskReceipt).toEqual({ projectId: 'p1', nodeId: 'n1', taskId: 'prompt-1', attemptId: retained.attemptId });
     expect(useAppStore.getState().nodes[0].data.videoUrl).toBeUndefined();
     await expect(executeComfyUIVideoGenerate(params)).rejects.toThrow('未交付');
     expect(promptCalls()).toHaveLength(1);
     useAppStore.getState().updateNodeDataTransient('n1', { videoUrl: 'asset://local.mp4', status: 'success' });
     completeVideoNodeTask('n1', 'prompt-1');
     expect(pending()).toEqual([]);
+  });
+
+  it('视频结果交付不等待自动释放显存的请求返回', async () => {
+    configureVideo();
+    useAppStore.setState({ config: { ...useAppStore.getState().config, comfyUIUrl: 'http://127.0.0.1:8188',
+      comfyMemoryPolicy: 'unload-models' } });
+    const fetchBefore = mocks.fetch.getMockImplementation();
+    let finishRelease = () => {};
+    const release = new Promise<Response>((resolve) => { finishRelease = () => resolve(json({})); });
+    mocks.fetch.mockImplementation((url: string, options?: RequestInit) =>
+      url.endsWith('/free') ? release : fetchBefore?.(url, options));
+    const received = vi.fn();
+    const result = executeComfyUIVideoGenerate(params).then(received);
+    try {
+      await vi.waitFor(() => expect(mocks.fetch).toHaveBeenCalledWith(expect.stringMatching(/\/free$/), expect.any(Object)));
+      await vi.waitFor(() => expect(received).toHaveBeenCalledWith(expect.objectContaining({
+        taskReceipt: expect.objectContaining({ taskId: 'prompt-1' }),
+      })));
+    } finally {
+      finishRelease();
+      await result;
+    }
   });
 
   it('视频已回填时完成通知同步清除暂停提示，重开项目不再恢复旧任务', async () => {
@@ -527,7 +554,9 @@ describe('ComfyUI 任务恢复合同', () => {
       '9': { gifs: [{ filename: 'final.mp4', subfolder: 'video', type: 'output' }] },
     } } }));
     const url = `${task.baseUrl}/view?filename=final.mp4&subfolder=video&type=output`;
-    await expect(executeComfyUIVideoGenerate(params)).resolves.toEqual({ url });
+    await expect(executeComfyUIVideoGenerate(params)).resolves.toMatchObject({
+      url, taskReceipt: { projectId: 'p1', nodeId: 'n1', taskId: 'prompt-1' },
+    });
     mocks.persist.mockResolvedValue({ mediaUrl: 'asset://saved.mp4', sourceUrl: url, filePath: 'saved.mp4' });
     await resumeVideoNodeTask('n1');
     expect(mocks.persist).toHaveBeenCalledWith(url, 'p1', 'ai-video', 'test', {

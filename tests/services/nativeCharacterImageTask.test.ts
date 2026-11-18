@@ -13,7 +13,10 @@ vi.mock('../../src/services/fileService', () => ({
   getProjectDataDir: async () => '/work', getAssetUrlFromPath: async (path: string) => `asset:${path}`,
   isTauriEnv: () => true, joinPath: (...segments: string[]) => segments.join('/'),
 }));
-vi.mock('../../src/services/fs/characterVisualFiles', () => ({ saveCharacterVisualResult: vi.fn() }));
+vi.mock('../../src/services/fs/characterVisualFiles', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/services/fs/characterVisualFiles')>(),
+  saveCharacterVisualResult: vi.fn(),
+}));
 vi.mock('../../src/services/nativeMediaLocalResult', () => ({ readNativeMediaLocalResult: files.read, captureNativeMediaLocalResult: vi.fn() }));
 
 beforeEach(() => {
@@ -24,7 +27,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-async function fixture() {
+async function fixture(extension = 'png') {
   const { project } = await createNativeProject({ name: '回执验收' });
   const operationId = crypto.randomUUID();
   const sha256 = 'a'.repeat(64);
@@ -33,7 +36,7 @@ async function fixture() {
     kind: 'native-character-image-v1', ownerProjectId: project.id, projectEpoch: project.epoch,
     resultRootRef: project.storageRootRef, characterId: 'removed-character', operationId,
     modelRef: 'general/image', providerConfigId: 'image-provider', requestFingerprint: 'b'.repeat(64),
-    status: 'outcome-unknown', outputs: [{ index: 0, width: 640, height: 480, bytes: 123, sha256, relativePath: `media/${sha256}.png` }],
+    status: 'outcome-unknown', outputs: [{ index: 0, width: 640, height: 480, bytes: 123, sha256, relativePath: `media/${sha256}.${extension}` }],
     revision: 0, createdAt: 1, updatedAt: 1,
     recovery: { version: 1, kind: 'protocol', connectionId: 'image-provider', providerBase: 'https://provider.example/v1',
       modelRef: 'general/image', configurationDigest: 'c'.repeat(64), expectedCount: 1,
@@ -86,6 +89,17 @@ describe('角色图片任务恢复', () => {
       expect(files.read).toHaveBeenCalledOnce();
       files.read.mockRejectedValueOnce(new Error('Digest changed'));
       await expect(readNativeCharacterImageTask(project.id, receipt.characterId, receipt.operationId, 0)).resolves.toMatchObject({ candidates: [] });
+    } finally { db.close(); }
+  });
+
+  it.each(['gif', 'svg'])('原生项目从回执读取 %s 候选并保持原文件身份', async (extension) => {
+    const { project, receipt, db } = await fixture(extension);
+    try {
+      const [output] = receipt.outputs;
+      await expect(readNativeCharacterImageTask(project.id, receipt.characterId, receipt.operationId, 0)).resolves.toMatchObject({
+        candidates: [{ relativePath: output.relativePath, sha256: output.sha256 }],
+      });
+      expect(files.read).toHaveBeenCalledExactlyOnceWith(project.id, output);
     } finally { db.close(); }
   });
 });

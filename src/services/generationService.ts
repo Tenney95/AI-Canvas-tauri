@@ -35,7 +35,8 @@ import { registerCanvasDerivation, isCanvasDerivationFresh, completeCanvasDeriva
 import { videoInputFingerprint, videoInputFingerprintMaterial } from './videoBatchPlanning';
 import { registerNativeVideoSubmissionGuard } from './nativeVideoSubmission';
 import { nativeMediaInputMaterial } from './nativeMediaInput';
-import { beginComfyNodeDelivery, cancelNodePolling, cleanupNodePolling, completeComfyNodeTask, completeMediaNodeTask, getPendingTasksForProject, pauseComfyNodeDelivery, pauseMediaNodeTask, pauseMediaTask, prepareMediaNodeGeneration, registerMediaNodeOperation, registerNodePolling, isMediaTaskPausedError } from './pollManager';
+import { beginComfyNodeDelivery, cancelNodePolling, cleanupNodePolling, completeComfyNodeTask, completeMediaNodeTask, getPendingTasksForProject, pauseComfyNodeDelivery, pauseMediaNodeTask, pauseMediaTask, prepareMediaNodeGeneration, registerMediaNodeOperation, registerNodePolling, isMediaTaskPausedError, showNativeComfyVideoRecovery } from './pollManager';
+import { isProjectExpectedContextCurrent } from './projectExecutionContext';
 import { resolveGenerationNodeData } from '../utils/nodeGeneration';
 import { applyGenerationCameraPrompt } from './shotlistPromptService';
 import { resolveImageOutputsPerJob, resolveImageParameterCapability } from './ai/mediaModelCapabilities';
@@ -401,6 +402,9 @@ export async function executeGeneration(
   const submittingProjectId = store.currentProjectId;
   const mediaSubmission = ['ai-image', 'ai-animation', 'ai-panorama', 'ai-video', 'ai-audio'].includes(nodeType);
   const localComfyTask = !!workflowId && !cloudWorkflow;
+  const executionContext = store.projectExecutionContext;
+  const nativeComfyVideoContext = nodeType === 'ai-video' && localComfyTask
+    && executionContext?.kind === 'canvas' && executionContext.modelGeneration === 1 ? executionContext : undefined;
   if (mediaSubmission || localComfyTask) {
     try { prepareMediaNodeGeneration(nodeId); }
     catch (error) {
@@ -445,6 +449,8 @@ export async function executeGeneration(
 
   // 文本和分镜也领取节点运行所有权，旧请求的取消收尾不能清掉新一轮的 loading。
   const endOperation = registerMediaNodeOperation(nodeId, true);
+  const ownsNativeComfyVideo = () => nativeComfyVideoContext && endOperation.isCurrent?.() !== false
+    && isProjectExpectedContextCurrent(nativeComfyVideoContext, useAppStore.getState(), { checkCanvasRevision: false });
   const nativeMediaGuard = nativeMediaMaterial === undefined ? undefined : registerNativeVideoSubmissionGuard(async () => {
     if (lease) await assertLease();
     const current = useAppStore.getState(), node = current.nodes.find((item) => item.id === nodeId);
@@ -860,7 +866,13 @@ export async function executeGeneration(
       const nativeOperationId = 'nativeOperationId' in err && typeof err.nativeOperationId === 'string' ? err.nativeOperationId : undefined;
       const state = 'localResultAvailable' in err && err.localResultAvailable === true ? 'delivery_pending'
         : 'remoteTaskKnown' in err && err.remoteTaskKnown === true ? 'paused' : 'unknown';
-      if (isStillCurrentSubmission()) {
+      if (nativeComfyVideoContext && nativeOperationId && ownsNativeComfyVideo() && state !== 'unknown') {
+        const currentNode = useAppStore.getState().nodes.find((node) => node.id === nodeId);
+        const saving = state === 'delivery_pending' || currentNode?.data.mediaTaskStage === 'saving';
+        showNativeComfyVideoRecovery(nativeComfyVideoContext, nodeId, nativeOperationId, saving);
+        return { success: false, message: err.message, recovery: { state: saving ? 'delivery_pending' : state, nativeOperationId } };
+      }
+      if (isStillCurrentSubmission() || ownsNativeComfyVideo()) {
         store.updateNodeDataTransient(nodeId, { status: 'idle', error: err.message, mediaTaskState: 'paused', mediaTaskStage: undefined });
         notify(err.message);
       }
@@ -926,6 +938,10 @@ export async function executeGeneration(
     if (savingSignal) cleanupNodePolling(nodeId, savingSignal);
     const current = useAppStore.getState();
     const currentNode = current.nodes.find((node) => node.id === nodeId);
+    if (!mediaDelivered && ownsNativeComfyVideo() && currentNode?.type === 'ai-video'
+      && currentNode.data.role !== 'source' && currentNode.data.status === 'loading') {
+      current.updateNodeDataTransient(nodeId, { status: 'idle', mediaTaskStage: undefined });
+    }
     const leaseRevoked = Boolean(lease && (!leaseValid || lease.signal?.aborted));
     if (leaseRevoked && endOperation.isCurrent?.()
       && current.currentProjectId === submittingProjectId && currentNode?.data.status === 'loading') {

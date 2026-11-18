@@ -2,6 +2,7 @@
 import type { NodeType } from '../types';
 import { splitCommaSeparatedUrls } from './ai/helpers';
 import { corsSafeFetch } from './ai/httpTransport';
+import { parseRunningHubModelOutputs, readRunningHubModelStatus } from './ai/providers/runninghubModelResult';
 import { pollTask, PollTimeoutError } from './pollTask';
 
 export interface ApimartTaskResult<TResult = Record<string, unknown>> {
@@ -65,10 +66,10 @@ export function extractApimartUrls(
 }
 
 interface RunningHubTaskResult {
-  status?: string;
+  status?: unknown;
   errorCode?: string;
   errorMessage?: string;
-  results?: Array<{ url?: string | null }> | null;
+  results?: unknown;
 }
 
 async function fetchRunningHubTask(
@@ -88,7 +89,7 @@ async function fetchRunningHubTask(
   });
   const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
   const code = payload.code;
-  if (!response.ok || (typeof code === 'number' && code !== 0)) {
+  if (!response.ok || (typeof code === 'number' && code !== 0 && code !== 200)) {
     const message = typeof payload.msg === 'string' ? payload.msg : `HTTP ${response.status}`;
     throw new Error(`RunningHub 任务查询失败：${message}`);
   }
@@ -106,13 +107,10 @@ export async function pollRunningHubTask(
 ): Promise<string[]> {
   return pollTask<RunningHubTaskResult, string[]>({
     fetchState: (querySignal) => fetchRunningHubTask(apiKey, baseUrl, taskId, querySignal),
-    isComplete: (result) => {
-      if (result.status?.toUpperCase() !== 'SUCCESS') return null;
-      const urls = result.results?.flatMap((item) => item.url ? [item.url] : []) ?? [];
-      if (urls.length === 0) throw new Error('RunningHub 任务完成但未返回图片');
-      return urls;
-    },
-    isFailed: (result) => result.status?.toUpperCase() === 'FAILED'
+    isComplete: (result) => readRunningHubModelStatus(result.status) === 'SUCCESS'
+      ? parseRunningHubModelOutputs(result.results, 'image').map((output) => output.url)
+      : null,
+    isFailed: (result) => readRunningHubModelStatus(result.status) === 'FAILED'
       ? `RunningHub 任务失败：${result.errorMessage || result.errorCode || '未知错误'}`
       : null,
     interval: 3000,

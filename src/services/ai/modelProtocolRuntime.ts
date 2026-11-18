@@ -32,6 +32,7 @@ import { readModelProtocolPathValues } from './modelProtocolResponse';
 import { readGoogleImagePartsReferenceUrls } from './imageModelTemplates';
 import { assertModelProtocolResult } from './modelCapabilityValidation';
 import { getProviderPolicy, resolveProviderCatalogId } from './providerPolicies';
+import { getProviderDefinition } from './providerCatalogService';
 import { RELAYON_VIDEO_RESULT_URL_PATHS, usesRelayonModelProtocol, resolveRelayonVideoExecutionProfile } from './providers/relayonModelManifest';
 import { normalizeRelayonVideoSubmitResponse } from './providers/relayonTaskIdentity';
 import { resolveRelayonImageBaseUrl } from './relayonProviderGroups';
@@ -399,7 +400,9 @@ export async function runConfiguredModelProtocol(
     options.model.videoCapability,
   );
   if (expansionConflicts.length > 0) throw new Error(expansionConflicts[0]);
-  const configuredBaseUrl = provider.baseUrl?.trim() || '';
+  const configuredBaseUrl = provider.baseUrl?.trim()
+    || (options.category === 'image' ? getProviderDefinition(options.model.providerConfigId, provider)?.defaultBaseUrl : undefined)
+    || '';
   const baseUrl = catalogId === 'relayonapi' && options.category === 'image' && options.useRelayonImageApi
     ? resolveRelayonImageBaseUrl(configuredBaseUrl) : configuredBaseUrl;
   if (!baseUrl) throw new Error(`模型“${options.model.name}”未配置接口地址`);
