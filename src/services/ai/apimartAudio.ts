@@ -308,6 +308,7 @@ export function submitSunoGeneration(
   }, 'APIMart Suno 音乐任务提交失败', signal, beforeSubmit);
 }
 
+/** 读取一次 APIMart 歌词或音乐任务状态，并对错误脱敏。 */
 export async function fetchFlowMusicTask(
   apiKey: string,
   baseUrl: string,
@@ -337,7 +338,7 @@ export async function fetchFlowMusicTask(
   }
 }
 
-/** 首次取回和续查共用原音乐阶段的查询，阶段提交由调用方管理。 */
+/** FlowMusic 与 Suno 共用原阶段的首次取回和续查，阶段提交由调用方管理。 */
 export function queryApimartMusicTask(
   apiKey: string,
   baseUrl: string,
@@ -360,6 +361,7 @@ export function queryApimartMusicTask(
   });
 }
 
+/** 读取歌词任务的首条歌词及标题，并校验歌词内容。 */
 export function extractFlowMusicLyrics(task: FlowMusicTaskState): Required<FlowMusicLyrics> {
   const item = task.result?.lyrics?.[0];
   const lyrics = item?.lyrics?.trim();
@@ -367,6 +369,7 @@ export function extractFlowMusicLyrics(task: FlowMusicTaskState): Required<FlowM
   return { title: item?.title?.trim() || '', lyrics };
 }
 
+/** 读取原音乐任务的首个音轨，兼容不同音频地址字段。 */
 export function extractFlowMusicTrack(task: FlowMusicTaskState): AudioGenerationResult {
   const item = task.result?.music?.[0];
   const url = item?.audio_url || item?.url || item?.wav_url;
@@ -379,7 +382,7 @@ export function extractFlowMusicTrack(task: FlowMusicTaskState): AudioGeneration
   };
 }
 
-/** 原任务可能包含多个音轨；原生恢复必须保留全部结果，不能取首项冒充完成。 */
+/** 读取原音乐任务的有界完整音轨集合，供原生恢复按原顺序保存和交付。 */
 export function extractFlowMusicTracks(task: FlowMusicTaskState): AudioGenerationResult[] {
   const tracks = task.result?.music;
   if (!Array.isArray(tracks) || !tracks.length || tracks.length > 128) throw new Error('原音乐任务音轨集合缺失或超过上限');

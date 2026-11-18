@@ -189,7 +189,7 @@ export function findComfyOutputFile(
   return null;
 }
 
-/** 完整候选沿用同一类型与正式输出优先规则，不截取首个文件作为整批结果。 */
+/** 供原生恢复按媒体类型和正式输出优先规则选择一组完整候选，并在组内去重。 */
 export function findComfyOutputFiles(outputs: ComfyOutputs, kinds: readonly ComfyOutputKind[]): ComfyOutputFile[] {
   if (!outputs || typeof outputs !== 'object' || Array.isArray(outputs)) return [];
   for (const kind of kinds) for (const storageType of ['output', 'legacy', 'any'] as const) {
@@ -212,7 +212,7 @@ export function buildComfyFileUrl(baseUrl: string, file: ComfyOutputFile): strin
   return `${baseUrl.replace(/\/+$/, '')}/view?filename=${encodeURIComponent(safeFile.filename)}${subfolder}${type}`;
 }
 
-/** 找到目标媒体就拼成 /view 地址，没找到返回 null（表示还没出结果）。 */
+/** 供 ComfyUI 工作流及原任务续查取首个目标媒体，并构造 /view 地址。找不到时返回 null。 */
 export function resolveComfyOutputUrl(
   baseUrl: string,
   outputs: ComfyOutputs,

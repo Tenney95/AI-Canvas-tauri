@@ -1,11 +1,13 @@
 /** RunningHub 标准模型首次取图与旧任务续查共享的状态和产物合同。 */
 import type { RunningHubMediaKind, RunningHubOutput } from '../../../types/runninghub';
 
+/** 标准模型的首次查询和续查使用同一状态映射，服务商确认取消时按失败终态处理。 */
 export function readRunningHubModelStatus(value: unknown): string {
   const status = typeof value === 'string' ? value.toUpperCase() : '';
   return status === 'CANCELED' || status === 'CANCELLED' ? 'FAILED' : status;
 }
 
+/** 按原顺序筛选请求类型的标准模型产物，缺少可用产物时保留原任务供处理。 */
 export function parseRunningHubModelOutputs(results: unknown, kind: RunningHubMediaKind): RunningHubOutput[] {
   if (!Array.isArray(results)) throw new Error('RunningHub 已完成但未返回产物数组');
   const outputs: RunningHubOutput[] = [];

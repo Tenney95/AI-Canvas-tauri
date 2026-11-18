@@ -16,6 +16,7 @@ interface DreaminaResultOptions {
   logQuery?: boolean;
 }
 
+/** 用原 submitId 查询 CLI，优先返回本地文件地址，支持首项和完整候选两种交付。 */
 export function queryDreaminaResult(submitId: string, options: DreaminaResultOptions = {}): Promise<string[]> {
   return pollTask<DreaminaQuery, string[]>({
     fetchState: async (signal) => {

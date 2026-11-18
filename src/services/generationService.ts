@@ -230,6 +230,10 @@ async function runSequentialImageBatch(
   }
 }
 
+/**
+ * 画布和节点弹窗共用的新生成入口，协调提交、保存、回填和输出历史。
+ * 使用项目、节点及执行租约校验交付，原任务续查交给 resumeMediaNodeTask。
+ */
 export async function executeGeneration(
   nodeId: string,
   overridePrompt?: string,

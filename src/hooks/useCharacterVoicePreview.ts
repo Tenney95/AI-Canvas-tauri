@@ -21,7 +21,10 @@ interface VoicePreviewRequest {
   release?: () => void;
 }
 
-/** 每个试听入口拥有独立的请求、播放器和原生媒体租约。 */
+/**
+ * 为每个角色声音入口管理独立的播放器和媒体租约，按入口范围与当前来源释放。
+ * 普通地址直接播放，ComfyUI 通过原生媒体取源。入口决定等待中的按钮状态和错误提示。
+ */
 export function useCharacterVoicePreview(context: string, { showPending, stopOnPause, onError, getSource }: VoicePreviewOptions = {}) {
   const requestRef = useRef<VoicePreviewRequest | null>(null);
   const [preview, setPreview] = useState<{ voice: VoicePreviewIdentity; status: 'pending' | 'playing' | 'error' } | null>(null);

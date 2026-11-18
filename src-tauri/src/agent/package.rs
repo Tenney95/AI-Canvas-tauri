@@ -251,6 +251,7 @@ fn read_registry<R: Runtime>(app: &AppHandle<R>) -> Result<SourceRegistry, Strin
     read_registry_at(&registry_file(app)?)
 }
 
+/// 按 Agent 的规则读取主表。缺失时返回空表，损坏或版本不符时返回错误。
 fn read_registry_at(file: &Path) -> Result<SourceRegistry, String> {
     match fs::read(file) {
         Ok(bytes) => {

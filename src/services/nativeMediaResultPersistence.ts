@@ -8,7 +8,10 @@ type NativeMediaResultOptions = Pick<FileTransferOptions, 'signal' | 'assertCurr
   missingFileMessage: string;
 };
 
-/** 把单个产物保存到原画布目录并冻结内容身份，回执和交付由调用方结算。 */
+/**
+ * 将单个产物保存到原画布并核验本地文件摘要。
+ * 调用方按执行阶段提供适用的鉴权、取消信号及上下文校验，并负责候选顺序和回执结算。
+ */
 export async function persistNativeMediaResult(
   url: string,
   canvasId: string,

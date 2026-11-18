@@ -19,6 +19,8 @@ pub(crate) struct RegistryWriteErrors {
     pub commit: &'static str,
 }
 
+/// 共用注册表的暂存、备份和发布失败回滚。调用方负责加锁、路径和内容校验。
+/// Agent 和插件使用固定暂存文件。Skill 独占创建暂存文件、同步写盘并校验文件类型。
 pub(crate) fn write_registry_file(
     primary: &Path,
     temporary: &Path,

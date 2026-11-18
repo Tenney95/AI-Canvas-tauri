@@ -5,7 +5,7 @@ import { corsSafeFetch } from './ai/httpTransport';
 import { parseRunningHubModelOutputs, readRunningHubModelStatus } from './ai/providers/runninghubModelResult';
 import { pollTask } from './pollTask';
 
-/** 旧 APIMart 音频回执沿用 /tasks 和历史结果字段。 */
+/** 续查旧 APIMart 音频回执，优先读取 audios 首项，兼容历史 images 字段。 */
 export function queryLegacyApimartAudioResult(
   apiKey: string, baseUrl: string, taskId: string, maxDuration: number, signal: AbortSignal,
 ): Promise<string[]> {
@@ -58,6 +58,7 @@ async function fetchRunningHubTask(
     : payload as RunningHubTaskResult;
 }
 
+/** 使用原任务 ID 续查旧 RunningHub 回执，复用共用模型结果解析。 */
 export async function pollRunningHubTask(
   apiKey: string,
   baseUrl: string,

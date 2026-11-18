@@ -357,7 +357,7 @@ async function pollResolvedModelProtocolRequest(
   return result;
 }
 
-/** 隐私标记沿原查询描述恢复；错误在进入任务诊断、消息或暂停回执前脱敏。 */
+/** 按解析后的模型协议查询原任务，供首次取回和续查共用。敏感查询错误在返回前脱敏。 */
 export async function pollResolvedModelProtocol(
   poll: ResolvedModelProtocolPoll,
   apiKey: string,

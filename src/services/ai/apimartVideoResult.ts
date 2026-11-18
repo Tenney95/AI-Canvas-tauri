@@ -28,6 +28,7 @@ function readApimartVideoUrls(collection: unknown, allowPartial?: boolean): stri
   return readAsyncMediaResultUrls({ videos: candidates }, 'videos', allowPartial);
 }
 
+/** 供视频首次取回和续查复用，优先读取视频候选，按调用方配置兼容旧图片字段。 */
 export function queryApimartVideoResult(
   apiKey: string, baseUrl: string, taskId: string, options: ApimartVideoQueryOptions,
 ): Promise<string[]> {

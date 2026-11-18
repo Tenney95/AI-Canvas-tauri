@@ -3,6 +3,7 @@ import type { ResolvedModelProtocolPoll } from '../../types/aiTypes';
 import { PollTaskFailedError } from '../pollTask';
 import { pollResolvedModelProtocol } from './modelProtocol';
 
+/** 按原任务 ID 构造 CCC 图片的声明式查询合同。 */
 export function createCccImageResultPoll(
   baseUrl: string, taskId: string, limits: Pick<ResolvedModelProtocolPoll, 'maxDurationMs' | 'maxAttempts'>,
 ): ResolvedModelProtocolPoll {
@@ -20,6 +21,7 @@ function validateCccFailure(raw: unknown): void {
   throw new PollTaskFailedError(typeof detail === 'string' && detail.trim() ? `CCC 图片任务失败：${detail}` : 'CCC 图片任务失败');
 }
 
+/** 首次取回与原任务续查共用声明式轮询和图片候选解析。 */
 export async function queryCccImageResult(
   poll: ResolvedModelProtocolPoll, apiKey: string, signal: AbortSignal | undefined, allowedBaseUrl: string,
   includeFailureDetail = false,

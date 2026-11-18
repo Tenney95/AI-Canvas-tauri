@@ -8,7 +8,7 @@ import { redactModelProtocolError } from './modelProtocolHttp';
 export type AsyncMediaResultField = 'videos' | 'audios' | 'images';
 const recordObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 
-/** 只选择一个明确的返回集合，按调用场景读取首项或保留完整候选。 */
+/** 优先读取指定媒体字段，兼容旧响应的兜底字段，按原顺序返回选中的候选集合。 */
 export function readAsyncMediaResultUrls(
   payload: unknown, field: AsyncMediaResultField, allowPartial = false, firstOnly = false,
 ): string[] {
@@ -61,7 +61,7 @@ type AsyncTaskQuery = Pick<PollTaskOptions<unknown, string[]>,
   readUrls: (task: Record<string, unknown>, raw: unknown) => string[];
 };
 
-/** 统一异步任务完成、失败与候选缺失的处理。 */
+/** 共用异步任务的终态处理，各适配器提供查询请求和候选提取规则。 */
 export function queryAsyncMediaResult({ missingResult, failureMessage, readUrls, ...pollOptions }: AsyncTaskQuery): Promise<string[]> {
   const taskState = (raw: unknown): Record<string, unknown> =>
     recordObject(raw) ? recordObject(raw.data) ? raw.data : raw : {};
@@ -86,6 +86,7 @@ export function queryAsyncMediaResult({ missingResult, failureMessage, readUrls,
   });
 }
 
+/** 共用图片候选提取，按任务数据、原始响应的顺序查找候选。 */
 export function queryAsyncImageResult({ allowPartial, firstOnly, ...options }: Omit<AsyncTaskQuery, 'readUrls'> & {
   allowPartial?: boolean;
   firstOnly?: boolean;
@@ -124,7 +125,7 @@ export function queryCompatibleImageTask(apiKey: string, baseUrl: string, taskId
   return queryCompatibleMediaTask(apiKey, baseUrl, taskId, 'images', options);
 }
 
-/** 首次取回和续查均对同一个 /tasks 原任务 ID 执行 GET。 */
+/** 兼容 /tasks 的图片、视频和音频首次取回及续查均通过 GET 查询原任务 ID。 */
 export function queryCompatibleMediaTask(
   apiKey: string, baseUrl: string, taskId: string, field: AsyncMediaResultField, options: CompatibleTaskOptions,
 ): Promise<string[]> {

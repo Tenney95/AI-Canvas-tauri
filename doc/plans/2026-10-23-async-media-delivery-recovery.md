@@ -16,6 +16,32 @@
 6. 任务记录不保存凭据、本地路径或完整请求正文。原有画布派生守卫、专用取消协议与站点身份继续有效。
 7. RunningHub、工作流 API 和 ComfyUI 继续沿用各自专用提交及取消流程；本批将已有 ComfyUI 任务接入对话交付恢复，不改其首轮提交服务，不承诺恢复没有留下任务记录的 ComfyUI 中断。RunningHub／工作流 API 的纯消息任务仍在重开原项目、加载原会话后专用恢复，尚未接入通用手动恢复按钮；通用 MCP 列表不将这些任务标为可直接续查。同步接口没有远端 ID 时也无法补出原任务查询能力。
 
+## 公用方法索引
+
+### 查询与候选解析
+
+首次取回和原任务续查调用同一个厂商查询方法，使用原连接及任务 ID。查询层返回结果，待续回执、下载和回填由调用方结算。
+
+| 场景 | 源码与方法 | 复用边界 |
+| --- | --- | --- |
+| 异步终态与候选解析 | [asyncMediaResult.ts](../../src/services/ai/asyncMediaResult.ts) 的 `queryAsyncMediaResult`、`queryAsyncImageResult`、`readAsyncMediaResultUrls` | 统一完成、失败、取消与空结果处理。按目标媒体字段读取一个有序候选集合，保留签名 URL 的字面逗号。调用方选择首项、完整集合或允许有效部分候选。 |
+| 兼容 `/tasks` 的图、视、音 | [asyncMediaResult.ts](../../src/services/ai/asyncMediaResult.ts) 的 `queryCompatibleMediaTask`、`queryCompatibleImageTask` | 用原 ID 执行 GET。普通生成、旧回执和原生恢复共用，角色图片续查通过图片包装调用。 |
+| APIMart 图片与视频 | [apimartImageResult.ts](../../src/services/ai/apimartImageResult.ts) 的 `fetchApimartTask`、`queryApimartImageResult` 和 [apimartVideoResult.ts](../../src/services/ai/apimartVideoResult.ts) 的 `queryApimartVideoResult` | 共用任务状态请求，图片保留候选顺序，视频优先取 `videos`，按合同允许兼容历史 `images`。 |
+| CCC 与声明式协议 | [cccImageResult.ts](../../src/services/ai/cccImageResult.ts) 的 `createCccImageResultPoll`、`queryCccImageResult` 和 [modelProtocolPoll.ts](../../src/services/ai/modelProtocolPoll.ts) 的 `pollResolvedModelProtocol` | CCC 首次取图、角色续查和原生恢复使用同一查询合同。声明式协议按已解析、已核对的查询合同读取原任务。 |
+| 即梦 | [dreaminaResult.ts](../../src/services/dreaminaResult.ts) 的 `queryDreaminaResult` | 图片、视频首次等待和恢复均查询原 `submitId`。优先读取 CLI 的本地产物，调用方决定取首项或整组。 |
+| APIMart 音乐与旧音频 | [apimartAudio.ts](../../src/services/ai/apimartAudio.ts) 的 `queryApimartMusicTask`、`extractFlowMusicLyrics`、`extractFlowMusicTrack`、`extractFlowMusicTracks` 和 [pollManagerQueries.ts](../../src/services/pollManagerQueries.ts) 的 `queryLegacyApimartAudioResult` | FlowMusic、Suno 共用 `/music/tasks` 查询，歌词与音轨分别提取。旧音频回执仍走 `/tasks`，保留 `audios` 和历史 `images` 的兼容。 |
+| RunningHub 标准模型 | [runninghubModelResult.ts](../../src/services/ai/providers/runninghubModelResult.ts) 的 `readRunningHubModelStatus`、`parseRunningHubModelOutputs` | 统一读取标准模型的状态和指定媒体类型候选。工作流保留自己的查询与输出合同。 |
+| ComfyUI 文件输出 | [comfyOutputs.ts](../../src/services/comfyOutputs.ts) 的 `resolveComfyOutputUrl`、`findComfyOutputFiles`、`buildComfyFileUrl` | 普通入口取首个匹配文件，原生交付可保留完整候选。动态工作流按既有规则扩展候选类型，通用音频优先音频、再试视频。 |
+
+### 轮询、交付与落盘
+
+| 场景 | 源码与方法 | 复用边界 |
+| --- | --- | --- |
+| 取消与清理轮询 | [pollManager.ts](../../src/services/pollManager.ts) 的 `registerNodePolling`、`isNodePollingCurrent`、`cleanupNodePolling` | 调用方直接传父信号，并保留登记返回的信号用于核对和清理。已取消的调用在替换登记前退出。ComfyUI 用登记身份区分调用方暂停和轮询被替换。 |
+| 续查与结算回执 | [pollManager.ts](../../src/services/pollManager.ts) 的 `resumeMediaNodeTask`、`pauseMediaTask`、`completeMediaNodeTask` | 支持的旧回执沿原任务续查或继续下载，回填成功后按原任务与尝试身份确认。RunningHub、Workflow API 等专用入口继续使用各自的恢复流程。 |
+| 画布和节点弹窗生成 | [generationService.ts](../../src/services/generationService.ts) 的 `executeGeneration` | 共用生成、保存、回填和写输出历史。旧音频弹窗在进入前仍要求显式选择模型。 |
+| 保存单个原生产物 | [nativeMediaResultPersistence.ts](../../src/services/nativeMediaResultPersistence.ts) 的 `persistNativeMediaResult` | 通用任务、工作流、内置图片、音乐和剪辑转场共用。由调用方传原画布、媒体类型及适用的鉴权和取消信号，并决定候选顺序与回执结算。方法核验文件路径和内容摘要，同步接口的唯一首返按原流程先留存到原画布。 |
+
 ## 当前状态
 
 - 已补齐共享任务回执、CCC 异步图片适配、节点及批量交付、主窗口普通对话与 Agent/MCP 恢复入口，并补充回归源码。

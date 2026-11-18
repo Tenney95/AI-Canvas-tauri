@@ -25,7 +25,7 @@ type ApimartTaskError = string | {
   type?: string;
 };
 
-/** 获取单次 APIMart 轮询数据并标准化为 task 对象 */
+/** 为 APIMart 图片、视频和旧音频读取单次任务状态，统一响应封装并对错误脱敏。 */
 export async function fetchApimartTask<TResult = Record<string, unknown>>(
   apiKey: string,
   baseUrl: string,
@@ -62,6 +62,7 @@ export async function fetchApimartTask<TResult = Record<string, unknown>>(
   }
 }
 
+/** 供图片首次取回和续查复用，按原顺序返回有效候选。 */
 export function queryApimartImageResult(
   apiKey: string,
   baseUrl: string,

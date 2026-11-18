@@ -227,7 +227,10 @@ function abortNodePolling(nodeId: string): void {
   }
 }
 
-/** 为节点注册轮询控制器，返回 AbortSignal 传给 pollTask */
+/**
+ * 登记节点的本地轮询。父信号已取消时保留现有轮询，替换轮询时保留待续回执。
+ * 将返回的信号传给查询，并用同一信号核对归属和清理登记。
+ */
 export function registerNodePolling(nodeId: string, parentSignal?: AbortSignal): AbortSignal {
   // 已经停止的调用不能先中断别人的轮询，再登记一轮新的查询。
   parentSignal?.throwIfAborted();
@@ -241,7 +244,7 @@ export function registerNodePolling(nodeId: string, parentSignal?: AbortSignal):
   return signal;
 }
 
-/** 父信号已取消时，仍可按登记身份保留本轮的续查回执。 */
+/** 按信号身份核对当前登记，父信号取消后仍可用来判断续查回执的归属。 */
 export function isNodePollingCurrent(nodeId: string, expectedSignal: AbortSignal): boolean {
   return abortControllers.get(nodeId)?.signal === expectedSignal;
 }
@@ -253,7 +256,7 @@ export function cancelNodePolling(nodeId: string, preservePending = false): void
   if (!preservePending) removePendingTask(nodeId);
 }
 
-/** 轮询正常结束/失败后清理注册表（不调用 abort） */
+/** 轮询结束时传入登记返回的信号清理本轮，避免旧请求移除后续登记。 */
 export function cleanupNodePolling(nodeId: string, expectedSignal?: AbortSignal): boolean {
   if (expectedSignal && !isNodePollingCurrent(nodeId, expectedSignal)) return false;
   const projectId = runtime.pollingProjects.get(nodeId);
@@ -666,6 +669,7 @@ export function hasMuseQueryIdentity(task: { taskType?: string; taskId: string }
     && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(task.taskId);
 }
 
+/** 按原回执保存待续状态，区分提交未知、待查询与待保存。 */
 export function pauseMediaTask(receipt: MediaTaskReceipt, error?: unknown,
   reason: MediaTaskPauseReason = 'query_interrupted'): MediaTaskPausedError | undefined {
   if (runtime.stoppedProjectIds.has(receipt.projectId)) return undefined;
@@ -2617,7 +2621,10 @@ export function abandonHistoryMediaDownload(receipt: MediaTaskReceipt): void {
   }
 }
 
-/** 用户重试只执行已保存任务的查询 / 下载，不走生成提交。 */
+/**
+ * 按现有回执续查原任务或重新下载。已有续查时，旁观者的信号仅取消自己的等待。
+ * 发起新生成使用 executeGeneration。
+ */
 export function resumeMediaNodeTask(nodeId: string, externalSignal?: AbortSignal, expected?: MediaTaskReceipt): Promise<void> {
   if (externalSignal?.aborted) return Promise.reject(externalSignal.reason);
   const existing = videoResumePromises.get(nodeId);
