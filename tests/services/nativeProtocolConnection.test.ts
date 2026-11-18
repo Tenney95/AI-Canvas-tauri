@@ -6,10 +6,14 @@ import type { NativeMediaTaskRecord } from '../../src/services/indexedDb/nativeM
 const driver = vi.hoisted(() => ({ models: [] as GeneralModelConfig[], providers: {} as Record<string, unknown> }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => ({ config: { generalModels: driver.models, providers: driver.providers } }) } }));
 vi.mock('../../src/services/ai/providerCatalogService', () => ({
-  getProviderDefinition: () => ({ id: 'custom-openai', models: [{ id: 'same-bare-id', name: '目录图片', category: 'image', executionProfile: { preset: 'openai-image' } }] }),
+  getProviderDefinition: (_id: string, provider?: { catalogId?: string }) => provider?.catalogId === 'sora2u'
+    ? { id: 'sora2u', retired: true, defaultBaseUrl: 'https://sora2u.com' }
+    : { id: 'custom-openai', models: [{ id: 'same-bare-id', name: '目录图片', category: 'image', executionProfile: { preset: 'openai-image' } }] },
+  isRetiredProviderConnection: (_id: string, provider?: { catalogId?: string }) => provider?.catalogId === 'sora2u',
   resolveCccGeminiImageExecutionProfile: (_modelId: string, profile: unknown) => profile,
 }));
 import { resolveNativeProtocolConnection } from '../../src/services/nativeProtocolConnection';
+import { resolveGeneralModelConnection } from '../../src/services/ai/helpers';
 
 function record(): NativeMediaTaskRecord {
   return { projectId: 'media-task:10000000-0000-4000-8000-000000000001', kind: 'native-media-task-v1',
@@ -41,4 +45,16 @@ it('同general ID、原provider完整配置保留其确切模型对象', () => {
 it('明确直连descriptor按原连接与原裸ID读取实际profile', () => {
   const selected = resolveNativeProtocolConnection({ ...record(), modelRef: 'original/same-bare-id' });
   expect(selected).toMatchObject({ providerConfigId: 'original', baseUrl: 'https://original.example/v1', model: { modelId: 'same-bare-id', executionProfile: { preset: 'openai-image' } } });
+});
+it('下架的内置连接只允许原生回执解析原模型、凭据和默认地址', () => {
+  const model: GeneralModelConfig = { id: 'user-config', name: '旧图片模型', modelId: 'same-bare-id', category: 'image',
+    providerConfigId: 'original', executionProfile: { preset: 'openai-image' } };
+  driver.models = [model];
+  driver.providers.original = { catalogId: 'sora2u', apiKey: 'synthetic-original' };
+  const receipt = { ...record(), providerBase: 'https://sora2u.com' };
+
+  expect(resolveGeneralModelConnection(receipt.modelRef!)).toBeUndefined();
+  expect(resolveNativeProtocolConnection(receipt)).toMatchObject({
+    model, providerConfigId: 'original', apiKey: 'synthetic-original', baseUrl: receipt.providerBase,
+  });
 });

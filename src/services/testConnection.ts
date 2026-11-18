@@ -4,7 +4,7 @@
 import { APIMART_BASE_URL, VOLCENGINE_BASE_URL } from '../constants/api';
 import type { ChatApiProtocol, WebSearchProviderId } from '../types';
 import { corsSafeFetch } from './ai/httpTransport';
-import { getProviderDefinition } from './ai/providerCatalogService';
+import { getProviderDefinition, isRetiredProviderConnection } from './ai/providerCatalogService';
 import { baseUrlCandidates, normalizeBaseUrl } from './ai/providerBaseUrl';
 import { getChatApiHeaders, resolveChatApiProtocol } from './ai/chatApiProtocol';
 import { invoke } from '@tauri-apps/api/core';
@@ -27,7 +27,7 @@ export interface TestResult {
 /** 仅供设置面板展示，不进入连接配置、用量账本或导出。 */
 export interface ProviderBalance {
   amount: string;
-  unit: 'GP' | '积分' | '算力' | 'USD' | '';
+  unit: '积分' | '算力' | 'USD' | '';
   scope: 'account' | 'key';
 }
 
@@ -59,8 +59,6 @@ function readUserCredits(payload: Record<string, unknown>): ProviderBalance | un
 
 // 新厂商先核实文档的鉴权、字段、单位和账户/Key 口径，再登记；不探测相似站点的路径。
 const BALANCE_ENDPOINTS: Readonly<Record<string, BalanceEndpoint>> = {
-  sora2u: { path: '/api/v1/credits', root: true,
-    read: (payload) => payload.success === true && payload.currency === 'GP' ? readBalance(payload.balance, 'GP', 'account') : undefined },
   apimart: { path: '/user/balance', read: readUserCredits },
   toapis: { path: '/user/balance', read: readUserCredits },
   libapi: { path: '/skills/balance', read: (payload) => {
@@ -108,9 +106,6 @@ export async function queryProviderBalance(
     const apiBase = /\/v\d[^/]*$/i.test(base) ? base : `${base}/v1`;
     const url = new URL(`${endpoint.root ? root : apiBase}${endpoint.path}`);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return undefined;
-    if (provider === 'sora2u') {
-      for (const [name, value] of Object.entries(definition?.requestQuery ?? {})) url.searchParams.set(name, value);
-    }
     const response = await corsSafeFetch(url.toString(), {
       method: endpoint.bodyKey ? 'POST' : 'GET',
       headers: endpoint.bodyKey ? { 'Content-Type': 'application/json' } : { Authorization: `Bearer ${apiKey.trim()}` },
@@ -344,6 +339,7 @@ export async function testProviderConnection(
   baseUrl?: string,
   chatApiProtocol?: ChatApiProtocol,
 ): Promise<TestResult> {
+  if (isRetiredProviderConnection(provider)) return { success: false, unsupported: true, error: '该内置厂商已下架，请选择其他连接' };
   if (provider === 'muse') {
     if (!isTauriEnv()) return { success: false, unsupported: true, error: 'Muse 登录仅在桌面应用中可用' };
     try {

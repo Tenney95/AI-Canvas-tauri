@@ -11,7 +11,7 @@ import {
   getProviderDefinition,
   getProviderDefinitions,
   getWebSearchProviderDefinitions,
-  isProviderModelVisible,
+  isRetiredProviderConnection,
   resolveWebSearchProviderId,
 } from '../../services/ai/providerCatalogService';
 import {
@@ -174,7 +174,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     for (const [id, providerConfig] of Object.entries(config.providers)) {
       if (id === 'runninghub' || RUNNINGHUB_CREDENTIAL_IDS.includes(id)) continue;
       const definition = getProviderDefinition(id, providerConfig);
-      if (!definition) continue;
+      if (!definition || definition.retired) continue;
       if (definition.kind === 'web-search' && id !== activeWebSearchProviderId) continue;
       if (!['cccapi', 'relayonapi'].includes(definition.id) && !shouldListProviderConnection(providerConfig, definition.authType, config.providers.runninghub?.apiKey)) continue;
       items.push({ id, config: providerConfig });
@@ -273,6 +273,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   const requestedConnectionId = pendingApiKeyConnectionId === NEW_API_KEY_CONNECTION_ID
     ? NEW_API_KEY_CONNECTION_ID
     : pendingApiKeyConnectionId && config.providers[pendingApiKeyConnectionId]
+      && !isRetiredProviderConnection(pendingApiKeyConnectionId, config.providers[pendingApiKeyConnectionId])
       ? pendingApiKeyConnectionId
       : null;
   const connectionDialogOpen = dialog.open || !!requestedConnectionId;
@@ -315,28 +316,13 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     for (const [connectionId, providerConfig] of Object.entries(config.providers)) {
       const catalogId = providerConfig.catalogId
         || getProviderDefinition(connectionId, providerConfig)?.id;
-      if (catalogId === 'apimart') {
-        const selectedModels = replaceLegacyApimartOmni(providerConfig.selectedModels);
-        const catalogModels = replaceLegacyApimartOmni(providerConfig.catalogModels);
-        if (selectedModels !== providerConfig.selectedModels || catalogModels !== providerConfig.catalogModels) {
-          changed = true;
-          saveProviderConfig(connectionId, { ...providerConfig, selectedModels, catalogModels });
-        }
-        continue;
+      if (catalogId !== 'apimart') continue;
+      const selectedModels = replaceLegacyApimartOmni(providerConfig.selectedModels);
+      const catalogModels = replaceLegacyApimartOmni(providerConfig.catalogModels);
+      if (selectedModels !== providerConfig.selectedModels || catalogModels !== providerConfig.catalogModels) {
+        changed = true;
+        saveProviderConfig(connectionId, { ...providerConfig, selectedModels, catalogModels });
       }
-      if (catalogId !== 'sora2u') continue;
-      const selectedModels = providerConfig.selectedModels?.filter(
-        (model) => isProviderModelVisible(catalogId, model.id),
-      );
-      const catalogModels = providerConfig.catalogModels?.filter(
-        (model) => isProviderModelVisible(catalogId, model.id),
-      );
-      if (
-        selectedModels?.length === providerConfig.selectedModels?.length
-        && catalogModels?.length === providerConfig.catalogModels?.length
-      ) continue;
-      changed = true;
-      saveProviderConfig(connectionId, { ...providerConfig, selectedModels, catalogModels });
     }
     if (changed) void saveConfig({ silent: true });
   }, [config.providers, saveConfig, saveProviderConfig]);

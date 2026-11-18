@@ -50,6 +50,29 @@ describe('project visual description cache', () => {
     });
   });
 
+  it('falls back to an active vision model when the saved preference uses a retired connection', () => {
+    useAppStore.setState((state) => ({
+      projects: state.projects.map((project) => ({
+        ...project, settings: { ...project.settings, visionModelId: 'general/old-vision' },
+      })),
+      config: {
+        ...state.config,
+        providers: {
+          ...state.config.providers,
+          'old-sora': { name: 'Sora2U', catalogId: 'sora2u', apiKey: 'synthetic-key', baseUrl: 'https://sora2u.com' },
+        },
+        generalModels: [{
+          id: 'old-vision', name: '旧视觉模型', modelId: 'old-vision-model', category: 'text',
+          providerConfigId: 'old-sora', inputModalities: ['text', 'image'],
+        }, ...(state.config.generalModels ?? [])],
+      },
+    }));
+
+    expect(resolveProjectVisionModel('project-visual-cache')).toEqual({
+      model: 'general/vision-model', provider: 'general',
+    });
+  });
+
   it.each([
     ['deepseek-flash', undefined, true],
     ['DeepSeek-V4.1-Flash', undefined, true],

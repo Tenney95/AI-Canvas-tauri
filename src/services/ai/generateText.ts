@@ -5,6 +5,7 @@ import { useAppStore } from '../../store/useAppStore';
 import { DEFAULT_BASE_URLS } from '../../constants/api';
 import type { AIGenerateParams, ProtocolJsonValue, TextGenerationResult } from '../../types/aiTypes';
 import {
+  assertProviderAvailableForSubmission,
   extractModelName,
   parseGeneralTextResponse,
   resolveGeneralModel,
@@ -123,6 +124,7 @@ export async function generateTextResult(params: AIGenerateParams): Promise<Text
     throw new Error('本地大模型已迁移到「通用模型」，请重新选择模型\n请在「设置 → API Key」中添加通用模型');
   } else {
     const providerConfig = config.providers[provider];
+    assertProviderAvailableForSubmission(provider, providerConfig);
     apiKey = providerConfig?.apiKey || '';
     if (!apiKey) {
       throw new Error(`未配置 ${provider} 的 API Key\n请在「设置 → API Key」中配置`);

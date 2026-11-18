@@ -6,7 +6,10 @@ const mocks = vi.hoisted(() => ({
   state: {} as AppState, references: [] as MediaReference[], resolve: vi.fn(), protocol: vi.fn(), asyncTask: vi.fn(),
 }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => mocks.state } }));
-vi.mock('../../src/services/ai/providerCatalogService', () => ({ getProviderDefinition: () => undefined }));
+vi.mock('../../src/services/ai/providerCatalogService', () => ({
+  getProviderDefinition: () => undefined,
+  isRetiredProviderConnection: () => false,
+}));
 vi.mock('../../src/services/uploadService', () => ({ resolveMediaReferenceUrl: mocks.resolve }));
 vi.mock('../../src/services/fileService', () => ({
   createMediaDataUrlBudget: () => ({ usedBytes: 0, maxBytes: 128 * 1024 * 1024, label: '参考音频' }),

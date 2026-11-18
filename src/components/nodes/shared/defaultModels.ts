@@ -20,7 +20,7 @@ import { MUSE_MODEL_MANIFEST } from '../../../services/ai/museModels';
 import { APIMART_OMNI_MODELS, APIMART_UPDATED_VIDEO_MODELS, isLegacyApimartOmni, replaceLegacyApimartOmni } from '../../../services/ai/apimartVideoModels';
 import { GRSAI_ADDED_MODELS } from '../../../services/ai/grsaiModels';
 import { resolveAudioParameterCapability } from '../../../services/ai/mediaModelCapabilities';
-import { getProviderDefinition } from '../../../services/ai/providerCatalogService';
+import { getProviderDefinition, isRetiredProviderConnection } from '../../../services/ai/providerCatalogService';
 
 export type MediaModelKind = 'image' | 'video' | 'audio';
 
@@ -976,7 +976,7 @@ export function isProviderCategoryVisible(
 ): boolean {
   if (!providerConfigId) return true;
   const provider = config.providers[providerConfigId];
-  if (!provider) return false;
+  if (!provider || isRetiredProviderConnection(providerConfigId, provider)) return false;
   return provider.visibleModelCategories === undefined
     || provider.visibleModelCategories.includes(category);
 }

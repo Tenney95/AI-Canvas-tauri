@@ -147,10 +147,10 @@ describe('独立剩余额度查询', () => {
     }));
   });
 
-  it('Sora2U 沿用已有 GP 和来源参数，0 也可展示', async () => {
-    transportMocks.corsSafeFetch.mockResolvedValueOnce(Response.json({ success: true, balance: 0, currency: 'GP' }));
-    await expect(queryProviderBalance('sora2u', 'sora-key')).resolves.toEqual({ amount: '0', unit: 'GP', scope: 'account' });
-    expect(transportMocks.corsSafeFetch.mock.calls[0]?.[0]).toBe('https://sora2u.com/api/v1/credits?utm_source=tenney&utm_medium=canvas&utm_content=wx');
+  it('Sora2U 下架后不再支持余额查询，即使显式提供历史地址', async () => {
+    expect(supportsProviderBalance('sora2u')).toBe(false);
+    await expect(queryProviderBalance('sora2u', 'sora-key', 'https://sora2u.com')).resolves.toBeUndefined();
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -402,27 +402,12 @@ describe('provider connection tests', () => {
     );
   });
 
-  it('tests Sora2U through the tracked read-only credits endpoint', async () => {
-    transportMocks.corsSafeFetch.mockResolvedValueOnce(new Response(JSON.stringify({
-      success: true,
-      balance: 1280,
-      currency: 'GP',
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    }));
-
-    await expect(testProviderConnection('sora2u', 'sk_sora_secret')).resolves.toEqual({
-      success: true,
-      balance: '1280 GP',
-      baseUrl: 'https://sora2u.com',
+  it('rejects old Sora2U connection probes before falling back to a model-list request', async () => {
+    await expect(testProviderConnection('sora2u', 'sk_sora_secret', 'https://sora2u.com')).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining('内置厂商已下架'),
     });
-    expect(transportMocks.corsSafeFetch).toHaveBeenCalledWith(
-      'https://sora2u.com/api/v1/credits?utm_source=tenney&utm_medium=canvas&utm_content=wx',
-      {
-        method: 'GET',
-        headers: { Authorization: 'Bearer sk_sora_secret' },
-      },
-    );
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+    expect(transportMocks.invoke).not.toHaveBeenCalled();
   });
 });

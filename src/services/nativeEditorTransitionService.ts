@@ -136,7 +136,7 @@ function connection(modelRef: string, providerHint = 'general', forRecovery = fa
       protocol: providerHint === 'volcengine' ? VOLCENGINE_EDITOR_PROTOCOL : APIMART_EDITOR_PROTOCOL };
   }
   if (providerHint !== 'general') throw new Error('该模型尚未接入可恢复首尾帧转场，未提交任务');
-  const found = resolveGeneralModelConnection(modelRef);
+  const found = resolveGeneralModelConnection(modelRef, { forRecovery });
   if (!found?.apiKey || !found.baseUrl) throw new Error('缺少原模型连接，请恢复原连接后续查');
   const base = new URL(found.baseUrl);
   if (!['https:', 'http:'].includes(base.protocol) || base.search || base.hash || base.username || base.password) throw new Error('连接地址无法安全恢复');

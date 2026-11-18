@@ -87,6 +87,8 @@ export interface ProviderDefinition {
   requestQuery?: Readonly<Record<string, string>>;
   /** 暂时不向用户暴露的模型 ID；保留底层协议，便于后续恢复。 */
   hiddenModelIds?: readonly string[];
+  /** 下架的内置厂商仅为已保存的连接提供历史查询信息。 */
+  retired?: true;
   credentials: ProviderCredentialField[];
   /** 内置厂商随应用发布的模型及声明式执行协议。 */
   models?: readonly ProviderModelSelection[];
@@ -397,16 +399,14 @@ const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = ([
   },
   {
     id: 'sora2u',
+    retired: true,
     name: 'Sora2U',
     description: 'Seedance 全模态视频与 Gemini/Kontext 图片模型',
     badgeText: 'S2U',
     authType: 'api-key',
     catalogAdapter: 'openai-compatible',
     defaultBaseUrl: SORA2U_BASE_URL,
-    modelsPath: '/api/v1/models',
     allowCustomBaseUrl: false,
-    externalUrl: 'https://sora2u.com/?utm_source=tenney&utm_medium=canvas&utm_content=wx',
-    connectionTestPath: '/api/v1/credits',
     requestQuery: SORA2U_REQUEST_QUERY,
     hiddenModelIds: SORA2U_HIDDEN_MODEL_IDS,
     credentials: [
@@ -562,12 +562,17 @@ export function isProviderModelVisible(catalogId: string | undefined, modelId: s
     }
   }
   const definition = BUILT_IN_PROVIDER_DEFINITIONS.find((item) => item.id === catalogId);
-  return !definition?.hiddenModelIds?.includes(modelId);
+  return !definition?.retired && !definition?.hiddenModelIds?.includes(modelId);
 }
 
 const PROVIDER_DEFINITION_MAP = new Map(
   BUILT_IN_PROVIDER_DEFINITIONS.map((definition) => [definition.id, definition]),
 );
+const AVAILABLE_PROVIDER_DEFINITIONS = BUILT_IN_PROVIDER_DEFINITIONS.filter((definition) => !definition.retired);
+
+export function isRetiredProviderConnection(providerId: string, config?: Pick<ApiProviderConfig, 'catalogId'>): boolean {
+  return PROVIDER_DEFINITION_MAP.get(resolveProviderCatalogId(providerId, config))?.retired === true;
+}
 
 /**
  * 落库的目录缓存上限。catalogModels 只是「下次打开对话框免去重新拉取」的缓存，
@@ -588,7 +593,7 @@ export function capCatalogModels(
 }
 
 export function getProviderDefinitions(): readonly ProviderDefinition[] {
-  return BUILT_IN_PROVIDER_DEFINITIONS;
+  return AVAILABLE_PROVIDER_DEFINITIONS;
 }
 
 export function isWebSearchProviderId(value: string | undefined): value is WebSearchProviderId {
@@ -643,7 +648,8 @@ export function getProviderDefinition(
   providerId: string,
   config?: Pick<ApiProviderConfig, 'catalogId'>,
 ): ProviderDefinition | undefined {
-  return PROVIDER_DEFINITION_MAP.get(resolveProviderCatalogId(providerId, config));
+  const definition = PROVIDER_DEFINITION_MAP.get(resolveProviderCatalogId(providerId, config));
+  return definition?.retired && !config ? undefined : definition;
 }
 
 /** 设置与导入只校验有效合同的临时副本；保存的用户协议和能力声明保持原样。 */
@@ -1019,6 +1025,7 @@ export async function fetchProviderModelCatalog(
   if (signal?.aborted) throw new DOMException('模型列表拉取已取消', 'AbortError');
   const definition = getProviderDefinition(providerId, config);
   if (!definition) throw new Error('未知厂商目录');
+  if (definition.retired) throw new Error('该内置厂商已下架');
   const normalizedFallback = normalizeModels(fallbackModels, providerId)
     .filter((model) => isProviderModelVisible(definition.id, model.id));
 

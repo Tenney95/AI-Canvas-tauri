@@ -6,7 +6,7 @@ import { resolveGeneralModelConnection } from './ai/helpers';
 import { getProviderDefinition, resolveCccGeminiImageExecutionProfile } from './ai/providerCatalogService';
 
 export function resolveNativeProtocolConnection(record: NativeMediaTaskRecord) {
-  const general = record.modelRef?.startsWith('general/') ? resolveGeneralModelConnection(record.modelRef) : undefined;
+  const general = record.modelRef?.startsWith('general/') ? resolveGeneralModelConnection(record.modelRef, { forRecovery: true }) : undefined;
   if (record.modelRef?.startsWith('general/')) return general?.providerConfigId === record.providerConfigId ? general : undefined;
   if (record.recovery?.kind !== 'general-protocol' || !record.recovery.modelId) return undefined;
   const provider = useAppStore.getState().config.providers[record.providerConfigId];

@@ -29,7 +29,7 @@ import { collectConnectedReferenceMedia, getMediaReferenceUrls, mergeMediaRefere
 import type { AIImageGenParams, BatchImageResult, ImageGenerationResult, MediaReference, NormalizedModelExecutionProtocol, ModelExecutionProfile } from '../../types/aiTypes';
 import type { AppConfig, GeneralModelConfig, ImageReferenceRequestMode } from '../../types';
 import { MAX_IMAGE_BATCH_COUNT } from '../../types/aiTypes';
-import { extractModelName, resolveGeneralModel, resolveGeneralModelConnection } from './helpers';
+import { assertProviderAvailableForSubmission, extractModelName, resolveGeneralModel, resolveGeneralModelConnection } from './helpers';
 import { collectPromptNodeMediaUrls, resolvePromptWithImageRefs, resolvePromptWithMediaRefs } from './promptResolver';
 import { warnIfTooManyReferences } from './connectedReferenceMedia';
 import { IMAGE_GENERATION_DATA_URL_BUDGET, resolveImageDataUrlArray, resolveImageUrlArray } from './imageUtils';
@@ -325,6 +325,9 @@ async function runImageBatch(
   }
   const state = useAppStore.getState();
   const config = state.config;
+  const connectionId = generalModel?.providerConfigId ?? provider;
+  const providerConfig = config.providers[connectionId];
+  if (!params.workflowId) assertProviderAvailableForSubmission(connectionId, providerConfig);
   const characterRoute = characterWorkbench ? characterImageConnection(model, provider, config) : undefined;
   const characterMidjourney = !!characterWorkbench && characterImageChannel(model, provider, config) === 'midjourney';
   if (params.characterPaintMask && (!characterRoute || !supportsCharacterPaintMask(model, provider, config)
@@ -333,8 +336,6 @@ async function runImageBatch(
   }
   if (characterMidjourney && requestedCount !== 1) throw new Error('角色工作台每次提交一个 Midjourney 作业');
   const submissionProjectId = state.currentProjectId;
-  const connectionId = generalModel?.providerConfigId ?? provider;
-  const providerConfig = config.providers[connectionId];
   const modelName = generalModel?.modelId ?? extractModelName(model, provider);
   const providerDefinition = getProviderDefinition(connectionId, providerConfig);
   const isLibapi = !params.workflowId && providerDefinition?.id === 'libapi';

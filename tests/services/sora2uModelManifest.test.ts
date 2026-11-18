@@ -1,5 +1,5 @@
 /**
- * sora2uModelManifest — 回归测试：Sora2U 内置模型清单。
+ * sora2uModelManifest — 回归测试：Sora2U 旧模型与协议。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -8,7 +8,7 @@ import {
   submitModelProtocol,
   validateModelExecutionProtocol,
 } from '../../src/services/ai/modelProtocol';
-import { getProviderDefinition } from '../../src/services/ai/providerCatalogService';
+import { getProviderDefinition, getProviderDefinitions, isProviderModelVisible } from '../../src/services/ai/providerCatalogService';
 import { getCategoryProtocolVariables, resolveProtocolFieldTemplate } from '../../src/services/ai/modelProtocolVariables';
 import {
   SORA2U_BASE_URL,
@@ -45,7 +45,7 @@ beforeEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('Sora2U 内置模型清单', () => {
+describe('Sora2U 历史模型清单', () => {
   it('复用型号基线仍保留各 SKU 的完整旧能力，未确认的输出与模式不继承', () => {
     for (const id of EXPECTED_MODELS.filter((value) => value.startsWith('seedance-2.'))) {
       const is25 = id.startsWith('seedance-2.5');
@@ -80,28 +80,25 @@ describe('Sora2U 内置模型清单', () => {
     expect(withSora2uReferenceLimits('unknown', undefined)).toBeUndefined();
   });
 
-  it('保留九个模型协议，但厂商目录暂时隐藏三个 Seedance 2.5 变体', () => {
-    expect(getProviderDefinition('sora2u')).toMatchObject({
+  it('内置目录移除 Sora2U，保存过的连接保留旧协议与原查询参数', () => {
+    expect(getProviderDefinitions().some((definition) => definition.id === 'sora2u')).toBe(false);
+    expect(getProviderDefinition('sora2u')).toBeUndefined();
+    const savedDefinition = getProviderDefinition('saved-connection', { catalogId: 'sora2u' });
+    expect(savedDefinition).toMatchObject({
       id: 'sora2u',
+      retired: true,
       defaultBaseUrl: SORA2U_BASE_URL,
-      modelsPath: '/api/v1/models',
-      externalUrl: 'https://sora2u.com/?utm_source=tenney&utm_medium=canvas&utm_content=wx',
-      connectionTestPath: '/api/v1/credits',
       requestQuery: {
         utm_source: 'tenney',
         utm_medium: 'canvas',
         utm_content: 'wx',
       },
-      hiddenModelIds: [
-        'seedance-2.5',
-        'seedance-2.5-character',
-        'seedance-2.5-character-mono',
-      ],
     });
-    expect(getProviderDefinition('sora2u')?.models).toHaveLength(6);
-    expect(getProviderDefinition('sora2u')?.models?.some(
-      (model) => model.id.startsWith('seedance-2.5'),
-    )).toBe(false);
+    expect(savedDefinition?.externalUrl).toBeUndefined();
+    expect(savedDefinition?.connectionTestPath).toBeUndefined();
+    expect(savedDefinition?.models?.find((model) => model.id === 'gemini-image')?.executionProfile?.protocol)
+      .toEqual(protocolFor('gemini-image'));
+    expect(EXPECTED_MODELS.every((model) => !isProviderModelVisible('sora2u', model))).toBe(true);
     expect(SORA2U_MODEL_MANIFEST.map((model) => model.id)).toEqual(EXPECTED_MODELS);
     expect(SORA2U_MODEL_MANIFEST.filter((model) => model.category === 'video')).toHaveLength(7);
     expect(SORA2U_MODEL_MANIFEST.filter((model) => model.category === 'image')).toHaveLength(2);

@@ -33,6 +33,18 @@ beforeEach(() => {
   protocolNative.desktop = false; protocolNative.invoke.mockReset(); revokePluginProtocolPresets();
 });
 
+it('rejects a saved direct text submission from a retired built-in connection before fetching', async () => {
+  useAppStore.setState((state) => ({ config: { ...state.config, providers: {
+    ...state.config.providers, 'old-sora': { name: 'Sora2U', catalogId: 'sora2u', apiKey: 'synthetic-key', baseUrl: 'https://sora2u.com' },
+  } } }));
+  const fetch = vi.fn();
+  vi.stubGlobal('fetch', fetch);
+
+  await expect(generateText({ provider: 'old-sora', model: 'old-sora/text-model', prompt: '测试' }))
+    .rejects.toThrow('内置厂商已下架');
+  expect(fetch).not.toHaveBeenCalled();
+});
+
 function installResponsesPlugin(catalogId: 'custom-openai' | 'volcengine' = 'custom-openai') {
   const reference = { pluginId: 'example.responses', presetId: 'responses' };
   const plugin: InstalledPlugin = { id: reference.pluginId, enabled: true, source: 'definePlugin({tools:{}});', sourceDigest: 'a'.repeat(64), revisionDigest: 'b'.repeat(64), installedAt: 1, updatedAt: 1,

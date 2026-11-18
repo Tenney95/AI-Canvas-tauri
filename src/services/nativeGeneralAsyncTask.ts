@@ -38,7 +38,7 @@ export function nativeGeneralTaskIds(payload: unknown): string[] {
   return [...new Set(ids as string[])];
 }
 function originalConnection(record: NativeMediaTaskRecord) {
-  const selected = record.modelRef && resolveGeneralModelConnection(record.modelRef);
+  const selected = record.modelRef && resolveGeneralModelConnection(record.modelRef, { forRecovery: true });
   if (!selected || selected.model.executionProfile || selected.model.modelId !== record.recovery?.modelId
     || selected.providerConfigId !== record.providerConfigId || selected.model.category !== record.category
     || normalizeNativeMediaProviderBase(selected.baseUrl) !== record.providerBase || !selected.apiKey) throw new Error('原通用连接或合同已变化，请恢复后续查，不会重新生成');

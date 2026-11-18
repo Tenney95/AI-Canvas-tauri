@@ -14,6 +14,7 @@ import {
   hasVisionInputCapability,
 } from '../../components/nodes/shared/defaultModels';
 import { generateText } from '../ai/generateText';
+import { isRetiredProviderConnection } from '../ai/providerCatalogService';
 import {
   VISUAL_DESCRIPTION_LIMIT,
   VISUAL_DESCRIPTION_PROMPT_VERSION,
@@ -61,6 +62,7 @@ export function resolveProjectVisionModel(projectId: string): {
     ));
     if (
       general
+      && !isRetiredProviderConnection(general.providerConfigId, state.config.providers[general.providerConfigId])
       && hasVisionInputCapability(general)
       && state.config.providers[general.providerConfigId]?.baseUrl?.trim()
     ) {
@@ -77,6 +79,7 @@ export function resolveProjectVisionModel(projectId: string): {
 
   const general = state.config.generalModels?.find((model) => (
     model.category === 'text'
+    && !isRetiredProviderConnection(model.providerConfigId, state.config.providers[model.providerConfigId])
     && hasVisionInputCapability(model)
     && !!state.config.providers[model.providerConfigId]?.baseUrl?.trim()
   ));

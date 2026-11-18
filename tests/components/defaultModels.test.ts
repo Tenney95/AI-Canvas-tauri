@@ -355,10 +355,11 @@ describe('内置厂商动态模型目录', () => {
   });
 });
 
-describe('Sora2U 独立模型分组', () => {
+describe('Sora2U 内置模型下架', () => {
   const config: AppConfig = {
     providers: {
-      sora2u: { name: 'Sora2U', apiKey: 'k', catalogId: 'sora2u', selectedModels: [] },
+      sora2u: { name: 'Sora2U', apiKey: 'k', selectedModels: [] },
+      'saved-sora': { name: '旧连接', apiKey: 'k', catalogId: 'sora2u' },
       relay: { name: '自定义中转', apiKey: 'k', catalogId: 'custom-openai', selectedModels: [] },
     },
     theme: 'dark',
@@ -372,6 +373,13 @@ describe('Sora2U 独立模型分组', () => {
       providerConfigId: 'sora2u',
     },
     {
+      id: 'saved-sora-image',
+      name: '旧连接图片',
+      modelId: 'kontext-image',
+      category: 'image' as const,
+      providerConfigId: 'saved-sora',
+    },
+    {
       id: 'relay-image',
       name: 'Relay Image',
       modelId: 'relay-image',
@@ -380,33 +388,27 @@ describe('Sora2U 独立模型分组', () => {
     },
   ];
 
-  it('节点菜单把 Sora2U 从通用模型中拆成独立厂商分组', () => {
+  it('节点菜单隐藏旧内置 ID 与保存过的 Sora2U 连接，仍显示通用模型', () => {
     const groups = getGeneralModelGroups(generalModels, config, 'ai-image');
 
-    expect(groups.find((group) => group.name === 'Sora2U')).toMatchObject({
-      id: 'general-provider-sora2u',
-      badgeText: 'S2U',
-      models: [expect.objectContaining({
-        value: 'general/sora-image',
-        provider: 'general',
-        label: 'Gemini Image',
-      })],
-    });
-    expect(groups.find((group) => group.id === 'general-models')?.models).toEqual([
-      expect.objectContaining({ value: 'general/relay-image' }),
-    ]);
+    expect(groups).toEqual([expect.objectContaining({
+      id: 'general-models',
+      models: [expect.objectContaining({ value: 'general/relay-image' })],
+    })]);
   });
 
-  it('对话媒体目录沿用 Sora2U 分组，但模型引用保持 general 协议', () => {
-    const option = getMediaModelOptions(generalModels, config)
-      .find((model) => model.value === 'general/sora-image');
+  it('对话媒体目录隐藏下架模型，显式自定义连接可沿用同名同 ID', () => {
+    const optionIds = (value: AppConfig) => getMediaModelOptions(generalModels, value)
+      .filter((model) => model.provider === 'general').map((model) => model.value);
 
-    expect(option).toMatchObject({
-      value: 'general/sora-image',
-      provider: 'general',
-      groupId: 'general-provider-sora2u',
-      groupName: 'Sora2U',
-    });
+    expect(optionIds(config)).toEqual(['general/relay-image']);
+    expect(optionIds({
+      ...config,
+      providers: {
+        ...config.providers,
+        sora2u: { ...config.providers.sora2u, catalogId: 'custom-openai' },
+      },
+    })).toEqual(['general/sora-image', 'general/relay-image']);
   });
 });
 
@@ -719,7 +721,6 @@ describe('声明式厂商菜单的分组范围', () => {
     { catalogId: 'cccapi', name: 'CCC API', badge: 'CCC', sharedGroup: true },
     { catalogId: 'toapis', name: 'ToAPIs', badge: 'T', sharedGroup: false },
     { catalogId: 'libapi', name: 'LibAPI', badge: 'LIB', sharedGroup: false },
-    { catalogId: 'sora2u', name: 'Sora2U', badge: 'S2U', sharedGroup: false },
   ])('$catalogId 的节点和对话菜单保留连接身份及原分组范围', ({ catalogId, name, badge, sharedGroup }) => {
     const config: AppConfig = { theme: 'dark', providers: {
       left: { name: '左连接', catalogId, apiKey: 'left-fixture' },
@@ -736,6 +737,18 @@ describe('声明式厂商菜单的分组范围', () => {
     expect(media.map((model) => model.value)).toEqual(['general/left', 'general/right']);
     expect([...new Set(media.map((model) => model.groupId))]).toEqual(expectedGroups);
     expect(media.every((model) => model.groupName === name)).toBe(true);
+  });
+
+  it('同一已下架厂商的多个连接均不出现在节点或对话模型菜单', () => {
+    const config: AppConfig = { theme: 'dark', providers: {
+      left: { name: '左连接', catalogId: 'sora2u', apiKey: 'left-fixture' },
+      right: { name: '右连接', catalogId: 'sora2u', apiKey: 'right-fixture' },
+    } };
+    const models = ['left', 'right'].map((providerConfigId) => ({ id: providerConfigId, name: providerConfigId,
+      modelId: 'gemini-image', category: 'image' as const, providerConfigId }));
+
+    expect(getGeneralModelGroups(models, config, 'ai-image')).toEqual([]);
+    expect(getMediaModelOptions(models, config).filter((model) => model.provider === 'general')).toEqual([]);
   });
 
   it('显式自定义厂商身份优先于连接名，未声明独立菜单的官方模型仍在通用分组', () => {

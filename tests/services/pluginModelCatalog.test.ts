@@ -95,19 +95,21 @@ describe('pluginModelCatalog menu presentation', () => {
     expect(entry).not.toHaveProperty('videoReplicaSupport');
   });
 
-  it('uses host CCC and Sora2U groups while preserving general model IDs and routing', () => {
+  it('keeps host CCC and explicit custom routing while hiding retired Sora2U models', () => {
     const config: AppConfig = {
       ...useAppStore.getState().config,
       providers: {
         'ccc-first': { name: 'CCC GPT', catalogId: 'cccapi', cccGroup: 'GPT', apiKey: 'never-export-ccc-key', baseUrl: 'https://never-export-ccc.example/v1' },
         'ccc-second': { name: 'CCC 视频', catalogId: 'cccapi', cccGroup: '视频', apiKey: 'never-export-second-key' },
         sora: { name: 'Sora2U', catalogId: 'sora2u', apiKey: 'never-export-sora-key', baseUrl: 'https://never-export-sora.example' },
+        sora2u: { name: 'Sora2U', catalogId: 'custom-openai', apiKey: 'never-export-custom-key' },
         relay: { name: '测试中转站', apiKey: 'never-export-relay-key' },
       },
       generalModels: [
         { id: 'ccc-a', name: 'H3', modelId: 'minimax-h3', category: 'video', providerConfigId: 'ccc-first' },
         { id: 'ccc-b', name: 'H3', modelId: 'minimax-h3', category: 'video', providerConfigId: 'ccc-second' },
         { id: 'sora-a', name: 'Seedance', modelId: 'seedance', category: 'video', providerConfigId: 'sora' },
+        { id: 'custom-video', name: '自定义视频', modelId: 'custom-video', category: 'video', providerConfigId: 'sora2u' },
         { id: 'relay-a', name: '自定义视频', modelId: 'relay-video', category: 'video', providerConfigId: 'relay' },
       ],
     };
@@ -120,8 +122,9 @@ describe('pluginModelCatalog menu presentation', () => {
       id: 'general-provider-cccapi', name: 'CCC API', description: '按模型所属分组自动使用对应的 API Key', badgeText: 'CCC', tone: 'brand',
     });
     expect(cccSecond?.group).toEqual(cccFirst?.group);
-    expect(entries.find((model) => model.id === 'general/sora-a')).toMatchObject({
-      provider: 'general', group: { id: 'general-provider-sora', name: 'Sora2U', badgeText: 'S2U' },
+    expect(entries.find((model) => model.id === 'general/sora-a')).toBeUndefined();
+    expect(entries.find((model) => model.id === 'general/custom-video')).toMatchObject({
+      provider: 'general', group: { id: 'general-models', name: '通用模型', badgeText: 'GM' }, description: 'Sora2U · ID: custom-video',
     });
     expect(entries.find((model) => model.id === 'general/relay-a')).toMatchObject({
       provider: 'general', group: { id: 'general-models', name: '通用模型', badgeText: 'GM' }, description: '测试中转站 · ID: relay-video',
@@ -136,7 +139,7 @@ describe('pluginModelCatalog menu presentation', () => {
       ...useAppStore.getState().config,
       providers: {
         absent: { name: '未配置', catalogId: 'cccapi', apiKey: '' },
-        hidden: { name: '已隐藏', catalogId: 'sora2u', apiKey: 'private-hidden-key', visibleModelCategories: [] },
+        hidden: { name: '已隐藏', catalogId: 'custom-openai', apiKey: 'private-hidden-key', visibleModelCategories: [] },
       },
       generalModels: [
         { id: 'absent', name: '未配置视频', modelId: 'video', category: 'video', providerConfigId: 'absent' },

@@ -7,6 +7,7 @@ import {
   getProviderDefinition,
   getProviderDefinitions,
   createConnectionId,
+  isRetiredProviderConnection,
   resolveCccGeminiImageExecutionProfile,
   resolveProviderImageModelForValidation,
 } from '../../src/services/ai/providerCatalogService';
@@ -1061,8 +1062,12 @@ describe('GPT Image 2.6 的逐厂商目录', () => {
     ] as const) {
       for (const id of ids) expect(getProviderDefinition(provider)!.models!.find((item) => item.id === id)?.category).toBe('image');
     }
-    for (const provider of ['libapi', 'sora2u']) {
-      expect(getProviderDefinition(provider)!.models?.some((item) => /(?:gpt-)?image[- ]?2\.6/i.test(item.id))).not.toBe(true);
+    const withoutImage26 = [
+      getProviderDefinition('libapi')!,
+      getProviderDefinition('sora2u', { catalogId: 'sora2u' })!,
+    ];
+    for (const provider of withoutImage26) {
+      expect(provider.models?.some((item) => /(?:gpt-)?image[- ]?2\.6/i.test(item.id))).not.toBe(true);
     }
   });
 });
@@ -1326,83 +1331,46 @@ describe('自定义连接原生模型目录', () => {
   });
 });
 
-describe('Sora2U 远端模型能力目录', () => {
+describe('Sora2U 目录下架', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
-  it.each([undefined, 0, 3, 4])('保留远端联合名额 %s，缺省时保留内置补充', async (maximum) => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(jsonResponse({ object: 'list', data: [{
-      id: 'seedance-2.0', reference_limits: { image: 9, video: 3, audio: 3,
-        ...(maximum === undefined ? {} : { videoAudioCombined: maximum }) },
-    }] })));
-    const result = await fetchProviderModelCatalog({ providerId: 'sora2u',
-      config: { name: 'Sora2U', apiKey: 'fixture-key', baseUrl: 'https://sora2u.com', catalogId: 'sora2u' },
-      fallbackModels: [...SORA2U_MODEL_MANIFEST] });
-    expect(result.models.find((model) => model.id === 'seedance-2.0')?.videoCapability)
-      .toMatchObject({ maxImageReferences: 9, maxVideoReferences: 3, maxAudioReferences: 3,
-        maxVideoAudioReferences: maximum ?? 3 });
+  it.each([
+    { providerId: 'sora2u', connection: {} },
+    { providerId: 'saved-connection', connection: { catalogId: 'sora2u' } },
+    { providerId: 'sora2u', connection: { baseUrl: 'https://sora2u.com' } },
+    { providerId: 'renamed-connection', connection: { catalogId: 'sora2u', baseUrl: 'https://sora2u.com' } },
+  ])('下架连接 $providerId 拒绝拉取远端目录和展示本地回退模型', async ({ providerId, connection }) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const config = { name: 'Sora2U', apiKey: 'fixture-key', ...connection };
+
+    expect(isRetiredProviderConnection(providerId, config)).toBe(true);
+    await expect(fetchProviderModelCatalog({ providerId, config, fallbackModels: [...SORA2U_MODEL_MANIFEST] }))
+      .rejects.toThrow('内置厂商已下架');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('隐藏 Sora2U 的三个 Seedance 2.5 变体，并保留其他远端新增模型', async () => {
+  it('显式自定义连接可以沿用相同 ID 和名称，继续按自己的地址拉取', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
       object: 'list',
-      data: [
-        {
-          id: 'seedance-2.5',
-          object: 'model',
-          name: 'Seedance 2.5 Remote',
-          durations: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 30],
-          duration_range: { min: 5, max: 30, step: 1 },
-          default_duration: 15,
-          aspect_ratios: ['16:9', '9:16', 'adaptive'],
-          default_aspect_ratio: 'adaptive',
-          resolutions: ['720p', '1080p'],
-          default_resolution: '720p',
-          supports_text_only: false,
-          supports_image: true,
-          supports_video: true,
-          supports_audio: true,
-          reference_limits: { image: 30, video: 10, audio: 10, total: 50 },
-        },
-        {
-          id: 'future-image',
-          object: 'model',
-          name: 'Future Image',
-          supports_image: true,
-          supports_video: false,
-          supports_audio: false,
-        },
-      ],
+      data: [{ id: 'custom-image', name: 'Custom Image', supports_image: true }],
     }));
     vi.stubGlobal('fetch', fetchMock);
-
-    const result = await fetchProviderModelCatalog({
-      providerId: 'sora2u',
-      config: {
-        name: 'Sora2U',
-        apiKey: 'sk_sora_test',
-        baseUrl: 'https://sora2u.com',
-        catalogId: 'sora2u',
-      },
-      fallbackModels: [...SORA2U_MODEL_MANIFEST],
-    });
-
+    const config = { name: 'Sora2U', apiKey: 'custom-fixture-key', baseUrl: 'https://relay.example/v1', catalogId: 'custom-openai' };
+    expect(isRetiredProviderConnection('sora2u', config)).toBe(false);
+    const result = await fetchProviderModelCatalog({ providerId: 'sora2u', config });
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://sora2u.com/api/v1/models?utm_source=tenney&utm_medium=canvas&utm_content=wx',
+      'https://relay.example/v1/models',
       expect.objectContaining({
         method: 'GET',
-        headers: { Authorization: 'Bearer sk_sora_test' },
+        headers: { Authorization: 'Bearer custom-fixture-key' },
       }),
     );
-    expect(result.models.find((model) => model.id === 'seedance-2.5')).toBeUndefined();
-    expect(result.models.some((model) => model.id.startsWith('seedance-2.5'))).toBe(false);
-    expect(result.models.find((model) => model.id === 'future-image')).toMatchObject({
-      category: 'image',
-      provider: 'sora2u',
-      inputModalities: ['text', 'image'],
-    });
+    expect(result.source).toBe('remote');
+    expect(result.models).toEqual([expect.objectContaining({ id: 'custom-image', provider: 'sora2u' })]);
   });
 });
 
