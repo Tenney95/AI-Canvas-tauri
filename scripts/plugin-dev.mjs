@@ -103,7 +103,8 @@ async function atomicText(path, contents) {
   await rename(temporary, path);
 }
 
-export async function initPlugin(root) {
+export async function initPlugin(root, template = 'node-tool') {
+  if (!['node-tool', 'protocol'].includes(template)) throw new Error('模板仅支持 node-tool 或 protocol');
   // mkdir 不使用 recursive，已存在的目录直接拒绝，避免覆盖作者的项目。
   await mkdir(root);
   await mkdir(join(root, 'src'));
@@ -117,8 +118,16 @@ export async function initPlugin(root) {
       nodeTypes: ['ai-text', 'source-text'], inputFields: ['output'], output: { mode: 'update-current', fields: ['output'] },
     }] },
   };
+  if (template === 'protocol') {
+    manifest.id = 'com.example.openai-responses';
+    manifest.name = 'OpenAI Responses';
+    manifest.category = 'utility';
+    manifest.requiredCapabilities = ['model.protocolPresets'];
+    manifest.permissions = [];
+    manifest.contributes = { nodeTools: [], modelProtocols: [{ id: 'responses', name: 'OpenAI Responses', category: 'text', adapter: 'openai-responses' }] };
+  }
   await writeFile(join(root, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
-  await writeFile(join(root, 'src/main.ts'), await text(join(repository, 'sdk/plugin-template.ts')), 'utf8');
+  await writeFile(join(root, 'src/main.ts'), template === 'protocol' ? 'definePlugin({ tools: {} });\n' : await text(join(repository, 'sdk/plugin-template.ts')), 'utf8');
   await writeFile(join(root, 'host.d.ts'), await portableSdk(), 'utf8');
   await writeFile(join(root, 'tsconfig.json'), `${JSON.stringify({
     compilerOptions: { target: 'ES2020', module: 'ESNext', moduleResolution: 'Bundler', strict: true,
@@ -174,13 +183,13 @@ function errorMessage(error, root) {
 }
 
 async function main() {
-  const [command, directory] = process.argv.slice(2);
+  const [command, directory, template] = process.argv.slice(2);
   if (!directory || !['init', 'sdk', 'check', 'build', 'watch'].includes(command)) {
     throw new Error('用法：node scripts/plugin-dev.mjs <init|sdk|check|build|watch> <插件目录>');
   }
   const root = resolve(directory);
   if (command === 'sdk') await atomicText(join(root, 'host.d.ts'), await portableSdk());
-  else if (command === 'init') await initPlugin(root);
+  else if (command === 'init') await initPlugin(root, template);
   else if (command === 'check') await checkPlugin(root);
   else if (command !== 'watch') await buildPlugin(root);
   if (command !== 'watch') {

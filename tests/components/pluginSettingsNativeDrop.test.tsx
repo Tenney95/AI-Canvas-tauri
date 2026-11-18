@@ -140,6 +140,28 @@ async function setup(options: { tauri?: boolean; delayedRegistration?: boolean; 
 
 const drop = (x = 300): DragDropEvent => ({ type: 'drop', paths: ['G:/plugins/example'], position: new PhysicalPosition(x, 300) });
 
+it('imports a protocol-only package through native folder review and displays its contribution', async () => {
+  const h = await setup();
+  const manifest = { apiVersion: 2 as const, id: 'example.responses', name: 'OpenAI Responses', version: '1.0.0', category: 'utility' as const,
+    runtime: 'javascript' as const, entry: 'main.js' as const, permissions: [], requiredCapabilities: ['model.protocolPresets'],
+    contributes: { nodeTools: [], modelProtocols: [{ id: 'responses', name: 'OpenAI Responses', category: 'text' as const, adapter: 'openai-responses' as const }] } };
+  h.readPackage.mockResolvedValue({ manifestText: JSON.stringify(manifest), manifest, source: 'definePlugin({ tools: {} });', resourcePayloads: [], directory: 'G:/plugins/example/' });
+  try {
+    await h.send(drop());
+    await vi.waitFor(() => expect(h.install).toHaveBeenCalledOnce());
+    expect(h.confirm).not.toHaveBeenCalled();
+    expect(h.install.mock.calls[0][0]).toContain('modelProtocols');
+    h.store.installedPlugins = [{ id: manifest.id, enabled: true, manifest, source: '', installedAt: 1, updatedAt: 1 }];
+    const text = (root: unknown): string => Array.isArray(root) ? root.map(text).join('')
+      : typeof root === 'string' || typeof root === 'number' ? String(root)
+        : root && typeof root === 'object' && 'props' in root ? text((root as ElementLike).props.children) : '';
+    const content = text(h.renderFull());
+    expect(content).toContain('0 个工具 · 0 个自定义节点');
+    expect(content).toContain('1 个协议预设');
+    expect(content).toContain('协议预设 · OpenAI Responses');
+  } finally { h.dispose(); }
+});
+
 async function triggerInstall(harness: Awaited<ReturnType<typeof setup>>, entry: 'native' | 'browser' | 'github') {
   if (entry === 'native') { await harness.send(drop()); return; }
   if (entry === 'browser') {

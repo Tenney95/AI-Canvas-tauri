@@ -337,6 +337,21 @@ export interface PluginHostInfo {
   limits: Record<'tool' | 'ui', Record<string, number>> & { replica?: Record<string, number> };
 }
 
+/** 声明式预设只绑定宿主适配器，不运行插件脚本或获取连接凭据。 */
+export type PluginChatAdapter = 'openai-compatible' | 'openai-responses' | 'anthropic-compatible' | 'gemini-native';
+
+export interface PluginModelProtocolManifest {
+  id: string;
+  name: string;
+  category: 'text';
+  adapter: PluginChatAdapter;
+}
+
+export interface PluginModelProtocolReference {
+  pluginId: string;
+  presetId: string;
+}
+
 export interface PluginManifest {
   apiVersion: 1 | 2;
   /** 兼容声明仅用于 API 2，旧宿主会在安装时拒绝该版本。 */
@@ -367,6 +382,7 @@ export interface PluginManifest {
   contributes: {
     nodeTools: PluginNodeToolManifest[];
     nodes?: PluginCustomNodeManifest[];
+    modelProtocols?: PluginModelProtocolManifest[];
   };
 }
 
@@ -387,6 +403,8 @@ export interface PluginRegistrationStatus {
   snapshotVerified?: boolean;
   healthCode?: 'ready' | 'disabled' | 'missing' | 'blocked' | 'invalid';
   dependencyFingerprint?: string;
+  /** 仅在原生快照核验且活动版本可用时返回。 */
+  modelProtocols?: PluginModelProtocolManifest[];
 }
 
 export interface PluginHealthSnapshot {

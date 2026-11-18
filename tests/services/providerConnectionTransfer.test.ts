@@ -5,6 +5,19 @@ import { describe, expect, it } from 'vitest';
 import { parseConnectionShare, serializeConnection } from '../../src/services/ai/providerConnectionTransfer';
 import type { ProviderModelSelection } from '../../src/types';
 
+it('round trips a missing plugin reference without stripping its identity or injecting an adapter', () => {
+  const executionProfile = { preset: 'plugin' as const, plugin: { pluginId: 'example.responses', presetId: 'responses' } };
+  const text = serializeConnection({ name: 'plugin', apiKey: 'private-fixture', catalogId: 'custom-openai', baseUrl: 'https://gateway.example/v1',
+    selectedModels: [{ id: 'model', name: 'model', provider: 'p', category: 'text', executionProfile }] });
+  const parsed = parseConnectionShare(text)!;
+  expect(parsed.diagnostics).toEqual([]);
+  expect(parsed.config.selectedModels![0].executionProfile).toEqual(executionProfile);
+  expect(text).not.toContain('private-fixture');
+  const invalid = JSON.parse(text);
+  invalid.connection.selectedModels[0].executionProfile.plugin.adapter = 'openai-compatible';
+  expect(parseConnectionShare(JSON.stringify(invalid))!.diagnostics[0].path).toContain('executionProfile.plugin');
+});
+
 it('round trips Responses connection and native model settings without credentials', () => {
   const text = serializeConnection({ name: 'Responses', catalogId: 'custom-openai', apiKey: 'private-fixture',
     baseUrl: 'https://example.test/v1', chatApiProtocol: 'openai-responses', selectedModels: [{

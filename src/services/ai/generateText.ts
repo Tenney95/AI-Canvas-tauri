@@ -26,6 +26,7 @@ import {
   type ChatApiMessage,
 } from './chatApiProtocol';
 import type { ChatApiProtocol } from '../../types';
+import { resolvePluginModelProtocol } from './pluginModelProtocol';
 
 // aiService 内部仍保留 runninghubwf 的默认 URL
 (DEFAULT_BASE_URLS as Record<string, string>).runninghubwf = 'https://api.runninghub.cn';
@@ -162,14 +163,20 @@ export async function generateTextResult(params: AIGenerateParams): Promise<Text
   const messages: ChatApiMessage[] = [];
   messages.push({ role: 'user', content: resolvedContent });
 
+  const controller = new AbortController();
+  const cancel = () => controller.abort(params.signal?.reason);
+  if (params.signal?.aborted) cancel();
+  else params.signal?.addEventListener('abort', cancel, { once: true });
+  let lease: Awaited<ReturnType<typeof resolvePluginModelProtocol>> | undefined;
   try {
+    controller.signal.throwIfAborted();
     const nativeTextProtocol = resolveNativeTextChatProtocol(generalModel?.executionProfile);
     if (nativeTextProtocol) chatApiProtocol = nativeTextProtocol;
-    if (generalModel?.executionProfile && !nativeTextProtocol) {
+    if (generalModel?.executionProfile && generalModel.executionProfile.preset !== 'plugin' && !nativeTextProtocol) {
       const protocol = resolveModelExecutionProfile(generalModel.executionProfile);
       if (!protocol) throw new Error(`通用模型 "${generalModel.name}" 未配置调用协议`);
       const result = await executeModelProtocol({
-        signal: params.signal,
+        signal: controller.signal,
         apiKey,
         baseUrl,
         protocol,
@@ -185,6 +192,10 @@ export async function generateTextResult(params: AIGenerateParams): Promise<Text
       return { text: result.text };
     }
 
+    if (generalModel?.executionProfile?.preset === 'plugin') {
+      lease = await resolvePluginModelProtocol(generalModel.executionProfile, () => useAppStore.getState().installedPlugins, controller);
+      chatApiProtocol = lease.adapter;
+    }
     // 未配置模型级协议时按连接协议执行；旧连接缺省仍是 OpenAI Chat Completions。
     const request = buildChatApiRequest({
       protocol: chatApiProtocol,
@@ -193,9 +204,11 @@ export async function generateTextResult(params: AIGenerateParams): Promise<Text
       model: modelName,
       messages,
       stream: false,
-      signal: params.signal,
+      signal: controller.signal,
     });
     // 不设超时（仅 ComfyUI 才设超时）
+    await lease?.assertCurrent();
+    controller.signal.throwIfAborted();
     const response = await (usesVolcengineTos ? corsSafeFetch(request.url, request.init, { sensitive: true })
       : corsSafeFetch(request.url, request.init));
 
@@ -204,6 +217,8 @@ export async function generateTextResult(params: AIGenerateParams): Promise<Text
     }
 
     const json = await response.json();
+    await lease?.assertCurrent();
+    controller.signal.throwIfAborted();
     const parsed = parseChatApiResponse(json, chatApiProtocol);
     // OpenAI 兼容通用模型保留既有宽松响应提取，原生协议只接受各自规范结构。
     const replyText = parsed.text || (
@@ -217,5 +232,8 @@ export async function generateTextResult(params: AIGenerateParams): Promise<Text
     return { text: replyText };
   } catch (error) {
     throw usesVolcengineTos ? redactVolcengineError(error, apiKey) : error;
+  } finally {
+    lease?.release();
+    params.signal?.removeEventListener('abort', cancel);
   }
 }

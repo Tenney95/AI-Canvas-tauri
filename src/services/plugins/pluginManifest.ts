@@ -23,6 +23,7 @@ import type {
   PluginPythonExecutionManifest,
   PluginToolDialogManifest,
   PluginUIManifest,
+  PluginModelProtocolManifest,
 } from '../../types/plugin';
 
 const PLUGIN_ID_RE = /^[a-z0-9](?:[a-z0-9._-]{1,126}[a-z0-9])?$/;
@@ -534,6 +535,28 @@ function parseCustomNodes(value: unknown): PluginCustomNodeManifest[] {
   });
 }
 
+export function parsePluginModelProtocols(value: unknown): PluginModelProtocolManifest[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 16) throw new Error('modelProtocols 必须是最多 16 项的数组');
+  const ids = new Set<string>();
+  return value.map((raw) => {
+    const item = objectValue(raw, 'modelProtocols[]');
+    if (Object.keys(item).some((key) => !['id', 'name', 'category', 'adapter'].includes(key))) {
+      throw new Error('modelProtocols 包含未知字段');
+    }
+    const id = nonEmptyString(item.id, 'modelProtocols.id', 64);
+    if (!TOOL_ID_RE.test(id) || ids.has(id)) throw new Error('modelProtocols.id 无效或重复');
+    ids.add(id);
+    if (item.category !== 'text') throw new Error('modelProtocols.category 仅支持 text');
+    if (typeof item.adapter !== 'string' || !['openai-compatible', 'openai-responses', 'anthropic-compatible', 'gemini-native'].includes(item.adapter)) {
+      throw new Error('modelProtocols.adapter 不受宿主支持');
+    }
+    const name = nonEmptyString(item.name, 'modelProtocols.name', 80);
+    if (/[\p{Cc}]/u.test(name)) throw new Error('modelProtocols.name 不能包含控制字符');
+    return { id, name, category: 'text' as const, adapter: item.adapter as PluginModelProtocolManifest['adapter'] };
+  }).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
 function parseManifest(value: unknown): PluginManifest {
   const root = objectValue(value, 'manifest');
   if (root.apiVersion !== 1 && root.apiVersion !== 2) throw new Error('仅支持 apiVersion: 1 或 2');
@@ -557,7 +580,9 @@ function parseManifest(value: unknown): PluginManifest {
     throw new Error('apiVersion: 1 的 entry 必须与 runtime 匹配');
   }
 
-  const permissions = stringArray(root.permissions, 'permissions', 16);
+  const permissions = Array.isArray(root.permissions) && root.permissions.length === 0
+    && apiVersion === 2 && requiredCapabilities?.includes('model.protocolPresets')
+    ? [] : stringArray(root.permissions, 'permissions', 16);
   if (permissions.some((permission) => !PERMISSIONS.has(permission as PluginPermission))) {
     throw new Error('插件声明了不支持的权限');
   }
@@ -601,7 +626,12 @@ function parseManifest(value: unknown): PluginManifest {
   const rawNodeTools = contributes.nodeTools ?? [];
   if (!Array.isArray(rawNodeTools)) throw new Error('contributes.nodeTools 必须是数组');
   const customNodes = parseCustomNodes(contributes.nodes);
-  if (rawNodeTools.length === 0 && customNodes.length === 0) throw new Error('插件至少需要贡献一个节点工具或自定义节点');
+  const modelProtocols = parsePluginModelProtocols(contributes.modelProtocols);
+  if (contributes.modelProtocols !== undefined && (apiVersion !== 2 || !requiredCapabilities?.includes('model.protocolPresets'))) {
+    throw new Error('modelProtocols 要求 API 2 与 model.protocolPresets 能力');
+  }
+  if (rawNodeTools.length === 0 && customNodes.length === 0 && modelProtocols.length === 0) throw new Error('插件至少需要贡献一个节点工具或自定义节点或协议预设');
+  if (permissions.length === 0 && (rawNodeTools.length > 0 || customNodes.length > 0)) throw new Error('仅协议预设插件可以不声明权限');
   if (rawNodeTools.length > MAX_TOOLS) throw new Error(`节点工具不能超过 ${MAX_TOOLS} 个`);
 
   const seenToolIds = new Set<string>();
@@ -814,7 +844,7 @@ function parseManifest(value: unknown): PluginManifest {
     ...(network ? { network } : {}),
     resources,
     ui,
-    contributes: { nodeTools, nodes: customNodes },
+    contributes: { nodeTools, nodes: customNodes, ...(modelProtocols.length ? { modelProtocols } : {}) },
   };
 }
 

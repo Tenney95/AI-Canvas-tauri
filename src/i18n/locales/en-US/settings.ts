@@ -2,6 +2,27 @@
  * 设置面板：语言与启动 / 画布背景 / 画布交互 / 界面偏好
  */
 const settings = {
+  "协议插件缺少宿主能力声明，请重新安装": "The protocol plugin is missing its host capability declaration. Reinstall it.",
+  "协议插件缺少注册摘要，请重新安装": "The protocol plugin is missing its registration digests. Reinstall it.",
+  "原生活动版本未提供所选协议预设": "The active native revision does not provide the selected protocol preset.",
+  "协议插件不可用": "Protocol plugin unavailable.",
+  "协议插件已变化，本轮调用已取消": "The protocol plugin changed. This call was canceled.",
+  "协议插件的原生活动版本已变化，本轮调用已取消": "The active native protocol plugin revision changed. This call was canceled.",
+  "插件协议预设": "Plugin protocol preset",
+  "插件预设不可用": "Plugin preset unavailable",
+  "不可用": "Unavailable",
+  "{count} 个协议预设": "{count} protocol presets",
+  "协议由宿主适配器执行，凭据由连接注入。": "The host adapter executes this protocol using credentials from the connection.",
+  "协议插件未就绪，请检查插件设置中的健康状态。": "The protocol plugin is not ready. Check its health in plugin settings.",
+  "协议调用已取消，请检查插件状态后重试。": "Protocol call canceled. Check the plugin status before retrying.",
+  "协议插件未安装，请安装对应插件或更换协议预设": "Protocol plugin is not installed. Install it or choose another preset.",
+  "协议插件未启用，请在插件设置中启用": "Protocol plugin is disabled. Enable it in plugin settings.",
+  "协议插件的必需依赖不可用": "A required dependency of the protocol plugin is unavailable.",
+  "协议插件需要 Tauri 桌面端核验": "Protocol plugins require verification in the Tauri desktop app.",
+  "未能确认协议插件的原生注册状态": "Could not verify the native registration of the protocol plugin.",
+  "协议插件的活动版本不可用，请刷新插件健康状态": "The active protocol plugin revision is unavailable. Refresh plugin health.",
+  "协议插件声明与原生快照不一致，请重新安装": "Protocol declarations differ from the native snapshot. Reinstall the plugin.",
+  "协议插件未提供所选预设，请更换协议预设": "The plugin does not provide the selected preset. Choose another preset.",
   // Harness collaboration, creation bundles, and external executors.
   "健康与生效诊断": "Health and activation diagnostics",
   "配置启用": "Enabled in configuration",

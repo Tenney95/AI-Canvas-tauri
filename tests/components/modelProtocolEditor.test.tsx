@@ -17,6 +17,14 @@ function renderEditor(model: ProviderModelSelection, workflowMode = false): stri
 }
 
 describe('model protocol editor', () => {
+  it('keeps an unavailable plugin reference selected and explains the native health requirement', () => {
+    const html = renderEditor({ id: 'model', name: 'model', category: 'text', provider: 'p', executionProfile: {
+      preset: 'plugin', plugin: { pluginId: 'missing.responses', presetId: 'responses' },
+    } });
+    expect(html).toContain('value="plugin:missing.responses/responses" disabled="" selected=""');
+    expect(html).toContain('协议插件未就绪');
+    expect(html).not.toContain('声明式协议 JSON');
+  });
   it('opens an unconfigured video model in custom JSON with three explicit APIMart templates', () => {
     const html = renderEditor({ id: 'custom-video', name: 'Video', category: 'video', provider: 'gateway' });
     expect(html).toContain('value="custom" selected=""');

@@ -15,6 +15,15 @@ import { useAppStore } from '../../src/store/useAppStore';
 import type { ModelExecutionProfile } from '../../src/types/aiTypes';
 import type { ChatApiProtocol, UserSkill } from '../../src/types';
 import { buildAssistantToolGuidance } from '../../src/services/chat/agentPromptGuidance';
+import type { InstalledPlugin } from '../../src/types/plugin';
+import { revokePluginProtocolPresets } from '../../src/services/plugins/pluginProtocolPresetService';
+
+const protocolNative = vi.hoisted(() => ({ invoke: vi.fn(), desktop: false }));
+vi.mock('@tauri-apps/api/core', async (original) => ({
+  ...await original<typeof import('@tauri-apps/api/core')>(),
+  invoke: (...args: unknown[]) => protocolNative.invoke(...args), isTauri: () => protocolNative.desktop,
+}));
+
 const museMocks = vi.hoisted(() => ({
   streamMuseText: vi.fn<(input: { messages: AssistantModelMessage[]; signal?: AbortSignal;
     onText: (snapshot: string) => void }) => Promise<string>>(),
@@ -55,6 +64,72 @@ beforeEach(() => {
   vi.unstubAllGlobals();
   museMocks.streamMuseText.mockReset();
   useAppStore.setState(useAppStore.getInitialState(), true);
+  protocolNative.desktop = false;
+  protocolNative.invoke.mockReset();
+  revokePluginProtocolPresets();
+});
+
+describe('plugin Responses execution', () => {
+  const reference = { pluginId: 'example.responses', presetId: 'responses' };
+  function install() {
+    const plugin: InstalledPlugin = { id: reference.pluginId, enabled: true, source: 'definePlugin({tools:{}});', sourceDigest: 'a'.repeat(64), revisionDigest: 'b'.repeat(64), installedAt: 1, updatedAt: 1,
+      manifest: { apiVersion: 2, requiredCapabilities: ['model.protocolPresets'], id: reference.pluginId, name: 'Responses', version: '1.0.0', category: 'utility', runtime: 'javascript', entry: 'main.js', permissions: [],
+        contributes: { nodeTools: [], modelProtocols: [{ id: 'responses', name: 'Responses', category: 'text', adapter: 'openai-responses' }] } } };
+    configureAssistant({ preset: 'plugin', plugin: reference }, 'anthropic-compatible');
+    useAppStore.setState({ installedPlugins: [plugin] });
+    protocolNative.desktop = true;
+    protocolNative.invoke.mockResolvedValue({ pluginId: plugin.id, exists: true, enabled: true, snapshotVerified: true, healthCode: 'ready',
+      activeSourceDigest: plugin.sourceDigest, activeRevisionDigest: plugin.revisionDigest, dependencyFingerprint: 'c'.repeat(64), modelProtocols: plugin.manifest.contributes.modelProtocols });
+    return plugin;
+  }
+  it.each([false, true])('routes plugin selection through Responses and preserves five images (nonStream=%s)', async (nonStream) => {
+    install();
+    const payload = { status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '五图分析' }] }] };
+    const fetch = vi.fn().mockResolvedValue(new Response(nonStream ? JSON.stringify(payload) : `data: ${JSON.stringify({ type: 'response.completed', response: payload })}\n\n`,
+      { headers: { 'Content-Type': nonStream ? 'application/json' : 'text/event-stream' } }));
+    vi.stubGlobal('fetch', fetch);
+    const images = Array.from({ length: 5 }, (_, i) => `data:image/png;base64,${i}AAA`);
+    const onEvent = vi.fn();
+    await expect(streamAssistantReply({ systemPrompt: '', userMessage: '', nonStream, onEvent, tools: [], resolveVisualReferences: false,
+      messages: [{ role: 'system', content: '分析每张' }, { role: 'user', content: [{ type: 'text', text: '五图' }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))] }] })).resolves.toBe('五图分析');
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0][0]).toBe('https://gateway.example/v1/responses');
+    expect(JSON.parse(fetch.mock.calls[0][1].body).input[1].content.filter((item: { type: string }) => item.type === 'input_image')).toHaveLength(5);
+    expect(protocolNative.invoke.mock.calls).toHaveLength(3);
+    expect(onEvent).toHaveBeenCalledWith({ type: 'done', finishReason: 'stop' });
+  });
+  it('does not send a request when the native plugin becomes unavailable before submission', async () => {
+    const plugin = install();
+    protocolNative.invoke.mockResolvedValueOnce({ pluginId: plugin.id, exists: true, enabled: true,
+      snapshotVerified: true, healthCode: 'ready', activeSourceDigest: plugin.sourceDigest,
+      activeRevisionDigest: plugin.revisionDigest, dependencyFingerprint: 'c'.repeat(64),
+      modelProtocols: plugin.manifest.contributes.modelProtocols })
+      .mockResolvedValueOnce({ pluginId: plugin.id, exists: true, enabled: false, healthCode: 'disabled' });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const onEvent = vi.fn();
+    await expect(streamAssistantReply({ systemPrompt: '', userMessage: '查询', nonStream: true,
+      resolveVisualReferences: false, onEvent, tools: [] })).rejects.toThrow('取消');
+    expect(protocolNative.invoke).toHaveBeenCalledTimes(2);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(onEvent).toHaveBeenCalledWith({ type: 'done', finishReason: 'canceled' });
+  });
+  it('rejects late tool proposals and the next tool round after plugin revocation', async () => {
+    install();
+    const payload = { status: 'completed', output: [{ type: 'function_call', call_id: 'call-late', name: 'canvas_query', arguments: '{}' }] };
+    const onEvent = vi.fn();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, headers: new Headers({ 'Content-Type': 'application/json' }), json: async () => {
+      revokePluginProtocolPresets(reference.pluginId);
+      useAppStore.setState((state) => ({ installedPlugins: state.installedPlugins.map((item) => ({ ...item, enabled: false })) }));
+      return payload;
+    } }));
+    await expect(streamAssistantReply({ systemPrompt: '', userMessage: '查询', nonStream: true, onEvent, tools: [] })).rejects.toThrow('取消');
+    expect(onEvent.mock.calls.some(([event]) => event.type === 'tool.call.final')).toBe(false);
+    expect(onEvent).toHaveBeenCalledWith({ type: 'done', finishReason: 'canceled' });
+    const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
+    await expect(streamAssistantReply({ systemPrompt: '', userMessage: '下一轮', onEvent: vi.fn(), tools: [] })).rejects.toThrow('未启用');
+    expect(fetch).not.toHaveBeenCalled();
+  });
 });
 
 describe('Responses image messages', () => {

@@ -1004,7 +1004,7 @@ export default function PluginSettings() {
                         {item.repository.replace('https://github.com/', '')}{item.directory ? ` / ${item.directory}` : ''}
                       </a>
                       <div className="mt-1 break-words text-[10px] text-canvas-text-muted">
-                        {t(CATEGORY_LABELS[item.manifest.category])} {t("· 权限：")}{item.manifest.permissions.join('、')}
+                        {t(CATEGORY_LABELS[item.manifest.category])} {t("· 权限：")}{item.manifest.permissions.join('、') || t('无')}
                       </div>
                     </details>
                   </div>
@@ -1063,6 +1063,7 @@ export default function PluginSettings() {
         {plugins.map((plugin) => {
           const nodeTypes = [...new Set(plugin.manifest.contributes.nodeTools.flatMap((tool) => tool.nodeTypes))];
           const customNodes = plugin.manifest.contributes.nodes ?? [];
+          const modelProtocols = plugin.manifest.contributes.modelProtocols ?? [];
           const inputFields = [...new Set(plugin.manifest.contributes.nodeTools.flatMap((tool) => tool.inputFields))];
           const outputFields = [...new Set(plugin.manifest.contributes.nodeTools.flatMap((tool) => tool.output.fields))];
           const placementLabels = [...new Set([
@@ -1117,6 +1118,11 @@ export default function PluginSettings() {
                         {node.title}
                       </span>
                     ))}
+                    {modelProtocols.map((protocol) => (
+                      <span key={`protocol:${protocol.id}`} className="rounded bg-indigo-500/10 px-1.5 py-0.5 text-[10px] text-indigo-400">
+                        {t('协议预设')} · {protocol.name}
+                      </span>
+                    ))}
                   </div>
                   <details className="mt-2 text-[11px] text-canvas-text-secondary">
                     <summary className="w-fit cursor-pointer select-none rounded hover:text-canvas-text focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-canvas-text-muted">
@@ -1125,8 +1131,9 @@ export default function PluginSettings() {
                     <div className="mt-1 break-words text-[10px] leading-4 text-canvas-text-muted">
                       API v{plugin.manifest.apiVersion} · {plugin.manifest.entry} {t("· 入口：")}{placementLabels || t('未声明')}<br />
                       {t('{tools} 个工具 · {nodes} 个自定义节点', { tools: plugin.manifest.contributes.nodeTools.length, nodes: customNodes.length })}<br />
+                      {t('{count} 个协议预设', { count: modelProtocols.length })}<br />
                       {t("读取：")}{inputFields.join('、') || t('无')} {t("· 写入：")}{outputFields.join('、') || t('无')}<br />
-                      {t("权限：")}{plugin.manifest.permissions.join('、')}<br />
+                      {t("权限：")}{plugin.manifest.permissions.join('、') || t('无')}<br />
                       {t("代码 SHA-256：")}<span className="break-all font-mono" title={plugin.sourceDigest}>{plugin.sourceDigest ?? t('待原生迁移')}</span>
                     </div>
                   </details>

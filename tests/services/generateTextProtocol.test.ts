@@ -8,7 +8,12 @@ import { resolvePromptWithMediaRefs } from '../../src/services/ai/promptResolver
 import type { ModelExecutionProfile } from '../../src/types/aiTypes';
 import type { WorkflowDefinition } from '../../src/types';
 import { getPendingTasksForProject } from '../../src/services/pollManager';
-
+import type { InstalledPlugin } from '../../src/types/plugin';
+import { revokePluginProtocolPresets } from '../../src/services/plugins/pluginProtocolPresetService';
+const protocolNative = vi.hoisted(() => ({ invoke: vi.fn(), desktop: false }));
+vi.mock('@tauri-apps/api/core', async (original) => ({
+  ...await original<typeof import('@tauri-apps/api/core')>(), invoke: (...args: unknown[]) => protocolNative.invoke(...args), isTauri: () => protocolNative.desktop,
+}));
 
 vi.mock('../../src/services/comfyProgress', () => ({ createComfyProgressSession: () => ({
   clientId: 'text-workflow-progress', waitUntilReady: async () => {}, bindPrompt: () => {}, close: () => {},
@@ -23,6 +28,30 @@ const jsonResponse = (payload: unknown) => new Response(JSON.stringify(payload),
 beforeEach(() => {
   vi.unstubAllGlobals();
   useAppStore.setState(useAppStore.getInitialState(), true);
+  protocolNative.desktop = false; protocolNative.invoke.mockReset(); revokePluginProtocolPresets();
+});
+
+it('uses a verified plugin for five-image text generation and rejects a result after revocation', async () => {
+  const reference = { pluginId: 'example.responses', presetId: 'responses' };
+  const plugin: InstalledPlugin = { id: reference.pluginId, enabled: true, source: 'definePlugin({tools:{}});', sourceDigest: 'a'.repeat(64), revisionDigest: 'b'.repeat(64), installedAt: 1, updatedAt: 1,
+    manifest: { apiVersion: 2, requiredCapabilities: ['model.protocolPresets'], id: reference.pluginId, name: 'Responses', version: '1.0.0', category: 'utility', runtime: 'javascript', entry: 'main.js', permissions: [],
+      contributes: { nodeTools: [], modelProtocols: [{ id: 'responses', name: 'Responses', category: 'text', adapter: 'openai-responses' }] } } };
+  useAppStore.setState((state) => ({ installedPlugins: [plugin], config: { ...state.config, providers: { p: { name: 'p', apiKey: 'key', baseUrl: 'https://gateway.example/v1' } },
+    generalModels: [{ id: 'plugin-model', name: 'plugin model', modelId: 'configured-model', category: 'text', providerConfigId: 'p', executionProfile: { preset: 'plugin', plugin: reference } }] } }));
+  protocolNative.desktop = true;
+  protocolNative.invoke.mockResolvedValue({ pluginId: plugin.id, exists: true, enabled: true, snapshotVerified: true, healthCode: 'ready', activeSourceDigest: plugin.sourceDigest,
+    activeRevisionDigest: plugin.revisionDigest, dependencyFingerprint: 'c'.repeat(64), modelProtocols: plugin.manifest.contributes.modelProtocols });
+  const payload = { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: '五图齐全' }] }] };
+  const fetch = vi.fn().mockResolvedValue(jsonResponse(payload)); vi.stubGlobal('fetch', fetch);
+  const params = { provider: 'general', model: 'general/plugin-model', prompt: '分析五图', imageUrls: Array.from({ length: 5 }, (_, i) => `data:image/png;base64,${i}AAA`) };
+  await expect(generateText(params)).resolves.toBe('五图齐全');
+  expect(fetch.mock.calls[0][0]).toBe('https://gateway.example/v1/responses');
+  expect(JSON.parse(fetch.mock.calls[0][1].body).input[0].content.filter((item: { type: string }) => item.type === 'input_image')).toHaveLength(5);
+  fetch.mockResolvedValue({ ok: true, json: async () => { revokePluginProtocolPresets(plugin.id); return payload; } });
+  await expect(generateText(params)).rejects.toThrow();
+  useAppStore.setState({ installedPlugins: [] }); fetch.mockClear();
+  await expect(generateText(params)).rejects.toThrow('未安装');
+  expect(fetch).not.toHaveBeenCalled();
 });
 
 it('sends all five reference images through the native Responses text-node path', async () => {

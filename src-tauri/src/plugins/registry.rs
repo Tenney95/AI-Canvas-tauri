@@ -123,6 +123,8 @@ struct PluginRevision {
     #[serde(default)]
     dependencies: Vec<PluginDependency>,
     declared_tool_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    model_protocols: Vec<PluginModelProtocol>,
     #[serde(default)]
     python_execution: BTreeMap<String, PluginPythonExecution>,
     #[serde(default)]
@@ -219,6 +221,41 @@ pub struct PluginRegistrationStatus {
     snapshot_verified: bool,
     health_code: String,
     dependency_fingerprint: Option<String>,
+    model_protocols: Vec<PluginModelProtocol>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PluginModelProtocol {
+    id: String,
+    name: String,
+    category: String,
+    adapter: String,
+}
+
+fn validate_model_protocols(items: &[PluginModelProtocol]) -> Result<(), String> {
+    if items.len() > 16 { return Err("modelProtocols 最多 16 项".into()); }
+    let mut ids = BTreeSet::new();
+    for item in items {
+        validate_tool_id(&item.id)?;
+        if !ids.insert(&item.id) || item.name.trim() != item.name || item.name.is_empty()
+            || item.name.chars().count() > 80 || item.name.chars().any(char::is_control)
+            || item.category != "text"
+            || !["openai-compatible", "openai-responses", "anthropic-compatible", "gemini-native"].contains(&item.adapter.as_str())
+        { return Err("modelProtocols 声明无效或 ID 重复".into()); }
+    }
+    Ok(())
+}
+
+fn parse_model_protocols(contributes: &Map<String, Value>, api_version: u64, capabilities: &[String]) -> Result<Vec<PluginModelProtocol>, String> {
+    let Some(raw) = contributes.get("modelProtocols") else { return Ok(Vec::new()); };
+    if api_version != 2 || !capabilities.iter().any(|item| item == "model.protocolPresets") {
+        return Err("modelProtocols 要求 API 2 与 model.protocolPresets 能力".into());
+    }
+    let mut items: Vec<PluginModelProtocol> = serde_json::from_value(raw.clone()).map_err(|_| "modelProtocols 格式无效")?;
+    validate_model_protocols(&items)?;
+    items.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(items)
 }
 
 pub(crate) struct PluginExecutionSource {
@@ -457,9 +494,6 @@ fn declared_tool_ids(contributes: &Map<String, Value>) -> Result<Vec<String>, St
                 return Err(format!("插件声明的工具不能超过 {MAX_DECLARED_TOOL_IDS} 个"));
             }
         }
-    }
-    if ids.is_empty() {
-        return Err("插件至少需要声明一个工具或自定义节点".to_string());
     }
     Ok(ids.into_iter().collect())
 }
@@ -875,6 +909,10 @@ fn parse_revision_with_resources(
         "contributes",
     )?;
     let declared_tool_ids = declared_tool_ids(contributes)?;
+    let model_protocols = parse_model_protocols(contributes, api_version, &required_capabilities)?;
+    if declared_tool_ids.is_empty() && model_protocols.is_empty() {
+        return Err("插件至少需要声明一个工具或自定义节点或协议预设".into());
+    }
     let python_execution = parse_python_execution(
         contributes,
         &runtime,
@@ -901,6 +939,7 @@ fn parse_revision_with_resources(
             required_capabilities,
             dependencies,
             declared_tool_ids,
+            model_protocols,
             python_execution,
             native_approved: false,
             ui_digest,
@@ -1735,7 +1774,14 @@ fn validate_stored_revision(revision: &PluginRevision) -> Result<(), String> {
     {
         return Err("提示词引用权限缺少 prompt.mentions 能力声明".to_string());
     }
-    if revision.declared_tool_ids.is_empty()
+    validate_model_protocols(&revision.model_protocols)?;
+    if revision.model_protocols.windows(2).any(|pair| pair[0].id >= pair[1].id) {
+        return Err("协议预设必须按 ID 排序且不能重复".into());
+    }
+    if !revision.model_protocols.is_empty() && !revision.required_capabilities.iter().any(|item| item == "model.protocolPresets") {
+        return Err("协议预设缺少 model.protocolPresets 能力声明".into());
+    }
+    if (revision.declared_tool_ids.is_empty() && revision.model_protocols.is_empty())
         || revision.declared_tool_ids.len() > MAX_DECLARED_TOOL_IDS
         || revision
             .declared_tool_ids
@@ -2467,6 +2513,7 @@ fn status_for(plugin_id: &str, record: Option<&PluginRegistration>) -> PluginReg
         snapshot_verified: false,
         health_code: "unavailable".into(),
         dependency_fingerprint: None,
+        model_protocols: Vec::new(),
     }
 }
 
@@ -2492,6 +2539,7 @@ fn revision_security_manifest_matches(left: &PluginRevision, right: &PluginRevis
         && left.required_capabilities == right.required_capabilities
         && left.dependencies == right.dependencies
         && left.declared_tool_ids == right.declared_tool_ids
+        && left.model_protocols == right.model_protocols
         && left.python_execution == right.python_execution
         && left.ui_digest == right.ui_digest
         && left.ui_entry == right.ui_entry
@@ -3193,6 +3241,7 @@ fn health_status_at(private_dir: &Path, registry: &PluginRegistry, plugin_id: &s
         else if !record.enabled { "disabled" }
         else if status.dependency_fingerprint.is_none() { "blocked" }
         else { "ready" }.into();
+    if status.health_code == "ready" { status.model_protocols = active.model_protocols.clone(); }
     status
 }
 
@@ -3366,6 +3415,69 @@ pub async fn read_plugin_package_resource(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn protocol_manifest() -> Value {
+        let mut value = manifest("javascript");
+        value["apiVersion"] = json!(2);
+        value["requiredCapabilities"] = json!(["model.protocolPresets"]);
+        value["permissions"] = json!([]);
+        value["contributes"] = json!({"nodeTools": [], "modelProtocols": [
+            {"id": "responses", "name": "OpenAI Responses", "category": "text", "adapter": "openai-responses"}
+        ]});
+        value
+    }
+
+    #[test]
+    fn protocol_only_packages_require_capability_and_bind_metadata_to_revision() {
+        let value = protocol_manifest();
+        let (_, revision) = parse_revision(&value, "definePlugin({ tools: {} });", None).unwrap();
+        assert!(revision.declared_tool_ids.is_empty());
+        assert_eq!(revision.model_protocols[0].adapter, "openai-responses");
+        validate_stored_revision(&revision).unwrap();
+        let mut changed = value.clone();
+        changed["contributes"]["modelProtocols"][0]["adapter"] = json!("openai-compatible");
+        let (_, next) = parse_revision(&changed, "definePlugin({ tools: {} });", None).unwrap();
+        assert_eq!(revision.source_digest, next.source_digest);
+        assert_ne!(revision.revision_digest, next.revision_digest);
+        assert!(!revision_security_manifest_matches(&revision, &next));
+        changed["requiredCapabilities"] = json!([]);
+        assert!(parse_revision(&changed, "source", None).is_err());
+        changed = value.clone(); changed["apiVersion"] = json!(1);
+        assert!(parse_revision(&changed, "source", None).is_err());
+        for field in ["category", "adapter", "id", "extra"] {
+            changed = value.clone();
+            changed["contributes"]["modelProtocols"][0][field] = json!("invalid/field");
+            assert!(parse_revision(&changed, "source", None).is_err());
+        }
+        changed = value.clone();
+        changed["contributes"]["modelProtocols"] = json!([value["contributes"]["modelProtocols"][0], value["contributes"]["modelProtocols"][0]]);
+        assert!(parse_revision(&changed, "source", None).is_err());
+    }
+
+    #[test]
+    fn protocol_catalog_only_exposes_verified_enabled_native_snapshot() {
+        let directory = temporary_directory("protocol-preset-health");
+        let source = "definePlugin({ tools: {} });";
+        let (id, revision) = parse_revision(&protocol_manifest(), source, None).unwrap();
+        stage_revision_at(&directory, id.clone(), revision.clone(), source, None).unwrap();
+        let mut registry = read_registry_at(&directory).unwrap();
+        commit_activation_at(&directory, &mut registry, &id, &revision.revision_digest, true, false).unwrap();
+        let status = health_status_at(&directory, &registry, &id);
+        assert_eq!(status.health_code, "ready");
+        assert_eq!(status.model_protocols, revision.model_protocols);
+        registry.plugins.get_mut(&id).unwrap().enabled = false;
+        assert!(health_status_at(&directory, &registry, &id).model_protocols.is_empty());
+        let mut changed = revision.clone();
+        changed.model_protocols[0].adapter = "openai-compatible".into();
+        assert!(stage_revision_at(&directory, id.clone(), changed, source, None).is_err());
+        registry = read_registry_at(&directory).unwrap();
+        assert_eq!(health_status_at(&directory, &registry, &id).model_protocols, revision.model_protocols);
+        fs::write(revision_file(&directory, &id, &revision), "changed").unwrap();
+        let damaged = health_status_at(&directory, &registry, &id);
+        assert_eq!(damaged.health_code, "invalid");
+        assert!(damaged.model_protocols.is_empty());
+        fs::remove_dir_all(directory).ok();
+    }
 
     #[test]
     fn dependency_metadata_requires_capability_and_rejects_unknown_or_self_references() {
@@ -4424,6 +4536,7 @@ mod tests {
             required_capabilities: Vec::new(),
             dependencies: Vec::new(),
             declared_tool_ids,
+            model_protocols: Vec::new(),
             python_execution: BTreeMap::new(),
             native_approved: false,
             ui_digest: None,

@@ -158,7 +158,7 @@ function cloneProtocol(protocol: NormalizedModelExecutionProtocol): NormalizedMo
 }
 
 export function getModelProtocolPreset(
-  preset: Exclude<ModelProtocolPresetId, 'custom' | 'openai-responses' | 'anthropic-chat' | 'gemini-chat'>,
+  preset: Exclude<ModelProtocolPresetId, 'custom' | 'plugin' | 'openai-responses' | 'anthropic-chat' | 'gemini-chat'>,
 ): NormalizedModelExecutionProtocol {
   if (preset === 'openai-chat') return cloneProtocol(OPENAI_CHAT_PROTOCOL);
   if (preset === 'openai-gpt-image') return cloneProtocol(OPENAI_GPT_IMAGE_PROTOCOL);
@@ -166,7 +166,8 @@ export function getModelProtocolPreset(
   if (preset === 'google-image-native') return cloneProtocol(GOOGLE_IMAGE_PROTOCOL);
   if (preset === 'xai-image-native') return cloneProtocol(XAI_IMAGE_PROTOCOL);
   if (preset === 'agnes-video') return cloneProtocol(AGNES_VIDEO_PROTOCOL);
-  return cloneProtocol(OPENAI_IMAGE_PROTOCOL);
+  if (preset === 'openai-image') return cloneProtocol(OPENAI_IMAGE_PROTOCOL);
+  throw new Error('不支持的声明式协议预设');
 }
 
 export function getModelProtocolPresetVideoCapability(

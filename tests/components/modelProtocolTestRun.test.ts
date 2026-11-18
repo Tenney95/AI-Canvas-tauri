@@ -3,13 +3,20 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { assertRealProtocolTestVariables, defaultVideoTestScenario, describeProtocolTestRunBlocker,
-  buildVideoTestVariables, resolveProtocolTestRunDraft, videoTestReferences, nativeProtocolTestMessages } from '../../src/components/settings/modelProtocolTestRun';
+  buildVideoTestVariables, resolveProtocolTestRunDraft, videoTestReferences, pluginProtocolChoice, parsePluginProtocolChoice, nativeProtocolTestMessages } from '../../src/components/settings/modelProtocolTestRun';
 import { getDefaultCustomProtocol } from '../../src/services/ai/modelProtocol';
 
 const videoBuilder = vi.hoisted(() => vi.fn());
 vi.mock('../../src/services/ai/generateVideo', () => ({ buildGeneralVideoProtocolVariables: videoBuilder }));
 
 describe('模型协议试跑前置条件', () => {
+  it('round trips stable plugin selections and refuses declarative fallback for plugin trials', () => {
+    const ref = { pluginId: 'example.responses', presetId: 'responses' };
+    expect(parsePluginProtocolChoice(pluginProtocolChoice(ref))).toEqual(ref);
+    expect(parsePluginProtocolChoice('openai-responses')).toBeUndefined();
+    expect(() => parsePluginProtocolChoice('plugin:example.responses/responses/extra')).toThrow();
+    expect(() => resolveProtocolTestRunDraft('plugin', getDefaultCustomProtocol('text'), '{}')).toThrow('原生活动适配器');
+  });
   it('preserves all five images and history from trial messages', () => {
     const messages = [{ role: 'system', content: '看图' }, { role: 'user', content: [{ type: 'text', text: '五图' },
       ...Array.from({ length: 5 }, (_, i) => ({ type: 'image_url', image_url: { url: `https://images.vendor.com/${i}.png` } }))] }];

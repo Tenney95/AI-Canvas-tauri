@@ -6,6 +6,7 @@ import type { ModelExecutionProfile, ModelExecutionProtocol, NormalizedModelExec
 import {
   buildModelProtocolRequest,
   comparableProtocol,
+  resolveModelExecutionProfile,
   executeModelProtocol,
   getDefaultCustomProtocol,
   getModelProtocolPreset,
@@ -18,6 +19,13 @@ import {
   previewModelProtocolResponse,
   validateModelExecutionProtocol,
 } from '../../src/services/ai/modelProtocol';
+
+it('does not execute plugin references as declarative JSON or a default image preset', () => {
+  const profile = { preset: 'plugin' as const, plugin: { pluginId: 'example.responses', presetId: 'responses' } };
+  expect(() => resolveModelExecutionProfile(profile)).toThrow('原生活动');
+  expect(() => getModelProtocolPreset('plugin' as never)).toThrow('不支持');
+  expect(comparableProtocol(profile)).toContain('example.responses');
+});
 import {
   findModelProtocolForEachCapabilityConflicts,
   findUnusedReferenceVariables,

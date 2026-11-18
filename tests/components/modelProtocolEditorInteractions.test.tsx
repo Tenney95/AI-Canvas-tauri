@@ -9,6 +9,8 @@ const driver = vi.hoisted(() => ({
   scope: null as HookScope | null, execute: vi.fn(), copy: vi.fn(),
   confirm: vi.fn(),
   layoutEffects: [] as Array<() => void>,
+  effects: [] as Array<() => void>,
+  catalog: vi.fn(),
 }));
 vi.mock('react', async () => ({
   ...await vi.importActual<typeof import('react')>('react'),
@@ -34,7 +36,7 @@ vi.mock('react', async () => ({
     }
     return (scope.values[index] as { value: T }).value;
   },
-  useEffect: () => {},
+  useEffect: (effect: () => void) => { driver.effects.push(effect); },
   useLayoutEffect: (effect: () => void) => { driver.layoutEffects.push(effect); },
   useId: () => `protocol-test-${driver.scope!.index++}`,
   useSyncExternalStore: (_subscribe: unknown, snapshot: () => unknown) => snapshot(),
@@ -46,7 +48,16 @@ vi.mock('../../src/services/ai/modelProtocolTestSession', async (original) => ({
 }));
 vi.mock('../../src/services/confirmDialog', () => ({ confirmAction: (...args: unknown[]) => driver.confirm(...args) }));
 vi.mock('../../src/services/clipboardService', () => ({ copyText: (...args: unknown[]) => driver.copy(...args) }));
+vi.mock('../../src/store/useAppStore', async (original) => {
+  const actual = await original<typeof import('../../src/store/useAppStore')>();
+  return { ...actual, useAppStore: Object.assign((selector: (state: ReturnType<typeof actual.useAppStore.getState>) => unknown) => selector(actual.useAppStore.getState()), actual.useAppStore) };
+});
+vi.mock('../../src/services/plugins/pluginProtocolPresetService', async (original) => ({
+  ...await original<typeof import('../../src/services/plugins/pluginProtocolPresetService')>(),
+  listPluginProtocolPresets: (...args: unknown[]) => driver.catalog(...args),
+}));
 import ModelProtocolEditor from '../../src/components/settings/ModelProtocolEditor';
+import { useAppStore } from '../../src/store/useAppStore';
 import { getDefaultCustomProtocol, parseModelExecutionProtocol, previewModelProtocolRequest } from '../../src/services/ai/modelProtocol';
 
 type Element = ReactElement<Record<string, unknown> & { children?: unknown }>;
@@ -84,6 +95,7 @@ function change(element: Element, value: string) {
 function render() {
   driver.scope!.index = 0;
   driver.layoutEffects = [];
+  driver.effects = [];
   tree = ModelProtocolEditor(props);
   driver.layoutEffects.forEach((effect) => effect());
 }
@@ -98,6 +110,8 @@ beforeEach(() => {
   driver.execute.mockReset().mockResolvedValue({ urls: ['https://cdn.example/result.png'] });
   driver.copy.mockReset().mockResolvedValue(true);
   driver.confirm.mockReset().mockResolvedValue(true);
+  driver.catalog.mockReset().mockResolvedValue([]);
+  useAppStore.setState(useAppStore.getInitialState(), true);
   props = {
     model: { id: 'image-model', name: 'Image', category: 'image', provider: 'custom',
       executionProfile: { preset: 'custom', protocol: getDefaultCustomProtocol('image') } },
@@ -107,6 +121,24 @@ beforeEach(() => {
 });
 
 describe('model protocol editor interactions', () => {
+  it('shows plugin identities, saves a stable reference, and refreshes to unavailable after lifecycle changes', async () => {
+    props.model = { id: 'model', name: 'model', provider: 'p', category: 'text' };
+    const first = { pluginId: 'example.responses', presetId: 'responses', name: 'OpenAI Responses', pluginName: 'Responses', available: true };
+    const second = { ...first, pluginId: 'other.responses' };
+    driver.catalog.mockResolvedValue([first, second]);
+    render(); driver.effects.forEach((effect) => effect());
+    await new Promise<void>((resolve) => setImmediate(resolve)); render();
+    expect(elements(tree).filter((element) => element.type === 'option' && String(element.props.value).startsWith('plugin:'))).toHaveLength(2);
+    const select = find((element) => typeof element.props.onChange === 'function' && element.props.value === 'legacy');
+    await (select.props.onChange as (value: string) => Promise<void>)('plugin:example.responses/responses'); render();
+    expect(props.onChange).toHaveBeenLastCalledWith({ preset: 'plugin', plugin: { pluginId: 'example.responses', presetId: 'responses' } });
+    driver.catalog.mockResolvedValue([{ ...first, available: false, reason: '协议插件未启用，请在插件设置中启用' }]);
+    useAppStore.setState({ installedPlugins: [...useAppStore.getState().installedPlugins] });
+    render(); driver.effects.forEach((effect) => effect());
+    await new Promise<void>((resolve) => setImmediate(resolve)); render();
+    expect(find((element) => element.type === 'option' && element.props.value === 'plugin:example.responses/responses').props.disabled).toBe(true);
+    expect(props.onChange).toHaveBeenLastCalledWith({ preset: 'plugin', plugin: { pluginId: 'example.responses', presetId: 'responses' } });
+  });
   it('keeps an unconfigured video protocol invalid when switching editor views', async () => {
     props.model = { id: 'unknown-video', name: 'Video', category: 'video', provider: 'custom' };
     render();
