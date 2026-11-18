@@ -15,7 +15,10 @@ const driver = vi.hoisted(() => ({
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => driver.state } }));
 vi.mock('../../src/services/ai/apimartImageResult', () => ({ fetchApimartTask: vi.fn(), queryApimartImageResult: driver.queryApimartImageResult }));
 vi.mock('../../src/services/nativeWorkflowTasks', () => ({ assertWorkflowContract: vi.fn(), queryNativeWorkflowOriginal: driver.queryWorkflow }));
-vi.mock('../../src/services/ai/modelProtocol', () => ({ submitModelProtocol: driver.submit }));
+vi.mock('../../src/services/ai/modelProtocol', async (original) => ({
+  ...await original<typeof import('../../src/services/ai/modelProtocol')>(),
+  submitModelProtocol: driver.submit,
+}));
 vi.mock('../../src/services/ai/modelProtocolPoll', () => ({
   pollResolvedModelProtocol: driver.poll,
   resolvePoll: (_base: string, poll: unknown) => poll,

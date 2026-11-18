@@ -92,7 +92,9 @@ it.each([422, 504])('MiniMax 原生提交 HTTP %i 区分确认拒绝与结果未
   const [record] = await listNativeMediaTasks(context.projectId);
   expect(record.status).toBe(status === 422 ? 'failed' : 'outcome-unknown');
   expect(record.remoteTaskId).toBeUndefined();
-  expect(driver.fetch).toHaveBeenCalledExactlyOnceWith(`${MINIMAX_BASE_URL}/v2/video_generation`, expect.objectContaining({ method: 'POST' }));
+  expect(driver.fetch.mock.calls.map(([url, init]) => [url, init?.method])).toEqual([
+    [`${MINIMAX_BASE_URL}/v2/video_generation`, 'POST'],
+  ]);
   expect(driver.deliver).not.toHaveBeenCalled();
 });
 

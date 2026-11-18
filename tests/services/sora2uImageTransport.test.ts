@@ -72,7 +72,7 @@ describe('Sora2U 内置图片下架', () => {
   it('旧图片回执可继续按原地址、密钥和协议恢复', () => {
     const params = configure('gemini-image', true, true);
     const saved = useAppStore.getState().config.providers['my-sora'].selectedModels![0].executionProfile;
-    expect(() => resolveGeneralModelConnection(params.model)).toThrow('内置厂商已下架');
+    expect(resolveGeneralModelConnection(params.model)).toBeUndefined();
     expect(resolveGeneralModelConnection(params.model, { forRecovery: true })).toMatchObject({
       providerConfigId: 'my-sora', apiKey: 'sora-image-fixture', baseUrl: SORA2U_BASE_URL,
       model: { executionProfile: saved },

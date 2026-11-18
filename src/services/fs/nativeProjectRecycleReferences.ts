@@ -1,11 +1,11 @@
 /** 回收整目录前重新核对权威目录、任务和目前仍可使用的素材引用。 */
 import { assetUsageFileTreesOverlap, loadAssetDirectoryUsage, matchesAssetUsage } from '../assetUsageService';
 import { configValuesEqual } from '../configPatch';
-import { getAllAssetIndexes, getProjectById } from '../indexedDbService';
+import { getAllAssetIndexes } from '../indexedDbService';
 import { validateNativeAsset, type NativeAssetRecord } from '../indexedDb/nativeAssetRepository';
 import { pendingMediaRelocations } from '../indexedDb/mediaRelocations';
-import { readNativeProject } from '../indexedDb/nativeProjectRepository';
 import { isNodeMediaCopySourceTree } from '../nodeMediaCopy';
+import { resolveProjectModel } from '../projectModelRouter';
 import { getGlobalFilesDir } from './assetLibrary';
 import { readNativeStorageSnapshot, nativeStorageProjectProtected, nativeStorageProjectRows, nativeStorageRowOwner,
   type NativeStorageSnapshot } from './nativeStorageReferences';
@@ -29,16 +29,16 @@ export async function assertNativeProjectRecycleReferences(projectId: string, ro
   const initialConfig = initial.config;
   const assertReferencesCurrent = () => {
     const current = useAppStore.getState();
-    const watched = ['currentProjectId', 'projects', 'nodes', 'edges', 'groups', 'history', 'messages', 'conversations', 'dramaAssets',
+    const watched = ['currentProjectId', 'nodes', 'edges', 'groups', 'history', 'messages', 'conversations', 'dramaAssets',
       'globalCharacters', 'globalScenes', 'globalProps', 'workflows', 'userPresets'] as const;
-    if (current.projectLoadStatus !== 'ready' || watched.some((key) => current[key] !== initial[key])
+    if (current.projectLoadStatus !== 'ready' || current.projects !== initial.projects || watched.some((key) => current[key] !== initial[key])
       || current.config.baseDataDir !== initialConfig.baseDataDir || !configValuesEqual(current.config.assetFolders, initialConfig.assetFolders)
       || isNodeMediaCopySourceTree(root)) throw new Error('项目引用在回收前发生变化');
   };
-  const [snapshot, existing, legacyProject, globalRoot, indexes] = await Promise.all([
-    readNativeStorageSnapshot(), readNativeProject(projectId), getProjectById(projectId), getGlobalFilesDir(), getAllAssetIndexes(),
+  const [snapshot, existing, globalRoot, indexes] = await Promise.all([
+    readNativeStorageSnapshot(), resolveProjectModel(projectId), getGlobalFilesDir(), getAllAssetIndexes(),
   ]);
-  if (existing || legacyProject) throw new Error('项目仍在使用，未移动素材目录');
+  if (existing.dataModel !== 'missing') throw new Error('项目仍在使用，未移动素材目录');
   assertRetiredScope(snapshot, projectId);
   const libraryRoots = [...(initialConfig.assetFolders ?? []), ...(globalRoot ? [globalRoot] : [])];
   if (!globalRoot || libraryRoots.some((path) => !assetUsageFileTreesOverlap(path, path) || assetUsageFileTreesOverlap(root, path))) {
@@ -69,10 +69,10 @@ export async function assertNativeProjectRecycleReferences(projectId: string, ro
     loadAssetDirectoryUsage(root, assetIds, retiredConversationIds), pendingMediaRelocations('global-assets'),
   ]);
   if (usage.locations.length || matchesAssetUsage(globalMoves, target)) throw new Error('原目录仍有素材引用或正在迁移');
-  const [latest, latestProject, latestLegacyProject] = await Promise.all([
-    readNativeStorageSnapshot(), readNativeProject(projectId), getProjectById(projectId),
+  const [latest, latestProject] = await Promise.all([
+    readNativeStorageSnapshot(), resolveProjectModel(projectId),
   ]);
-  if (latestProject || latestLegacyProject || !configValuesEqual(latest, snapshot)) {
+  if (latestProject.dataModel !== 'missing' || !configValuesEqual(latest, snapshot)) {
     throw new Error('核对期间项目目录、引用或文件操作发生变化');
   }
   assertRetiredScope(latest, projectId);

@@ -41,9 +41,13 @@ class FakeAudio {
   constructor() { players.push(this); }
 }
 
+function VoicePreviewProbe(context: string, options?: Parameters<typeof useCharacterVoicePreview>[1]) {
+  return useCharacterVoicePreview(context, options);
+}
+
 function render(context: string, options?: Parameters<typeof useCharacterVoicePreview>[1]) {
   hooks.nextEffects = [];
-  return useCharacterVoicePreview(context, options);
+  return VoicePreviewProbe(context, options);
 }
 
 function commit() {

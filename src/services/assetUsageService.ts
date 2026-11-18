@@ -441,9 +441,9 @@ export async function loadAssetUsage(target: AssetUsageProbe | readonly AssetUsa
   if (directories.length) {
     const finalCatalog = await listProjectCatalog();
     const current = useAppStore.getState();
-    const watched = ['projects', 'nodes', 'edges', 'groups', 'history', 'messages', 'conversations', 'dramaAssets', 'globalCharacters', 'globalScenes',
+    const watched = ['nodes', 'edges', 'groups', 'history', 'messages', 'conversations', 'dramaAssets', 'globalCharacters', 'globalScenes',
       'globalProps', 'workflows', 'userPresets'] as const;
-    if (current.currentProjectId !== initial.currentProjectId || current.projectLoadStatus !== 'ready'
+    if (current.currentProjectId !== initial.currentProjectId || current.projects !== initial.projects || current.projectLoadStatus !== 'ready'
       || watched.some((key) => initial[key] !== current[key])
       || !configValuesEqual(catalog, finalCatalog)) throw new Error('项目引用在核对期间发生变化');
   }
