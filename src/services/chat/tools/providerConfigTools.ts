@@ -66,6 +66,7 @@ interface ProviderModelsSelectInput {
 const MODEL_CATEGORIES: GeneralModelCategory[] = ['text', 'image', 'video', 'audio'];
 const CHAT_API_PROTOCOLS: ChatApiProtocol[] = [
   'openai-compatible',
+  'openai-responses',
   'anthropic-compatible',
   'gemini-native',
 ];
@@ -462,7 +463,7 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
         'OpenAPI 文档中的 string、0、空对象和空数组是有效的结构占位符，不要因此拒绝调用。',
         'Gemini 图片 generateContent 会自动规范化 IMAGE、contents 和 inlineData.data，不要求真实 Base64 响应样例。',
         '图片接口若使用 image 字段接收 data:image/...;base64,... 数组，应把 imageReferenceRequestMode 设为 generation-json-image-data-urls。',
-        '文本接口必须按文档设置 chatApiProtocol：OpenAI Chat Completions 用 openai-compatible，Anthropic Messages 用 anthropic-compatible，Gemini generateContent 用 gemini-native；文档未说明时缺省为 openai-compatible。该字段不改变图片、视频或音频的逐模型执行协议。',
+        '文本接口必须按文档设置 chatApiProtocol：OpenAI Chat Completions 用 openai-compatible，OpenAI Responses 用 openai-responses，Anthropic Messages 用 anthropic-compatible，Gemini generateContent 用 gemini-native；文档未说明时缺省为 openai-compatible。该字段不改变图片、视频或音频的逐模型执行协议。',
         '文档写明模型用途、擅长场景或限制时，把这句话填进 description（不超过 500 字），模型选择器会显示它。',
         '文本模型的文档若写明支持图片/多模态输入，把 inputModalities 设为 ["text","image"]，画布才允许把图片连进该模型；只支持纯文本就不要填。',
         '文档写明上下文窗口时把 token 数填进 contextWindow（如 128000）；中转站的自定义模型名推断不出窗口大小，不填会按 32000 保守压缩上下文。',

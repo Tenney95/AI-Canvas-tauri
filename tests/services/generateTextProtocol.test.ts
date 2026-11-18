@@ -9,6 +9,7 @@ import type { ModelExecutionProfile } from '../../src/types/aiTypes';
 import type { WorkflowDefinition } from '../../src/types';
 import { getPendingTasksForProject } from '../../src/services/pollManager';
 
+
 vi.mock('../../src/services/comfyProgress', () => ({ createComfyProgressSession: () => ({
   clientId: 'text-workflow-progress', waitUntilReady: async () => {}, bindPrompt: () => {}, close: () => {},
 }) }));
@@ -22,6 +23,27 @@ const jsonResponse = (payload: unknown) => new Response(JSON.stringify(payload),
 beforeEach(() => {
   vi.unstubAllGlobals();
   useAppStore.setState(useAppStore.getInitialState(), true);
+});
+
+it('sends all five reference images through the native Responses text-node path', async () => {
+  useAppStore.setState((state) => ({ config: { ...state.config,
+    providers: { ...state.config.providers, 'responses-provider': {
+      name: 'Responses', catalogId: 'custom-openai', apiKey: 'secret', baseUrl: 'https://gateway.example/v1',
+      chatApiProtocol: 'openai-compatible',
+    } },
+    generalModels: [{ id: 'responses-vision', name: 'Vision', modelId: 'configured-model', category: 'text',
+      providerConfigId: 'responses-provider', inputModalities: ['text', 'image'], executionProfile: { preset: 'openai-responses' } }],
+  } }));
+  const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ status: 'completed', output: [
+    { type: 'message', content: [{ type: 'output_text', text: '风格分析' }] },
+  ] }));
+  vi.stubGlobal('fetch', fetchMock);
+  const images = Array.from({ length: 5 }, (_, index) => `data:image/png;base64,${index}AAA`);
+  await expect(generateText({ provider: 'general', model: 'general/responses-vision', prompt: '分析五图', imageUrls: images }))
+    .resolves.toBe('风格分析');
+  expect(fetchMock.mock.calls[0][0]).toBe('https://gateway.example/v1/responses');
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body).input[0].content.slice(1))
+    .toEqual(images.map((url) => ({ type: 'input_image', image_url: url, detail: 'auto' })));
 });
 
 describe('local ComfyUI text execution', () => {
@@ -296,6 +318,12 @@ describe('custom text model protocol', () => {
       response: { candidates: [{ content: { parts: [{ text: 'Gemini 回复' }] } }] },
       expectedHeader: 'x-goog-api-key',
     },
+    {
+      preset: 'openai-responses' as const,
+      expectedUrl: 'https://gateway.example/v1/responses',
+      response: { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'Responses 回复' }] }] },
+      expectedHeader: 'Authorization',
+    },
   ])('lets a $preset model override the connection chat protocol', async ({
     preset, expectedUrl, response, expectedHeader,
   }) => {
@@ -320,9 +348,9 @@ describe('custom text model protocol', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(generateText({ provider: 'general', model: 'general/mixed-text', prompt: '你好' }))
-      .resolves.toBe(preset === 'anthropic-chat' ? 'Claude 回复' : 'Gemini 回复');
+      .resolves.toBe(preset === 'anthropic-chat' ? 'Claude 回复' : preset === 'openai-responses' ? 'Responses 回复' : 'Gemini 回复');
     expect(fetchMock.mock.calls[0]?.[0]).toBe(expectedUrl);
-    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({ [expectedHeader]: 'secret' });
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({ [expectedHeader]: expectedHeader === 'Authorization' ? 'Bearer secret' : 'secret' });
   });
 });
 

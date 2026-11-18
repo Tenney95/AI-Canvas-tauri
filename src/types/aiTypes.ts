@@ -215,7 +215,7 @@ export type ModelExecutionProtocol = ModelExecutionProtocolV1 | ModelExecutionPr
 /** parser、编辑器与执行器统一使用的规范协议。 */
 export type NormalizedModelExecutionProtocol = ModelExecutionProtocolV2;
 
-export type ModelProtocolPresetId = 'openai-chat' | 'anthropic-chat' | 'gemini-chat' | 'openai-image' | 'openai-gpt-image' | 'gpt-image-gateway-json' | 'google-image-native' | 'xai-image-native' | 'agnes-video' | 'custom';
+export type ModelProtocolPresetId = 'openai-chat' | 'openai-responses' | 'anthropic-chat' | 'gemini-chat' | 'openai-image' | 'openai-gpt-image' | 'gpt-image-gateway-json' | 'google-image-native' | 'xai-image-native' | 'agnes-video' | 'custom';
 
 export interface ModelExecutionProfile {
   preset: ModelProtocolPresetId;

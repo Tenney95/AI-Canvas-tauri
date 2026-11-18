@@ -1046,6 +1046,7 @@ const settings = {
   '所有已填写分组一起保存，调用时自动匹配 Key。': 'All filled-in groups are saved together and the key is matched automatically at call time.',
   '保存全部分组': 'Save all groups',
   '对话协议': 'Chat protocol',
+  '使用 Responses API、input_image 和 Responses 流式事件': 'Uses the Responses API, input_image and Responses stream events',
   '使用 Messages API、x-api-key 和 Anthropic 流式事件': 'Uses the Messages API, x-api-key and Anthropic stream events',
   '使用原生 generateContent、x-goog-api-key 和 Gemini 内容结构': 'Uses native generateContent, x-goog-api-key and the Gemini content structure',
   '使用 Chat Completions、Bearer Key 和 OpenAI SSE': 'Uses Chat Completions, a Bearer key and OpenAI SSE',

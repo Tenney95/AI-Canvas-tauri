@@ -158,7 +158,7 @@ function cloneProtocol(protocol: NormalizedModelExecutionProtocol): NormalizedMo
 }
 
 export function getModelProtocolPreset(
-  preset: Exclude<ModelProtocolPresetId, 'custom' | 'anthropic-chat' | 'gemini-chat'>,
+  preset: Exclude<ModelProtocolPresetId, 'custom' | 'openai-responses' | 'anthropic-chat' | 'gemini-chat'>,
 ): NormalizedModelExecutionProtocol {
   if (preset === 'openai-chat') return cloneProtocol(OPENAI_CHAT_PROTOCOL);
   if (preset === 'openai-gpt-image') return cloneProtocol(OPENAI_GPT_IMAGE_PROTOCOL);

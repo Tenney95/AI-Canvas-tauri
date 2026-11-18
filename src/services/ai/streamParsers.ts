@@ -9,6 +9,7 @@
  * - OpenAI 兼容的 SSE 事件类型
  * - UTF-8 多字节字符的跨 chunk 拼接
  */
+import { parseResponsesStream, readResponsesContext } from './responsesApiProtocol';
 import type { AssistantStreamEvent, FinishReason } from '../../types/chat';
 import type { ChatApiProtocol } from '../../types';
 import {
@@ -209,6 +210,8 @@ export async function parseStream(
   if (contentType === 'application/json' || contentType?.endsWith('+json')) {
     return parseNonStream(response, options);
   }
+
+  if (protocol === 'openai-responses') return parseResponsesStream(response, options);
 
   const reader = response.body?.getReader();
   if (!reader) {
@@ -554,7 +557,12 @@ export async function parseNonStream(
     throw new ProviderStreamPayloadError(readChatApiErrorMessage(payload) || '模型请求失败');
   }
   const parsed = parseChatApiResponse(payload, options.protocol);
-  assertAssistantOutput(parsed.text, parsed.toolCalls.length);
+  if (parsed.finishReason !== 'length' || options.protocol !== 'openai-responses') {
+    assertAssistantOutput(parsed.text, parsed.toolCalls.length);
+  }
+  if (options.protocol === 'openai-responses' && parsed.finishReason === 'stop') {
+    onEvent({ type: 'responses.context', output: readResponsesContext(payload) });
+  }
   // Agent 与对话消息通过事件累计正文，不能只返回字符串而不通知消息消费者。
   if (parsed.reasoning) onEvent({ type: 'reasoning.delta', delta: parsed.reasoning, source: options.protocol ?? 'openai-compatible' });
   if (parsed.text) onEvent({ type: 'text.delta', delta: parsed.text });

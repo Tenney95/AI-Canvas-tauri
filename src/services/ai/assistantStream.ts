@@ -10,6 +10,7 @@
 import { useAppStore } from '../../store/useAppStore';
 import { parseStream, parseNonStream } from './streamParsers';
 import type { AssistantStreamEvent } from '../../types/chat';
+import type { ChatApiMessage } from './chatApiProtocol';
 import type { ChatApiProtocol } from '../../types';
 import type { ModelExecutionProtocol, ProtocolJsonValue } from '../../types/aiTypes';
 import {
@@ -203,12 +204,7 @@ export type AssistantModelContent = string | Array<{
   image_url?: { url: string };
 }>;
 
-export interface AssistantModelMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool';
-  content: AssistantModelContent;
-  tool_call_id?: string;
-  tool_calls?: AssistantModelToolCall[];
-}
+export type AssistantModelMessage = ChatApiMessage;
 
 export interface AssistantToolDefinition {
   type: 'function';

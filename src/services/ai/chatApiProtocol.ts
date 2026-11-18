@@ -2,8 +2,9 @@
  * 连接级对话 API 协议适配。
  *
  * 应用内部继续使用 OpenAI 风格的 messages / tools；只有在可信边界处才转换为
- * Anthropic Messages 或 Gemini generateContent，避免 Agent Runtime 和画布业务分叉。
+ * Responses、Anthropic Messages 或 Gemini generateContent，避免 Agent Runtime 和画布业务分叉。
  */
+import { buildResponsesBody, parseResponsesResponse, RESPONSES_OUTPUT } from './responsesApiProtocol';
 import type { ChatApiProtocol } from '../../types';
 import type { ModelExecutionProfile, ModelProtocolPresetId } from '../../types/aiTypes';
 
@@ -11,12 +12,14 @@ export const DEFAULT_CHAT_API_PROTOCOL: ChatApiProtocol = 'openai-compatible';
 
 export const CHAT_API_PROTOCOL_LABELS: Record<ChatApiProtocol, string> = {
   'openai-compatible': 'OpenAI 兼容',
+  'openai-responses': 'OpenAI Responses',
   'anthropic-compatible': 'Anthropic 兼容',
   'gemini-native': 'Gemini 原生',
 };
 
 export function isChatApiProtocol(value: unknown): value is ChatApiProtocol {
   return value === 'openai-compatible'
+    || value === 'openai-responses'
     || value === 'anthropic-compatible'
     || value === 'gemini-native';
 }
@@ -28,13 +31,14 @@ export function resolveChatApiProtocol(value: unknown): ChatApiProtocol {
 /** 模型级原生对话预设沿用已实现的消息、工具与流式适配器。 */
 export function isNativeTextProtocolPreset(
   preset: string,
-): preset is Extract<ModelProtocolPresetId, 'anthropic-chat' | 'gemini-chat'> {
-  return preset === 'anthropic-chat' || preset === 'gemini-chat';
+): preset is Extract<ModelProtocolPresetId, 'openai-responses' | 'anthropic-chat' | 'gemini-chat'> {
+  return preset === 'openai-responses' || preset === 'anthropic-chat' || preset === 'gemini-chat';
 }
 
 export function resolveNativeTextChatProtocol(
   profile: ModelExecutionProfile | undefined,
 ): ChatApiProtocol | undefined {
+  if (profile?.preset === 'openai-responses') return 'openai-responses';
   if (profile?.preset === 'anthropic-chat') return 'anthropic-compatible';
   if (profile?.preset === 'gemini-chat') return 'gemini-native';
   return undefined;
@@ -60,6 +64,7 @@ export interface ChatApiMessage {
   content: ChatApiContent;
   tool_call_id?: string;
   tool_calls?: ChatApiToolCall[];
+  [RESPONSES_OUTPUT]?: Array<Record<string, unknown>>;
 }
 
 export interface ChatApiToolDefinition {
@@ -327,7 +332,10 @@ export function buildChatApiRequest(options: BuildChatApiRequestOptions): { url:
   const baseUrl = options.baseUrl.replace(/\/+$/, '');
   let path: string;
   let body: Record<string, unknown>;
-  if (protocol === 'anthropic-compatible') {
+  if (protocol === 'openai-responses') {
+    path = '/responses';
+    body = buildResponsesBody(options);
+  } else if (protocol === 'anthropic-compatible') {
     path = '/messages';
     body = buildAnthropicBody(options);
   } else if (protocol === 'gemini-native') {
@@ -369,6 +377,7 @@ export function parseChatApiResponse(
   protocolValue?: ChatApiProtocol,
 ): ParsedChatApiResponse {
   const protocol = resolveChatApiProtocol(protocolValue);
+  if (protocol === 'openai-responses') return parseResponsesResponse(payload);
   const record = payload && typeof payload === 'object'
     ? payload as Record<string, unknown>
     : {};

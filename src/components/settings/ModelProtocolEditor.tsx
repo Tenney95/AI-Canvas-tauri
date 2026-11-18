@@ -44,6 +44,7 @@ import PopupCloseButton from '../shared/PopupCloseButton';
 import {
   assertRealProtocolTestVariables, buildVideoTestVariables, defaultVideoTestScenario,
   describeProtocolTestRunBlocker, resolveProtocolTestRunDraft,
+  nativeProtocolTestMessages,
   type ProtocolChoice, type VideoTestReferences, type VideoTestScenario,
 } from './modelProtocolTestRun';
 import { useT } from '../../i18n';
@@ -119,6 +120,7 @@ interface ProtocolResponsePreviewState {
 const PRESET_LABELS: Record<ProtocolChoice, string> = {
   legacy: '自动兼容（旧方式）',
   'openai-chat': 'OpenAI Chat',
+  'openai-responses': 'OpenAI Responses',
   'anthropic-chat': 'Anthropic Messages',
   'gemini-chat': 'Google Gemini generateContent',
   'openai-image': 'OpenAI 同步图片（旧预设）',
@@ -264,7 +266,7 @@ function createResponseSample(): ProtocolJsonValue {
 }
 
 function getAvailableChoices(category: GeneralModelCategory, current: ProtocolChoice): ProtocolChoice[] {
-  if (category === 'text') return ['legacy', 'openai-chat', 'anthropic-chat', 'gemini-chat', 'custom'];
+  if (category === 'text') return ['legacy', 'openai-chat', 'openai-responses', 'anthropic-chat', 'gemini-chat', 'custom'];
   if (category === 'image') return ['legacy', 'gpt-image-gateway-json', 'openai-gpt-image',
     'google-image-native', 'xai-image-native', ...(current === 'openai-image' ? ['openai-image' as const] : []), 'custom'];
   if (category === 'video') return ['legacy', 'agnes-video', 'custom'];
@@ -968,10 +970,7 @@ export default function ModelProtocolEditor({
           apiKey,
           baseUrl,
           model: model.id,
-          messages: [{
-            role: 'user',
-            content: typeof variables.prompt === 'string' ? variables.prompt : '介绍这个模型',
-          }],
+          messages: nativeProtocolTestMessages(variables),
           stream: false,
           signal: controller.signal,
         });

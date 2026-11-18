@@ -4,8 +4,27 @@
 import type { ProviderModelSelection } from '../../types';
 import type { MediaReference, ModelProtocolPresetId, NormalizedModelExecutionProtocol, ProtocolJsonValue } from '../../types/aiTypes';
 import { parseModelExecutionProtocol, type ModelProtocolVariables } from '../../services/ai/modelProtocol';
+import type { ChatApiMessage } from '../../services/ai/chatApiProtocol';
 
 export type ProtocolChoice = ModelProtocolPresetId | 'legacy';
+
+/** 真实试跑保留输入消息和多图；不能再只提取 prompt 导致参考素材丢失。 */
+export function nativeProtocolTestMessages(variables: ModelProtocolVariables): ChatApiMessage[] {
+  if (variables.messages === undefined) return [{ role: 'user', content: typeof variables.prompt === 'string' ? variables.prompt : '介绍这个模型' }];
+  if (!Array.isArray(variables.messages) || !variables.messages.length) throw new Error('试跑 messages 必须是非空消息数组');
+  for (const message of variables.messages) {
+    if (!message || typeof message !== 'object' || Array.isArray(message)
+      || !['system', 'user', 'assistant', 'tool'].includes(String(message.role))
+      || !(typeof message.content === 'string' || Array.isArray(message.content))) throw new Error('试跑消息格式无效');
+    if (Array.isArray(message.content)) for (const part of message.content) {
+      if (!part || typeof part !== 'object' || Array.isArray(part)
+        || !(part.type === 'text' && typeof part.text === 'string'
+          || part.type === 'image_url' && part.image_url && typeof part.image_url === 'object' && !Array.isArray(part.image_url)
+            && typeof part.image_url.url === 'string')) throw new Error('试跑消息内容仅支持 text 和 image_url');
+    }
+  }
+  return variables.messages as unknown as ChatApiMessage[];
+}
 
 export type VideoTestScenario = 'text' | 'keyframe' | 'reference';
 export interface VideoTestReferences {

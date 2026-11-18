@@ -38,7 +38,7 @@ const RESULT_CATEGORY_LABELS: Record<GeneralModelCategory, string> = {
 };
 
 const MODEL_PROTOCOL_PRESET_IDS: readonly ModelProtocolPresetId[] = [
-  'openai-chat', 'anthropic-chat', 'gemini-chat', 'openai-image', 'openai-gpt-image',
+  'openai-chat', 'openai-responses', 'anthropic-chat', 'gemini-chat', 'openai-image', 'openai-gpt-image',
   'gpt-image-gateway-json', 'google-image-native', 'xai-image-native', 'agnes-video', 'custom',
 ];
 

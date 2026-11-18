@@ -5,6 +5,20 @@ import { describe, expect, it } from 'vitest';
 import { parseConnectionShare, serializeConnection } from '../../src/services/ai/providerConnectionTransfer';
 import type { ProviderModelSelection } from '../../src/types';
 
+it('round trips Responses connection and native model settings without credentials', () => {
+  const text = serializeConnection({ name: 'Responses', catalogId: 'custom-openai', apiKey: 'private-fixture',
+    baseUrl: 'https://example.test/v1', chatApiProtocol: 'openai-responses', selectedModels: [{
+      id: 'configured-model', name: 'Vision model', provider: 'custom-original', category: 'text',
+      inputModalities: ['text', 'image'], executionProfile: { preset: 'openai-responses' },
+    }] });
+  expect(text).not.toContain('private-fixture');
+  const parsed = parseConnectionShare(text)!;
+  expect(parsed.diagnostics).toEqual([]);
+  expect(parsed.config).toMatchObject({ chatApiProtocol: 'openai-responses', apiKey: '', selectedModels: [{
+    inputModalities: ['text', 'image'], executionProfile: { preset: 'openai-responses' },
+  }] });
+});
+
 describe('CCC group connection transfer', () => {
   it('round trips the group and model configuration while excluding credentials', () => {
     const text = serializeConnection({ name: 'CCC API · CCC生图稳定', catalogId: 'cccapi',

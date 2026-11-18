@@ -447,11 +447,13 @@ export default function ProviderConnectionForm({
             ))}
           </Select>
           <small>
-            {chatApiProtocol === 'anthropic-compatible'
-              ? t('使用 Messages API、x-api-key 和 Anthropic 流式事件')
-              : chatApiProtocol === 'gemini-native'
-                ? t('使用原生 generateContent、x-goog-api-key 和 Gemini 内容结构')
-                : t('使用 Chat Completions、Bearer Key 和 OpenAI SSE')}
+            {chatApiProtocol === 'openai-responses'
+              ? t('使用 Responses API、input_image 和 Responses 流式事件')
+              : chatApiProtocol === 'anthropic-compatible'
+                ? t('使用 Messages API、x-api-key 和 Anthropic 流式事件')
+                : chatApiProtocol === 'gemini-native'
+                  ? t('使用原生 generateContent、x-goog-api-key 和 Gemini 内容结构')
+                  : t('使用 Chat Completions、Bearer Key 和 OpenAI SSE')}
           </small>
         </label>
       )}

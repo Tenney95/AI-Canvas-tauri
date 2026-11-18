@@ -62,11 +62,13 @@ describe('model protocol editor', () => {
     expect(html).not.toContain('执行模式');
   });
 
-  it('offers the existing Anthropic and Gemini adapters for a text model', () => {
+  it.each(['anthropic-chat', 'openai-responses'] as const)('offers native adapters for a text model (%s)', (preset) => {
     const html = renderEditor({
       id: 'chat-model', name: 'Chat model', category: 'text', provider: 'gateway',
-      executionProfile: { preset: 'anthropic-chat' },
+      executionProfile: { preset },
     });
+    expect(html).toContain('OpenAI Responses');
+    expect(html).toContain(`value="${preset}" selected=""`);
     expect(html).toContain('Anthropic Messages');
     expect(html).toContain('Google Gemini generateContent');
     expect(html).not.toContain('声明式协议 JSON');

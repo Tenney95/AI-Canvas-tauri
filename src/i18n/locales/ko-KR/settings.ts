@@ -978,6 +978,7 @@ const settings = {
   '所有已填写分组一起保存，调用时自动匹配 Key。': '입력한 모든 그룹을 함께 저장하고 호출 시 키를 자동으로 찾습니다.',
   '保存全部分组': '모든 그룹 저장',
   '对话协议': '대화 프로토콜',
+  '使用 Responses API、input_image 和 Responses 流式事件': 'Responses API, input_image, Responses 스트림 이벤트를 사용합니다',
   '使用 Messages API、x-api-key 和 Anthropic 流式事件': 'Messages API, x-api-key, Anthropic 스트림 이벤트를 사용합니다',
   '使用原生 generateContent、x-goog-api-key 和 Gemini 内容结构': '네이티브 generateContent, x-goog-api-key, Gemini 콘텐츠 구조를 사용합니다',
   '使用 Chat Completions、Bearer Key 和 OpenAI SSE': 'Chat Completions, Bearer 키, OpenAI SSE를 사용합니다',

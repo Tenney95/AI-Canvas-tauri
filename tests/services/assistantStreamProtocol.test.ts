@@ -15,7 +15,6 @@ import { useAppStore } from '../../src/store/useAppStore';
 import type { ModelExecutionProfile } from '../../src/types/aiTypes';
 import type { ChatApiProtocol, UserSkill } from '../../src/types';
 import { buildAssistantToolGuidance } from '../../src/services/chat/agentPromptGuidance';
-
 const museMocks = vi.hoisted(() => ({
   streamMuseText: vi.fn<(input: { messages: AssistantModelMessage[]; signal?: AbortSignal;
     onText: (snapshot: string) => void }) => Promise<string>>(),
@@ -56,6 +55,29 @@ beforeEach(() => {
   vi.unstubAllGlobals();
   museMocks.streamMuseText.mockReset();
   useAppStore.setState(useAppStore.getInitialState(), true);
+});
+
+describe('Responses image messages', () => {
+  it.each([false, true])('keeps five images and history in the actual request (model override %s)', async (modelOverride) => {
+    configureAssistant(modelOverride ? { preset: 'openai-responses' } : undefined,
+      modelOverride ? 'anthropic-compatible' : 'openai-responses');
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+      status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '五图已收到' }] }],
+    }), { headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const images = Array.from({ length: 5 }, (_, index) => `data:image/png;base64,${index}AAA`);
+    await expect(streamAssistantReply({ systemPrompt: '', userMessage: '', nonStream: true, tools: [], onEvent: vi.fn(),
+      messages: [
+        { role: 'system', content: '分析风格' },
+        { role: 'assistant', content: '请提供图片' },
+        { role: 'user', content: [{ type: 'text', text: '这是图片1到5' }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))] },
+      ],
+    })).resolves.toBe('五图已收到');
+    expect(fetchMock.mock.calls[0][0]).toBe('https://gateway.example/v1/responses');
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.input.map((item: { role: string }) => item.role)).toEqual(['system', 'assistant', 'user']);
+    expect(body.input[2].content.filter((part: { type: string }) => part.type === 'input_image').map((part: { image_url: string }) => part.image_url)).toEqual(images);
+  });
 });
 
 describe('Muse assistant text transport', () => {
@@ -339,6 +361,13 @@ describe('assistant custom protocol boundary', () => {
       body: 'data: {"candidates":[{"content":{"parts":[{"text":"Gemini 回复"}]},"finishReason":"STOP"}]}\n\n',
       expectedText: 'Gemini 回复',
     },
+    {
+      preset: 'openai-responses' as const,
+      expectedUrl: 'https://gateway.example/v1/responses',
+      expectedHeader: 'Authorization',
+      body: 'data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Responses 回复"}]}]}}\n\n',
+      expectedText: 'Responses 回复',
+    },
   ])('streams a $preset model through its native adapter despite an OpenAI connection default', async ({
     preset, expectedUrl, expectedHeader, body, expectedText,
   }) => {
@@ -352,7 +381,7 @@ describe('assistant custom protocol boundary', () => {
     await expect(streamAssistantReply({ systemPrompt: '', userMessage: '你好', onEvent }))
       .resolves.toBe(expectedText);
     expect(fetchMock.mock.calls[0]?.[0]).toBe(expectedUrl);
-    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({ [expectedHeader]: 'secret' });
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({ [expectedHeader]: expectedHeader === 'Authorization' ? 'Bearer secret' : 'secret' });
     expect(onEvent).toHaveBeenCalledWith({ type: 'text.delta', delta: expectedText });
   });
 

@@ -3475,7 +3475,7 @@ describe('协议共享基础规则', () => {
 
   it('未配置、无自定义协议及原生文本协议均不产生比较键', () => {
     const profiles: Array<ModelExecutionProfile | undefined> = [
-      undefined, { preset: 'custom' }, { preset: 'anthropic-chat' }, { preset: 'gemini-chat' },
+      undefined, { preset: 'custom' }, { preset: 'openai-responses' }, { preset: 'anthropic-chat' }, { preset: 'gemini-chat' },
     ];
     for (const profile of profiles) expect(comparableProtocol(profile)).toBeUndefined();
   });

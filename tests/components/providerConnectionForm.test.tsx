@@ -52,6 +52,7 @@ describe('ProviderConnectionForm chat protocol selector', () => {
     const html = render('custom-openai');
     expect(html).toContain('对话协议');
     expect(html).toContain('OpenAI 兼容');
+    expect(html).toContain('OpenAI Responses');
     expect(html).toContain('Anthropic 兼容');
     expect(html).toContain('Gemini 原生');
     expect(html).toContain('value="anthropic-compatible" selected=""');
