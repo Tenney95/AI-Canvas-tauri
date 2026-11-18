@@ -22,8 +22,7 @@ import { assertNativeVideoSubmissionInput, captureNativeVideoSubmissionBaseline,
 import { readNativeProjectView } from './nativeProjectNavigation';
 import { sha256BytesHex } from './mediaDataUrl';
 import { projectModelSourceToken } from './projectModelComparisonMaterial';
-import { captureNativeMediaLocalResult } from './nativeMediaLocalResult';
-import { persistMediaUrlToProjectData } from './fileService';
+import { persistNativeMediaResult } from './nativeMediaResultPersistence';
 import { PollTaskFailedError } from './pollTask';
 import { VIDEO_POLL_MAX_DURATION_MS } from './pollManager';
 import { readNativeMediaMessageInput, readNativeMediaOrigin } from './nativeMediaOrigin';
@@ -280,10 +279,9 @@ export async function resumeNativeBuiltinAudioTask(operationId: string, external
     const access = createMediaDownloadAccess('apimart', selected.baseUrl, { type: 'bearer' });
     for (const [ordinal, track] of tracks.entries()) {
       current();
-      const stored = await persistMediaUrlToProjectData(track.url, record.canvasId, 'ai-audio', `原音乐音轨 ${ordinal + 1}`,
-        { signal: controller.signal, assertCurrent: current, mediaDownloadAccess: access });
-      if (!stored.filePath) throw new Error('原音乐音轨尚未保存');
-      outputs.push({ ...await captureNativeMediaLocalResult(record.canvasId, stored.filePath), category: 'audio' });
+      outputs.push(await persistNativeMediaResult(track.url, record.canvasId, { category: 'audio',
+        label: `原音乐音轨 ${ordinal + 1}`, missingFileMessage: '原音乐音轨尚未保存',
+        signal: controller.signal, assertCurrent: current, mediaDownloadAccess: access }));
     }
     record = await retainNativeMediaOutputs(record, outputs);
     state = await recordNativeApimartMusicStage(state, 'music', { completed: true });

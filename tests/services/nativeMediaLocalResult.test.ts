@@ -1,14 +1,15 @@
 /** 普通生成文件转摘要副本；原生IO均为固定替身。 */
 import { beforeEach, expect, it, vi } from 'vitest';
-const io = vi.hoisted(() => ({ invoke: vi.fn(), published: [] as Array<{ path: string; bytes: number; sha256: string }>, loseReply: false, failPublish: false }));
+const io = vi.hoisted(() => ({ invoke: vi.fn(), persist: vi.fn(), published: [] as Array<{ path: string; bytes: number; sha256: string }>, loseReply: false, failPublish: false }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: io.invoke }));
 vi.mock('@tauri-apps/plugin-fs', () => ({ exists: async () => io.published.length > 0 }));
-vi.mock('../../src/services/fileService', () => ({ getProjectDataDir: async () => 'C:/fixture',
+vi.mock('../../src/services/fileService', () => ({ getProjectDataDir: async () => 'C:/fixture', persistMediaUrlToProjectData: io.persist,
   getRelativeAssetPath: (path: string, root: string) => path.startsWith(root + '/') ? path.slice(root.length + 1) : null }));
 import { captureNativeMediaLocalResult, readNativeMediaLocalResult } from '../../src/services/nativeMediaLocalResult';
+import { persistNativeMediaResult } from '../../src/services/nativeMediaResultPersistence';
 const hash = 'a'.repeat(64);
 beforeEach(() => {
-  io.published = []; io.loseReply = false; io.failPublish = false; io.invoke.mockReset();
+  io.published = []; io.loseReply = false; io.failPublish = false; io.invoke.mockReset(); io.persist.mockReset();
   io.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
     if (command === 'publish_project_import_assets') {
       if (io.failPublish) throw new Error('项目素材超出项目目录');
@@ -61,4 +62,41 @@ it('旧media摘要路径继续读取，项目外路径拒绝冻结', async () =>
 it('已声明摘要的路径被改写时失败，不把替换内容当作普通下载重绑', async () => {
   await expect(captureNativeMediaLocalResult('original-canvas', `C:/fixture/media/${'b'.repeat(64)}.mp3`)).rejects.toThrow('替换内容');
   expect(io.invoke.mock.calls.some(([command]) => command === 'publish_project_import_assets')).toBe(false);
+});
+
+it('保存单个音轨时向原画布传递鉴权和取消信号，再冻结实际文件内容', async () => {
+  const url = 'https://fixture.example/result';
+  const transfer = { signal: new AbortController().signal, assertCurrent: vi.fn(),
+    mediaDownloadAccess: { providerConfigId: 'fixture', origin: 'https://fixture.example', auth: { type: 'bearer' as const } } };
+  io.persist.mockResolvedValueOnce({ filePath: 'C:/fixture/output-1.flac' });
+
+  await expect(persistNativeMediaResult(url, 'original-canvas', { ...transfer, category: 'audio',
+    label: '原音乐音轨 1', missingFileMessage: '原音轨未保存' }))
+    .resolves.toEqual({ category: 'audio', relativePath: `imports/retained-${hash}/${hash}.flac`, bytes: 12, sha256: hash });
+  expect(io.persist).toHaveBeenCalledExactlyOnceWith(url, 'original-canvas', 'ai-audio', '原音乐音轨 1', transfer);
+});
+
+it('仅返回结果 URL 时使用调用方错误并且不尝试冻结', async () => {
+  const url = 'https://fixture.example/result';
+  io.persist.mockResolvedValueOnce({ mediaUrl: url, sourceUrl: url });
+
+  await expect(persistNativeMediaResult(url, 'original-canvas', { category: 'video',
+    label: '原视频', missingFileMessage: '原视频未保存' })).rejects.toThrow('原视频未保存');
+  expect(io.invoke).not.toHaveBeenCalled();
+});
+
+it('摘要核验期间取消时不会把已经落盘的文件返回为本轮产物', async () => {
+  const controller = new AbortController();
+  const reason = new DOMException('取消此次取回', 'AbortError');
+  const relativePath = `media/${hash}.png`;
+  io.persist.mockResolvedValueOnce({ filePath: `C:/fixture/${relativePath}` });
+  io.invoke.mockImplementationOnce(async () => {
+    controller.abort(reason);
+    return [{ path: relativePath, bytes: 12, sha256: hash }];
+  });
+
+  await expect(persistNativeMediaResult('https://fixture.example/result', 'original-canvas', { category: 'image',
+    label: '原图片', missingFileMessage: '原图片未保存', signal: controller.signal })).rejects.toBe(reason);
+  expect(io.invoke).toHaveBeenCalledExactlyOnceWith('inspect_project_archive_assets',
+    { assetsDir: 'C:/fixture', selectedPaths: [relativePath] });
 });

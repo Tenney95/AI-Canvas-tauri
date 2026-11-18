@@ -4,6 +4,7 @@
  * 供 Toolbar 快捷指令直接调用，也供 AINodeDialog 复用。
  */
 import { ANIMATION_FRAME_GRIDS } from '../types';
+import { t } from '../i18n';
 import { pickImageOutputParameters, resolveConfiguredImageOutput } from './ai/imageOutputParameters';
 import { buildAnimationSpritePrompt, resolveAnimationSheetAspectRatio } from './ai/animationPrompt';
 import { animationProcessing, animationResultPatch } from './animationService';
@@ -775,7 +776,7 @@ export async function executeGeneration(
         : await persistAudioGenerationResult(result, submittingProjectId, data.label);
       if (lease) await assertLease();
       if (guardedSubmission && !isStillCurrentSubmission()) return { success: false, message: '画布已变化，任务已保留' };
-      if (persisted.persistence === 'failed') throw new Error('音频已生成，但保存失败；请继续保存原结果');
+      if (persisted.persistence === 'failed') throw new Error(t('音频已生成，但保存失败；请继续保存原结果'));
       updateResult(nodeId, {
         audioUrl: persisted.mediaUrl, sourceUrl: persisted.sourceUrl, filePath: persisted.filePath,
         thumbnailUrl: persisted.mediaUrl, output: persisted.outputUrl,
@@ -802,7 +803,6 @@ export async function executeGeneration(
           autoGenerateLyrics: data.autoGenerateLyrics,
         },
       });
-      if (result.workflowApiTaskId) completeWorkflowApiNodeTask(nodeId, result.workflowApiTaskId);
       notify('音频生成完成');
     } else if (nodeType === 'ai-shotlist') {
       if (lease) {
@@ -919,7 +919,9 @@ export async function executeGeneration(
       }
     }
     const msg = err instanceof Error ? err.message : (typeof err === 'string' && err.trim() ? err : '生成失败');
-    if (msg === '任务已被取消') return { success: false, message: '任务已取消',
+    const audioCancelled = nodeType === 'ai-audio'
+      && (msg === '请求已取消' || (err instanceof DOMException && err.name === 'AbortError'));
+    if (msg === '任务已被取消' || audioCancelled) return { success: false, message: '任务已取消',
       ...(nodeType === 'ai-video' ? { recovery: { state: 'unknown' as const } } : {}) };
     if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消',
       ...(nodeType === 'ai-video' && !lease ? { recovery: { state: 'unknown' as const } } : {}) };

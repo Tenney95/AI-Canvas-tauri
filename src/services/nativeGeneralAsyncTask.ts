@@ -15,8 +15,7 @@ import { assertNativeMediaPrepared, claimNativeMediaRecovery, failNativeMediaTas
   normalizeNativeMediaProviderBase, prepareNativeMediaTask, recordNativeMediaSubmission, type NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
 import { retainNativeMediaOutputs } from './indexedDb/nativeMediaCollectionRepository';
 import { nativeMediaLocalOutputs, MAX_NATIVE_MEDIA_OUTPUTS } from './nativeMediaCollection';
-import { captureNativeMediaLocalResult } from './nativeMediaLocalResult';
-import { persistMediaUrlToProjectData } from './fileService';
+import { persistNativeMediaResult } from './nativeMediaResultPersistence';
 import { sha256BytesHex } from './mediaDataUrl';
 import { projectModelSourceToken } from './projectModelComparisonMaterial';
 import { PollTaskFailedError } from './pollTask';
@@ -65,10 +64,9 @@ async function retainUrls(record: NativeMediaTaskRecord, urls: readonly string[]
   const outputs: NativeMediaLocalOutput[] = [], access = createMediaDownloadAccess(record.providerConfigId, baseUrl, { type: 'bearer' });
   for (const [ordinal, url] of urls.entries()) {
     options.assertCurrent?.();
-    const saved = await persistMediaUrlToProjectData(url, record.canvasId, `ai-${record.category}`, `原通用产物 ${ordinal + 1}`,
-      { signal: options.signal, assertCurrent: options.assertCurrent, mediaDownloadAccess: access });
-    if (!saved.filePath) throw new Error('原通用媒体产物尚未完整保存');
-    outputs.push({ ...await captureNativeMediaLocalResult(record.canvasId, saved.filePath), category: record.category });
+    outputs.push(await persistNativeMediaResult(url, record.canvasId, { category: record.category,
+      label: `原通用产物 ${ordinal + 1}`, missingFileMessage: '原通用媒体产物尚未完整保存',
+      signal: options.signal, assertCurrent: options.assertCurrent, mediaDownloadAccess: access }));
   }
   return retainNativeMediaOutputs(record, outputs, { inlineSubmission: options.inlineSubmission, signal: options.signal, completion: options.completion });
 }

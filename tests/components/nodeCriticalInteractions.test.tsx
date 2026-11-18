@@ -2805,6 +2805,58 @@ describe('critical canvas node interactions', () => {
     });
   });
 
+  describe('AINodeDialog shared audio generation', () => {
+    it.each([
+      { type: 'ai-audio', scenario: 'submit' },
+      { type: 'source-audio', scenario: 'submit' },
+      { type: 'ai-audio', scenario: 'project-switch' },
+      { type: 'source-audio', scenario: 'node-replaced' },
+      { type: 'ai-audio', scenario: 'missing-model' },
+      { type: 'ai-audio', scenario: 'missing-provider' },
+    ])('delegates $type using the original input identity: $scenario', async ({ type, scenario }) => {
+      const store = createStore([{
+        id: 'audio-node', type, position: { x: 0, y: 0 },
+        data: { type, label: '配音', prompt: '当前节点提示词',
+          model: scenario === 'missing-model' ? undefined : 'general/voice',
+          provider: scenario === 'missing-provider' ? undefined : 'general' },
+      }], () => 1);
+      store.activeNodeId = 'audio-node';
+      store.projects[0].settings = { defaultModels: { audio: 'general/default-voice' } };
+      const executeGeneration = vi.fn().mockResolvedValue({ success: true });
+      await installReactHookDriver();
+      installStoreMock(store);
+      vi.doMock('zustand/react/shallow', () => ({ useShallow: <T,>(selector: T) => selector }));
+      vi.doMock('../../src/i18n', () => ({ useT: () => (text: string) => text }));
+      vi.doMock('../../src/components/nodes/shared/PromptPanel', () => ({
+        default: function PromptPanelMock() { return null; },
+      }));
+      vi.doMock('../../src/components/nodes/shared/defaultModels', () => ({ findMediaModelOption: vi.fn() }));
+      vi.doMock('../../src/services/pollManager', () => ({ ...mockComfyDeliveries(), getPendingTasksForProject: () => [] }));
+      vi.doMock('../../src/services/generationService', () => ({
+        executeGeneration, subscribeImageBatches: () => () => {}, isImageBatchGenerating: () => false,
+        cancelImageBatchGeneration: vi.fn(), usesSequentialImageBatch: () => false,
+      }));
+      const Dialog = (await import('../../src/components/nodes/AINodeDialog')).default as unknown as () => unknown;
+      const panel = findElement(Dialog(), (element) => componentName(element) === 'PromptPanelMock');
+      const override = '临时配音提示词 @{reference:角色声音}';
+      const submission = (panel.props.onSubmit as (prompt: string) => Promise<void>)(override);
+      if (scenario === 'project-switch') store.currentProjectId = 'project-b';
+      if (scenario === 'node-replaced') {
+        store.nodes[0] = { ...store.nodes[0], data: { ...store.nodes[0].data, prompt: '编辑后的正文' } };
+      }
+
+      await submission;
+
+      if (scenario === 'submit') expect(executeGeneration).toHaveBeenCalledExactlyOnceWith('audio-node', override, undefined);
+      else expect(executeGeneration).not.toHaveBeenCalled();
+      if (scenario === 'missing-model' || scenario === 'missing-provider') {
+        expect(store.showToast).toHaveBeenCalledWith('请先在底部模型选择器中选择一个模型', 'error');
+      }
+      expect(store.updateNodeDataTransient).not.toHaveBeenCalled();
+      expect(store.recordOutputHistory).not.toHaveBeenCalled();
+    });
+  });
+
   it.each([
     { label: '通用到通用', from: 'general/video-a', fromProvider: 'general', to: 'general/video-b', provider: 'general', ratio: '9:16' },
     { label: '通用到原生', from: 'general/video-a', fromProvider: 'general', to: 'volcengine/doubao-seedance-2-5', provider: 'volcengine', ratio: '9:16' },

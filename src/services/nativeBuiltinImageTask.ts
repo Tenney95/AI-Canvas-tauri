@@ -10,8 +10,9 @@ import { assertNativeMediaPrepared, assertNativeMediaResultRetention, prepareNat
 import { EXCHANGE, REVISIONS, increment, openNativeProjectDatabase, transact, type NativeProjectOptions } from './indexedDb/nativeProjectRepository';
 import { retainNativeMediaOutputs } from './indexedDb/nativeMediaCollectionRepository';
 import { validateNativeMediaLocalOutputs } from './nativeMediaCollection';
-import { captureNativeMediaLocalResult, readNativeMediaLocalResult } from './nativeMediaLocalResult';
-import { persistMediaUrlToProjectData } from './fileService';
+import { readNativeMediaLocalResult } from './nativeMediaLocalResult';
+import { persistNativeMediaResult } from './nativeMediaResultPersistence';
+import type { FileTransferOptions } from './fileService';
 import { configValuesEqual } from './configPatch';
 import { projectModelSourceToken } from './projectModelComparisonMaterial';
 import { sha256BytesHex } from './mediaDataUrl';
@@ -95,13 +96,13 @@ const pending = (operationId: string, cause?: unknown, retained = false): Error 
   error.name = 'NativeMediaTaskPending'; Object.assign(error, { nativeOperationId: operationId, localResultAvailable: retained }); return error;
 };
 function delivered(operationId: string): never { const error = new Error('原媒体完整产物已保存并交付'); error.name = 'NativeMediaTaskDelivered'; Object.assign(error, { nativeOperationId: operationId }); throw error; }
-async function saveOutputs(record: NativeMediaTaskRecord, urls: readonly string[], access?: MediaDownloadAccess): Promise<NativeMediaLocalOutput[]> {
+async function saveOutputs(record: NativeMediaTaskRecord, urls: readonly string[],
+  options: Pick<FileTransferOptions, 'signal' | 'assertCurrent' | 'mediaDownloadAccess'>): Promise<NativeMediaLocalOutput[]> {
   if (!urls.length || urls.length > 128 || urls.some((url) => typeof url !== 'string' || !url)) throw new Error('原作业未返回完整的有界产物集合');
   const outputs: NativeMediaLocalOutput[] = [];
   for (const url of urls) {
-    const saved = await persistMediaUrlToProjectData(url, record.canvasId, `ai-${record.category}`, '原媒体产物', { mediaDownloadAccess: access });
-    if (!saved.filePath) throw new Error('原媒体产物尚未完整保存');
-    outputs.push({ ...await captureNativeMediaLocalResult(record.canvasId, saved.filePath), category: record.category });
+    outputs.push(await persistNativeMediaResult(url, record.canvasId, { category: record.category,
+      label: '原媒体产物', missingFileMessage: '原媒体产物尚未完整保存', ...options }));
   }
   return outputs;
 }
@@ -162,7 +163,8 @@ export async function runNativeBuiltinImageTask(input: { nodeId?: string; mode: 
     } else {
       if (!result.urls?.length) throw new Error('原接口没有返回可确认的任务 ID 或完整结果');
       if (input.mode !== 'ccc') await assertNativeMediaResultRetention(record);
-      const outputs = await saveOutputs(record, result.urls, input.mediaDownloadAccess);
+      // 同步付费结果没有原任务 ID，先保存到原根，取消只暂停后续交付。
+      const outputs = await saveOutputs(record, result.urls, { mediaDownloadAccess: input.mediaDownloadAccess });
       ({ record } = await mutate(record, (_main, receipt) => { receipt.inlineOutputs = outputs; receipt.state = 'inline'; }));
       hasCachedOutputs = true;
       record = await retainNativeMediaOutputs(record, outputs, input.mode === 'ccc' ? { inlineSubmission: true } : {});
@@ -289,7 +291,8 @@ export async function resumeNativeBuiltinImageTask(operationId: string, signal?:
       }
       assertCurrent();
       const access = receipt.mode === 'ccc' ? createMediaDownloadAccess(record.providerConfigId, record.providerBase, { type: 'bearer' }) : undefined;
-      const outputs = await saveOutputs(record, urls, access);
+      const outputs = await saveOutputs(record, urls, { signal, assertCurrent, mediaDownloadAccess: access });
+      assertCurrent();
       ({ record, receipt } = await mutate(record, (_main, row) => { const task = row.tasks.find((item) => item.taskId === original.taskId); if (!task || task.state !== 'submitted') return fail(); task.state = 'completed'; task.outputs = outputs; }));
     }
     const outputs = receipt.tasks.flatMap((task) => task.outputs ?? []);

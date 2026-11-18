@@ -15,9 +15,8 @@ import type { AnimationAction, BaseNodeData, CameraGenerationSettings, ImagePost
 import { ANIMATION_FRAME_GRIDS } from '../../types';
 import { generateShotlistRows } from '../../services/shotlistService';
 import { MAX_IMAGE_BATCH_COUNT, type MediaTaskReceipt, type TextGenerationResult, type AudioSpeechSettings, type AudioSpeechReference, type AudioOutputFormat, type AudioTtsVoice, type VideoReferenceItem } from '../../types/aiTypes';
-import { generateText, generateTextResult, generateImage, generateImagesBatch, generateAudio, buildPanoramaPrompt } from '../../services/aiService';
+import { generateText, generateTextResult, generateImage, generateImagesBatch, buildPanoramaPrompt } from '../../services/aiService';
 import { removeAudioSpeechReference } from '../../services/ai/audioSpeechSettings';
-import { persistAudioGenerationResult } from '../../services/ai/generateAudio';
 import { persistMediaUrlToProjectData, type PersistedProjectMedia } from '../../services/fileService';
 import {
   applyImageBatchResults,
@@ -436,10 +435,15 @@ function AINodeDialog() {
       await executeGenerationWithImagePromptChoice(latestNode!.id, overridePrompt, postProcess);
       return;
     }
-    // 新项目的付费媒体必须经统一生成入口注册原生提交守卫与耐久回执；
-    // 弹窗内保留的旧直调没有守卫，会在提交前被拒绝。
-    if (store.projectExecutionContext?.modelGeneration === 1
-      && ['ai-image', 'ai-animation', 'ai-panorama', 'ai-audio'].includes(latestData.type)) {
+    if (latestData.type === 'ai-audio') {
+      // 旧项目的弹窗须先显式选模型，避免缺少选择时使用项目的默认付费模型。
+      if (store.projectExecutionContext?.modelGeneration !== 1 && (!latestData.model || !latestData.provider)) {
+        const prompt = overridePrompt ?? latestData.prompt ?? '';
+        const cloud = isCloudWorkflow(store.workflows.find((item) => item.id === latestData.workflowId));
+        showToast(t(!prompt.trim() && !cloud && latestData.provider !== 'runninghub'
+          ? '请输入提示词' : '请先在底部模型选择器中选择一个模型'), 'error');
+        return;
+      }
       const originalData = latestNode!.data;
       const originalProjectId = store.currentProjectId;
       const { executeGeneration } = await import('../../services/generationService');
@@ -519,7 +523,7 @@ function AINodeDialog() {
     }
     const submittingNodeId = activeNodeId!;
     const submittingProjectId = currentProjectId;
-    const mediaSubmission = ['ai-image', 'ai-animation', 'ai-panorama', 'ai-audio'].includes(latestData.type);
+    const mediaSubmission = ['ai-image', 'ai-animation', 'ai-panorama'].includes(latestData.type);
     const localComfyTask = !!latestData.workflowId && !cloudWorkflow;
     if (mediaSubmission || localComfyTask) {
       try { prepareMediaNodeGeneration(submittingNodeId); }
@@ -770,73 +774,6 @@ function AINodeDialog() {
           params: { imageSize, aspectRatio },
         });
         showToast(t('全景图生成完成'));
-      } else if (nodeType === 'ai-audio') {
-        const result = await generateAudio({
-          prompt: effectivePrompt,
-          model: nodeModel,
-          provider: nodeProvider,
-          audioSpeechSettings: latestData.audioSpeechSettings,
-          audioVoice: latestData.audioVoice,
-          audioFormat: latestData.audioFormat,
-          audioSpeed: latestData.audioSpeed,
-          musicTitle: latestData.musicTitle,
-          musicLyrics: latestData.musicLyrics,
-          musicBpm: latestData.musicBpm,
-          musicDuration: latestData.musicDuration,
-          autoGenerateLyrics: latestData.autoGenerateLyrics,
-          workflowId: latestData.workflowId,
-          workflowInputs: latestData.workflowInputs, runninghubModelParameters: latestData.runninghubModelParameters,
-          nodeId: activeNodeId ?? undefined,
-        });
-        taskReceipt = result.taskReceipt;
-        comfyTaskId = result.comfyTaskId;
-        if (comfyTaskId) beginComfyNodeDelivery(submittingNodeId, comfyTaskId);
-        if (!isStillCurrentSubmission()) {
-          if (result.url.startsWith('blob:')) URL.revokeObjectURL(result.url);
-          return;
-        }
-        if (taskReceipt) updateNodeDataTransient(submittingNodeId, { mediaTaskStage: 'saving' });
-        const persisted = await persistAudioGenerationResult(result, currentProjectId, nodeLabel);
-        if (guardedSubmission && !isStillCurrentSubmission()) return;
-        if (persisted.persistence === 'failed') throw new Error(t('音频已生成，但保存失败；请继续保存原结果'));
-        updateNodeData(activeNodeId!, {
-          audioUrl: persisted.mediaUrl,
-          sourceUrl: persisted.sourceUrl,
-          filePath: persisted.filePath,
-          thumbnailUrl: persisted.mediaUrl,
-          output: persisted.outputUrl,
-          musicClipId: result.clipId,
-          ...(result.title ? { musicTitle: result.title } : {}),
-          ...(result.lyrics ? { musicLyrics: result.lyrics } : {}),
-          status: 'success',
-        });
-        confirmMediaDelivery();
-        if (result.workflowApiTaskId) completeWorkflowApiNodeTask(submittingNodeId, result.workflowApiTaskId);
-        if (result.comfyTaskId) completeComfyNodeTask(submittingNodeId, result.comfyTaskId);
-        recordOutputHistory(activeNodeId!, {
-          nodeId: activeNodeId!,
-          nodeLabel: nodeLabel,
-          timestamp: Date.now(),
-          prompt: effectivePrompt,
-          output: persisted.outputUrl,
-          nodeType: 'ai-audio',
-          model: nodeModel,
-          provider: nodeProvider,
-          status: 'success',
-          mediaUrl: persisted.mediaUrl,
-          filePath: persisted.filePath,
-          params: {
-            audioSpeechSettings: latestData.audioSpeechSettings,
-            audioVoice: latestData.audioVoice,
-            audioFormat: latestData.audioFormat,
-            audioSpeed: latestData.audioSpeed,
-            musicTitle: result.title || latestData.musicTitle,
-            musicBpm: latestData.musicBpm,
-            musicDuration: latestData.musicDuration,
-            autoGenerateLyrics: latestData.autoGenerateLyrics,
-          },
-        });
-        showToast(t('音频生成完成'));
       } else if (nodeType === 'ai-shotlist') {
         const rows = await generateShotlistRows(submittingNodeId, effectivePrompt, nodeModel, nodeProvider);
         showToast(t('已生成 {count} 个镜头', { count: rows.length }));

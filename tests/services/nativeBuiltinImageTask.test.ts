@@ -6,12 +6,13 @@ import type { CanvasContext } from '../../src/types/project';
 import type { BaseNodeData } from '../../src/types';
 import type { NativeMediaSubmissionPreparation } from '../../src/types/media';
 import type { NativeMediaTaskRecord } from '../../src/services/indexedDb/nativeMediaTaskRepository';
+import type { FileTransferOptions } from '../../src/services/fileService';
 type FixtureState = { currentProjectId: string; projectExecutionContext: CanvasContext; nodes: unknown[]; messages: unknown[]; config: { providers: Record<string, { apiKey?: string; baseUrl?: string }> };
   beginNativeMediaSubmissionPreparation: (context: CanvasContext) => Promise<NativeMediaSubmissionPreparation>;
   updateNodeDataTransient: (nodeId: string, data: Partial<BaseNodeData>) => void;
   commitNativeMediaResult: (record: NativeMediaTaskRecord, path: string, context: CanvasContext, signal?: AbortSignal) => Promise<void> };
 const io = vi.hoisted(() => ({ context: null as unknown as CanvasContext, state: null as unknown as FixtureState,
-  listeners: new Set<() => void>(), query: vi.fn(), invoke: vi.fn(), dispatcher: vi.fn(), fetch: vi.fn(), files: new Map<string, string>(),
+  listeners: new Set<() => void>(), query: vi.fn(), invoke: vi.fn(), dispatcher: vi.fn(), fetch: vi.fn(), persist: vi.fn(), files: new Map<string, string>(),
   polling: new AbortController(), cleanupPolling: vi.fn(), legacySave: vi.fn(), legacyRemove: vi.fn(), assertInput: vi.fn(), readLocal: vi.fn(), captureLocal: vi.fn(),
   canvasRevision: 1, preparationReleased: vi.fn(), updateTransient: vi.fn() }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => io.state,
@@ -32,9 +33,7 @@ vi.mock('../../src/services/pollManager', () => ({ savePendingTask: io.legacySav
   },
   cleanupNodePolling: io.cleanupPolling, getVideoEditorTransitionAnchor: () => undefined,
   resumeNativeMediaLocalDelivery: vi.fn(async () => {}) }));
-vi.mock('../../src/services/fileService', () => ({ persistMediaUrlToProjectData: async (url: string) => {
-  if (!io.files.has(url)) io.files.set(url, `media/${String.fromCharCode(97 + io.files.size).repeat(64)}.png`);
-  return { filePath: io.files.get(url)! }; } }));
+vi.mock('../../src/services/fileService', () => ({ persistMediaUrlToProjectData: io.persist }));
 vi.mock('../../src/services/nativeMediaLocalResult', () => ({ readNativeMediaLocalResult: io.readLocal,
   captureNativeMediaLocalResult: io.captureLocal }));
 vi.mock('../../src/services/nativeVolcengineRecovery', () => ({ resumeNativeVolcengineTask: io.dispatcher }));
@@ -54,6 +53,10 @@ beforeEach(async () => {
   io.listeners.clear(); io.files.clear(); io.query.mockReset(); io.invoke.mockReset(); io.dispatcher.mockReset(); io.fetch.mockReset();
   io.assertInput.mockReset().mockResolvedValue(undefined); io.readLocal.mockReset().mockResolvedValue(undefined);
   io.captureLocal.mockReset().mockImplementation(async (_canvas: string, path: string) => ({ relativePath: path, bytes: 10, sha256: path.slice(6, 70) }));
+  io.persist.mockReset().mockImplementation(async (url: string) => {
+    if (!io.files.has(url)) io.files.set(url, `media/${String.fromCharCode(97 + io.files.size).repeat(64)}.png`);
+    return { filePath: io.files.get(url)! };
+  });
   io.legacySave.mockClear(); io.legacyRemove.mockClear(); io.cleanupPolling.mockClear(); io.polling = new AbortController();
   io.canvasRevision = 1; io.preparationReleased.mockClear(); io.updateTransient.mockReset();
   const root = await createNativeProject({ name: '隔离图片合同' });
@@ -138,6 +141,37 @@ it('原CCC单次续取仍未完成时保留原submitted，下一次画布事件�
   expect(io.query).toHaveBeenCalledOnce(); io.query.mockClear();
   await resumeNativeMediaLocalResults(io.context.canvasId, { allowOriginalCccTaskQuery: true });
   expect(io.query).toHaveBeenCalledOnce(); expect((await listNativeMediaTasks(io.context.projectId))[0].status).toBe('delivered');
+});
+
+it.each(['调用方取消', '切换画布'])('原CCC产物下载中%s保留原回执，再次取回只查询同一原任务', async (interruption) => {
+  const { record, posts } = await cccFreezeFailure();
+  const original = io.context;
+  const controller = new AbortController();
+  io.captureLocal.mockClear();
+  io.persist.mockImplementationOnce(async (_url, _canvas, _prefix, _name, options?: FileTransferOptions) => {
+    expect(options?.signal?.aborted).toBe(false);
+    if (interruption === '调用方取消') controller.abort();
+    else {
+      io.context = { ...original, canvasId: 'other-canvas', runtimeEpoch: 'other-canvas-run' };
+      io.state.projectExecutionContext = io.context; io.state.currentProjectId = io.context.canvasId;
+      io.listeners.forEach((listener) => listener());
+    }
+    expect(options?.signal?.aborted).toBe(true);
+    return { filePath: io.files.get('https://fixture.example/returned-image') };
+  });
+
+  await expect(resumeNativeBuiltinImageTask(record.operationId, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+  expect(io.captureLocal).not.toHaveBeenCalled();
+  expect(io.dispatcher).not.toHaveBeenCalled();
+  expect((await listNativeMediaTasks(original.projectId))[0]).toMatchObject({ status: 'submitted', remoteTaskId: record.remoteTaskId });
+
+  io.context = original; io.state.projectExecutionContext = original; io.state.currentProjectId = original.canvasId;
+  await resumeNativeBuiltinImageTask(record.operationId);
+  expect(io.query.mock.calls.map(([poll]) => poll.url)).toEqual([
+    'https://fixture.example/tasks/original-ccc-task', 'https://fixture.example/tasks/original-ccc-task',
+  ]);
+  expect(posts).toBe(1);
+  expect((await listNativeMediaTasks(original.projectId))[0].status).toBe('delivered');
 });
 
 it('原CCC查询等待期间切集会取消回填，保留原任务且不覆盖当前画布', async () => {
@@ -461,6 +495,23 @@ it('付费返回后切集只保留原本机集合，重开原集不需要API Key
   io.state.config.providers = {};
   await resumeNativeBuiltinImageTask(retained.operationId);
   expect(posts).toBe(1); expect((await listNativeMediaTasks(original.projectId))[0].status).toBe('delivered');
+});
+
+it('同步付费返回后调用方取消时仍保存原根，续取缓存不发查询', async () => {
+  const controller = new AbortController();
+  const url = 'https://fixture.example/synchronous-image';
+  await expect(runNativeBuiltinImageTask({ nodeId: 'source', mode: 'standard', modelId: 'image-model', connectionId: 'fixture',
+    baseUrl: 'https://fixture.example', requestMaterial: ['frozen-input'], beforeSubmit: async () => {}, signal: controller.signal,
+    execute: async (beforePost) => { await beforePost(); controller.abort(); return { urls: [url] }; },
+  })).rejects.toMatchObject({ name: 'NativeMediaTaskPending', localResultAvailable: true });
+  expect(io.persist).toHaveBeenCalledExactlyOnceWith(url, io.context.canvasId, 'ai-image', '原媒体产物', { mediaDownloadAccess: undefined });
+  const [retained] = await listNativeMediaTasks(io.context.projectId);
+  expect(retained.localResults).toHaveLength(1);
+  expect(retained.remoteTaskId).toBeUndefined();
+
+  await resumeNativeBuiltinImageTask(retained.operationId);
+  expect(io.query).not.toHaveBeenCalled();
+  expect((await listNativeMediaTasks(io.context.projectId))[0].status).toBe('delivered');
 });
 
 it('CCC全部原task结算，已确认失败不掩盖其余任务的多个候选', async () => {

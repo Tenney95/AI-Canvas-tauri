@@ -80,3 +80,23 @@ npx vitest run tests/services/apimartGen.test.ts tests/services/pollManager.test
 ```powershell
 npx vitest run tests/services/pollManager.test.ts tests/services/comfyTaskRecovery.test.ts tests/services/apimartGen.test.ts tests/services/apimartMusic.test.ts tests/services/grsaiMedia.test.ts tests/services/nativeBuiltinImageTask.test.ts tests/services/dreaminaResult.test.ts
 ```
+
+## 节点音频交付与原生产物保存
+
+2026-11-18 两批改动待用户验收。本次未运行自动化测试和 Tauri 桌面验收。
+
+- **节点音频交付。** 旧项目音频节点及源音频节点的弹窗入口接入 `executeGeneration`，和画布生成共用保存、回填原节点、写输出历史和确认回执的流程。弹窗在调用前核对项目、节点及输入快照，旧项目仍要求明确选择模型。其他节点类型继续沿用各自的路由。
+- **原生产物保存。** 通用任务、工作流、内置图片、音乐和剪辑转场共用单个 URL 的保存、文件路径检查与内容摘要核验。各调用方仍决定原画布、下载授权、候选顺序和何时结算回执。内置图片按原任务 ID 取回时，下载接收取消信号，摘要核验前后也检查取消。同步接口只有首个响应可取结果时，先在原画布留存结果，之后按既有流程交付。
+
+桌面验收使用可观察生成与查询次数的测试连接。
+
+1. 在旧项目的音频节点弹窗和画布分别触发生成。检查两种入口都向对应模型传入音色或音乐参数，各提交一次生成、回填原节点、写入一条输出历史。再检查源音频节点、工作流和原生项目的音频节点。项目设置了默认模型而旧弹窗的节点还未选模型时，确认弹窗提示选择模型。
+2. 暂停音频结果下载或切换画布、替换节点，确认结果只交付给原节点。恢复可续查的任务，核对原任务 ID 和提交次数。
+3. 用多个候选验收原生通用任务、工作流、内置图片、音乐和剪辑转场。核对原画布目录、候选顺序和摘要身份。下载内置图片时取消或切项目，回到原画布续查，生成提交数保持一次。同步接口的首返结果在切走后应留存在原画布，可在重开后交付。
+
+两批可分别撤销代码回滚，沿用既有回执和目录布局。在仓库根目录执行对应的定向模拟验证。
+
+```powershell
+npx vitest run tests/components/nodeCriticalInteractions.test.tsx tests/services/audioSpeechSettings.test.ts tests/services/generationServiceReplicaLease.test.ts
+npx vitest run tests/services/nativeMediaLocalResult.test.ts tests/services/nativeGeneralAsyncTask.test.ts tests/services/nativeWorkflowTasks.test.ts tests/services/nativeBuiltinImageTask.test.ts tests/services/nativeBuiltinAudioRecovery.test.ts tests/services/nativeEditorProtocols.test.ts tests/services/nativeEditorMediaTaskRepository.test.ts
+```

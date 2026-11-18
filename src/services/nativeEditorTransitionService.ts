@@ -14,7 +14,7 @@ import { buildModelProtocolRequest, resolveModelExecutionProfile, submitModelPro
 import { resolvePoll, pollResolvedModelProtocol } from './ai/modelProtocolPoll';
 import { findModelProtocolForEachCapabilityConflicts, findUnusedReferenceVariables } from './ai/modelProtocolRuntime';
 import { createMediaDownloadAccess } from './ai/mediaDownloadAccess';
-import { getAssetUrlFromPath, getProjectDataDir, getRelativeAssetPath, joinPath, persistMediaUrlToProjectData } from './fileService';
+import { getAssetUrlFromPath, getProjectDataDir, getRelativeAssetPath, joinPath } from './fileService';
 import { readNativeVideoImageReference, type NativeVideoImageReference } from './nativeVideoImageReference';
 import { arrayBufferToBase64 } from './fs/core';
 import { sha256BytesHex } from './mediaDataUrl';
@@ -40,7 +40,8 @@ import { quoteVolcengineVideo } from './billing/volcenginePricing';
 import { VIDEO_POLL_MAX_DURATION_MS } from './pollManager';
 import { apimartEditorTaskIds, APIMART_EDITOR_PROTOCOL, DREAMINA_EDITOR_PROTOCOL, RUNNINGHUB_EDITOR_PROTOCOL, VOLCENGINE_EDITOR_PROTOCOL } from './nativeEditorProtocols';
 import { nativeProtocolQueryDigest, nativeProtocolQueryPaths, captureNativeProtocolContext, resolveNativeProtocolContext, isSafeNativeProtocolTaskId } from './nativeModelProtocolTask';
-import { captureNativeMediaLocalResult, readNativeMediaLocalResult } from './nativeMediaLocalResult';
+import { readNativeMediaLocalResult } from './nativeMediaLocalResult';
+import { persistNativeMediaResult } from './nativeMediaResultPersistence';
 import { isNativeMediaContentPath } from './nativeMediaContentPath';
 import type { NativeMediaLocalOutput } from '../types/media';
 import { runningHubConnection } from './workflowExecutionService';
@@ -172,11 +173,10 @@ async function saveOutputs(row: NativeEditorMediaTask, urls: readonly string[], 
   if (!unique.length || unique.length > 128) throw new Error('原转场视频候选数量无效，回执保留');
   const outputs: NativeMediaLocalOutput[] = [];
   for (const [index, url] of unique.entries()) {
-    const saved = await persistMediaUrlToProjectData(url, row.canvasId, 'ai-video', `AI转场-${row.operationId}-${index + 1}`, {
+    outputs.push(await persistNativeMediaResult(url, row.canvasId, { category: 'video',
+      label: `AI转场-${row.operationId}-${index + 1}`, missingFileMessage: '原转场结果未保存为本机文件',
       ...(signal ? { signal } : {}), ...(guard ? { assertCurrent: guard } : {}),
-      mediaDownloadAccess: createMediaDownloadAccess(row.providerConfigId, selected.baseUrl, selected.protocol.auth) });
-    if (!saved.filePath) throw new Error('原转场结果未保存为本机文件');
-    outputs.push({ ...await captureNativeMediaLocalResult(row.canvasId, saved.filePath), category: 'video' });
+      mediaDownloadAccess: createMediaDownloadAccess(row.providerConfigId, selected.baseUrl, selected.protocol.auth) }));
   }
   return retainNativeEditorMediaOutputs(row, outputs, completion ? { completion } : {});
 }

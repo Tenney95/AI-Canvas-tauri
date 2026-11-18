@@ -14,8 +14,8 @@ import { createNativeWorkflowReceipt, beginNativeWorkflowSubmission, retainNativ
   type NativeWorkflowDescriptor, type NativeWorkflowReceipt, type NativeWorkflowTask } from './nativeWorkflowRepository';
 import { retainNativeMediaOutputs } from './indexedDb/nativeMediaCollectionRepository';
 import { nativeMediaLocalOutputs } from './nativeMediaCollection';
-import { captureNativeMediaLocalResult, readNativeMediaLocalResult } from './nativeMediaLocalResult';
-import { persistMediaUrlToProjectData } from './fileService';
+import { readNativeMediaLocalResult } from './nativeMediaLocalResult';
+import { persistNativeMediaResult } from './nativeMediaResultPersistence';
 import { PollTaskFailedError } from './pollTask';
 import { getHttpResponseError } from './ai/httpUtils';
 import { createMediaDownloadAccess } from './ai/mediaDownloadAccess';
@@ -48,9 +48,9 @@ async function saveOutputs(record: NativeMediaTaskRecord, outputs: readonly Clou
   // 同步返回的字节须先归入原根；其余查询可取消并按原taskID重查，不向另一集投递。
   for (const output of outputs) {
     signal?.throwIfAborted(); assertCurrent?.();
-    const saved = await persistMediaUrlToProjectData(output.url, record.canvasId, `ai-${output.kind}`, '原工作流产物', { signal, assertCurrent, mediaDownloadAccess });
-    if (!saved.filePath) throw new Error('原工作流产物尚未完整保存，可继续查询原任务');
-    files.push({ ...await captureNativeMediaLocalResult(record.canvasId, saved.filePath), category: output.kind });
+    files.push(await persistNativeMediaResult(output.url, record.canvasId, { category: output.kind,
+      label: '原工作流产物', missingFileMessage: '原工作流产物尚未完整保存，可继续查询原任务',
+      signal, assertCurrent, mediaDownloadAccess }));
   }
   const first = files.findIndex((file) => file.category === record.category);
   if (first < 0) throw new Error('原工作流没有请求类型的产物');

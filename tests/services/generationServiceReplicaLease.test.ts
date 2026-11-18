@@ -619,6 +619,21 @@ describe('ComfyUI 图片与音频交付边界', () => {
     expect(mocks.pauseComfy).toHaveBeenCalledWith('media', 'original', expect.any(Function), expect.objectContaining({ message: '音频已生成，但保存失败；请继续保存原结果' }));
   });
 
+  it.each([
+    new DOMException('音频提供方取消', 'AbortError'),
+    new Error('请求已取消'),
+    new Error('任务已被取消'),
+  ])('音频弹窗沿用取消分类，%s 不写失败历史', async (reason) => {
+    setup('ai-audio');
+    mocks.audio.mockRejectedValueOnce(reason);
+
+    await expect(executeGeneration('media')).resolves.toEqual(cancelled);
+
+    expect(mocks.audio).toHaveBeenCalledOnce();
+    expect(mocks.persistAudio).not.toHaveBeenCalled();
+    expectNoCommit();
+  });
+
   it.each(['ai-image', 'ai-audio'] as const)('%s 把原保存异常交给恢复层，不确认任务或重新生成', async (kind) => {
     setup(kind);
     const error = Object.assign(new Error('生成媒体未能写入项目目录：保存目录无法写入'), {
