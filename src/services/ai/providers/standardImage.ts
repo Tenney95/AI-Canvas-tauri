@@ -27,6 +27,7 @@ import { isNativeVideoSubmissionGuard } from '../../nativeVideoSubmission';
 import { isCharacterImageTaskContext } from '../../characterImageTaskContext';
 import { isNativeCharacterImageSubmissionGuard, runNativeCharacterImageTask } from '../../nativeCharacterImageTask';
 import { isOpenAIPaintMaskContract, prepareCharacterImageMask } from '../characterImageMask';
+import { assertImagePromptLength, imagePromptCharacterLimit } from '../imagePromptLimits';
 
 export interface StandardImageParams {
   apiKey: string;
@@ -330,6 +331,7 @@ export async function generateImageStandardBatch(
   count: number,
   signal?: AbortSignal,
 ): Promise<BatchImageResult> {
+  assertImagePromptLength(params.modelName, params.prompt, imagePromptCharacterLimit(params.modelName));
   const apiKey = params.apiKey;
   try {
     const requestedCount = Math.max(1, Math.floor(count));

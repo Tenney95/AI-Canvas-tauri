@@ -104,9 +104,10 @@ export type FinishReason = 'stop' | 'length' | 'canceled' | 'error';
 export type AssistantStreamEvent =
   | { type: 'start'; requestId: string; modelId: string }
   | { type: 'text.delta'; delta: string }
-  | { type: 'reasoning.delta'; delta: string; source: 'openai-compatible' | 'anthropic-compatible' | 'gemini-native' }
+  | { type: 'reasoning.delta'; delta: string; source: 'openai-compatible' | 'openai-responses' | 'anthropic-compatible' | 'gemini-native' }
   | { type: 'status'; phase: StreamPhase; message?: string }
   | { type: 'conversation.title'; title: string }
+  | { type: 'responses.context'; output: Array<Record<string, unknown>> }
   | { type: 'tool.call.delta'; callId: string; delta: string }
   | { type: 'tool.call.final'; call: ProposedToolCall }
   | { type: 'tool.result'; result: ToolResultSummary }

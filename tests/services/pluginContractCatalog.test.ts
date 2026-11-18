@@ -1,8 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import { inspectPluginContract } from '../../src/services/plugins/pluginContractCatalog';
 import { PLUGIN_HOST } from '../../src/services/plugins/pluginHost';
+import type { InstalledPlugin } from '../../src/types/plugin';
 
 describe('public plugin contracts', () => {
+  it('omits corrupted protocol metadata instead of reflecting arbitrary installed fields', () => {
+    const plugin: InstalledPlugin = { id: 'example.protocol', enabled: true, installedAt: 1, updatedAt: 1, source: '',
+      manifest: { apiVersion: 2, id: 'example.protocol', name: 'Example', version: '1.0.0', category: 'utility', entry: 'main.js', runtime: 'javascript', permissions: [],
+        contributes: { nodeTools: [], modelProtocols: [{ id: 'responses', name: 'Responses', category: 'text', adapter: 'private-secret' as never }] } } };
+    const result = inspectPluginContract({ section: 'plugins' }, [plugin]);
+    expect(result.entries[0].contract.modelProtocols).toEqual([]);
+    expect(JSON.stringify(result)).not.toContain('private-secret');
+  });
+  it('publishes bounded native protocol preset contract without arbitrary request codecs', () => {
+    const entry = inspectPluginContract({ section: 'manifest', query: 'modelProtocols' }).entries[0];
+    expect(entry.contract).toMatchObject({ apiVersion: 2, capability: 'model.protocolPresets', maxItems: 16, category: ['text'] });
+    expect(entry.contract.adapters).toContain('openai-responses');
+    expect(JSON.stringify(entry.contract)).not.toContain('apiKey');
+  });
   it('exposes supported capabilities without claiming granted authority', () => {
     const result = inspectPluginContract({ section: 'host' });
     expect(result.entries[0].contract.capabilities).toEqual(PLUGIN_HOST.capabilities);

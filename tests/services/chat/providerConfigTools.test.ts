@@ -532,12 +532,12 @@ describe('provider config agent tools', () => {
     expect(result).toMatchObject({ ok: false, result: { status: 'error' } });
   });
 
-  it('exposes only the three supported connection-level chat protocols', () => {
+  it('exposes the supported connection-level chat protocols', () => {
     const schema = getAgentTool('provider_config_preview')!.inputSchema.properties?.chatApiProtocol;
 
     expect(schema).toMatchObject({
       type: 'string',
-      enum: ['openai-compatible', 'anthropic-compatible', 'gemini-native'],
+      enum: ['openai-compatible', 'openai-responses', 'anthropic-compatible', 'gemini-native'],
     });
     expect(getAgentTool('provider_config_preview')!.description).toContain('chatApiProtocol');
   });

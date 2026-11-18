@@ -26,6 +26,7 @@ import {
   type ChatApiMessage,
 } from './chatApiProtocol';
 import type { ChatApiProtocol } from '../../types';
+import { resolvePluginModelProtocol } from './pluginModelProtocol';
 
 // aiService 内部仍保留 runninghubwf 的默认 URL
 (DEFAULT_BASE_URLS as Record<string, string>).runninghubwf = 'https://api.runninghub.cn';
@@ -138,38 +139,47 @@ export async function generateTextResult(params: AIGenerateParams): Promise<Text
     modelName = extractModelName(model, provider);
   }
 
-  // 解析 @{nodeId:label} 引用：图片节点构建 image_url，其他节点内联文本
-  const { content, textContent } = await resolvePromptToChatContent(rawPrompt);
-  if (!textContent.trim()) {
-    throw new Error('提示词不能为空');
-  }
-
-  // 调用方直接给的图片（截帧、节点自身产物等）接在 @ 引用之后
-  const contentWithImages = params.imageUrls?.length
-    ? [
-        ...(typeof content === 'string' ? [{ type: 'text', text: content }] : content),
-        ...params.imageUrls.map((url) => ({ type: 'image_url', image_url: { url } })),
-      ]
-    : content;
-
   const usesVolcengineTos = getProviderPolicy(resolveProviderCatalogId(providerConfigId,
     config.providers[providerConfigId])).upload === 'volcengine-tos';
-  // 方舟直接把原始来源交给私有 TOS；其他文本/VLM 连接沿用受限 Base64。
-  const resolvedContent = usesVolcengineTos
-    ? await resolveContentImageUrls(contentWithImages, providerConfigId, params.signal)
-    : await resolveChatContentImageDataUrls(contentWithImages, params.signal);
-
-  const messages: ChatApiMessage[] = [];
-  messages.push({ role: 'user', content: resolvedContent });
-
+  const controller = new AbortController();
+  const cancel = () => controller.abort(params.signal?.reason);
+  if (params.signal?.aborted) cancel();
+  else params.signal?.addEventListener('abort', cancel, { once: true });
+  let lease: Awaited<ReturnType<typeof resolvePluginModelProtocol>> | undefined;
   try {
+    controller.signal.throwIfAborted();
+    if (generalModel?.executionProfile?.preset === 'plugin') {
+      lease = await resolvePluginModelProtocol(generalModel.executionProfile, () => useAppStore.getState().installedPlugins, controller);
+      chatApiProtocol = lease.adapter;
+    }
+    const signal = lease?.signal ?? controller.signal;
+    signal.throwIfAborted();
+    const { content, textContent } = await resolvePromptToChatContent(rawPrompt, { signal });
+    lease?.assertActive();
+    signal.throwIfAborted();
+    if (!textContent.trim()) throw new Error('提示词不能为空');
+
+    // 调用方直接给的图片（截帧、节点自身产物等）接在 @ 引用之后。
+    const contentWithImages = params.imageUrls?.length
+      ? [
+          ...(typeof content === 'string' ? [{ type: 'text', text: content }] : content),
+          ...params.imageUrls.map((url) => ({ type: 'image_url', image_url: { url } })),
+        ]
+      : content;
+    // 方舟使用私有 TOS，其他文本/VLM 连接使用受限 Base64。
+    const resolvedContent = usesVolcengineTos
+      ? await resolveContentImageUrls(contentWithImages, providerConfigId, signal)
+      : await resolveChatContentImageDataUrls(contentWithImages, signal);
+    signal.throwIfAborted();
+    const messages: ChatApiMessage[] = [{ role: 'user', content: resolvedContent }];
+
     const nativeTextProtocol = resolveNativeTextChatProtocol(generalModel?.executionProfile);
     if (nativeTextProtocol) chatApiProtocol = nativeTextProtocol;
-    if (generalModel?.executionProfile && !nativeTextProtocol) {
+    if (generalModel?.executionProfile && generalModel.executionProfile.preset !== 'plugin' && !nativeTextProtocol) {
       const protocol = resolveModelExecutionProfile(generalModel.executionProfile);
       if (!protocol) throw new Error(`通用模型 "${generalModel.name}" 未配置调用协议`);
       const result = await executeModelProtocol({
-        signal: params.signal,
+        signal,
         apiKey,
         baseUrl,
         protocol,
@@ -193,9 +203,11 @@ export async function generateTextResult(params: AIGenerateParams): Promise<Text
       model: modelName,
       messages,
       stream: false,
-      signal: params.signal,
+      signal,
     });
     // 不设超时（仅 ComfyUI 才设超时）
+    await lease?.assertCurrent();
+    signal.throwIfAborted();
     const response = await (usesVolcengineTos ? corsSafeFetch(request.url, request.init, { sensitive: true })
       : corsSafeFetch(request.url, request.init));
 
@@ -204,6 +216,8 @@ export async function generateTextResult(params: AIGenerateParams): Promise<Text
     }
 
     const json = await response.json();
+    await lease?.assertCurrent();
+    signal.throwIfAborted();
     const parsed = parseChatApiResponse(json, chatApiProtocol);
     // OpenAI 兼容通用模型保留既有宽松响应提取，原生协议只接受各自规范结构。
     const replyText = parsed.text || (
@@ -217,5 +231,8 @@ export async function generateTextResult(params: AIGenerateParams): Promise<Text
     return { text: replyText };
   } catch (error) {
     throw usesVolcengineTos ? redactVolcengineError(error, apiKey) : error;
+  } finally {
+    lease?.release();
+    params.signal?.removeEventListener('abort', cancel);
   }
 }

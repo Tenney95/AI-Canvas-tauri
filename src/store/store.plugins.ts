@@ -12,7 +12,8 @@ import type {
   PluginPackageResourcePayload,
 } from '../types/plugin';
 import { createInstalledPlugin, parsePluginBundle } from '../services/plugins/pluginManifest';
-import { clearPluginResources } from '../services/plugins/pluginResourceService';
+import { clearPluginResources as clearPluginResourceHandles } from '../services/plugins/pluginResourceService';
+import { revokePluginProtocolPresets } from '../services/plugins/pluginProtocolPresetService';
 import { affectedPluginIds, resolvePluginDependencies } from '../services/plugins/pluginDependencyService';
 import {
   deletePluginFromDb,
@@ -49,6 +50,11 @@ interface StagedPluginRevision {
   pluginId: string;
   sourceDigest: string;
   revisionDigest: string;
+}
+
+function clearPluginResources(id: string): void {
+  revokePluginProtocolPresets(id);
+  clearPluginResourceHandles(id);
 }
 
 const SOURCE_DIGEST_RE = /^[0-9a-f]{64}$/u;
@@ -232,6 +238,7 @@ export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (s
           )),
         }));
         previousLeaseRevoked = true;
+        for (const id of affectedPluginIds(get().installedPlugins, plugin.id)) revokePluginProtocolPresets(id);
         if (previous.revisionDigest !== plugin.revisionDigest) {
           for (const id of affectedPluginIds(get().installedPlugins, plugin.id)) clearPluginResources(id);
         }
@@ -415,6 +422,7 @@ export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (s
     deletePlugin: async (id) => enqueuePluginMutation(id, () => deletePluginCore(id), get().installedPlugins.some((plugin) => Boolean(plugin.manifest.dependencies?.length))),
 
     repairPluginRegistry: async () => enqueuePluginMutation('$registry', async () => {
+      revokePluginProtocolPresets();
       const repaired = await invoke<boolean>('repair_plugin_registry');
       if (!repaired) {
         set({ pluginRegistryRepairRequired: false });
@@ -440,6 +448,7 @@ export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (s
     }, true),
 
     loadPlugins: async () => {
+      revokePluginProtocolPresets();
       const plugins: InstalledPlugin[] = [];
       let repairRequired = false;
       for (const persisted of await getAllPlugins()) {

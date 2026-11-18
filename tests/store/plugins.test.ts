@@ -16,10 +16,14 @@ const dbMocks = vi.hoisted(() => ({
 const resourceMocks = vi.hoisted(() => ({
   clearPluginResources: vi.fn(),
 }));
+const protocolMocks = vi.hoisted(() => ({ revokePluginProtocolPresets: vi.fn() }));
 
 vi.mock('@tauri-apps/api/core', () => nativeMocks);
 vi.mock('../../src/services/indexedDbService', () => dbMocks);
 vi.mock('../../src/services/plugins/pluginResourceService', () => resourceMocks);
+vi.mock('../../src/services/plugins/pluginProtocolPresetService', async (original) => ({
+  ...await original<typeof import('../../src/services/plugins/pluginProtocolPresetService')>(), ...protocolMocks,
+}));
 
 import { createPluginSlice } from '../../src/store/store.plugins';
 
@@ -116,6 +120,27 @@ beforeEach(() => {
 });
 
 describe('插件由用户安装', () => {
+  it('installs protocol-only packages and revokes calls before disable, uninstall, repair and reload', async () => {
+    const manifestText = JSON.stringify({ apiVersion: 2, id: 'example.responses', name: 'Responses', version: '1.0.0', category: 'utility',
+      runtime: 'javascript', entry: 'main.js', permissions: [], requiredCapabilities: ['model.protocolPresets'], contributes: { nodeTools: [],
+        modelProtocols: [{ id: 'responses', name: 'Responses', category: 'text', adapter: 'openai-responses' }] } });
+    const { slice, getState } = createSlice();
+    const installed = await slice.installPluginBundle(manifestText, 'definePlugin({ tools: {} });');
+    expect(getState().installedPlugins[0].manifest.contributes.modelProtocols).toHaveLength(1);
+    await slice.setPluginEnabled(installed.id, false);
+    expect(protocolMocks.revokePluginProtocolPresets).toHaveBeenCalledWith(installed.id);
+    protocolMocks.revokePluginProtocolPresets.mockClear();
+    await slice.deletePlugin(installed.id);
+    expect(protocolMocks.revokePluginProtocolPresets).toHaveBeenCalledWith(installed.id);
+    protocolMocks.revokePluginProtocolPresets.mockClear();
+    await slice.repairPluginRegistry();
+    expect(protocolMocks.revokePluginProtocolPresets).toHaveBeenCalledWith();
+    protocolMocks.revokePluginProtocolPresets.mockClear();
+    dbMocks.getAllPlugins.mockResolvedValue([installed]);
+    await slice.loadPlugins();
+    expect(protocolMocks.revokePluginProtocolPresets).toHaveBeenCalledWith();
+    expect(getState().installedPlugins[0].manifest.contributes.modelProtocols).toEqual(installed.manifest.contributes.modelProtocols);
+  });
   it('revokes dependent grants but preserves their configured enabled choice', async () => {
     const base = createInstalledPluginFixture('example.base');
     const dependent = createInstalledPluginFixture('example.dependent');
@@ -126,6 +151,7 @@ describe('插件由用户安装', () => {
     await slice.setPluginEnabled(base.id, false);
     expect(resourceMocks.clearPluginResources).toHaveBeenCalledWith(base.id);
     expect(resourceMocks.clearPluginResources).toHaveBeenCalledWith(dependent.id);
+    expect(protocolMocks.revokePluginProtocolPresets).toHaveBeenCalledWith(dependent.id);
     expect(getState().installedPlugins.find((item) => item.id === dependent.id)?.enabled).toBe(true);
     nativeMocks.invoke.mockClear();
     await expect(slice.setPluginEnabled(dependent.id, true)).rejects.toThrow('依赖');
@@ -466,6 +492,7 @@ describe('可信 Python 插件状态边界', () => {
       enabled: false,
     });
     expect(grantedPluginIds.has(previous.id)).toBe(false);
+    expect(protocolMocks.revokePluginProtocolPresets).toHaveBeenCalledWith(previous.id);
 
     activation.resolve(undefined);
     const installed = await update;

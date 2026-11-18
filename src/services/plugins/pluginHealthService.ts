@@ -2,6 +2,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import type { InstalledPlugin, PluginHealthSnapshot, PluginRegistrationStatus, PythonPluginRuntimeStatus } from '../../types/plugin';
 import { assertPluginCompatibility } from './pluginHost';
 import { resolvePluginDependencies } from './pluginDependencyService';
+import { parsePluginModelProtocols } from './pluginManifest';
 
 /** 不返回原生错误原文，避免将平台路径写入诊断、工具结果或消息。 */
 export async function inspectPluginHealth(plugin: InstalledPlugin, plugins: readonly InstalledPlugin[]): Promise<PluginHealthSnapshot> {
@@ -30,6 +31,10 @@ export async function inspectPluginHealth(plugin: InstalledPlugin, plugins: read
       result.state = 'disabled';
       if (plugin.enabled !== status.enabled) result.reasons.push('配置与原生启用状态不一致');
     } else result.state = 'ready';
+    if (result.state === 'ready' && JSON.stringify(parsePluginModelProtocols(status.modelProtocols))
+      !== JSON.stringify(parsePluginModelProtocols(plugin.manifest.contributes.modelProtocols))) {
+      result.state = 'invalid'; result.reasons.push('协议预设声明与原生活动快照不一致');
+    }
     if (result.state === 'ready' && plugin.manifest.runtime === 'python') {
       // 复用现有环境状态探测；不执行插件源码，不返回 executable 或原生 error 原文。
       try {

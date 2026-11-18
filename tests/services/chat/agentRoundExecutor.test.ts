@@ -9,6 +9,7 @@ import * as taskService from '../../../src/services/chat/agentTaskService';
 import * as resultService from '../../../src/services/chat/agentResultService';
 import { executeRegisteredAgentToolCall } from '../../../src/services/chat/agentToolExecution';
 import { MCP_GLOBAL_TOOL_NAMES, MCP_SETTINGS_CONVERSATION_ID, MCP_SETTINGS_SCOPE_ID, MCP_SETTINGS_TOOL_NAMES } from '../../../src/services/mcp/mcpSettingsScope';
+import { buildChatApiRequest, type ChatApiMessage } from '../../../src/services/ai/chatApiProtocol';
 
 const streamAssistantReplyMock = vi.hoisted(() => vi.fn());
 const resolveAssistantModelMock = vi.hoisted(() => vi.fn<
@@ -408,6 +409,43 @@ it('preserves a full serialized result page and its next cursor beyond the previ
   expect(content.length).toBeGreaterThan(12_000);
   expect(JSON.parse(content)).toEqual(page);
   expect(result.totalToolResultChars).toBe(200_000 + pageContent.length);
+});
+
+it('replays ordered Responses reasoning and function output across Agent rounds without persisting opaque context', async () => {
+  const execute = vi.fn(async () => ({ status: 'success' as const, summary: '已读取', modelContent: '{"nodes":2}' }));
+  registerAgentTool({ id: 'responses_read', title: 'Read', description: 'Read', effect: 'read',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false }, execute });
+  const output = [
+    { type: 'reasoning', id: 'rs_1', summary: [], encrypted_content: 'opaque-round-context' },
+    { type: 'message', id: 'msg_1', role: 'assistant', status: 'completed', phase: 'commentary',
+      content: [{ type: 'output_text', text: '先读取', annotations: [] }] },
+    { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'responses_read', arguments: '{}', status: 'completed' },
+  ];
+  streamAssistantReplyMock.mockImplementationOnce(async ({ onEvent }) => {
+    onEvent({ type: 'text.delta', delta: '先读取' });
+    onEvent({ type: 'responses.context', output });
+    onEvent({ type: 'tool.call.final', call: { callId: 'call_1', toolId: 'responses_read', input: {} } });
+    onEvent({ type: 'done', finishReason: 'stop' });
+  });
+  const messages: ChatApiMessage[] = [{ role: 'user', content: '读取画布' }];
+  const controller = new AbortController();
+  const params = { taskId: 'task-round', signal: controller.signal, messages, fullText: '', totalToolResultChars: 0,
+    callbacks: {}, transitionTask: transitionAgentTask, waitForApproval: async () => ({ approved: true }) };
+  await expect(executeAgentRound(params)).resolves.toMatchObject({ outcome: 'continue' });
+  expect(execute).toHaveBeenCalledOnce();
+  expect(JSON.stringify(useAppStore.getState().agentTasks)).not.toContain('opaque-round-context');
+  expect(JSON.stringify(messages)).not.toContain('opaque-round-context');
+  streamAssistantReplyMock.mockImplementationOnce(async ({ messages: nextMessages, onEvent }) => {
+    const request = buildChatApiRequest({ protocol: 'openai-responses', apiKey: 'fixture',
+      baseUrl: 'https://gateway.example/v1', model: 'configured-model', stream: true, messages: nextMessages });
+    const body = JSON.parse(String(request.init.body));
+    const reasoningIndex = body.input.findIndex((item: { type: string }) => item.type === 'reasoning');
+    expect(body.input.slice(reasoningIndex, reasoningIndex + output.length)).toEqual(output);
+    expect(body.input[reasoningIndex + output.length]).toMatchObject({ type: 'function_call_output', call_id: 'call_1' });
+    onEvent({ type: 'text.delta', delta: '读取完成' });
+    onEvent({ type: 'done', finishReason: 'stop' });
+  });
+  await expect(executeAgentRound(params)).resolves.toMatchObject({ outcome: 'completed' });
 });
 
 it.each(['plan', 'collaborative', 'autonomous'] as const)('Muse %s rounds complete ordinary answers with no offered or executed tools', async (mode) => {

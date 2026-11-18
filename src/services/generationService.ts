@@ -76,6 +76,7 @@ export interface GenerationLease {
 
 /** 宿主批量调度共用执行器，但由外层管理一次历史和汇总提示。 */
 export interface GenerationOptions {
+  imagePromptResolution?: { original: string; replacement: string };
   comfyH3ExpectedSettings?: string;
   history?: 'transient';
   silent?: boolean;
@@ -487,6 +488,7 @@ export async function executeGeneration(
       if (nativeMediaGuard) {
         if (postProcess) throw new Error('请先生成原媒体，再执行图片后处理，避免将后处理误记为生成回执');
         await generateImagesBatch({ prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
+          ...(batchOptions?.imagePromptResolution ? { imagePromptResolution: batchOptions.imagePromptResolution } : {}),
           imageSize, imageQuality, imageBackground: data.imageBackground === '' ? '' : imageBackground, ...imageOutput, aspectRatio, nodeId,
           workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
           ...outpaintReferences,
@@ -509,6 +511,7 @@ export async function executeGeneration(
         cloudGuard = guardedSubmission ? registerCanvasDerivation(useAppStore.getState(), nodeId) : null;
         notify(`正在批量生成 ${outputCount} 张图片`);
         const imageOptions = {
+          ...(batchOptions?.imagePromptResolution ? { imagePromptResolution: batchOptions.imagePromptResolution } : {}),
           prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
           imageSize, imageQuality, imageBackground: data.imageBackground === '' ? '' : imageBackground, ...imageOutput, aspectRatio, nodeId,
           workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
@@ -533,7 +536,7 @@ export async function executeGeneration(
           silent: batchOptions?.silent,
           model: nodeModel, provider: nodeProvider,
           projectId: submittingProjectId,
-          prompt: effectivePrompt,
+          prompt: batchOptions?.imagePromptResolution?.replacement ?? effectivePrompt,
           imageSize,
           imageQuality,
           imageBackground,
@@ -544,6 +547,7 @@ export async function executeGeneration(
           ? '部分图片仍待保存或取回，原任务已保留' : '部分图片未能保存或生成，请核对已返回结果' };
       }
       const imageOptions = {
+        ...(batchOptions?.imagePromptResolution ? { imagePromptResolution: batchOptions.imagePromptResolution } : {}),
         prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
         imageSize, imageQuality, imageBackground: data.imageBackground === '' ? '' : imageBackground, ...imageOutput, aspectRatio, nodeId,
         workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
@@ -578,7 +582,7 @@ export async function executeGeneration(
       if (result.comfyTaskId) completeComfyNodeTask(nodeId, result.comfyTaskId);
       store.syncDramaAssetImageFromNode?.(nodeId, mediaUrl);
       store.recordOutputHistory(nodeId, {
-        nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
+        nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: batchOptions?.imagePromptResolution?.replacement ?? effectivePrompt,
         output: persisted.sourceUrl, nodeType, model: nodeModel, provider: nodeProvider,
         status: 'success', mediaUrl, filePath: persisted.filePath,
         params: isAnimation ? { imageSize, aspectRatio, animationAction, animationFrames,
@@ -613,6 +617,7 @@ export async function executeGeneration(
       const aspectRatio = (data.aspectRatio as string) || '2:1';
       const imageOptions = {
         prompt: buildPanoramaPrompt(effectivePrompt), model: nodeModel, provider: nodeProvider,
+        ...(batchOptions?.imagePromptResolution ? { imagePromptResolution: batchOptions.imagePromptResolution } : {}),
         imageSize, aspectRatio, nodeId,
         workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
       };
@@ -640,7 +645,7 @@ export async function executeGeneration(
       confirmMediaDelivery();
       if (result.comfyTaskId) completeComfyNodeTask(nodeId, result.comfyTaskId);
       store.recordOutputHistory(nodeId, {
-        nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
+        nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: batchOptions?.imagePromptResolution?.replacement ?? effectivePrompt,
         output: persisted.sourceUrl, nodeType: 'ai-panorama', model: nodeModel, provider: nodeProvider,
         status: 'success', mediaUrl, filePath: persisted.filePath,
         params: { imageSize, aspectRatio },
@@ -885,7 +890,7 @@ export async function executeGeneration(
         store.updateNodeDataTransient(nodeId, { status: 'idle', error: undefined, mediaTaskState: 'delivery_pending',
           ...(retained.taskType.startsWith('runninghub') ? { runninghubStage: message } : {}) });
         await store.recordOutputHistory(nodeId, {
-          nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
+          nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: batchOptions?.imagePromptResolution?.replacement ?? effectivePrompt,
           output: '', nodeType, model: nodeModel, provider: nodeProvider, status: 'download_pending',
           recoveryTask: receipt,
           error: isHistoryMediaDownloadFailure(err) && err instanceof Error ? err.message : '下载或保存尚未完成，可重新取回原结果',
@@ -921,7 +926,7 @@ export async function executeGeneration(
     if (batchNodeIds) failImageBatchNodes(batchNodeIds, msg, submittingProjectId);
     store.updateNodeDataTransient(nodeId, { status: 'error', error: msg });
     store.recordOutputHistory(nodeId, {
-      nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
+      nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: batchOptions?.imagePromptResolution?.replacement ?? effectivePrompt,
       output: '', nodeType: nodeType as 'ai-text' | 'ai-image' | 'ai-video' | 'ai-audio' | 'ai-panorama',
       model: nodeModel, provider: nodeProvider, status: 'error', error: msg,
     });

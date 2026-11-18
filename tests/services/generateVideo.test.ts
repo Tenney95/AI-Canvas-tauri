@@ -2266,6 +2266,7 @@ describe('general video runtime safety', () => {
   it.each([
     ['anthropic-chat', 'Anthropic Messages'],
     ['gemini-chat', 'Google Gemini generateContent'],
+    ['openai-responses', 'OpenAI Responses'],
   ] as const)('identifies a text-only %s preset and the exact video settings location', async (preset, label) => {
     configureGeneralVideoModel({ id: 'wrong-video-protocol', executionProfile: { preset } });
     const fetchMock = vi.fn();

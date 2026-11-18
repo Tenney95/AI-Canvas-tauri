@@ -5,6 +5,7 @@ import type { ImageModelCapability, ModelProtocolPresetId, NormalizedModelExecut
 import type { MediaGenerationParameters } from '../../types/media';
 import { modelProtocolUsesVariable, resolveModelExecutionProfile } from './modelProtocol';
 import { assertImageOutputCapability } from './imageOutputParameters';
+import { parsePluginProtocolReference } from '../plugins/pluginProtocolPresetService';
 
 export const MEDIA_PARAMETER_TEXT_FIELDS = ['aspectRatio', 'resolution', 'imageQuality', 'imageBackground', 'imageOutputFormat'] as const;
 
@@ -38,8 +39,8 @@ const RESULT_CATEGORY_LABELS: Record<GeneralModelCategory, string> = {
 };
 
 const MODEL_PROTOCOL_PRESET_IDS: readonly ModelProtocolPresetId[] = [
-  'openai-chat', 'anthropic-chat', 'gemini-chat', 'openai-image', 'openai-gpt-image',
-  'gpt-image-gateway-json', 'google-image-native', 'xai-image-native', 'agnes-video', 'custom',
+  'openai-chat', 'openai-responses', 'anthropic-chat', 'gemini-chat', 'openai-image', 'openai-gpt-image',
+  'gpt-image-gateway-json', 'google-image-native', 'xai-image-native', 'agnes-video', 'custom', 'plugin',
 ];
 
 export function isModelProtocolPresetId(value: unknown): value is ModelProtocolPresetId {
@@ -259,6 +260,14 @@ export function assertModelCapabilityProtocol(model: ProviderModelSelection): vo
   if (model.executionProfile && !isModelProtocolPresetId(model.executionProfile.preset)) {
     throw new Error('executionProfile.preset：调用协议预设不受当前应用支持');
   }
+  if (model.executionProfile?.preset === 'plugin') {
+    if (model.category !== 'text' || model.executionProfile.protocol !== undefined) {
+      throw new Error('executionProfile.preset：插件对话协议只支持文本模型，不能混用自定义协议');
+    }
+    parsePluginProtocolReference(model.executionProfile.plugin);
+    return;
+  }
+  if (model.executionProfile?.plugin !== undefined) throw new Error('executionProfile.plugin：仅插件预设可以保存插件引用');
   if (model.imageCapability) assertImageModelCapability(model.imageCapability);
   if (model.imageCapability?.supportsDataUrlReference === false
     && model.imageReferenceRequestMode === 'generation-json-image-data-urls') {

@@ -168,11 +168,14 @@ export async function resolvePromptToChatContent(rawPrompt: string, options?: { 
   content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
   textContent: string;
 }> {
+  const signal = options?.signal;
+  signal?.throwIfAborted();
   const store = useAppStore.getState();
   const { nodes } = store;
   rawPrompt = expandShotlistRowMentions(rawPrompt, nodes);
   assertNoComfyRefmodMentions(rawPrompt);
   const globalAssets = await loadGlobalDramaAssetsForPrompt(rawPrompt, store);
+  signal?.throwIfAborted();
   // groups: 1=@asset  2,3=@drama  4,5=@node
   const chipRegex = /@asset\{([^}]+)\}|@drama\{([^:]+):([^}]+)\}|@\{([^:]+):([^}]+)\}|@image\{(chat-ref-[a-f0-9-]{36}\.(?:png|jpg|webp))\|([^}\r\n]*)\}/g;
   const imageEntries: PromptImageEntry[] = [];
@@ -182,6 +185,7 @@ export async function resolvePromptToChatContent(rawPrompt: string, options?: { 
   let match: RegExpExecArray | null;
 
   while ((match = chipRegex.exec(rawPrompt)) !== null) {
+    signal?.throwIfAborted();
     if (match.index > lastIndex) {
       parts.push(rawPrompt.slice(lastIndex, match.index));
     }
@@ -192,7 +196,7 @@ export async function resolvePromptToChatContent(rawPrompt: string, options?: { 
       if (idx === undefined) {
         const projectId = options?.projectId === undefined ? store.currentProjectId : options.projectId;
         if (!projectId) throw new Error('缺少参考图所属项目');
-        const dataUrl = await readChatImageReference(projectId, match[6], options?.signal);
+        const dataUrl = await readChatImageReference(projectId, match[6], signal);
         idx = imageEntries.length + 1;
         imageKeyToIndex.set(key, idx);
         imageEntries.push({ url: dataUrl });
@@ -211,7 +215,7 @@ export async function resolvePromptToChatContent(rawPrompt: string, options?: { 
         const key = `asset:${match[1]}`;
         let idx = imageKeyToIndex.get(key);
         if (idx === undefined) {
-          const dataUrl = await readFileToDataUrl(assetPath);
+          const dataUrl = await readFileToDataUrl(assetPath, signal ? { signal } : undefined);
           if (dataUrl) {
             idx = imageEntries.length + 1;
             imageKeyToIndex.set(key, idx);
@@ -407,6 +411,7 @@ export async function resolvePromptToChatContent(rawPrompt: string, options?: { 
     parts.push(rawPrompt.slice(lastIndex));
   }
 
+  signal?.throwIfAborted();
   const textContent = parts.join('').trim();
   assertNoComfyRefmodMentions(textContent);
 
@@ -417,6 +422,7 @@ export async function resolvePromptToChatContent(rawPrompt: string, options?: { 
   const imageUrls = await Promise.all(
     imageEntries.map(async (entry) => {
       const url = await resolveNodeImageUrl(entry.url, entry.filePath);
+      signal?.throwIfAborted();
       try {
         return await mergePromptImageOverlays(url, entry);
       } catch (err) {
@@ -425,6 +431,7 @@ export async function resolvePromptToChatContent(rawPrompt: string, options?: { 
       }
     }),
   );
+  signal?.throwIfAborted();
 
   const contentArr: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
   if (textContent) {

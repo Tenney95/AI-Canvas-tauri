@@ -28,7 +28,7 @@ import { saveDataUrlToProjectData, buildNodeFileName } from '../../services/file
 import { copyImage as copyImageToClipboard } from '../../services/clipboardService';
 import { startImageOutpaint } from '../../services/imageOutpaintService';
 import type { OutpaintSettings } from '../../types/media';
-import { executeGeneration } from '../../services/generationService';
+import { executeGenerationWithImagePromptChoice as executeGeneration } from '../../services/imagePromptOverflowService';
 import { useCompletionFlash } from '../../hooks/useCompletionFlash';
 import { flushPendingAutoSave } from '../../hooks/useAutoSave';
 import { useCanvasNodeLodPreviewRevision, useCanvasNodeLodProtection } from '../../hooks/useCanvasNodeLod';

@@ -44,6 +44,7 @@ import PopupCloseButton from '../shared/PopupCloseButton';
 import {
   assertRealProtocolTestVariables, buildVideoTestVariables, defaultVideoTestScenario,
   describeProtocolTestRunBlocker, resolveProtocolTestRunDraft,
+  nativeProtocolTestMessages, pluginProtocolChoice, parsePluginProtocolChoice,
   type ProtocolChoice, type VideoTestReferences, type VideoTestScenario,
 } from './modelProtocolTestRun';
 import { useT } from '../../i18n';
@@ -67,6 +68,12 @@ import {
   ProtocolTestSessionError,
 } from '../../services/ai/modelProtocolTestSession';
 import { confirmAction } from '../../services/confirmDialog';
+import { useAppStore } from '../../store/useAppStore';
+import type { InstalledPlugin, PluginModelProtocolReference } from '../../types/plugin';
+import { listPluginProtocolPresets, type PluginProtocolPresetEntry } from '../../services/plugins/pluginProtocolPresetService';
+import { resolvePluginModelProtocol } from '../../services/ai/pluginModelProtocol';
+
+const EMPTY_PLUGINS: InstalledPlugin[] = [];
 
 type EditorView = 'form' | 'json';
 type JsonFieldKind = 'object' | 'value';
@@ -119,6 +126,7 @@ interface ProtocolResponsePreviewState {
 const PRESET_LABELS: Record<ProtocolChoice, string> = {
   legacy: '自动兼容（旧方式）',
   'openai-chat': 'OpenAI Chat',
+  'openai-responses': 'OpenAI Responses',
   'anthropic-chat': 'Anthropic Messages',
   'gemini-chat': 'Google Gemini generateContent',
   'openai-image': 'OpenAI 同步图片（旧预设）',
@@ -128,6 +136,7 @@ const PRESET_LABELS: Record<ProtocolChoice, string> = {
   'xai-image-native': 'xAI Images 原生图片（文生图）',
   'agnes-video': 'Agnes 异步视频',
   custom: '高级自定义 JSON',
+  plugin: '插件协议预设',
 };
 
 // 可用变量列表由 modelProtocolVariables 总表派生，避免与运行时实际提供的变量脱节
@@ -264,7 +273,7 @@ function createResponseSample(): ProtocolJsonValue {
 }
 
 function getAvailableChoices(category: GeneralModelCategory, current: ProtocolChoice): ProtocolChoice[] {
-  if (category === 'text') return ['legacy', 'openai-chat', 'anthropic-chat', 'gemini-chat', 'custom'];
+  if (category === 'text') return ['legacy', 'openai-chat', 'openai-responses', 'anthropic-chat', 'gemini-chat', 'custom'];
   if (category === 'image') return ['legacy', 'gpt-image-gateway-json', 'openai-gpt-image',
     'google-image-native', 'xai-image-native', ...(current === 'openai-image' ? ['openai-image' as const] : []), 'custom'];
   if (category === 'video') return ['legacy', 'agnes-video', 'custom'];
@@ -437,6 +446,19 @@ export default function ModelProtocolEditor({
     ? parseModelExecutionProtocol(model.executionProfile.protocol)
     : getDefaultCustomProtocol(model.category);
   const [preset, setPreset] = useState<ProtocolChoice>(initialPreset);
+  const [pluginReference, setPluginReference] = useState<PluginModelProtocolReference | undefined>(model.executionProfile?.plugin);
+  const plugins = useAppStore((state) => state.installedPlugins ?? EMPTY_PLUGINS);
+  const [pluginCatalog, setPluginCatalog] = useState<{ plugins: readonly InstalledPlugin[]; entries: PluginProtocolPresetEntry[] }>();
+  useEffect(() => {
+    let canceled = false;
+    void listPluginProtocolPresets(plugins).then((entries) => { if (!canceled) setPluginCatalog({ plugins, entries }); });
+    return () => { canceled = true; };
+  }, [plugins]);
+  const pluginEntries = pluginCatalog?.plugins === plugins ? pluginCatalog.entries : [];
+  const selectedPlugin = pluginEntries.find((entry) => entry.pluginId === pluginReference?.pluginId && entry.presetId === pluginReference?.presetId);
+  let selectedPluginKey = 'plugin:missing/missing';
+  try { if (pluginReference) selectedPluginKey = pluginProtocolChoice(pluginReference); } catch { /* 损坏引用保留为不可用，由保存与执行校验拒绝。 */ }
+  const pluginUnavailable = preset === 'plugin' && !selectedPlugin?.available;
   const [protocol, setProtocol] = useState<NormalizedModelExecutionProtocol>(initialProtocol);
   const [view, setView] = useState<EditorView>(simpleEditor || videoJsonEditor ? 'json' : 'form');
   const [protocolJson, setProtocolJson] = useState(() => serializeJson(initialProtocol));
@@ -596,8 +618,10 @@ export default function ModelProtocolEditor({
     return false;
   };
 
-  const changePreset = async (nextPreset: ProtocolChoice) => {
-    if (nextPreset === preset || !(await allowOverwriteDraft())) return;
+  const changePreset = async (choice: string) => {
+    const reference = parsePluginProtocolChoice(choice);
+    const nextPreset = reference ? 'plugin' : choice as ProtocolChoice;
+    if ((nextPreset === preset && (nextPreset !== 'plugin' || choice === selectedPluginKey)) || !(await allowOverwriteDraft())) return;
     setUnsyncedDraft(false);
     setNavigationError('');
     protocolSelectionRef.current = null;
@@ -605,6 +629,12 @@ export default function ModelProtocolEditor({
     setPreset(nextPreset);
     setError(null);
     invalidFormFieldsRef.current.clear();
+    if (reference) {
+      setPluginReference(reference);
+      onValidityChange(true);
+      onChange({ preset: 'plugin', plugin: reference });
+      return;
+    }
     if (nextPreset === 'legacy') {
       onValidityChange(true);
       onChange(undefined);
@@ -613,7 +643,7 @@ export default function ModelProtocolEditor({
     if (nextPreset === 'custom') {
       if (simpleEditor || videoJsonEditor) setView('json');
       const nextProtocol = preset !== 'legacy' && preset !== 'custom'
-        && !isNativeTextProtocolPreset(preset)
+        && preset !== 'plugin' && !isNativeTextProtocolPreset(preset)
         ? getModelProtocolPreset(preset)
         : protocol;
       publishProtocol(nextProtocol);
@@ -624,6 +654,7 @@ export default function ModelProtocolEditor({
       onChange({ preset: nextPreset });
       return;
     }
+    if (nextPreset === 'plugin') return;
     const nextProtocol = getModelProtocolPreset(nextPreset);
     setProtocol(nextProtocol);
     setProtocolJson(serializeJson(nextProtocol));
@@ -957,10 +988,12 @@ export default function ModelProtocolEditor({
     const controller = new AbortController();
     testAbortRef.current = controller;
     setTestRun({ status: 'running' });
+    let lease: Awaited<ReturnType<typeof resolvePluginModelProtocol>> | undefined;
     try {
-      const nativeChatProtocol = isNativeTextProtocolPreset(preset)
+      if (preset === 'plugin') lease = await resolvePluginModelProtocol({ preset: 'plugin', plugin: pluginReference }, () => useAppStore.getState().installedPlugins, controller);
+      const nativeChatProtocol = lease?.adapter ?? (isNativeTextProtocolPreset(preset)
         ? resolveNativeTextChatProtocol({ preset })
-        : undefined;
+        : undefined);
       let result: { urls?: string[]; text?: string; taskId?: string };
       if (nativeChatProtocol) {
         const request = buildChatApiRequest({
@@ -968,16 +1001,16 @@ export default function ModelProtocolEditor({
           apiKey,
           baseUrl,
           model: model.id,
-          messages: [{
-            role: 'user',
-            content: typeof variables.prompt === 'string' ? variables.prompt : '介绍这个模型',
-          }],
+          messages: nativeProtocolTestMessages(variables),
           stream: false,
           signal: controller.signal,
         });
+        await lease?.assertCurrent();
+        controller.signal.throwIfAborted();
         const response = await corsSafeFetch(request.url, request.init);
         if (!response.ok) await parseResponseError(response, `API 请求失败 (${response.status})`);
         const payload: unknown = await response.json();
+        await lease?.assertCurrent();
         result = { text: parseChatApiResponse(payload, nativeChatProtocol).text };
       } else {
         const currentProtocol = resolveProtocolTestRunDraft(
@@ -1003,12 +1036,16 @@ export default function ModelProtocolEditor({
         detail: resultDetail(result),
       });
     } catch (runError) {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted) {
+        if (testAbortRef.current === controller) setTestRun({ status: 'error', message: t('协议调用已取消，请检查插件状态后重试。') });
+        return;
+      }
       setTestRun({
         status: 'error',
         message: describeTestError(runError),
       });
     } finally {
+      lease?.release();
       if (testAbortRef.current === controller) testAbortRef.current = null;
     }
   };
@@ -1047,7 +1084,7 @@ export default function ModelProtocolEditor({
       ? t('查询已暂停，任务仍保留；继续查询不会重新生成。')
       : session?.status === 'failed' ? t('上游任务已失败，不能继续查询生成结果。') : '';
 
-  const testRunBlocker = describeProtocolTestRunBlocker(preset, apiKey, baseUrl, !!error);
+  const testRunBlocker = describeProtocolTestRunBlocker(preset, apiKey, baseUrl, !!error || pluginUnavailable);
   const testRunDisabledReason = testRunBlocker === 'legacy-preset'
     ? t('「自动兼容」不走声明式协议，无法试跑')
     : testRunBlocker === 'missing-base-url'
@@ -1073,11 +1110,17 @@ export default function ModelProtocolEditor({
       <div className={`provider-protocol-topbar ${showReferenceRequest ? 'has-reference-mode' : ''}`}>
         <label className="provider-protocol-field">
           <span>{t('协议预设')}</span>
-          <Select fixedMenu value={preset} onChange={(selectedOptionValue) => changePreset(selectedOptionValue as ProtocolChoice)}>
+          <Select fixedMenu value={preset === 'plugin' ? selectedPluginKey : preset} onChange={changePreset}>
             {(workflowMode ? ['custom' as const] : getAvailableChoices(model.category, preset)).map((choice) => (
               <option key={choice} value={choice}>{choice === 'legacy' && inheritanceLabel
                 ? t(inheritanceLabel) : t(PRESET_LABELS[choice])}</option>
             ))}
+            {!workflowMode && model.category === 'text' && pluginEntries.map((entry) => (
+              <option key={pluginProtocolChoice(entry)} value={pluginProtocolChoice(entry)} disabled={!entry.available}>
+                {entry.name} · {t('插件')} {entry.pluginName} ({entry.pluginId}/{entry.presetId}){entry.available ? '' : ` · ${t('不可用')}`}
+              </option>
+            ))}
+            {preset === 'plugin' && !selectedPlugin && <option value={selectedPluginKey} disabled>{t('插件预设不可用')} ({pluginReference?.pluginId}/{pluginReference?.presetId})</option>}
           </Select>
         </label>
         {showReferenceRequest ? (
@@ -1106,6 +1149,10 @@ export default function ModelProtocolEditor({
           </div>
         ) : null}
       </div>
+
+      {preset === 'plugin' && <p role="status" className="text-xs text-canvas-text-secondary">
+        {selectedPlugin?.available ? t('协议由宿主适配器执行，凭据由连接注入。') : t(selectedPlugin?.reason ?? '协议插件未就绪，请检查插件设置中的健康状态。')}
+      </p>}
 
       {preset === 'custom' ? (
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-canvas-text-secondary">

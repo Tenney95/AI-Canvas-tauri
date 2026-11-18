@@ -968,9 +968,11 @@ export async function generateVideo(
     }
     const connectionName = connection.provider.name.trim() || connection.providerConfigId;
     const preset = gm.executionProfile?.preset;
-    const textPreset = preset === 'anthropic-chat'
-      ? 'Anthropic Messages'
-      : preset === 'gemini-chat' ? 'Google Gemini generateContent' : undefined;
+    const textPreset = preset === 'openai-responses'
+      ? 'OpenAI Responses'
+      : preset === 'anthropic-chat'
+        ? 'Anthropic Messages'
+        : preset === 'gemini-chat' ? 'Google Gemini generateContent' : undefined;
     const reason = textPreset
       ? `“协议预设”误选为文本对话协议“${textPreset}”，不能用于视频生成。`
       : '尚未配置“模型调用协议”；仅添加模型或填写参数能力不会生成调用协议。';

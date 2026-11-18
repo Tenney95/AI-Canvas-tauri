@@ -17,6 +17,14 @@ function renderEditor(model: ProviderModelSelection, workflowMode = false): stri
 }
 
 describe('model protocol editor', () => {
+  it('keeps an unavailable plugin reference selected and explains the native health requirement', () => {
+    const html = renderEditor({ id: 'model', name: 'model', category: 'text', provider: 'p', executionProfile: {
+      preset: 'plugin', plugin: { pluginId: 'missing.responses', presetId: 'responses' },
+    } });
+    expect(html).toContain('value="plugin:missing.responses/responses" disabled="" selected=""');
+    expect(html).toContain('协议插件未就绪');
+    expect(html).not.toContain('声明式协议 JSON');
+  });
   it('opens an unconfigured video model in custom JSON with three explicit APIMart templates', () => {
     const html = renderEditor({ id: 'custom-video', name: 'Video', category: 'video', provider: 'gateway' });
     expect(html).toContain('value="custom" selected=""');
@@ -62,11 +70,13 @@ describe('model protocol editor', () => {
     expect(html).not.toContain('执行模式');
   });
 
-  it('offers the existing Anthropic and Gemini adapters for a text model', () => {
+  it.each(['anthropic-chat', 'openai-responses'] as const)('offers native adapters for a text model (%s)', (preset) => {
     const html = renderEditor({
       id: 'chat-model', name: 'Chat model', category: 'text', provider: 'gateway',
-      executionProfile: { preset: 'anthropic-chat' },
+      executionProfile: { preset },
     });
+    expect(html).toContain('OpenAI Responses');
+    expect(html).toContain(`value="${preset}" selected=""`);
     expect(html).toContain('Anthropic Messages');
     expect(html).toContain('Google Gemini generateContent');
     expect(html).not.toContain('声明式协议 JSON');

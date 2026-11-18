@@ -40,6 +40,7 @@ export interface ImageParameterRange {
 }
 
 export interface AIImageGenParams extends AIGenerateParams, ImageOutputParameters {
+  imagePromptResolution?: { original: string; replacement: string };
   /** 仅供完整交付多候选的图片节点／对话入口使用，不写入厂商请求。 */
   collectCandidates?: boolean;
   /** 角色工作台只使用显式选择的素材，交付到角色任务。 */
@@ -215,12 +216,14 @@ export type ModelExecutionProtocol = ModelExecutionProtocolV1 | ModelExecutionPr
 /** parser、编辑器与执行器统一使用的规范协议。 */
 export type NormalizedModelExecutionProtocol = ModelExecutionProtocolV2;
 
-export type ModelProtocolPresetId = 'openai-chat' | 'anthropic-chat' | 'gemini-chat' | 'openai-image' | 'openai-gpt-image' | 'gpt-image-gateway-json' | 'google-image-native' | 'xai-image-native' | 'agnes-video' | 'custom';
+export type ModelProtocolPresetId = 'openai-chat' | 'openai-responses' | 'anthropic-chat' | 'gemini-chat' | 'openai-image' | 'openai-gpt-image' | 'gpt-image-gateway-json' | 'google-image-native' | 'xai-image-native' | 'agnes-video' | 'custom' | 'plugin';
 
 export interface ModelExecutionProfile {
   preset: ModelProtocolPresetId;
   /** preset=custom 时保存用户声明的协议。 */
   protocol?: ModelExecutionProtocol;
+  /** preset=plugin 时仅保存稳定身份；适配器声明必须读取原生活动 revision。 */
+  plugin?: { pluginId: string; presetId: string };
 }
 
 /** 声明式数值范围；边界默认包含，可按厂商规则改为严格大于 / 小于。 */

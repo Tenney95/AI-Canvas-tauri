@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react';
+import { lazy, Suspense, useEffect, useId, useRef, useState, type ReactNode, type Ref } from 'react';
 import { useReducedMotion } from 'framer-motion';
 import { Icon } from '@iconify/react';
 import { useT } from '../../i18n';
@@ -23,7 +23,11 @@ interface WorkbenchArticleAssistantProps {
   performanceMode?: boolean;
 }
 
-export default function WorkbenchArticleAssistant({ targetKey, targetLabel, target, disabled, generating,
+export default function WorkbenchArticleAssistant(props: WorkbenchArticleAssistantProps) {
+  return <ArticleAssistantEditor key={props.targetKey} {...props} />;
+}
+
+function ArticleAssistantEditor({ targetKey, targetLabel, target, disabled, generating,
   unavailableReason, dispatch, containerRef, hidden = false, executionControls, theme = 'dark',
   performanceMode = false }: WorkbenchArticleAssistantProps) {
   const t = useT();
@@ -36,25 +40,11 @@ export default function WorkbenchArticleAssistant({ targetKey, targetLabel, targ
   const [status, setStatus] = useState('');
   const lifetime = useRef(0);
   const request = useRef(0);
-  const currentTargetKey = useRef(targetKey);
-  const [previousTargetKey, setPreviousTargetKey] = useState(targetKey);
-  if (previousTargetKey !== targetKey) {
-    setPreviousTargetKey(targetKey);
-    setInstruction('');
-    setCandidate(null);
-    setError('');
-    setStatus('');
-    setPending(null);
-  }
 
   useEffect(() => {
     lifetime.current += 1;
     return () => { lifetime.current += 1; };
   }, []);
-  useLayoutEffect(() => {
-    currentTargetKey.current = targetKey;
-    request.current += 1;
-  }, [targetKey]);
 
   const visibleCandidate = candidate?.key === targetKey ? candidate.value : null;
   const running = generating || pending === 'generate';
@@ -66,7 +56,7 @@ export default function WorkbenchArticleAssistant({ targetKey, targetLabel, targ
     const capturedLifetime = lifetime.current;
     const capturedKey = targetKey;
     const sequence = ++request.current;
-    const isCurrent = () => lifetime.current === capturedLifetime && currentTargetKey.current === capturedKey && request.current === sequence;
+    const isCurrent = () => lifetime.current === capturedLifetime && request.current === sequence;
     setPending('generate'); setError(''); setStatus('');
     try {
       const result = await dispatch({ type: 'article_generate', target, instruction: instruction.trim() }) as WorkbenchArticleCandidate;
@@ -85,9 +75,8 @@ export default function WorkbenchArticleAssistant({ targetKey, targetLabel, targ
   const act = async (kind: 'apply' | 'discard' | 'cancel') => {
     if (kind === 'cancel' ? !running || pending === 'cancel' : busy || !visibleCandidate || (kind === 'apply' && unavailable)) return;
     const capturedLifetime = lifetime.current;
-    const capturedKey = targetKey;
     const sequence = request.current;
-    const isCurrent = () => lifetime.current === capturedLifetime && currentTargetKey.current === capturedKey && request.current === sequence;
+    const isCurrent = () => lifetime.current === capturedLifetime && request.current === sequence;
     setPending(kind); setError(''); setStatus('');
     try {
       const result = await dispatch(kind === 'cancel' ? { type: 'article_cancel' }

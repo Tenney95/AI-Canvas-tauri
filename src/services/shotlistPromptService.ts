@@ -30,7 +30,11 @@ export function resolveSingleShotlistRowReference(prompt: string, nodes: readonl
   return references.length === 1 ? references[0] : undefined;
 }
 
-export function expandShotlistRowMentions(prompt: string, nodes: readonly ShotlistNode[], options: { durationSeconds?: number; cameraSettings?: CameraGenerationSettings } = {}): string {
+export function expandShotlistRowMentions(prompt: string, nodes: readonly ShotlistNode[], options: {
+  durationSeconds?: number;
+  cameraSettings?: CameraGenerationSettings;
+  onReadNode?: (id: string) => void;
+} = {}): string {
   if (!prompt.includes('/shot/')) return prompt;
   prompt = normalizeShotlistPromptReferences(prompt);
   const rootReferences = [...new Set([...prompt.matchAll(NODE_MENTION)]
@@ -49,10 +53,12 @@ export function expandShotlistRowMentions(prompt: string, nodes: readonly Shotli
       if (stack.has(referenceId)) throw new Error('分镜镜头存在循环引用，请移除循环后生成');
       if (stack.size >= 8 || ++count > 64) throw new Error('分镜镜头引用层级或数量过多，请减少引用');
       const { nodeId, rowId, row, defaults } = readRow(referenceId, nodes);
+      options.onReadNode?.(nodeId);
       let content = formatShotVideoPrompt(referenceId === durationReference ? { ...row, duration: options.durationSeconds } : row, defaults, options.cameraSettings);
       const frame = row.frame && nodes.find((node) => node.id === row.frame?.nodeId);
       // 画面格也用于回填成片；只有参考图片自动带入，视频参考由正文显式声明。
       if (row.frame?.kind === 'image') {
+        options.onReadNode?.(row.frame.nodeId);
         const source = frame?.data.shotlistProductionSource;
         if (!(source?.kind === 'video' && source.nodeId === nodeId && source.rowId === rowId)) {
           if (!frame || !['ai-image', 'source-image'].includes(frame.data.type)
@@ -74,9 +80,11 @@ export function expandShotlistRowMentions(prompt: string, nodes: readonly Shotli
 }
 
 /** 精确镜头内合并摄影参数，普通媒体提示词沿用原有 Camera settings 段。 */
-export function applyGenerationCameraPrompt(prompt: string, nodes: readonly ShotlistNode[], cameraSettings?: CameraGenerationSettings, durationSeconds?: number): string {
+export function applyGenerationCameraPrompt(prompt: string, nodes: readonly ShotlistNode[], cameraSettings?: CameraGenerationSettings, durationSeconds?: number,
+  onReadNode?: (id: string) => void,
+): string {
   if ([...prompt.matchAll(NODE_MENTION)].some((match) => match[1].includes('/shot/'))) {
-    return expandShotlistRowMentions(prompt, nodes, { cameraSettings, durationSeconds });
+    return expandShotlistRowMentions(prompt, nodes, { cameraSettings, durationSeconds, onReadNode });
   }
   // 整表的文字和画面仍由原解析器展开，摄影覆盖随解析上下文逐镜合并。
   if ([...prompt.matchAll(NODE_MENTION)].some((match) => nodes.some((node) => node.id === match[1] && node.data.type === 'ai-shotlist'))) return prompt;

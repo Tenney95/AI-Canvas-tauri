@@ -1,6 +1,7 @@
 /**
  * agentRoundExecutor — 执行 Agent 模型轮次、工具调用与结果回传。
  */
+import { RESPONSES_OUTPUT } from '../ai/responsesApiProtocol';
 import { estimateTokens } from './tokenEstimate';
 /**
  * 执行 Agent 的单个模型轮次，串联上下文、流式响应、工具提案与执行结果。
@@ -1101,6 +1102,7 @@ export async function executeAgentRound({
   }));
 
   const proposedCalls: ProposedToolCall[] = [];
+  let responsesOutput: Array<Record<string, unknown>> = [];
   let roundText = '';
   const completion: { reason: FinishReason } = { reason: 'stop' };
   let streamError: string | undefined;
@@ -1144,6 +1146,8 @@ export async function executeAgentRound({
           callbacks.onTextDelta?.(event.delta);
         } else if (event.type === 'reasoning.delta') {
           callbacks.onReasoningDelta?.(event.delta);
+        } else if (event.type === 'responses.context') {
+          responsesOutput = event.output;
         } else if (event.type === 'tool.call.final') {
           if (!supportsTools) throw new Error('当前文本模型未开放工具调用，未执行其工具提案');
           proposedCalls.push(event.call);
@@ -1231,6 +1235,7 @@ export async function executeAgentRound({
   messages.push({
     role: 'assistant',
     content: roundText,
+    ...(responsesOutput.length ? { [RESPONSES_OUTPUT]: responsesOutput } : {}),
     tool_calls: proposedCalls.map((call) => ({
       id: call.callId,
       type: 'function',

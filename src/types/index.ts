@@ -538,6 +538,7 @@ export type GeneralModelCategory = 'text' | 'image' | 'audio' | 'video';
 /** 连接级文本/对话 API 协议；缺省保持 OpenAI Chat Completions 兼容。 */
 export type ChatApiProtocol =
   | 'openai-compatible'
+  | 'openai-responses'
   | 'anthropic-compatible'
   | 'gemini-native';
 

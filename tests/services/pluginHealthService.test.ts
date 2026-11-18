@@ -9,6 +9,16 @@ const plugin: InstalledPlugin = { id: 'sample', source: 'not disclosed', sourceD
     category: 'utility', permissions: [], contributes: { nodeTools: [] } } };
 beforeEach(() => { mocks.invoke.mockReset(); mocks.isTauri.mockReturnValue(true); });
 describe('plugin native health', () => {
+  it('marks mismatched protocol metadata invalid even with a verified ready revision', async () => {
+    const protocols = [{ id: 'responses', name: 'Responses', category: 'text' as const, adapter: 'openai-responses' as const }];
+    const configured = { ...plugin, manifest: { ...plugin.manifest, contributes: { nodeTools: [], modelProtocols: protocols } } };
+    mocks.invoke.mockResolvedValue({ pluginId: plugin.id, exists: true, enabled: true, activeSourceDigest: plugin.sourceDigest,
+      activeRevisionDigest: plugin.revisionDigest, snapshotVerified: true, healthCode: 'ready', modelProtocols: [] });
+    expect((await inspectPluginHealth(configured, [configured])).state).toBe('invalid');
+    mocks.invoke.mockResolvedValue({ pluginId: plugin.id, exists: true, enabled: true, activeSourceDigest: plugin.sourceDigest,
+      activeRevisionDigest: plugin.revisionDigest, snapshotVerified: true, healthCode: 'ready', modelProtocols: protocols });
+    expect((await inspectPluginHealth(configured, [configured])).state).toBe('ready');
+  });
   it('requires matching native identity and verified snapshot for ready', async () => {
     mocks.invoke.mockResolvedValue({ pluginId: plugin.id, exists: true, enabled: true, activeSourceDigest: plugin.sourceDigest,
       activeRevisionDigest: plugin.revisionDigest, snapshotVerified: true, healthCode: 'ready' });

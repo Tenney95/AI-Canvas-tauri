@@ -26,6 +26,7 @@ import { validateModelExecutionProtocol } from './modelProtocol';
 import { normalizeBaseUrl } from './providerBaseUrl';
 import { isChatApiProtocol, resolveChatApiProtocol } from './chatApiProtocol';
 import { assertModelCapabilityProtocol, isModelProtocolPresetId } from './modelCapabilityValidation';
+import { parsePluginProtocolReference } from '../plugins/pluginProtocolPresetService';
 import { assertVideoModelCapability } from './videoRequestResolver';
 import { getProviderDefinition, resolveProviderImageModelForValidation, type ProviderDefinition } from './providerCatalogService';
 
@@ -170,7 +171,18 @@ function parseModel(value: unknown, path: string, diagnostics: ConnectionImportD
       diagnose('executionProfile.preset', '调用协议预设不受当前应用支持，请使用当前版本提供的预设或自定义协议');
       return null;
     }
-    if (profile.preset !== 'custom') {
+    if (profile.preset === 'plugin') {
+      try {
+        if (profile.protocol !== undefined) throw new Error('mixed');
+        model.executionProfile = { preset: 'plugin', plugin: parsePluginProtocolReference(profile.plugin) };
+      } catch {
+        diagnose('executionProfile.plugin', '插件预设引用无效，请保留 pluginId 与 presetId；不能混用自定义协议');
+        return null;
+      }
+    } else if (profile.plugin !== undefined) {
+      diagnose('executionProfile.plugin', '仅插件预设可以包含插件引用');
+      return null;
+    } else if (profile.preset !== 'custom') {
       model.executionProfile = { preset: profile.preset };
     } else {
       const errors = validateModelExecutionProtocol(profile.protocol);

@@ -116,8 +116,9 @@ export function resolveModelExecutionProfile(
   profile: ModelExecutionProfile | undefined,
 ): NormalizedModelExecutionProtocol | null {
   if (!profile) return null;
+  if (profile.preset === 'plugin') throw new Error('插件协议必须通过原生活动预设执行');
   // 原生文本预设经 chatApiProtocol 转换消息、工具与流式事件，不能按声明式 JSON 执行。
-  if (profile.preset === 'anthropic-chat' || profile.preset === 'gemini-chat') return null;
+  if (profile.preset === 'openai-responses' || profile.preset === 'anthropic-chat' || profile.preset === 'gemini-chat') return null;
   if (profile.preset === 'custom') {
     if (!profile.protocol) throw new Error('自定义调用协议不能为空');
     return parseModelExecutionProtocol(profile.protocol);
@@ -128,6 +129,7 @@ export function resolveModelExecutionProfile(
 /** 规范化完整协议的稳定比较键；无可解析协议时返回 undefined。 */
 export function comparableProtocol(profile: ModelExecutionProfile | undefined): string | undefined {
   try {
+    if (profile?.preset === 'plugin') return JSON.stringify({ preset: 'plugin', pluginId: profile.plugin?.pluginId, presetId: profile.plugin?.presetId });
     const protocol = resolveModelExecutionProfile(profile);
     return protocol ? JSON.stringify(protocol, (_key, value: unknown) => (
       value && typeof value === 'object' && !Array.isArray(value)

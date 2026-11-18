@@ -19,6 +19,14 @@ declare global {
 
 export type * from '../src/types/plugin';
 
+/** API 2 contributes.modelProtocols 需要 model.protocolPresets 能力。
+ * 每包最多 16 个 { id, name, category: 'text', adapter }；适配器限宿主公开枚举。
+ * 可以仅贡献协议预设（nodeTools: []），main.js 使用 definePlugin({ tools: {} })。
+ * 选择预设不执行插件脚本，宿主负责消息、图片、工具、流式转换与连接鉴权。
+ * 模型只保存 { preset: 'plugin', plugin: { pluginId, presetId } }。
+ * 原生核验活动快照，更新/停用/卸载/注册表修复撤销旧调用；缺失引用不得默认回退。
+ */
+
 /** API 2 dependencies 仅声明执行前置条件；要求 plugin.dependencies 宿主能力。
  * 必需依赖缺失、停用、版本不足或依赖环会阻止执行；可选缺项仅诊断。
  * 任何已解析依赖换版都会撤销活动调用，不能用于跨插件 RPC 或共享内部服务。

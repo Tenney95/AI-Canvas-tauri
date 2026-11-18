@@ -526,6 +526,7 @@ async function setupImageFullscreen() {
   vi.doMock('../../src/services/clipboardService', () => ({ copyImage: vi.fn() }));
   vi.doMock('../../src/services/apimartService', () => ({ generateOutpaintImage: vi.fn() }));
   vi.doMock('../../src/services/generationService', () => ({ executeGeneration: vi.fn() }));
+  vi.doMock('../../src/services/imagePromptOverflowService', () => ({ executeGenerationWithImagePromptChoice: vi.fn() }));
   vi.doMock('../../src/store/store.utils', () => ({ blobToDataUrl: vi.fn() }));
   vi.doMock('../../src/components/nodes/shared/toolbar/presetAction', () => ({ createPresetNode: vi.fn() }));
   const ImageNode = (await import('../../src/components/nodes/ImageNode')).default as unknown as (
@@ -553,7 +554,7 @@ describe('image fullscreen save barrier', () => {
       '../../src/hooks/useCanvasNodeLod', '../../src/components/nodes/shared/image/useImageNodeOnnxActions',
       '../../src/components/nodes/shared/image/imageUtils', '../../src/services/fileService',
       '../../src/services/clipboardService', '../../src/services/apimartService',
-      '../../src/services/generationService', '../../src/store/store.utils',
+      '../../src/services/generationService', '../../src/services/imagePromptOverflowService', '../../src/store/store.utils',
       '../../src/components/nodes/shared/toolbar/presetAction',
     ]) vi.doUnmock(path);
   });
@@ -2116,7 +2117,7 @@ describe('critical canvas node interactions', () => {
       await installReactHookDriver();
       installStoreMock(store);
       vi.doMock('zustand/react/shallow', () => ({ useShallow: <T,>(selector: T) => selector }));
-      vi.doMock('../../src/i18n', () => ({ useT: () => (text: string) => text }));
+      vi.doMock('../../src/i18n', () => ({ t: (text: string) => text, useT: () => (text: string) => text }));
       vi.doMock('@tauri-apps/api/core', () => ({ convertFileSrc: (path: string) => path }));
       vi.doMock('../../src/components/nodes/shared/PromptPanel', () => ({ default: function PromptPanelMock() { return null; } }));
       vi.doMock('../../src/components/nodes/shared/MediaTaskStatus', () => ({ default: function MediaTaskStatusMock() { return null; } }));
@@ -2174,7 +2175,7 @@ describe('critical canvas node interactions', () => {
       const { panel, generateImage, generateImagesBatch, persistMediaUrlToProjectData } = await setupImageQualityDialog(1, 4);
       await (panel().props.onSubmit as (prompt: string) => Promise<void>)('MJ prompt');
       expect(executeGeneration).toHaveBeenCalledOnce();
-      expect(executeGeneration).toHaveBeenCalledWith('quality-image', 'MJ prompt', undefined);
+      expect(executeGeneration).toHaveBeenCalledWith('quality-image', 'MJ prompt', undefined, undefined);
       expect(generateImage).not.toHaveBeenCalled();
       expect(generateImagesBatch).not.toHaveBeenCalled();
       expect(persistMediaUrlToProjectData).not.toHaveBeenCalled();
@@ -2298,7 +2299,7 @@ describe('critical canvas node interactions', () => {
       persistMediaUrlToProjectData.mockReturnValueOnce(saving.promise);
       const pending = (panel().props.onSubmit as () => Promise<void>)();
       await vi.waitFor(() => expect(persistMediaUrlToProjectData).toHaveBeenCalledOnce());
-      expect(registerNodePolling).toHaveBeenCalledWith('quality-image');
+      expect(registerNodePolling).toHaveBeenCalledWith('quality-image', undefined);
       expect(persistMediaUrlToProjectData).toHaveBeenCalledWith('https://example.com/result.png', 'project-a', 'ai-image', '图片', {
         mediaDownloadAccess: undefined, signal: savingController.signal,
       });

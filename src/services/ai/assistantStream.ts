@@ -10,8 +10,11 @@
 import { useAppStore } from '../../store/useAppStore';
 import { parseStream, parseNonStream } from './streamParsers';
 import type { AssistantStreamEvent } from '../../types/chat';
+import type { ChatApiMessage } from './chatApiProtocol';
 import type { ChatApiProtocol } from '../../types';
-import type { ModelExecutionProtocol, ProtocolJsonValue } from '../../types/aiTypes';
+import type { ModelExecutionProfile, ModelExecutionProtocol, ProtocolJsonValue } from '../../types/aiTypes';
+import type { PluginProtocolLease } from '../plugins/pluginProtocolPresetService';
+import { resolvePluginModelProtocol } from './pluginModelProtocol';
 import {
   findMediaModelOption,
   getConfiguredModelGroups,
@@ -54,6 +57,7 @@ interface ResolvedModelConfig {
   /** 网页问答没有原生 function calling；省略时沿用既有模型工具能力。 */
   supportsTools?: boolean;
   transport?: 'muse-webview';
+  pluginProfile?: ModelExecutionProfile;
 }
 
 /**
@@ -91,7 +95,7 @@ function resolveAssistantModelById(assistantModelId: string): ResolvedModelConfi
     const nativeTextProtocol = resolveNativeTextChatProtocol(gm.executionProfile);
     let protocol: ModelExecutionProtocol;
     try {
-      protocol = gm.executionProfile && !nativeTextProtocol
+      protocol = gm.executionProfile && gm.executionProfile.preset !== 'plugin' && !nativeTextProtocol
         ? resolveModelExecutionProfile(gm.executionProfile) ?? getModelProtocolPreset('openai-chat')
         : getModelProtocolPreset('openai-chat');
     } catch {
@@ -106,7 +110,8 @@ function resolveAssistantModelById(assistantModelId: string): ResolvedModelConfi
       modelName: gm.modelId,
       protocol,
       chatApiProtocol: nativeTextProtocol ?? resolveChatApiProtocol(provider.chatApiProtocol),
-      usesChatApiProtocol: !gm.executionProfile || !!nativeTextProtocol,
+      usesChatApiProtocol: !gm.executionProfile || !!nativeTextProtocol || gm.executionProfile.preset === 'plugin',
+      pluginProfile: gm.executionProfile?.preset === 'plugin' ? gm.executionProfile : undefined,
       supportsVision: hasVisionInputCapability(gm),
     };
   }
@@ -203,12 +208,7 @@ export type AssistantModelContent = string | Array<{
   image_url?: { url: string };
 }>;
 
-export interface AssistantModelMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool';
-  content: AssistantModelContent;
-  tool_call_id?: string;
-  tool_calls?: AssistantModelToolCall[];
-}
+export type AssistantModelMessage = ChatApiMessage;
 
 export interface AssistantToolDefinition {
   type: 'function';
@@ -325,9 +325,15 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
   if (trackAbort) useAppStore.getState().setActiveRequestAbort(controller);
 
   const tools = providedTools ?? buildAssistantTools(toolContextMessage ?? userMessage);
+  let pluginLease: PluginProtocolLease | undefined;
+  const terminalEvents: AssistantStreamEvent[] = [];
 
   try {
     controller.signal.throwIfAborted();
+    if (modelConfig.pluginProfile) {
+      pluginLease = await resolvePluginModelProtocol(modelConfig.pluginProfile, () => useAppStore.getState().installedPlugins, controller);
+      modelConfig.chatApiProtocol = pluginLease.adapter;
+    }
     if (modelConfig.transport === 'muse-webview' && tools.length > 0) {
       throw new Error('Muse 当前仅支持普通文本/图片问答，不支持工具调用；请选择支持工具的模型执行工具');
     }
@@ -391,9 +397,13 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
             toolChoice: tools.length > 0 ? 'auto' : undefined,
           },
         });
+
+    await pluginLease?.assertCurrent();
+    controller.signal.throwIfAborted();
     const response = await (options.sensitive || usesVolcengineTos
       ? corsSafeFetch(builtRequest.url, builtRequest.init, { sensitive: true })
       : corsSafeFetch(builtRequest.url, builtRequest.init));
+
     const responseProtocol = modelConfig.usesChatApiProtocol
       ? modelConfig.chatApiProtocol
       : 'openai-compatible';
@@ -402,12 +412,21 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
     const parserOptions = { signal: controller.signal, protocol: responseProtocol,
       onEvent: (event: AssistantStreamEvent) => {
         controller.signal.throwIfAborted();
+        pluginLease?.assertActive();
+        // 工具提议及终态等到原生身份复核后才交付，避免停用后的迟到工具执行。
+        if (pluginLease && event.type !== 'text.delta' && event.type !== 'reasoning.delta' && event.type !== 'error') {
+          terminalEvents.push(event);
+          return;
+        }
         onEvent(event);
       } };
     const result = nonStream
       ? await parseNonStream(response, parserOptions)
       : await parseStream(response, { ...parserOptions, requestId, modelId: modelConfig.modelName });
     controller.signal.throwIfAborted();
+    await pluginLease?.assertCurrent();
+    controller.signal.throwIfAborted();
+    for (const event of terminalEvents) onEvent(event);
     return result;
   } catch (error: unknown) {
     if (controller.signal.aborted || (error as { name?: string } | null)?.name === 'AbortError') {
@@ -422,6 +441,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
     onEvent({ type: 'done', finishReason: 'error' });
     throw safeError;
   } finally {
+    pluginLease?.release();
     signal?.removeEventListener('abort', cancelFromCaller);
     const currentCtrl = useAppStore.getState().activeRequestAbort;
     if (currentCtrl === controller) {

@@ -37,26 +37,34 @@ function targetKey(target: WorkbenchArticleTarget): string {
   return `${target.kind}:${id}`;
 }
 
-export function createWorkbenchArticleSession(options: {
+interface WorkbenchArticleAccess {
   readTarget: (target: WorkbenchArticleTarget) => WorkbenchArticleCapture | Promise<WorkbenchArticleCapture>;
   /** 调用方仍须在真正写入草稿的同步位置复核目标与版本。 */
   applyTarget: (captured: WorkbenchArticleCapture, text: string) => void | Promise<void>;
   getExecution?: () => { projectId: string; conversationId?: string; selection: AssistantExecutionSelection;
     mode: AgentMode; profile: AgentTeamProfile; modelId?: string };
+}
+
+export function createWorkbenchArticleSession(options?: WorkbenchArticleAccess & {
   onChange?: () => void;
 }) {
   if (isTauriEnv() && getCurrentWindow().label !== 'main') throw new ArticleError('请通过主窗口修改文章');
+  let targetAccess = options;
+  const access = () => {
+    if (!targetAccess) throw new ArticleError('当前没有可编辑的文章');
+    return targetAccess;
+  };
   const listeners = new Set<() => void>();
   let disposed = false;
   let active: { kind: 'generate' | 'apply'; controller: AbortController; label?: string } | undefined;
   let candidate: { captured: WorkbenchArticleCapture; value: WorkbenchArticleCandidate } | undefined;
-  const notify = () => { if (!disposed) { options.onChange?.(); listeners.forEach((listener) => listener()); } };
+  const notify = () => { if (!disposed) { options?.onChange?.(); listeners.forEach((listener) => listener()); } };
   const live = () => { if (disposed) throw new ArticleError('文章编辑会话已关闭'); };
   const idle = () => { live(); if (active) throw new ArticleError('请先等待当前文章操作完成，或停止生成'); };
   const summary = (): WorkbenchArticleSummary => ({ generating: active?.kind === 'generate',
     hasCandidate: !!candidate, targetLabel: active?.label ?? candidate?.value.targetLabel });
   const current = async (captured: WorkbenchArticleCapture) => {
-    const latest = await options.readTarget(captured.target);
+    const latest = await access().readTarget(captured.target);
     live();
     if (latest.projectId !== captured.projectId || latest.key !== captured.key || latest.version !== captured.version
       || latest.content !== captured.content || targetKey(latest.target) !== targetKey(captured.target)) {
@@ -118,8 +126,9 @@ export function createWorkbenchArticleSession(options: {
     let incomplete = false;
     let outputTooLong = false;
     try {
-      const execution = options.getExecution ? structuredClone(options.getExecution()) : undefined;
-      const source = await options.readTarget({ ...target });
+      const targetAccess = access();
+      const execution = targetAccess.getExecution ? structuredClone(targetAccess.getExecution()) : undefined;
+      const source = await targetAccess.readTarget({ ...target });
       check(operation);
       if (targetKey(source.target) !== targetKey(target) || typeof source.content !== 'string' || source.content.includes('\0')) {
         throw new ArticleError('文章内容无效，请重新打开文章');
@@ -215,7 +224,7 @@ export function createWorkbenchArticleSession(options: {
     try {
       await current(capturedCandidate.captured);
       check(operation);
-      await options.applyTarget(capturedCandidate.captured, capturedCandidate.value.text);
+      await access().applyTarget(capturedCandidate.captured, capturedCandidate.value.text);
       check(operation);
       candidate = undefined; notify();
       return true;
@@ -245,6 +254,7 @@ export function createWorkbenchArticleSession(options: {
   }
 
   return { handle, summary, isBusy: () => !!active,
+    setTargetAccess(next: WorkbenchArticleAccess) { targetAccess = next; },
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     cancel,
     dispose() { disposed = true; active?.controller.abort(); candidate = undefined; listeners.clear(); },

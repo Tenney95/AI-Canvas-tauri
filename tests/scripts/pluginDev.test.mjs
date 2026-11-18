@@ -10,6 +10,18 @@ import { describe, it, expect } from 'vitest';
 import { initPlugin, buildPlugin, checkPlugin } from '../../scripts/plugin-dev.mjs';
 
 describe('plugin developer CLI', () => {
+  it('builds and validates a protocol-only template with portable contribution types', async () => {
+    const temporary = await mkdtemp(join(tmpdir(), 'ai-canvas-protocol-sdk-'));
+    try {
+      const root = join(temporary, 'plugin');
+      const manifest = await initPlugin(root, 'protocol');
+      expect(manifest.permissions).toEqual([]);
+      expect(manifest.contributes.nodeTools).toEqual([]);
+      expect(manifest.contributes.modelProtocols[0].adapter).toBe('openai-responses');
+      expect(await readFile(join(root, 'host.d.ts'), 'utf8')).toContain('interface PluginModelProtocolManifest');
+      await expect(checkPlugin(root)).resolves.toMatchObject({ requiredCapabilities: ['model.protocolPresets'] });
+    } finally { await rm(temporary, { recursive: true, force: true }); }
+  }, 25000);
   // 这条集成用例会多次检查类型和打包，给 CI 冷启动留足时间。
   it('generates a portable typed plugin, bundles imports, updates hashes and rejects invalid packages without executing code', async () => {
     const temporary = await mkdtemp(join(tmpdir(), 'ai-canvas-plugin-sdk-'));

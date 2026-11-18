@@ -10,9 +10,14 @@ import { classifyAffectedChanges, isVersionOnlyReleaseChange } from '../../scrip
 const script = fileURLToPath(new URL('../../scripts/ci-affected.mjs', import.meta.url));
 const dependencies = fileURLToPath(new URL('../../node_modules', import.meta.url));
 
+function isolatedEnvironment() {
+  return Object.fromEntries(Object.entries(process.env)
+    .filter(([key]) => !/^(?:GIT_|VITEST(?:_|$)|npm_execpath$)/i.test(key)));
+}
+
 async function withTemporaryRepository(useRepository) {
   const root = await mkdtemp(join(tmpdir(), 'ai-canvas-ci-affected-'));
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:GIT_|VITEST(?:_|$))/i.test(key)));
+  const env = isolatedEnvironment();
   const git = (...args) => execFileSync('git', ['-c', 'core.hooksPath=disabled-hooks', ...args], { cwd: root, env });
   const write = async (path, content) => {
     const target = join(root, path);
@@ -381,7 +386,7 @@ describe('冻结发布检查计划', () => {
       await write('npm-trap.mjs', "import { appendFileSync } from 'node:fs'; appendFileSync('npm-calls.txt', process.argv.slice(2).join(' ') + '\\n');\n");
       const frozen = { ...empty, schemaVersion: 1, release: true, mode: 'affected', typecheck: true, base, sha, testFiles: [] };
       await write('frozen-plan.json', JSON.stringify({ ...frozen, sha: identity.sha }));
-      const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:GIT_|VITEST(?:_|$))/i.test(key)));
+      const env = isolatedEnvironment();
       env.npm_execpath = npmTrap;
       const execute = () => execFileSync(process.execPath, [script, '--execute-plan', 'frozen-plan.json', '--build'],
         { cwd: root, env, stdio: 'pipe', encoding: 'utf8' });
@@ -421,7 +426,7 @@ describe('冻结发布检查计划', () => {
       const frozen = { ...empty, schemaVersion: 1, release: true, mode: 'affected', typecheck: true, base, sha,
         explicitTests: [test], testFiles: [test] };
       await write('frozen-plan.json', JSON.stringify(frozen));
-      const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:GIT_|VITEST(?:_|$))/i.test(key)));
+      const env = isolatedEnvironment();
       env.npm_execpath = join(root, 'npm-trap.mjs');
       const execute = () => execFileSync(process.execPath, [script, '--execute-plan', 'frozen-plan.json', '--build'],
         { cwd: root, env, stdio: 'pipe', encoding: 'utf8' });

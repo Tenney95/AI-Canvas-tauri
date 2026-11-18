@@ -14,6 +14,7 @@
  */
 import { useAppStore } from '../../store/useAppStore';
 import { isRemoteMediaUrl } from '../../utils/mediaUrl';
+import { t } from '../../i18n';
 import { getEnabledProjectStyleReferenceUrl } from '../projectSettingsService';
 import { DEFAULT_BASE_URLS } from '../../constants/api';
 import { mapImageDimensions } from '../aiDimensions';
@@ -57,6 +58,7 @@ import { isNativeCharacterImageSubmissionGuard, runNativeCharacterImageTask } fr
 import { isCharacterImageTaskContext } from '../characterImageTaskContext';
 import { assertImageOutputInput, resolveConfiguredImageOutput, resolveImageOutputCapability } from './imageOutputParameters';
 import { isOpenAIPaintMaskContract } from './characterImageMask';
+import { assertImagePromptLength, imagePromptCharacterCount, imagePromptCharacterLimit, ImagePromptOverflowError } from './imagePromptLimits';
 
 const RELAYON_FILE_IMAGE_BUDGET = {
   maxImages: RELAYON_IMAGE_REFERENCE_LIMIT,
@@ -258,21 +260,56 @@ export function supportsCharacterImageModel(
   return characterImageChannel(model, provider, config) !== 'midjourney' || referenceCount <= 1;
 }
 
+export async function inspectImagePromptLength(
+  params: AIImageGenParams, inputCharacters = imagePromptCharacterCount(params.prompt),
+): Promise<ImagePromptOverflowError | undefined> {
+  if (params.workflowId) return;
+  const generalModel = params.provider === 'general' ? resolveGeneralModel(params.model) : undefined;
+  const modelId = generalModel?.modelId ?? extractModelName(params.model, params.provider);
+  const connectionId = generalModel?.providerConfigId ?? params.provider;
+  const state = useAppStore.getState();
+  const definition = getProviderDefinition(connectionId, state.config.providers[connectionId]);
+  const limit = imagePromptCharacterLimit(modelId, generalModel?.executionProfile?.preset, definition?.id);
+  if (limit === undefined) return;
+  const prepared = await runImageBatch(params, 1, undefined, undefined, true);
+  if (prepared.limit !== undefined && imagePromptCharacterCount(prepared.prompt) > prepared.limit) {
+    return new ImagePromptOverflowError(prepared.modelName, prepared.prompt, prepared.limit, inputCharacters);
+  }
+}
+
 export async function generateImagesBatch(
   params: AIImageGenParams,
   count: number,
   signal?: AbortSignal,
   beforeSubmit?: () => void | Promise<void>,
 ): Promise<BatchImageResult> {
+  return runImageBatch(params, count, signal, beforeSubmit);
+}
+
+interface PreparedImagePrompt {
+  prompt: string;
+  modelName: string;
+  limit: number | undefined;
+}
+
+async function runImageBatch(params: AIImageGenParams, count: number, signal: AbortSignal | undefined,
+  beforeSubmit: (() => void | Promise<void>) | undefined, inspectOnly: true): Promise<PreparedImagePrompt>;
+async function runImageBatch(params: AIImageGenParams, count: number, signal?: AbortSignal,
+  beforeSubmit?: () => void | Promise<void>, inspectOnly?: false): Promise<BatchImageResult>;
+async function runImageBatch(
+  params: AIImageGenParams, count: number, signal?: AbortSignal,
+  beforeSubmit?: () => void | Promise<void>, inspectOnly = false,
+): Promise<BatchImageResult | PreparedImagePrompt> {
   const requestedCount = Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(count)));
   const { model, provider } = params;
+
   const characterWorkbench = params.characterWorkbench;
   const characterContext = isCharacterImageTaskContext(beforeSubmit);
   const characterGuard = isNativeCharacterImageSubmissionGuard(beforeSubmit) ? beforeSubmit : undefined;
   if (characterWorkbench && (!characterContext || params.nodeId)) {
     throw new Error('角色图片生成缺少受信角色任务目的地');
   }
-  if (useAppStore.getState().projectExecutionContext?.modelGeneration === 1 && characterWorkbench !== 'global') {
+  if (!inspectOnly && useAppStore.getState().projectExecutionContext?.modelGeneration === 1 && characterWorkbench !== 'global') {
     if (!isNativeVideoSubmissionGuard(beforeSubmit) && !(characterWorkbench && characterContext)) {
       throw new Error('此原生图片模型或批量合同没有可耐久续查的完整回执，未提交请求');
     }
@@ -449,12 +486,21 @@ export async function generateImagesBatch(
     mergeMediaReferences(runninghubMedia.references, collectConnectedReferenceMedia(params.nodeId).references.map(canonicalImageReference)),
   ) : undefined;
   if (referenceMedia) allImageUrls = getMediaReferenceUrls(referenceMedia, 'image', 'local');
-  const prompt = characterWorkbench ? resolvedPrompt : enrichPromptWithReferenceHints(
+  let prompt = characterWorkbench ? resolvedPrompt : enrichPromptWithReferenceHints(
     runninghubMedia && referenceMedia ? compileVideoReferencePrompt(runninghubMedia, referenceMedia, { target: 'local' }) : resolvedPrompt,
     allImageUrls.length,
     styleAsFirst,
     aspectRatio,
   );
+  const limit = params.workflowId ? undefined : imagePromptCharacterLimit(modelName, executionProfile?.preset, providerDefinition?.id);
+  if (inspectOnly) return { prompt, modelName, limit };
+  if (!params.workflowId) {
+    if (limit !== undefined && params.imagePromptResolution) {
+      if (params.imagePromptResolution.original !== prompt) throw new Error(t('画布或生成输入已变化，请重新生成'));
+      prompt = params.imagePromptResolution.replacement;
+    }
+    assertImagePromptLength(modelName, prompt, limit, imagePromptCharacterCount(params.prompt));
+  }
   // 原生图片按显式模型能力校验，不用通用“多数模型前 10 项”的提示猜测其上限。
   if (!usesGoogleImageParts) warnIfTooManyReferences({ image: allImageUrls.length });
 

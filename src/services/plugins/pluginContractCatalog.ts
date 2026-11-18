@@ -2,6 +2,7 @@
 import type { InstalledPlugin, PluginContractEntry, PluginInspectInput, PluginNodeHostEffect } from '../../types/plugin';
 import { PLUGIN_HOST } from './pluginHost';
 import { resolvePluginDependencies } from './pluginDependencyService';
+import { parsePluginModelProtocols } from './pluginManifest';
 
 export const PLUGIN_INSPECT_SCHEMA = {
   type: 'object' as const, additionalProperties: false,
@@ -59,6 +60,15 @@ const PUBLIC_CONTRACTS: readonly PluginContractEntry[] = [
     limits: { manifestBytes: 65536, sourceBytes: 524288, dependencies: 16 },
     dependencies: { fields: ['pluginId', 'minVersion', 'optional'], capability: 'plugin.dependencies', apiVersion: 2 },
   } },
+  { id: 'manifest.modelProtocols', section: 'manifest', summary: '模型协议预设贡献（宿主原生适配器）', contract: {
+    apiVersion: 2, capability: 'model.protocolPresets', location: 'contributes.modelProtocols', maxItems: 16,
+    fields: ['id', 'name', 'category', 'adapter'], category: ['text'],
+    adapters: ['openai-compatible', 'openai-responses', 'anthropic-compatible', 'gemini-native'],
+    reference: { preset: 'plugin', plugin: { pluginId: '插件 ID', presetId: '贡献 ID' } },
+    package: '允许仅贡献预设，nodeTools 可为空；保留 main.js 入口，选择预设不执行脚本',
+    authority: '原生活动 revision 的核验快照；请求前和结果交付前重验；更新、停用、卸载及修复撤销调用',
+    credentials: '宿主从模型连接注入，不向插件传递凭据、Base URL 或消息',
+  } },
   { id: 'sdk.security', section: 'sdk', summary: '执行与宿主 effect 边界', contract: {
     identity: ['pluginId', 'sourceDigest', 'revisionDigest', 'toolId', 'invocationId'],
     permissions: ['node.read', 'node.write', 'models.read', 'models.invoke', 'prompt.references.read', 'network.request',
@@ -83,9 +93,12 @@ export function inspectPluginContract(input: PluginInspectInput = {}, plugins: r
     || !Number.isSafeInteger(limit) || limit < 1 || limit > 8) throw new Error('插件合同查询参数无效');
   const installed: PluginContractEntry[] = plugins.filter((plugin) => /^[a-z0-9](?:[a-z0-9._-]{1,126}[a-z0-9])?$/u.test(plugin.id)).slice(0, 512).map((plugin) => {
     const dependencies = resolvePluginDependencies(plugins, plugin.id);
+    let modelProtocols: ReturnType<typeof parsePluginModelProtocols> = [];
+    try { modelProtocols = parsePluginModelProtocols(plugin.manifest.contributes.modelProtocols); } catch { /* 损坏声明不进入公开摘要。 */ }
     return { id: plugin.id, section: 'plugins', summary: `${plugin.id} · ${plugin.enabled ? '配置启用' : '配置停用'}`, contract: {
       id: plugin.id, version: /^[\d.]{1,32}$/u.test(plugin.manifest.version) ? plugin.manifest.version : 'custom',
       runtime: plugin.manifest.runtime, enabled: plugin.enabled,
+      modelProtocols: modelProtocols.map(({ id, category, adapter }) => ({ id, category, adapter })),
       dependenciesReady: dependencies.ready, reasons: dependencies.ready ? [] : ['必需依赖未满足或声明存在循环'],
       nativeHealth: '需在插件设置中刷新原生健康状态，配置启用不等于实际生效',
     } };

@@ -64,6 +64,7 @@ const ChatPanel = lazy(() => import('./components/chat/ChatPanel'));
 const PresetManager = lazy(() => import('./components/nodes/shared/PresetManager'));
 const PresetRunnerDialog = lazy(() => import('./components/nodes/shared/PresetRunnerDialog'));
 const ReversePromptDialog = lazy(() => import('./components/nodes/shared/ReversePromptDialog'));
+const ImagePromptOverflowDialog = lazy(() => import('./components/nodes/shared/ImagePromptOverflowDialog'));
 const DirectorDeskRuntimeManager = lazy(() => import('./components/director/DirectorDeskRuntimeManager'));
 const FreeDistributionNoticeDialog = lazy(() => import('./components/FreeDistributionNoticeDialog'));
 const OnboardingDialog = lazy(() => import('./components/OnboardingDialog'));
@@ -694,6 +695,7 @@ export default function App() {
             {mountReversePrompt && <ReversePromptDialog />}
           </Suspense>
         </LazyLoadBoundary>
+        <Suspense fallback={null}><ImagePromptOverflowDialog /></Suspense>
         <Toast />
       </div>
       {/* Sidebar — outside the overflow-hidden container so it's not clipped */}

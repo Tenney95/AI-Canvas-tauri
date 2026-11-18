@@ -1,7 +1,9 @@
 /** 工作台文章改写只操作内存草稿；正文与候选不进入窗口摘要。 */
 export type WorkbenchArticleTarget =
-  | { kind: 'outline' | 'script'; episodeId: string }
-  | { kind: 'original' | 'outline-document'; documentId: string };
+  | { kind: 'outline'; episodeId: string }
+  | { kind: 'script'; episodeId: string }
+  | { kind: 'original'; documentId: string }
+  | { kind: 'outline-document'; documentId: string };
 
 export interface WorkbenchArticleCapture {
   target: WorkbenchArticleTarget;
