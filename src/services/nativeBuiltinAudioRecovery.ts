@@ -6,8 +6,8 @@ import type { NativeMediaLocalOutput } from '../types/media';
 import { APIMART_BASE_URL } from '../constants/api';
 import { useAppStore } from '../store/useAppStore';
 import { extractModelName } from './ai/helpers';
-import { extractFlowMusicLyrics, extractFlowMusicTracks, fetchFlowMusicTask, generateApimartSpeech, getApimartAudioCapability,
-  submitFlowMusicGeneration, submitFlowMusicLyrics, submitSunoGeneration, type FlowMusicTaskState } from './ai/apimartAudio';
+import { extractFlowMusicLyrics, extractFlowMusicTracks, generateApimartSpeech, getApimartAudioCapability,
+  queryApimartMusicTask, submitFlowMusicGeneration, submitFlowMusicLyrics, submitSunoGeneration } from './ai/apimartAudio';
 import { getHttpResponseError } from './ai/httpUtils';
 import { createMediaDownloadAccess } from './ai/mediaDownloadAccess';
 import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from './projectExecutionContext';
@@ -24,7 +24,7 @@ import { sha256BytesHex } from './mediaDataUrl';
 import { projectModelSourceToken } from './projectModelComparisonMaterial';
 import { captureNativeMediaLocalResult } from './nativeMediaLocalResult';
 import { persistMediaUrlToProjectData } from './fileService';
-import { pollTask, PollTaskFailedError } from './pollTask';
+import { PollTaskFailedError } from './pollTask';
 import { VIDEO_POLL_MAX_DURATION_MS } from './pollManager';
 import { readNativeMediaMessageInput, readNativeMediaOrigin } from './nativeMediaOrigin';
 import { nativeMediaInputMaterial } from './nativeMediaInput';
@@ -203,11 +203,9 @@ export async function resumeNativeBuiltinAudioTask(operationId: string, external
   externalSignal?.addEventListener('abort', abort, { once: true }); if (externalSignal?.aborted) controller.abort();
   const unsubscribe = useAppStore.subscribe(() => { if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) controller.abort(); });
   const current = () => { controller.signal.throwIfAborted(); assertScope(context, record!); };
-  const wait = (taskId: string) => pollTask<FlowMusicTaskState, FlowMusicTaskState>({
-    fetchState: (signal) => fetchFlowMusicTask(selected.apiKey, selected.baseUrl, taskId, signal),
-    isComplete: (task) => task.status === 'completed' ? task : null,
-    isFailed: (task) => ['failed', 'cancelled', 'error'].includes(task.status ?? '') ? 'APIMart 已确认原音乐阶段失败' : null,
-    interval: 3000, maxDuration: VIDEO_POLL_MAX_DURATION_MS, signal: controller.signal, onFetchError: 'throw',
+  const wait = (taskId: string) => queryApimartMusicTask(selected.apiKey, selected.baseUrl, taskId, {
+    maxDuration: VIDEO_POLL_MAX_DURATION_MS, signal: controller.signal,
+    failureMessage: () => 'APIMart 已确认原音乐阶段失败',
   });
   const submit = async (name: 'lyrics' | 'music', generated?: { title: string; lyrics: string }) => {
     const stage = state[name]; if (stage.state === 'unknown') throw new Error('原音频阶段提交未知，请核对平台，不能重投');

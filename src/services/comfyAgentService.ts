@@ -14,7 +14,7 @@ import type {
 import { isTauriEnv, persistMediaUrlToProjectData } from './fileService';
 import { comfyFetch, pollComfyHistory } from './comfyPolling';
 import { maybeAutoReleaseComfyMemory } from './comfyMemory';
-import { resolveComfyOutputUrl, type ComfyOutputKind } from './comfyOutputs';
+import { COMFY_AUDIO_OUTPUT_KINDS, resolveComfyOutputUrl, type ComfyOutputKind } from './comfyOutputs';
 import { formatComfyPromptError } from './comfyWorkflowService';
 import { extractComfyUIIONodes, sanitizeWorkflowFileName } from './comfyUIWindowService';
 import { assertComfyResponse } from './comfyQuery';
@@ -449,7 +449,7 @@ async function cancelPrompt(baseUrl: string, promptId: string): Promise<void> {
 
 function outputKinds(kind: MediaKind): ComfyOutputKind[] {
   if (kind === 'video') return ['video'];
-  if (kind === 'audio') return ['audio', 'video', 'image'];
+  if (kind === 'audio') return [...COMFY_AUDIO_OUTPUT_KINDS, 'image'];
   return ['image'];
 }
 

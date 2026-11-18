@@ -1241,6 +1241,26 @@ describe('legacy general media requests', () => {
     ]);
   });
 
+  it('keeps the signed compatible audio URL on the first query of the submitted task', async () => {
+    const baseUrl = 'https://audio-gateway.example/v1';
+    const taskId = 'original-audio-result';
+    const signedUrl = 'https://cdn.example/track.mp3?signature=alpha,beta';
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ data: [{ task_id: taskId }] }))
+      .mockResolvedValueOnce(jsonResponse({ data: { status: 'completed', result: {
+        audios: [{ url: [signedUrl, 'https://cdn.example/another.mp3'] }],
+      } } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await executeGeneralAsyncTask('fixture-key', baseUrl, 'audio-model', 'prompt', 'audios', 'custom', 'audio-node');
+
+    expect(result.url).toBe(signedUrl);
+    expect(result.taskReceipt).toMatchObject({ nodeId: 'audio-node', taskId });
+    expect(fetchMock.mock.calls.map(([request, init]) => [String(request), init?.method ?? 'GET'])).toEqual([
+      [`${baseUrl}/audio/generations`, 'POST'],
+      [`${baseUrl}/tasks/${taskId}?language=zh`, 'GET'],
+    ]);
+  });
+
   it('retains a known video task on query HTTP 504 without sending another POST', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ task_id: 'slow-task' }))
       .mockResolvedValueOnce(new Response('', { status: 504 }));

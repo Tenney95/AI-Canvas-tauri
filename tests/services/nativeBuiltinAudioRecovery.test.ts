@@ -28,9 +28,13 @@ vi.mock('../../src/services/nativeVideoSubmission', () => ({ isNativeVideoSubmis
 vi.mock('../../src/services/nativeMediaLocalResult', () => ({ readNativeMediaLocalResult: async () => {}, captureNativeMediaLocalResult: vi.fn() }));
 vi.mock('../../src/services/nativeVolcengineRecovery', () => ({ resumeNativeVolcengineTask: driver.deliver }));
 vi.mock('../../src/services/nativeMediaOriginPersistence', () => ({ persistNativeMediaOrigin: driver.originPersist }));
+vi.mock('../../src/services/ai/httpTransport', async (original) => ({
+  ...await original<typeof import('../../src/services/ai/httpTransport')>(),
+  corsSafeFetch: async (url: string, init?: RequestInit) => Response.json({ data: await driver.fetchTask(url, init) }),
+}));
 vi.mock('../../src/services/ai/apimartAudio', async (original) => ({
   ...await original<typeof import('../../src/services/ai/apimartAudio')>(), generateApimartSpeech: driver.speech,
-  submitFlowMusicLyrics: driver.lyricsSubmit, submitFlowMusicGeneration: driver.musicSubmit, fetchFlowMusicTask: driver.fetchTask,
+  submitFlowMusicLyrics: driver.lyricsSubmit, submitFlowMusicGeneration: driver.musicSubmit,
 }));
 
 import { generateNativeBuiltinAudio, resumeNativeBuiltinAudioTask } from '../../src/services/nativeBuiltinAudioRecovery';
@@ -151,4 +155,6 @@ it('纯对话歌词已完成后重启，项目输入变化不能仅凭消息归�
   await expect(resumeNativeBuiltinAudioTask(record.operationId)).rejects.toThrow('下一阶段尚未提交');
   await expect(resumeNativeBuiltinAudioTask(record.operationId, undefined, undefined, { allowUnstartedStage: true })).rejects.toThrow('项目设置、引用或模型输入已变化');
   expect(driver.musicPosts).toBe(0); expect(driver.lyricsSubmit).toHaveBeenCalledOnce(); expect(driver.fetchTask).toHaveBeenCalledOnce();
+  expect(driver.fetchTask.mock.calls.map(([url, init]) => [url, init?.method ?? 'GET']))
+    .toEqual([['https://apimart.example/v1/music/tasks/original-lyrics-task?language=zh', 'GET']]);
 });

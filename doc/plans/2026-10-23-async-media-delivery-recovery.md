@@ -48,3 +48,19 @@
 ## 回滚
 
 撤销本批代码即可回滚；新增任务字段为可选兼容字段，不清空原有记录，不迁移数据库。保留其他任务的未提交改动。
+
+## 音频结果查询收口
+
+2026-11-18 已接入共享查询，待用户验收。本批未运行自动化检查或真实厂商调用。
+
+- 兼容 `/tasks` 的首次取回、旧回执续查及原生恢复均使用 `queryCompatibleMediaTask` 查询原 ID。音频签名地址保留字面逗号。交互入口沿用首条产物，原生恢复验证并保存有序的完整候选。查询 408／504 保留原任务以便续查。
+- 旧 APIMart 音频回执复用 APIMart 任务请求和媒体解析，兼容原 `audios` 及旧的 `images` 字段。FlowMusic 和 Suno 的 `/music/tasks` 查询共用终态判断并识别取消。歌词查询只读取原阶段，下一阶段仍需现有授权的生成入口。
+- ComfyUI 共用音频优先、视频兜底的候选类型顺序。动态工作流保留其末位图片兜底，新旧调用方沿用各自的候选数量和保存归属。三部分可独立回滚，沿用原回执结构。
+
+在配置可模拟异步结果的 Tauri 测试项目中，分别验证兼容 `/tasks` 音频、原 APIMart 音频回执、FlowMusic 与 Suno。先检查首次取回，再让查询超时或项目目录暂不可写，恢复后点击「继续查询」。确认同一任务 ID、一次生成提交，且带逗号的签名地址可保存。检查歌词续查只回填歌词、取消结果正确结束，以及 ComfyUI 同时返回多个音轨和视频时按原目标交付。
+
+在仓库根目录执行定向模拟验证：
+
+```powershell
+npx vitest run tests/services/apimartGen.test.ts tests/services/pollManager.test.ts tests/services/nativeGeneralAsyncTask.test.ts tests/services/apimartMusic.test.ts tests/services/nativeBuiltinAudioRecovery.test.ts tests/services/mediaProviderRegistry.test.ts tests/services/comfyOutputs.test.ts tests/services/comfyTaskRecovery.test.ts
+```

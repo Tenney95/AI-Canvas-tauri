@@ -25,6 +25,9 @@ export type ComfyOutputs = Record<string, ComfyOutputNode>;
 
 export type ComfyOutputKind = 'image' | 'video' | 'audio';
 
+/** 音频工作流优先使用独立音轨，兼容以视频容器交付的结果。 */
+export const COMFY_AUDIO_OUTPUT_KINDS = ['audio', 'video'] as const;
+
 export interface ComfyTextOutput {
   text: string;
 }
@@ -170,7 +173,7 @@ function filesFromNode(node: ComfyOutputNode, kind: ComfyOutputKind, storageType
  */
 export function findComfyOutputFile(
   outputs: ComfyOutputs,
-  kinds: ComfyOutputKind[],
+  kinds: readonly ComfyOutputKind[],
 ): ComfyOutputFile | null {
   if (!outputs || typeof outputs !== 'object' || Array.isArray(outputs)) return null;
   for (const kind of kinds) {
@@ -187,7 +190,7 @@ export function findComfyOutputFile(
 }
 
 /** 完整候选沿用同一类型与正式输出优先规则，不截取首个文件作为整批结果。 */
-export function findComfyOutputFiles(outputs: ComfyOutputs, kinds: ComfyOutputKind[]): ComfyOutputFile[] {
+export function findComfyOutputFiles(outputs: ComfyOutputs, kinds: readonly ComfyOutputKind[]): ComfyOutputFile[] {
   if (!outputs || typeof outputs !== 'object' || Array.isArray(outputs)) return [];
   for (const kind of kinds) for (const storageType of ['output', 'legacy', 'any'] as const) {
     const unique = new Map<string, ComfyOutputFile>();
@@ -213,7 +216,7 @@ export function buildComfyFileUrl(baseUrl: string, file: ComfyOutputFile): strin
 export function resolveComfyOutputUrl(
   baseUrl: string,
   outputs: ComfyOutputs,
-  kinds: ComfyOutputKind[],
+  kinds: readonly ComfyOutputKind[],
 ): { url: string; file: ComfyOutputFile } | null {
   const file = findComfyOutputFile(outputs, kinds);
   return file ? { url: buildComfyFileUrl(baseUrl, file), file } : null;

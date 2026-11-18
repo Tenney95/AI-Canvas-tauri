@@ -4,7 +4,7 @@ import type { CanvasContext } from '../types/project';
 import { useAppStore } from '../store/useAppStore';
 import { executeCharacterImageTask, isCharacterImageTaskContext } from './characterImageTaskContext';
 import { resolveGeneralModelConnection } from './ai/helpers';
-import { queryCompatibleImageTask, queryCompatibleVideoTask, readAsyncMediaResultUrls as nativeGeneralTaskUrls, type AsyncMediaResultField as ResultField } from './ai/asyncMediaResult';
+import { queryCompatibleMediaTask, readAsyncMediaResultUrls as nativeGeneralTaskUrls, type AsyncMediaResultField as ResultField } from './ai/asyncMediaResult';
 import { corsSafeFetch } from './ai/httpTransport';
 import { classifyHttpResponseFailure, getHttpResponseError, HttpResponseError } from './ai/httpUtils';
 import { throwIfDefinitiveModelResponseFailure } from './ai/modelProtocolHttp';
@@ -19,7 +19,7 @@ import { captureNativeMediaLocalResult } from './nativeMediaLocalResult';
 import { persistMediaUrlToProjectData } from './fileService';
 import { sha256BytesHex } from './mediaDataUrl';
 import { projectModelSourceToken } from './projectModelComparisonMaterial';
-import { pollTask, PollTaskFailedError, PollTimeoutError } from './pollTask';
+import { PollTaskFailedError } from './pollTask';
 import { VIDEO_POLL_MAX_DURATION_MS } from './pollManager';
 
 export const NATIVE_GENERAL_ASYNC_KIND = 'general-async-v1';
@@ -182,30 +182,9 @@ export async function resumeNativeGeneralAsyncTask(operationId: string, signal?:
       current();
       let values: string[];
       try {
-        const queryOptions = { maxDuration: VIDEO_POLL_MAX_DURATION_MS, signal: controller.signal };
-        if (field === 'images') {
-          values = await queryCompatibleImageTask(selected.apiKey, selected.baseUrl, taskId, queryOptions);
-        } else if (field === 'videos') {
-          values = await queryCompatibleVideoTask(selected.apiKey, selected.baseUrl, taskId, queryOptions);
-        } else {
-          values = await pollTask<Record<string, unknown>, string[]>({
-            fetchState: async (querySignal) => {
-              const response = await corsSafeFetch(`${selected.baseUrl.replace(/\/+$/, '')}/tasks/${encodeURIComponent(taskId)}?language=zh`, {
-                headers: { Authorization: `Bearer ${selected.apiKey}` }, signal: querySignal,
-              });
-              if ([408, 504].includes(response.status)) throw new PollTimeoutError();
-              if (!response.ok) throw new Error(`原通用查询失败（HTTP ${response.status}）`);
-              return await response.json() as Record<string, unknown>;
-            },
-            isComplete: (raw) => { const task = recordObject(raw.data) ? raw.data : raw;
-              if (task.status !== 'completed') return null;
-              const values = nativeGeneralTaskUrls(recordObject(task.result) ? task.result : raw, field);
-              if (!values.length) throw new Error('原通用任务完成但没有完整产物'); return values; },
-            isFailed: (raw) => { const task = recordObject(raw.data) ? raw.data : raw;
-              return ['failed', 'error', 'cancelled'].includes(String(task.status)) ? '服务商已确认原通用任务失败' : null; },
-            interval: 3000, onFetchError: 'throw', ...queryOptions,
-          });
-        }
+        values = await queryCompatibleMediaTask(selected.apiKey, selected.baseUrl, taskId, field, {
+          maxDuration: VIDEO_POLL_MAX_DURATION_MS, signal: controller.signal,
+        });
       } catch (error) {
         if (error instanceof PollTaskFailedError) { failedTasks++; continue; }
         throw error;

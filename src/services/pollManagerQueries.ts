@@ -1,64 +1,27 @@
 /** 旧媒体任务恢复使用的查询与结果解析；任务状态仍由 pollManager 管理。 */
-import type { NodeType } from '../types';
-import { splitCommaSeparatedUrls } from './ai/helpers';
+import { fetchApimartTask, type ApimartTaskResult } from './ai/apimartImageResult';
+import { queryAsyncMediaResult, readAsyncMediaResultUrls } from './ai/asyncMediaResult';
 import { corsSafeFetch } from './ai/httpTransport';
 import { parseRunningHubModelOutputs, readRunningHubModelStatus } from './ai/providers/runninghubModelResult';
-import { pollTask, PollTimeoutError } from './pollTask';
+import { pollTask } from './pollTask';
 
-export interface ApimartTaskResult<TResult = Record<string, unknown>> {
-  code: number;
-  status?: string;
-  progress?: number;
-  result?: TResult;
-}
-
-export async function fetchApimartTask(
-  apiKey: string,
-  baseUrl: string,
-  taskId: string,
-  signal?: AbortSignal,
-  timeoutAsPause = false,
-): Promise<ApimartTaskResult> {
-  const resp = await corsSafeFetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
-    headers: { Authorization: `Bearer ${apiKey}` },
+/** 旧 APIMart 音频回执沿用 /tasks 和历史结果字段。 */
+export function queryLegacyApimartAudioResult(
+  apiKey: string, baseUrl: string, taskId: string, maxDuration: number, signal: AbortSignal,
+): Promise<string[]> {
+  return queryAsyncMediaResult({
+    fetchState: (querySignal) => fetchApimartTask(apiKey, baseUrl.replace(/\/+$/, ''), encodeURIComponent(taskId), querySignal, true),
+    readUrls: (task) => {
+      const result = task.result as ApimartTaskResult['result'];
+      const urls = readAsyncMediaResultUrls({ audios: result?.audios }, 'audios', true, true);
+      return urls.length ? urls : readAsyncMediaResultUrls({ audios: result?.images }, 'audios', true);
+    },
+    missingResult: '任务完成但未返回结果',
+    failureMessage: (_task, status) => `任务失败: ${status}`,
+    interval: 3000,
+    maxDuration,
     signal,
   });
-  if (timeoutAsPause && [408, 504].includes(resp.status)) throw new PollTimeoutError();
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  const raw = (await resp.json()) as Record<string, unknown>;
-  if (raw.data && typeof raw.data === 'object' && !Array.isArray(raw.data)) {
-    const d = raw.data as Record<string, unknown>;
-    return {
-      code: raw.code as number,
-      status: (d.status ?? raw.status) as string | undefined,
-      progress: (d.progress ?? raw.progress) as number | undefined,
-      result: d.result as Record<string, unknown> | undefined,
-    };
-  }
-  return raw as unknown as ApimartTaskResult;
-}
-
-export function extractApimartUrls(
-  result: Record<string, unknown> | undefined,
-  nodeType: NodeType,
-): string[] {
-  if (!result) return [];
-  const extractUrls = (value: unknown): string[] => {
-    if (!Array.isArray(value)) return [];
-    return value.flatMap((item) => {
-      if (!item || typeof item !== 'object') return [];
-      const url = (item as { url?: unknown }).url;
-      if (Array.isArray(url)) {
-        return splitCommaSeparatedUrls(url.filter((entry): entry is string => typeof entry === 'string'));
-      }
-      return typeof url === 'string' ? splitCommaSeparatedUrls([url]) : [];
-    });
-  };
-  if (nodeType === 'ai-audio') {
-    const urls = extractUrls(result.audios);
-    if (urls.length > 0) return [urls[0]];
-  }
-  return extractUrls(result.images);
 }
 
 interface RunningHubTaskResult {

@@ -6,7 +6,7 @@ import { isCharacterImageTaskContext } from '../characterImageTaskContext';
 import { captureLegacyCanvasContext } from '../projectExecutionContext';
 import { assertNativeMediaPrepared, prepareNativeMediaTask, recordNativeMediaSubmission, type NativeMediaTaskRecord } from '../indexedDb/nativeMediaTaskRepository';
 import { assertNativeVideoSubmissionInput, captureNativeVideoSubmissionBaseline, isNativeVideoSubmissionGuard, type NativeMediaSubmissionPreparation } from '../nativeVideoSubmission';
-import { pollTask, PollTaskFailedError } from '../pollTask';
+import { PollTaskFailedError } from '../pollTask';
 import { savePendingTask, updatePendingTask, removePendingTask, removeFailedMediaTask, registerNodePolling, cleanupNodePolling, pauseMediaTask, VIDEO_POLL_MAX_DURATION_MS } from '../pollManager';
 import { parseGeneralImageResponses, parseMultiPathResponse } from './helpers';
 import type { BatchImageResult, MediaDownloadAccess, MediaTaskReceipt } from '../../types/aiTypes';
@@ -29,7 +29,7 @@ import { projectModelSourceToken } from '../projectModelComparisonMaterial';
 import { isSafeNativeProtocolTaskId } from '../nativeProtocolContext';
 import { queryApimartImageResult } from './apimartImageResult';
 import { queryApimartVideoResult } from './apimartVideoResult';
-import { queryCompatibleImageTask, queryCompatibleVideoTask } from './asyncMediaResult';
+import { queryCompatibleMediaTask, readAsyncMediaResultUrls } from './asyncMediaResult';
 
 export { fetchApimartTask, type ApimartTaskResult } from './apimartImageResult';
 
@@ -128,8 +128,10 @@ export async function executeGeneralAsyncTask(
 
     // 无 task_id 时尝试直接从响应中解析结果（同步完成，无需轮询）
     if (!taskId) {
-      const url = parseMultiPathResponse(submitResult, resultField)
-        ?? (resultField === 'images' ? parseGeneralImageResponses(submitResult)[0] : undefined);
+      const url = resultField === 'audios'
+        ? readAsyncMediaResultUrls(submitResult, resultField, true, true)[0]
+        : parseMultiPathResponse(submitResult, resultField)
+          ?? (resultField === 'images' ? parseGeneralImageResponses(submitResult)[0] : undefined);
       if (url) {
         if (receipt) removePendingTask(receipt.nodeId, receipt.taskId, receipt.attemptId);
         return { url, mediaDownloadAccess };
@@ -149,44 +151,12 @@ export async function executeGeneralAsyncTask(
       receipt = updatePendingTask(nodeId, { taskId, submitted: true }, receipt?.taskId, receipt?.attemptId) ?? receipt;
     }
 
-    // 视频达到本地等待预算后暂停，用户续查时不会再次提交。
-    const result = resultField === 'videos'
-      ? { url: (await queryCompatibleVideoTask(apiKey, baseUrl, taskId, {
-        maxDuration: VIDEO_POLL_MAX_DURATION_MS, signal, allowPartial: true,
-      }))[0] }
-      : resultField === 'images'
-      ? { url: (await queryCompatibleImageTask(apiKey, baseUrl, taskId, {
-        maxDuration: VIDEO_POLL_MAX_DURATION_MS, signal, timeoutAsPause: false, allowPartial: true,
-      }))[0] }
-      : await pollTask<Record<string, unknown>, { url: string }>({
-          fetchState: async (querySignal) => {
-            const pollResp = await corsSafeFetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
-              headers: { Authorization: `Bearer ${apiKey}` },
-              signal: querySignal,
-            });
-            if (!pollResp.ok) throw new Error(`HTTP ${pollResp.status}`);
-            return (await pollResp.json()) as Record<string, unknown>;
-          },
-          isComplete: (raw) => {
-            const task = (raw.data ?? raw) as Record<string, unknown>;
-            if (task.status === 'completed') {
-              const url = parseMultiPathResponse((task.result ?? raw) as Record<string, unknown>, resultField);
-              if (url) return { url };
-              throw new Error('任务完成但未返回结果');
-            }
-            return null;
-          },
-          isFailed: (raw) => {
-            const task = (raw.data ?? raw) as Record<string, unknown>;
-            return task.status === 'failed' || task.status === 'error' || task.status === 'cancelled'
-              ? `任务失败: ${task.status}` : null;
-          },
-          interval: 3000,
-          maxDuration: VIDEO_POLL_MAX_DURATION_MS,
-          signal,
-      });
+    const [url] = await queryCompatibleMediaTask(apiKey, baseUrl, taskId, resultField, {
+      maxDuration: VIDEO_POLL_MAX_DURATION_MS, signal, timeoutAsPause: resultField !== 'images', allowPartial: true,
+      firstOnly: resultField === 'audios',
+    });
     if (receipt) receipt = updatePendingTask(receipt.nodeId, { mediaRecoveryState: 'delivery_pending' }, receipt.taskId, receipt.attemptId) ?? receipt;
-    return { ...result, mediaDownloadAccess, ...(receipt ? { taskReceipt: receipt } : {}) };
+    return { url, mediaDownloadAccess, ...(receipt ? { taskReceipt: receipt } : {}) };
   } catch (unsafeError) {
     const error = redactModelProtocolError(unsafeError, apiKey);
     const rejected = !receipt?.taskId && getHttpResponseError(error)?.definitiveFailure === true;

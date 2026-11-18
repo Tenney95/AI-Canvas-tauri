@@ -37,9 +37,9 @@ vi.mock('../../src/services/ai/apimartGen', () => ({
 vi.mock('../../src/services/ai/apimartAudio', () => ({
   extractFlowMusicLyrics: vi.fn(),
   extractFlowMusicTrack: vi.fn(),
-  fetchFlowMusicTask: vi.fn(),
   generateApimartSpeech: mocks.generateApimartSpeech,
   getApimartAudioCapability: mocks.getApimartAudioCapability,
+  queryApimartMusicTask: vi.fn(),
   submitFlowMusicGeneration: vi.fn(),
   submitFlowMusicLyrics: vi.fn(),
 }));

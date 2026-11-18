@@ -3,7 +3,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
-import { buildComfyFileUrl, findComfyOutputFile, getComfyTextOutputNodeIds, MAX_COMFY_TEXT_BYTES, resolveComfyOutputUrl,
+import { buildComfyFileUrl, COMFY_AUDIO_OUTPUT_KINDS, findComfyOutputFile, findComfyOutputFiles, getComfyTextOutputNodeIds, MAX_COMFY_TEXT_BYTES, resolveComfyOutputUrl,
   resolveComfyTextOutput, sanitizeComfyOutputFile, type ComfyOutputFile, type ComfyOutputKind } from '../../src/services/comfyOutputs';
 import { COMFY_TEXT_OUTPUT_UNAVAILABLE_MESSAGE, pollComfyTextHistory, readComfyTextOutput } from '../../src/services/comfyPolling';
 
@@ -11,6 +11,16 @@ const textFetch = vi.hoisted(() => vi.fn());
 vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: textFetch }));
 
 const file = (filename: string) => ({ filename, subfolder: '', type: 'output' });
+
+it('shares audio order for single and grouped results and falls back to video only without audio', () => {
+  const video = file('container.mp4');
+  const audio = [file('first.wav'), file('second.flac')];
+  const outputs = { '1': { videos: [video] }, '2': { audio } };
+
+  expect(findComfyOutputFile(outputs, COMFY_AUDIO_OUTPUT_KINDS)).toEqual(audio[0]);
+  expect(findComfyOutputFiles(outputs, COMFY_AUDIO_OUTPUT_KINDS)).toEqual(audio);
+  expect(findComfyOutputFiles({ '1': { videos: [video] } }, COMFY_AUDIO_OUTPUT_KINDS)).toEqual([video]);
+});
 
 describe('ComfyUI official SaveText output', () => {
   it('only captures the submitted SaveText node and returns its text rather than the earlier input display', () => {

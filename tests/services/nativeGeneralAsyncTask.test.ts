@@ -116,6 +116,37 @@ it('原生视频查询超时后只用原连接和原 ID 续查，无第二次 PO
   expect(driver.save).toHaveBeenCalledExactlyOnceWith(outputUrl, context.canvasId, 'ai-video', '原通用产物 1', expect.any(Object));
   expect(driver.deliver).toHaveBeenCalledExactlyOnceWith(receipt.operationId, expect.any(AbortSignal));
 });
+it('原生音频查询超时后使用原 ID 续查并保存完整的有序候选', async () => {
+  const { context, input } = await fixture();
+  const taskId = `original-audio-${crypto.randomUUID()}`;
+  const urls = ['https://cdn.example/one.mp3?signature=a,b', 'https://cdn.example/two.mp3?signature=c,d'];
+  driver.fetch
+    .mockResolvedValueOnce(Response.json({ data: [{ task_id: taskId }] }))
+    .mockResolvedValueOnce(new Response('', { status: 504 }))
+    .mockResolvedValueOnce(Response.json({ data: { status: 'completed', result: { audios: [{ url: urls }] } } }));
+
+  await expect(executeNativeGeneralAsyncTask(input))
+    .rejects.toMatchObject({ name: 'NativeMediaTaskPending', remoteTaskKnown: true });
+  const [receipt] = await listNativeMediaTasks(context.projectId);
+  expect(receipt).toMatchObject({ status: 'submitted', remoteTaskId: taskId, pollContext: { taskIds: [taskId] } });
+  expect(driver.save).not.toHaveBeenCalled();
+
+  await resumeNativeGeneralAsyncTask(receipt.operationId);
+
+  const queryUrl = `${input.baseUrl}/tasks/${taskId}?language=zh`;
+  expect(driver.fetch.mock.calls.map(([url, init]) => [url, init?.method ?? 'GET', init?.headers.Authorization])).toEqual([
+    [`${input.baseUrl}/audio/generations`, 'POST', 'Bearer synthetic-key'],
+    [queryUrl, 'GET', 'Bearer synthetic-key'],
+    [queryUrl, 'GET', 'Bearer synthetic-key'],
+  ]);
+  expect(driver.save.mock.calls.map(([url, canvasId, type]) => [url, canvasId, type])).toEqual(
+    urls.map((url) => [url, context.canvasId, 'ai-audio']),
+  );
+  const [delivered] = await listNativeMediaTasks(context.projectId);
+  expect(delivered.localResults).toHaveLength(urls.length);
+  expect(driver.deliver).toHaveBeenCalledExactlyOnceWith(receipt.operationId, expect.any(AbortSignal));
+});
+
 it('一个原任务失败时仍保存其余全部已确认候选，并单独冻结失败计数', async () => {
   const { context, input } = await fixture();
   driver.fetch.mockImplementation(async (url: string, init?: RequestInit) => init?.method === 'POST'

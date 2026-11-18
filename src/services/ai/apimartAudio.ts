@@ -12,6 +12,7 @@ import {
   type AudioCapabilityKind,
 } from './mediaModelCapabilities';
 import { buildAudioMusicRequestBody, buildAudioSpeechRequestBody } from './audioParameterMappings';
+import { pollTask } from '../pollTask';
 
 export type ApimartAudioCapability = AudioCapabilityKind;
 
@@ -334,6 +335,29 @@ export async function fetchFlowMusicTask(
   } catch (error) {
     throw redactModelProtocolError(error, apiKey);
   }
+}
+
+/** 首次取回和续查共用原音乐阶段的查询，阶段提交由调用方管理。 */
+export function queryApimartMusicTask(
+  apiKey: string,
+  baseUrl: string,
+  taskId: string,
+  { signal, maxDuration, failureMessage }: {
+    signal?: AbortSignal;
+    maxDuration: number;
+    failureMessage?: (task: FlowMusicTaskState) => string;
+  },
+): Promise<FlowMusicTaskState> {
+  return pollTask<FlowMusicTaskState, FlowMusicTaskState>({
+    fetchState: (querySignal) => fetchFlowMusicTask(apiKey, baseUrl, taskId, querySignal),
+    isComplete: (task) => task.status === 'completed' ? task : null,
+    isFailed: (task) => ['failed', 'error', 'cancelled'].includes(task.status ?? '')
+      ? failureMessage?.(task) ?? `APIMart 音乐任务失败: ${typeof task.error === 'string' ? task.error : task.error?.message || task.status}`
+      : null,
+    interval: 3000,
+    maxDuration,
+    signal,
+  });
 }
 
 export function extractFlowMusicLyrics(task: FlowMusicTaskState): Required<FlowMusicLyrics> {

@@ -7,21 +7,19 @@
  *
  * 存储结构按 projectId 隔离，每个节点或消息跟踪 ID 最多一条待续记录。
  */
-import { isPollTimeoutError, pollTask, PollTaskFailedError, PollTimeoutError, withPollRequestDeadline } from './pollTask';
+import { isPollTimeoutError, PollTaskFailedError, withPollRequestDeadline } from './pollTask';
 import { derivedNodePlacement, generateId, getNextDisplayId } from '../store/store.utils';
-import { corsSafeFetch } from './ai/httpTransport';
 import { pollVolcengineVideoTask } from './ai/providers/volcengineVideoQuery';
 import { useAppStore } from '../store/useAppStore';
 import { pickImageOutputParameters } from './ai/imageOutputParameters';
 import { MediaPersistenceError, persistMediaUrlToProjectData, type MediaPersistenceFailureKind, type PersistedProjectMedia } from './fileService';
 import { applyImageBatchResults, imageBatchArtifactId } from './imageBatchService';
 import { mapImageDimensions } from './aiDimensions';
-import { parseMultiPathResponse } from './ai/helpers';
-import { extractApimartUrls, fetchApimartTask, pollRunningHubTask, type ApimartTaskResult } from './pollManagerQueries';
+import { pollRunningHubTask, queryLegacyApimartAudioResult } from './pollManagerQueries';
 import { queryApimartImageResult } from './ai/apimartImageResult';
 import { queryApimartVideoResult } from './ai/apimartVideoResult';
-import { queryCompatibleImageTask, queryCompatibleVideoTask } from './ai/asyncMediaResult';
-import { resolveComfyOutputUrl, sanitizeComfyOutputFile, type ComfyOutputFile, type ComfyOutputKind, type ComfyOutputs } from './comfyOutputs';
+import { queryCompatibleMediaTask } from './ai/asyncMediaResult';
+import { COMFY_AUDIO_OUTPUT_KINDS, resolveComfyOutputUrl, sanitizeComfyOutputFile, type ComfyOutputFile, type ComfyOutputKind, type ComfyOutputs } from './comfyOutputs';
 import { ComfyOutputUnavailableError, ComfyPendingError, ComfyQueryAuthorizationError, getComfyQueryAuthorizationMessage, pollComfyHistory, pollComfyTextHistory } from './comfyPolling';
 import { maybeAutoReleaseComfyMemory } from './comfyMemory';
 import { COMFY_QUERY_TIMEOUT_MS } from './comfyQuery';
@@ -33,8 +31,7 @@ import { assertModelProtocolResult, isSafeMediaParameterText, MEDIA_PARAMETER_TE
 import {
   extractFlowMusicLyrics,
   extractFlowMusicTrack,
-  fetchFlowMusicTask,
-  type FlowMusicTaskState,
+  queryApimartMusicTask,
 } from './ai/apimartAudio';
 import type { BaseNodeData, NodeType } from '../types';
 import type { CanvasContext } from '../types/project';
@@ -1602,31 +1599,17 @@ async function resumeApimart(task: PendingTask, parentSignal?: AbortSignal): Pro
       updatePendingTask(nodeId, { mediaDownloadAccess }, task.taskId, task.attemptId);
     }
     const settled = await settleMediaTaskQueries(taskIds.map((taskId) => (batchSignal: AbortSignal) => {
-      if (nodeType === 'ai-image' || nodeType === 'ai-panorama') {
-        return queryApimartImageResult(apiKey, baseUrl, taskId, {
-          interval: 3000, maxDuration: MEDIA_POLL_MAX_DURATION_MS, signal: batchSignal,
-        });
-      }
       if (nodeType === 'ai-video') {
         return queryApimartVideoResult(apiKey, baseUrl, taskId, {
           maxDuration: MEDIA_POLL_MAX_DURATION_MS, signal: batchSignal, allowPartial: true, firstVideoOnly: true,
           failureMessage: (status) => `任务失败: ${status}`,
         });
       }
-      return pollTask<ApimartTaskResult, string[]>({
-        fetchState: (querySignal) => fetchApimartTask(apiKey, baseUrl, taskId, querySignal, true),
-        isComplete: (t) => {
-          if (t.status !== 'completed') return null;
-          const resolved = extractApimartUrls(t.result, nodeType);
-          if (resolved.length === 0) throw new Error('任务完成但未返回结果');
-          return resolved;
-        },
-        isFailed: (t) =>
-          t.status === 'failed' || t.status === 'error' || t.status === 'cancelled' ? `任务失败: ${t.status}` : null,
-        interval: 3000,
-        maxDuration: MEDIA_POLL_MAX_DURATION_MS,
-        onFetchError: 'throw',
-        signal: batchSignal,
+      if (nodeType === 'ai-audio') {
+        return queryLegacyApimartAudioResult(apiKey, baseUrl, taskId, MEDIA_POLL_MAX_DURATION_MS, batchSignal);
+      }
+      return queryApimartImageResult(apiKey, baseUrl, taskId, {
+        interval: 3000, maxDuration: MEDIA_POLL_MAX_DURATION_MS, signal: batchSignal,
       });
     }), signal);
     const uncertain = settled.find((result) => result.status === 'rejected' && !(result.reason instanceof PollTaskFailedError));
@@ -1745,26 +1728,6 @@ async function resumeRunningHub(task: PendingTask): Promise<void> {
   }
 }
 
-async function pollFlowMusicTask(
-  apiKey: string,
-  baseUrl: string,
-  taskId: string,
-  signal: AbortSignal,
-): Promise<FlowMusicTaskState> {
-  return pollTask<FlowMusicTaskState, FlowMusicTaskState>({
-    fetchState: (querySignal) => fetchFlowMusicTask(apiKey, baseUrl, taskId, querySignal),
-    isComplete: (state) => state.status === 'completed' ? state : null,
-    isFailed: (state) =>
-      state.status === 'failed' || state.status === 'error'
-        ? `APIMart 音乐任务失败: ${state.status}`
-        : null,
-    interval: 3000,
-    onFetchError: 'throw',
-    maxDuration: MEDIA_POLL_MAX_DURATION_MS,
-    signal,
-  });
-}
-
 /** 恢复只取回原阶段；歌词取回后由用户显式发起新的音乐生成。 */
 async function resumeApimartFlowMusic(task: PendingTask, parentSignal?: AbortSignal): Promise<void> {
   const { nodeId } = task;
@@ -1788,10 +1751,12 @@ async function resumeApimartFlowMusic(task: PendingTask, parentSignal?: AbortSig
   const query = guardVideoTaskQuery(task, signal);
 
   try {
+    const original = await queryApimartMusicTask(apiKey, baseUrl, taskId, {
+      signal, maxDuration: MEDIA_POLL_MAX_DURATION_MS,
+      failureMessage: (state) => `APIMart 音乐任务失败: ${state.status}`,
+    });
     if (stage === 'lyrics') {
-      const generated = extractFlowMusicLyrics(
-        await pollFlowMusicTask(apiKey, baseUrl, taskId, signal),
-      );
+      const generated = extractFlowMusicLyrics(original);
       if (query.isCurrent && !query.isCurrent()) throw new CanvasResultStaleError();
       useAppStore.getState().updateNodeDataTransient(nodeId, {
         musicTitle: generated.title || data.musicTitle,
@@ -1805,9 +1770,7 @@ async function resumeApimartFlowMusic(task: PendingTask, parentSignal?: AbortSig
       return;
     }
 
-    const result = extractFlowMusicTrack(
-      await pollFlowMusicTask(apiKey, baseUrl, taskId, signal),
-    );
+    const result = extractFlowMusicTrack(original);
     if (query.isCurrent && !query.isCurrent()) throw new CanvasResultStaleError();
     const latestData = useAppStore.getState().nodes.find((item) => item.id === nodeId)?.data as BaseNodeData | undefined;
     useAppStore.getState().updateNodeDataTransient(nodeId, {
@@ -1900,9 +1863,9 @@ async function resumeComfyUI(task: PendingTask, parentSignal?: AbortSignal): Pro
     && (nodeType !== 'ai-text' || useAppStore.getState().nodes.some((item) => item.id === nodeId
       && getGenerationNodeType(item.data.type) === 'ai-text'));
 
-  const kinds: ComfyOutputKind[] =
+  const kinds: readonly ComfyOutputKind[] =
     nodeType === 'ai-video' ? ['video']
-      : nodeType === 'ai-audio' ? ['audio', 'video']
+      : nodeType === 'ai-audio' ? COMFY_AUDIO_OUTPUT_KINDS
         : ['image'];
   const extract = (outputs: ComfyOutputs) => resolveComfyOutputUrl(baseUrl, outputs, kinds);
   let resultReceived = false;
@@ -2051,47 +2014,9 @@ async function resumeGeneral(task: PendingTask, parentSignal?: AbortSignal): Pro
   const query = guardVideoTaskQuery(task, signal);
 
   try {
-    const url = resultField === 'videos'
-      ? (await queryCompatibleVideoTask(apiKey, baseUrl, taskId, {
-        maxDuration: MEDIA_POLL_MAX_DURATION_MS, signal, allowPartial: true,
-      }))[0]
-      : resultField === 'images'
-      ? (await queryCompatibleImageTask(apiKey, baseUrl, taskId, {
-        maxDuration: MEDIA_POLL_MAX_DURATION_MS, signal, allowPartial: true,
-      }))[0]
-      : (await pollTask<Record<string, unknown>, { url: string }>({
-          fetchState: async (querySignal) => {
-            const pollResp = await corsSafeFetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
-              headers: { Authorization: `Bearer ${apiKey}` },
-              signal: querySignal,
-            });
-            if ([408, 504].includes(pollResp.status)) throw new PollTimeoutError();
-            if (!pollResp.ok) throw new Error(`HTTP ${pollResp.status}`);
-            return (await pollResp.json()) as Record<string, unknown>;
-          },
-          isComplete: (raw) => {
-            const t = (raw.data ?? raw) as Record<string, unknown>;
-            if (t.status === 'completed') {
-              const resolved = parseMultiPathResponse(
-                (t.result ?? raw) as Record<string, unknown>,
-                resultField,
-              );
-              if (resolved) return { url: resolved };
-              throw new Error('任务完成但未返回结果');
-            }
-            return null;
-          },
-          isFailed: (raw) => {
-            const t = (raw.data ?? raw) as Record<string, unknown>;
-            return t.status === 'failed' || t.status === 'error' || t.status === 'cancelled'
-              ? `任务失败: ${t.status}`
-              : null;
-          },
-          interval: 3000,
-          maxDuration: MEDIA_POLL_MAX_DURATION_MS,
-          onFetchError: 'throw',
-          signal,
-      })).url;
+    const [url] = await queryCompatibleMediaTask(apiKey, baseUrl, taskId, resultField, {
+      maxDuration: MEDIA_POLL_MAX_DURATION_MS, signal, allowPartial: true, firstOnly: resultField === 'audios',
+    });
     markMediaTaskDeliveryPending(task, signal, [url]);
     if (await deliverMediaMessageResult(task, [url], signal)) return;
     await applyNodeResult(nodeId, url, label, query.isCurrent, undefined, task.videoGeneration, task.mediaDownloadAccess, signal);

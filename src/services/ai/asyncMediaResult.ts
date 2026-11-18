@@ -1,15 +1,17 @@
 /** 旧异步媒体接口和 APIMart 共用有界结果集合解析。 */
 import { pollTask, PollTimeoutError, type PollTaskOptions } from '../pollTask';
 import { MAX_NATIVE_MEDIA_OUTPUTS } from '../nativeMediaCollection';
-import { splitCommaSeparatedUrls, toImageDataUrl } from './helpers';
+import { toImageDataUrl } from './helpers';
 import { corsSafeFetch } from './httpTransport';
 import { redactModelProtocolError } from './modelProtocolHttp';
 
 export type AsyncMediaResultField = 'videos' | 'audios' | 'images';
 const recordObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 
-/** 只选择一个明确的返回集合；每项／每项中的多个 URL 都保留，不按请求张数截断。 */
-export function readAsyncMediaResultUrls(payload: unknown, field: AsyncMediaResultField, allowPartial = false): string[] {
+/** 只选择一个明确的返回集合，按调用场景读取首项或保留完整候选。 */
+export function readAsyncMediaResultUrls(
+  payload: unknown, field: AsyncMediaResultField, allowPartial = false, firstOnly = false,
+): string[] {
   if (!recordObject(payload)) return [];
   const containers = [payload, ...(recordObject(payload.result) ? [payload.result] : []), ...(recordObject(payload.data) ? [payload.data] : [])];
   const missing = (message: string): string[] => {
@@ -18,7 +20,6 @@ export function readAsyncMediaResultUrls(payload: unknown, field: AsyncMediaResu
   };
   const splitUrls = (url: string) => {
     if (/^data:/i.test(url)) return [url];
-    if (field === 'audios') return splitCommaSeparatedUrls([url]);
     // 只有后续项目明确是另一个地址时拆分，保留签名 URL 查询参数中的字面逗号。
     return url.split(/,\s*(?=(?:https?:\/\/|asset:|blob:))/i).map((item) => item.trim()).filter(Boolean);
   };
@@ -39,7 +40,7 @@ export function readAsyncMediaResultUrls(payload: unknown, field: AsyncMediaResu
   };
   let urls: string[] | undefined;
   for (const container of containers) { urls = collection(container[field]); if (urls) break; }
-  if ((!urls || field === 'videos' && urls.length === 0) && field !== 'images') {
+  if (!urls?.length && field !== 'images') {
     for (const container of containers) { urls = collection(container.images); if (urls) break; }
   }
   if (!urls?.length) for (const container of containers) {
@@ -48,6 +49,7 @@ export function readAsyncMediaResultUrls(payload: unknown, field: AsyncMediaResu
   }
   if (!urls?.length) for (const container of containers) if (typeof container.url === 'string') { urls = values(container.url); break; }
   if (!urls?.length) return [];
+  if (firstOnly) return urls.slice(0, 1);
   if (urls.length > MAX_NATIVE_MEDIA_OUTPUTS) throw new Error('原任务候选超过安全上限，未截断交付');
   return urls;
 }
@@ -84,20 +86,22 @@ export function queryAsyncMediaResult({ missingResult, failureMessage, readUrls,
   });
 }
 
-export function queryAsyncImageResult({ allowPartial, ...options }: Omit<AsyncTaskQuery, 'readUrls'> & {
+export function queryAsyncImageResult({ allowPartial, firstOnly, ...options }: Omit<AsyncTaskQuery, 'readUrls'> & {
   allowPartial?: boolean;
+  firstOnly?: boolean;
 }): Promise<string[]> {
   return queryAsyncMediaResult({
     ...options,
     readUrls: (task, raw) => {
-      const urls = readAsyncMediaResultUrls(task, 'images', allowPartial);
-      return urls.length > 0 || task === raw ? urls : readAsyncMediaResultUrls(raw, 'images', allowPartial);
+      const urls = readAsyncMediaResultUrls(task, 'images', allowPartial, firstOnly);
+      return urls.length > 0 || task === raw ? urls : readAsyncMediaResultUrls(raw, 'images', allowPartial, firstOnly);
     },
   });
 }
 
 type CompatibleTaskOptions = {
   signal?: AbortSignal; maxDuration: number; timeoutAsPause?: boolean; allowPartial?: boolean;
+  firstOnly?: boolean;
 };
 
 async function fetchCompatibleTaskState(
@@ -117,28 +121,33 @@ async function fetchCompatibleTaskState(
 
 /** 查询通用 /tasks 图片契约，供实时调用和旧回执恢复共同使用。 */
 export function queryCompatibleImageTask(apiKey: string, baseUrl: string, taskId: string, options: CompatibleTaskOptions): Promise<string[]> {
-  const { signal, maxDuration, timeoutAsPause, allowPartial } = options;
-  return queryAsyncImageResult({
-    fetchState: (querySignal) => fetchCompatibleTaskState(apiKey, baseUrl, taskId, querySignal, timeoutAsPause),
-    missingResult: '原通用任务完成但没有完整图片',
-    failureMessage: () => '服务商已确认原通用图片任务失败',
-    allowPartial,
-    interval: 3000,
-    maxDuration,
-    signal,
-  });
+  return queryCompatibleMediaTask(apiKey, baseUrl, taskId, 'images', options);
 }
 
 /** 首次取回和续查均对同一个 /tasks 原任务 ID 执行 GET。 */
-export function queryCompatibleVideoTask(apiKey: string, baseUrl: string, taskId: string, options: CompatibleTaskOptions): Promise<string[]> {
-  const { signal, maxDuration, timeoutAsPause, allowPartial } = options;
-  return queryAsyncMediaResult({
-    fetchState: (querySignal) => fetchCompatibleTaskState(apiKey, baseUrl, taskId, querySignal, timeoutAsPause),
-    readUrls: (task, raw) => readAsyncMediaResultUrls(recordObject(task.result) ? task.result : raw, 'videos', allowPartial),
-    missingResult: '原通用任务完成但没有完整视频',
-    failureMessage: (_task, status) => `任务失败: ${status}`,
+export function queryCompatibleMediaTask(
+  apiKey: string, baseUrl: string, taskId: string, field: AsyncMediaResultField, options: CompatibleTaskOptions,
+): Promise<string[]> {
+  const { signal, maxDuration, timeoutAsPause, allowPartial, firstOnly } = options;
+  const pollOptions = {
+    fetchState: (querySignal?: AbortSignal) => fetchCompatibleTaskState(apiKey, baseUrl, taskId, querySignal, timeoutAsPause),
     interval: 3000,
     maxDuration,
     signal,
+  };
+  if (field === 'images') {
+    return queryAsyncImageResult({
+      ...pollOptions,
+      missingResult: '原通用任务完成但没有完整图片',
+      failureMessage: () => '服务商已确认原通用图片任务失败',
+      allowPartial,
+      firstOnly,
+    });
+  }
+  return queryAsyncMediaResult({
+    ...pollOptions,
+    readUrls: (task, raw) => readAsyncMediaResultUrls(recordObject(task.result) ? task.result : raw, field, allowPartial, firstOnly),
+    missingResult: field === 'audios' ? '原通用任务完成但没有完整音频' : '原通用任务完成但没有完整视频',
+    failureMessage: (_task, status) => `任务失败: ${status}`,
   });
 }

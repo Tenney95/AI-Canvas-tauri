@@ -32,7 +32,7 @@ vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => m
 vi.mock('../../src/services/pollManager', () => mocks);
 
 import {
-  fetchFlowMusicTask, generateApimartSpeech, submitFlowMusicLyrics,
+  fetchFlowMusicTask, generateApimartSpeech, queryApimartMusicTask, submitFlowMusicLyrics,
   submitSunoGeneration, submitFlowMusicGeneration, transcribeApimartAudio,
 } from '../../src/services/ai/apimartAudio';
 import { apimartMediaProviderAdapter } from '../../src/services/ai/providers/apimartMedia';
@@ -119,6 +119,19 @@ describe('APIMart 音频错误脱敏', () => {
     expect(mocks.removePendingTask).toHaveBeenCalledWith('music-node', 'original-task', 'attempt');
     expect(mocks.pauseMediaTask).not.toHaveBeenCalled();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('共享音乐查询只读取原 ID，将已取消任务结算为明确终态', async () => {
+    const taskId = 'original/music-task';
+    const fetchMock = vi.fn().mockResolvedValueOnce(json({ data: { status: 'cancelled' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(queryApimartMusicTask(apiKey, 'https://api.example/v1', taskId, {
+      maxDuration: 10_000,
+      failureMessage: (task) => `原音乐阶段：${task.status}`,
+    })).rejects.toMatchObject({ name: 'PollTaskFailedError', message: '原音乐阶段：cancelled' });
+    expect(fetchMock.mock.calls.map(([url, init]) => [url, init?.method ?? 'GET']))
+      .toEqual([['https://api.example/v1/music/tasks/original%2Fmusic-task?language=zh', 'GET']]);
   });
 
   it('音乐查询网络异常在原任务暂停边界也不携带 Key', async () => {

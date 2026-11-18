@@ -6,7 +6,7 @@ import { useAppStore } from '../../../store/useAppStore';
 import type { AIAudioGenParams, AIVideoGenParams, AudioGenerationResult, MediaTaskReceipt } from '../../../types/aiTypes';
 import type { BaseNodeData } from '../../../types';
 import { mapImageDimensions } from '../../aiDimensions';
-import { pollTask, PollTaskFailedError } from '../../pollTask';
+import { PollTaskFailedError } from '../../pollTask';
 import { getHttpResponseError } from '../httpUtils';
 import {
   cleanupNodePolling,
@@ -20,14 +20,13 @@ import {
 import {
   extractFlowMusicLyrics,
   extractFlowMusicTrack,
-  fetchFlowMusicTask,
   generateApimartSpeech,
   getApimartAudioCapability,
+  queryApimartMusicTask,
   submitFlowMusicGeneration,
   submitFlowMusicLyrics,
   submitSunoGeneration,
   type FlowMusicGenerationRequest,
-  type FlowMusicTaskState,
 } from '../apimartAudio';
 import { generateApimartImagesBatch, generateApimartVideo } from '../apimartGen';
 import { getApimartSeedanceCapability, isApimartSeedanceModel } from '../apimartVideoModels';
@@ -65,25 +64,6 @@ function buildFlowMusicRequest(
     bpm: params.musicBpm,
     length: params.musicDuration ?? 60,
   };
-}
-
-function waitForFlowMusicTask(
-  apiKey: string,
-  baseUrl: string,
-  taskId: string,
-  signal?: AbortSignal,
-): Promise<FlowMusicTaskState> {
-  return pollTask<FlowMusicTaskState, FlowMusicTaskState>({
-    fetchState: (querySignal) => fetchFlowMusicTask(apiKey, baseUrl, taskId, querySignal),
-    isComplete: (task) => task.status === 'completed' ? task : null,
-    isFailed: (task) =>
-      task.status === 'failed' || task.status === 'error' || task.status === 'cancelled'
-        ? `APIMart 音乐任务失败: ${typeof task.error === 'string' ? task.error : task.error?.message || task.status}`
-        : null,
-    interval: 3000,
-    maxDuration: VIDEO_POLL_MAX_DURATION_MS,
-    signal,
-  });
 }
 
 async function generateFlowMusic(
@@ -130,7 +110,7 @@ async function generateFlowMusic(
         receipt = updatePendingTask(params.nodeId, { taskId: lyricsTaskId, submitted: true }, receipt?.taskId, receipt?.attemptId) ?? receipt;
       }
       generatedLyrics = extractFlowMusicLyrics(
-        await waitForFlowMusicTask(apiKey, baseUrl, lyricsTaskId, signal),
+        await queryApimartMusicTask(apiKey, baseUrl, lyricsTaskId, { signal, maxDuration: VIDEO_POLL_MAX_DURATION_MS }),
       );
 
       if (
@@ -172,7 +152,7 @@ async function generateFlowMusic(
       }, receipt?.taskId, receipt?.attemptId) ?? receipt;
     }
     const result = extractFlowMusicTrack(
-      await waitForFlowMusicTask(apiKey, baseUrl, musicTaskId, signal),
+      await queryApimartMusicTask(apiKey, baseUrl, musicTaskId, { signal, maxDuration: VIDEO_POLL_MAX_DURATION_MS }),
     );
     if (receipt) receipt = updatePendingTask(receipt.nodeId, { mediaRecoveryState: 'delivery_pending' }, receipt.taskId, receipt.attemptId) ?? receipt;
     return { ...result, ...(receipt ? { taskReceipt: receipt } : {}) };

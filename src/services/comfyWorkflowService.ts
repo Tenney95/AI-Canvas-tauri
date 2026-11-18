@@ -26,7 +26,7 @@ import {
 import { ComfyOutputUnavailableError, ComfyPendingError, ComfyQueryAuthorizationError, comfyFetch, pollComfyHistory, pollComfyTextHistory, readComfyTextOutput } from './comfyPolling';
 import { assertComfyResponse, withComfyQueryTimeout } from './comfyQuery';
 import { corsSafeFetch } from './ai/httpTransport';
-import { getComfyTextOutputNodeIds, resolveComfyOutputUrl, type ComfyOutputFile } from './comfyOutputs';
+import { COMFY_AUDIO_OUTPUT_KINDS, getComfyTextOutputNodeIds, resolveComfyOutputUrl, type ComfyOutputFile } from './comfyOutputs';
 import { createComfyProgressSession, type ComfyProgressSession } from './comfyProgress';
 import { maybeAutoReleaseComfyMemory } from './comfyMemory';
 import { applyComfyRefmodsToWorkflow, assertComfyRefmodSubmissionFresh, assertComfyRefmodSubmissionTargetFresh } from './comfyRefmodWorkflow';
@@ -1960,7 +1960,7 @@ async function pollComfyUIHistoryForAudio(
   signal?: AbortSignal,
 ): Promise<{ url: string; file: ComfyOutputFile }> {
   return pollComfyHistory(baseUrl, promptId, 'ComfyUI 音频生成超时（1 小时）', (outputs) => (
-    resolveComfyOutputUrl(baseUrl, outputs, ['audio', 'video'])
+    resolveComfyOutputUrl(baseUrl, outputs, COMFY_AUDIO_OUTPUT_KINDS)
   ), signal);
 }
 

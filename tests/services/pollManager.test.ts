@@ -594,6 +594,51 @@ describe('polling runtime hot reload identity', () => {
     expect(getPendingTasksForProject('project-1')).toEqual([]);
   });
 
+  it.each([
+    ['apimart', 'audios'],
+    ['apimart', 'images'],
+    ['general', 'audios'],
+  ] as const)('recovers a %s audio receipt with a %s result using only the original ID', async (provider, field) => {
+    const nodeId = 'audio-retry';
+    const taskId = 'original-audio-to-recover';
+    const providerConfigId = provider === 'apimart' ? 'apimart' : 'original-audio';
+    const baseUrl = 'https://audio-gateway.example/v1';
+    const firstUrl = 'https://cdn.example/track.mp3?signature=a,b&nonce=first';
+    const retryUrl = 'https://cdn.example/track.mp3?signature=c,d&nonce=retry';
+    useAppStore.setState((state) => ({ nodes: [{ id: nodeId, type: 'ai-audio', position: { x: 0, y: 0 },
+      data: { type: 'ai-audio', label: '原音频', status: 'idle' } }], config: { ...state.config, providers: {
+      ...state.config.providers, [providerConfigId]: { name: '原连接', apiKey: 'fixture-key', baseUrl },
+    } } }));
+    const receipt = savePendingTask({ nodeId, projectId: 'project-1', nodeType: 'ai-audio', provider,
+      providerConfigId, taskType: provider, taskId, submitted: true, mediaRecoveryState: 'query_paused' });
+    const fetchMock = vi.fn();
+    for (const url of [firstUrl, retryUrl]) {
+      fetchMock.mockResolvedValueOnce(Response.json({
+        data: { status: 'completed', result: { [field]: [{ url: [url, 'https://cdn.example/another.mp3'] }] } },
+      }));
+    }
+    vi.stubGlobal('fetch', fetchMock);
+    const persist = vi.spyOn(fileService, 'persistMediaUrlToProjectData')
+      .mockRejectedValueOnce(new fileService.MediaPersistenceError('媒体下载响应等待超时'))
+      .mockResolvedValueOnce({ mediaUrl: 'asset://recovered-audio.mp3', sourceUrl: retryUrl });
+    vi.spyOn(useAppStore.getState(), 'recordOutputHistory').mockResolvedValue(undefined);
+
+    await resumeMediaNodeTask(nodeId);
+    expect(getMediaTaskReceipt(nodeId)).toEqual(receipt);
+    expect(getPendingTasksForProject('project-1')[0]).toMatchObject({ taskId, mediaRecoveryState: 'delivery_pending' });
+    await resumeMediaNodeTask(nodeId);
+
+    expect(persist.mock.calls.map(([url, projectId, kind]) => [url, projectId, kind])).toEqual([
+      [firstUrl, 'project-1', 'ai-audio'],
+      [retryUrl, 'project-1', 'ai-audio'],
+    ]);
+    expect(fetchMock.mock.calls.map(([request, init]) => [String(request), init?.method ?? 'GET', init?.headers])).toEqual(
+      Array.from({ length: 2 }, () => [`${baseUrl}/tasks/${taskId}?language=zh`, 'GET', { Authorization: 'Bearer fixture-key' }]),
+    );
+    expect(useAppStore.getState().nodes[0].data).toMatchObject({ status: 'success', audioUrl: 'asset://recovered-audio.mp3' });
+    expect(getPendingTasksForProject('project-1')).toEqual([]);
+  });
+
   it('does not restore saving ownership to an older operation after a newer one finishes', () => {
     const older = registerMediaNodeOperation('parallel-image', true);
     const newer = registerMediaNodeOperation('parallel-image', true);

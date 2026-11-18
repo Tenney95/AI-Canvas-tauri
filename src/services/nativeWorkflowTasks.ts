@@ -20,7 +20,7 @@ import { PollTaskFailedError } from './pollTask';
 import { getHttpResponseError } from './ai/httpUtils';
 import { createMediaDownloadAccess } from './ai/mediaDownloadAccess';
 import { isSafeNativeProtocolTaskId, validateNativeProtocolContext } from './nativeProtocolContext';
-import { findComfyOutputFiles, buildComfyFileUrl, type ComfyOutputs } from './comfyOutputs';
+import { COMFY_AUDIO_OUTPUT_KINDS, findComfyOutputFiles, buildComfyFileUrl, type ComfyOutputs } from './comfyOutputs';
 import type { MediaDownloadAccess } from '../types/aiTypes';
 
 export { listNativeWorkflowRetainedOutputs } from './nativeWorkflowRepository';
@@ -242,7 +242,7 @@ export async function queryNativeWorkflowOriginal(descriptor: NativeWorkflowDesc
     ...(manifest.version === 2 ? { manifest, poll } : {}) }, signal);
 }
 export function nativeComfyOutputs(baseUrl: string, outputs: ComfyOutputs, category: MediaKind): CloudWorkflowOutput[] | null {
-  const files = findComfyOutputFiles(outputs, category === 'audio' ? ['audio', 'video'] : [category]);
+  const files = findComfyOutputFiles(outputs, category === 'audio' ? COMFY_AUDIO_OUTPUT_KINDS : [category]);
   if (!files.length) return null;
   if (files.length > 128) throw new Error('ComfyUI 产物超过上限，未截断交付');
   return files.map((file) => ({ url: buildComfyFileUrl(baseUrl, file), kind: category }));
