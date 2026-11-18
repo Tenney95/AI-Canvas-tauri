@@ -5,7 +5,8 @@ import type { MediaDownloadAccess, NormalizedModelExecutionProtocol } from '../t
 import type { ModelProtocolVariables } from './ai/modelProtocolTypes';
 import { useAppStore } from '../store/useAppStore';
 import { executeCharacterImageTask, validateCharacterImageTaskRecovery, type CharacterImageExecutionOutputs } from './characterImageTaskContext';
-import { pollTask, PollTaskFailedError } from './pollTask';
+import { PollTaskFailedError } from './pollTask';
+import { queryDreaminaResult } from './dreaminaResult';
 import { queryApimartImageResult } from './ai/apimartImageResult';
 import { queryCompatibleImageTask } from './ai/asyncMediaResult';
 import { createCccImageResultPoll, queryCccImageResult } from './ai/cccImageResult';
@@ -40,13 +41,9 @@ export async function queryCharacterImageOriginal(query: Query, task: Task, oper
   }
   if (query.kind === 'builtin' && query.builtinMode === 'dreamina') {
     if (query.connectionId !== 'dreamina' || query.providerBase !== 'http://dreamina.local') throw new Error('原即梦任务连接身份无效');
-    const { invoke, convertFileSrc } = await import('@tauri-apps/api/core');
-    const urls = await pollTask<{ status: string; outputs: Array<{ url: string; localPath: string }> }, string[]>({
-      fetchState: () => invoke('dreamina_query_result', { submitId: task.taskId }),
-      isComplete: (value) => value.status === 'success' && value.outputs.length
-        ? value.outputs.map((file) => file.localPath ? convertFileSrc(file.localPath) : file.url) : null,
-      isFailed: (value) => value.status === 'failed' ? '即梦已确认原任务失败' : null,
-      interval: 3000, maxDuration: 60 * 60 * 1000, signal, onFetchError: 'throw',
+    const urls = await queryDreaminaResult(task.taskId, {
+      signal,
+      failureMessage: '即梦已确认原任务失败',
     });
     return urls.map((url) => ({ url }));
   }

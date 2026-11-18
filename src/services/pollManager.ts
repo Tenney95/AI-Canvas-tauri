@@ -46,7 +46,7 @@ import {
   RUNNINGHUB_MODEL_BASE_URL,
   VOLCENGINE_BASE_URL,
 } from '../constants/api';
-import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { queryDreaminaResult } from './dreaminaResult';
 import { getGenerationNodeType } from '../utils/nodeGeneration';
 import { isHistoryMediaDownloadPending } from './historyMediaRecovery';
 
@@ -1830,16 +1830,6 @@ async function resumeApimartFlowMusic(task: PendingTask, parentSignal?: AbortSig
 
 /* ── 即梦 ── */
 
-interface DreaminaOutput {
-  url: string;
-  localPath: string;
-}
-interface DreaminaQuery {
-  status: 'pending' | 'success' | 'failed';
-  outputs: DreaminaOutput[];
-  failReason: string;
-}
-
 async function resumeDreamina(task: PendingTask, parentSignal?: AbortSignal): Promise<void> {
   const { nodeId, taskId } = task;
   const node = useAppStore.getState().nodes.find((n) => n.id === nodeId);
@@ -1849,20 +1839,7 @@ async function resumeDreamina(task: PendingTask, parentSignal?: AbortSignal): Pr
   const query = guardVideoTaskQuery(task, signal);
 
   try {
-    const out = await pollTask<DreaminaQuery, DreaminaOutput>({
-      fetchState: () => invoke<DreaminaQuery>('dreamina_query_result', { submitId: taskId }),
-      isComplete: (r) =>
-        r.status === 'success' && r.outputs.length > 0 ? r.outputs[0] : null,
-      isFailed: (r) =>
-        r.status === 'failed' ? r.failReason || '即梦生成失败' : null,
-      interval: 3000,
-      maxDuration: 60 * 60 * 1000,
-      timeoutMsg: '即梦生成超时',
-      onFetchError: 'throw',
-      signal,
-    });
-
-    const url = out.localPath ? convertFileSrc(out.localPath) : out.url;
+    const [url] = await queryDreaminaResult(taskId, { signal, firstOnly: true });
     markMediaTaskDeliveryPending(task, signal, [url]);
     if (await deliverMediaMessageResult(task, [url], signal)) return;
     await applyNodeResult(nodeId, url, label, query.isCurrent, undefined, task.videoGeneration, task.mediaDownloadAccess, signal);

@@ -493,5 +493,8 @@ it('Dreamina等待取消后仍保存迟到submitId，重启仅query全部outputs
   await resumeNativeBuiltinImageTask(record.operationId);
   expect((await listNativeMediaTasks(io.context.projectId))[0].localResults).toHaveLength(2);
   expect(io.invoke.mock.calls.filter(([command]) => command === 'dreamina_generate')).toHaveLength(1);
+  expect(io.invoke.mock.calls.filter(([command]) => command === 'dreamina_query_result')).toEqual([
+    ['dreamina_query_result', { submitId: 'original-cli-task' }],
+  ]);
   expect(io.legacySave).not.toHaveBeenCalled(); expect(io.legacyRemove).not.toHaveBeenCalled();
 });

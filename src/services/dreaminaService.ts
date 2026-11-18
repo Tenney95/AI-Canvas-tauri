@@ -6,13 +6,13 @@
  * 避免线上地址过期。
  */
 import { mapImageDimensions } from './aiDimensions';
-import { pollTask } from './pollTask';
+import { queryDreaminaResult } from './dreaminaResult';
 import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling, getVideoEditorTransitionAnchor } from './pollManager';
 import { useAppStore } from '../store/useAppStore';
 import { logAiRequest } from './ai/httpTransport';
 import { getDreaminaImageModel, getDreaminaVideoCapability } from './ai/dreaminaModels';
 import type { MediaReference } from '../types/aiTypes';
-import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
 import { isNativeVideoSubmissionGuard } from './nativeVideoSubmission';
 import { isCharacterImageTaskContext } from './characterImageTaskContext';
 
@@ -38,16 +38,6 @@ function mapResolution(imageSize: string | undefined, modelVersion: string): str
 function modelVersionOf(model: string): string {
   const i = model.indexOf('/');
   return i >= 0 ? model.slice(i + 1) : model;
-}
-
-interface DreaminaOutput {
-  url: string;
-  localPath: string;
-}
-interface DreaminaQuery {
-  status: 'pending' | 'success' | 'failed';
-  outputs: DreaminaOutput[];
-  failReason: string;
 }
 
 async function invokeTauri<T>(
@@ -86,29 +76,6 @@ async function invokeTauri<T>(
     if (e instanceof Error) throw e;
     throw new Error(typeof e === 'string' ? e : JSON.stringify(e), { cause: e });
   }
-}
-
-async function resolveOutputUrl(o: DreaminaOutput): Promise<string> {
-  if (o.localPath) {
-    return convertFileSrc(o.localPath);
-  }
-  return o.url;
-}
-
-const POLL_INTERVAL_MS = 3000;
-const MAX_POLL_MS = 60 * 60 * 1000; // 1 小时上限（视频可能较久）
-
-async function pollResult(submitId: string, signal?: AbortSignal): Promise<DreaminaOutput> {
-  return pollTask<DreaminaQuery, DreaminaOutput>({
-    fetchState: () => invokeTauri<DreaminaQuery>('dreamina_query_result', { submitId }, signal),
-    isComplete: (r) => r.status === 'success' && r.outputs.length > 0 ? r.outputs[0] : null,
-    isFailed: (r) => r.status === 'failed' ? (r.failReason || '即梦生成失败') : null,
-    interval: POLL_INTERVAL_MS,
-    maxDuration: MAX_POLL_MS,
-    timeoutMsg: '即梦生成超时',
-    onFetchError: 'throw',
-    signal,
-  });
 }
 
 /** 原生命令本身不支持取消；等待可停止，真实提交的迟到ID仍必须耐久保存。 */
@@ -191,8 +158,7 @@ export async function generateDreaminaImage(opts: {
       updatePendingTask(opts.nodeId, { taskId: submitId, submitted: true });
     }
 
-    const out = await pollResult(submitId, signal);
-    const url = await resolveOutputUrl(out);
+    const [url] = await queryDreaminaResult(submitId, { signal, firstOnly: true, logQuery: true });
     if (!url) throw new Error('即梦未返回生成结果');
     return { url, width: dims.width, height: dims.height };
   } finally {
@@ -328,8 +294,7 @@ export async function generateDreaminaVideo(opts: {
       updatePendingTask(opts.nodeId, { taskId: submitId, submitted: true });
     }
 
-    const out = await pollResult(submitId, signal);
-    const url = await resolveOutputUrl(out);
+    const [url] = await queryDreaminaResult(submitId, { signal, firstOnly: true, logQuery: true });
     if (!url) throw new Error('即梦未返回生成结果');
     return { url };
   } finally {

@@ -1,5 +1,4 @@
 /** 固定图片接口与 Dreamina 的原任务回执；真实提交不重试，完整产物先冻结后交付。 */
-import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import type { MediaDownloadAccess } from '../types/aiTypes';
 import type { NativeMediaLocalOutput, MediaKind } from '../types/media';
 import { useAppStore } from '../store/useAppStore';
@@ -19,7 +18,8 @@ import { sha256BytesHex } from './mediaDataUrl';
 import { getHttpResponseError } from './ai/httpUtils';
 import { createCccImageResultPoll, queryCccImageResult } from './ai/cccImageResult';
 import { createMediaDownloadAccess } from './ai/mediaDownloadAccess';
-import { pollTask, PollTaskFailedError } from './pollTask';
+import { queryDreaminaResult } from './dreaminaResult';
+import { PollTaskFailedError } from './pollTask';
 import { isSafeNativeProtocolTaskId } from './nativeProtocolContext';
 
 export type NativeBuiltinImageMode = 'standard' | 'protocol' | 'volcengine' | 'ccc' | 'dreamina';
@@ -269,11 +269,9 @@ export async function resumeNativeBuiltinImageTask(operationId: string, signal?:
       let urls: string[];
       try {
         if (receipt.mode === 'dreamina') {
-          urls = await pollTask<{ status: string; outputs: Array<{ url: string; localPath: string }>; failReason: string }, string[]>({
-            fetchState: () => invoke('dreamina_query_result', { submitId: original.taskId }),
-            isComplete: (value) => value.status === 'success' && value.outputs.length ? value.outputs.map((file) => file.localPath ? convertFileSrc(file.localPath) : file.url) : null,
-            isFailed: (value) => value.status === 'failed' ? '即梦已确认原任务失败' : null,
-            interval: 3000, maxDuration: 60 * 60 * 1000, signal, onFetchError: 'throw',
+          urls = await queryDreaminaResult(original.taskId, {
+            signal,
+            failureMessage: '即梦已确认原任务失败',
           });
         } else if (receipt.mode === 'ccc') {
           const provider = useAppStore.getState().config.providers[record.providerConfigId];

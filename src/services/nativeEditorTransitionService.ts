@@ -1,6 +1,6 @@
 /** 新项目剪辑转场：只续查原远端任务，结果直接条件提交到原工程。 */
 import { stat } from '@tauri-apps/plugin-fs';
-import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
 import type { CanvasContext } from '../types/project';
 import type { ModelProtocolVariables } from './ai/modelProtocol';
 import type { MediaReference, ProtocolJsonValue } from '../types/aiTypes';
@@ -23,7 +23,7 @@ import { assertNativeEditorMediaPrepared, claimNativeEditorMediaTask, commitNati
   prepareNativeEditorMediaTask, recordNativeEditorMediaSubmission, retainNativeEditorMediaOutput, reviewNativeEditorMediaTask, type NativeEditorMediaTask } from './indexedDb/nativeEditorMediaTaskRepository';
 import { retainNativeEditorMediaOutputs } from './indexedDb/nativeEditorMediaTaskRepository';
 import { getHttpResponseError } from './ai/httpUtils';
-import { pollTask, PollTaskFailedError } from './pollTask';
+import { PollTaskFailedError } from './pollTask';
 import { assertModelProtocolResult } from './ai/modelCapabilityValidation';
 import { failNativeEditorMediaTask } from './indexedDb/nativeEditorMediaTaskRepository';
 import { APIMART_BASE_URL, VOLCENGINE_BASE_URL } from '../constants/api';
@@ -55,6 +55,7 @@ import { resolveNativeRecoveryProtocol } from './nativeProtocolRecovery';
 import { aigcsiVideoVariables, usesAigcsiModelProtocol } from './ai/providers/aigcsiModelManifest';
 import { minimaxVideoVariables, resolveMinimaxExecutionProfile, usesMinimaxModelProtocol, assertMinimaxQueryResponse } from './ai/providers/minimaxModelManifest';
 import { buildDreaminaVideoParams } from './dreaminaService';
+import { queryDreaminaResult } from './dreaminaResult';
 import { getDreaminaVideoCapability } from './ai/dreaminaModels';
 
 async function probeStoredVideo(root: string, relativePath: string): Promise<number> {
@@ -404,11 +405,9 @@ export async function recoverNativeEditorTransition(operationId: string, anchorN
       }
       if (!urls.length) { remoteFailed = 'failed'; throw new PollTaskFailedError('原APIMart转场任务均已失败或取消'); }
       completion = { taskCount: ids.length, failedTasks }; return { urls };
-    })() : selected.kind === 'dreamina' ? { urls: await pollTask<{ status: string; outputs: Array<{ url: string; localPath: string }>; failReason?: string }, string[]>({
-      fetchState: () => invoke('dreamina_query_result', { submitId: row.remoteTaskId! }),
-      isComplete: (value) => value.status === 'success' && value.outputs.length ? value.outputs.map((file) => file.localPath ? convertFileSrc(file.localPath) : file.url) : null,
-      isFailed: (value) => value.status === 'failed' ? '即梦已确认原转场任务失败' : null,
-      signal: activeSignal, interval: 3000, maxDuration: 60 * 60 * 1000, onFetchError: 'throw',
+    })() : selected.kind === 'dreamina' ? { urls: await queryDreaminaResult(row.remoteTaskId!, {
+      signal: activeSignal,
+      failureMessage: '即梦已确认原转场任务失败',
     }) } : selected.kind === 'runninghub' ? { urls: (await queryRunningHubModel(selected.rawConnection, [row.remoteTaskId!], 'video', activeSignal)).map((output) => output.url) }
       : await (async () => {
         if (selected.kind !== 'general') throw new Error('原转场查询合同未匹配，未查询其他厂商');
