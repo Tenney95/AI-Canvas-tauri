@@ -145,6 +145,25 @@ describe('节点扩图的独立输入', () => {
     expect(mocks.imageBatch.mock.calls[0][0]).toMatchObject({ image_urls: [normalized.url] });
   });
 
+  it('原生扩图同时保留提示词选择和输出格式，沿用原提交守卫', async () => {
+    const capabilities = await import('../../src/services/ai/mediaModelCapabilities');
+    vi.spyOn(capabilities, 'resolveImageParameterCapability').mockReturnValue({
+      modelId: 'image-output', resolutionStyle: 'K', resolutions: ['2K'], ratios: ['1:1'], supportsBatch: false,
+      outputFormats: ['png', 'gif', 'svg'], defaultOutputFormat: 'png',
+    });
+    mocks.store.projectExecutionContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'runtime',
+      projectId: 'p', projectEpoch: 1, canvasId: 'p', episodeId: null, canvasEpoch: 1, canvasRevision: 0 };
+    const input = { ...outpaintData(), imageOutputFormat: 'png' as const };
+    mocks.store.nodes = [{ id: 'video', data: input }];
+    mocks.imageBatch.mockRejectedValueOnce(Object.assign(new Error('fixture delivered'), { name: 'NativeMediaTaskDelivered' }));
+    const imagePromptResolution = { original: '完整扩图提示词', replacement: '精简扩图提示词' };
+    expect(await executeGeneration('video', undefined, undefined, undefined, undefined, { imagePromptResolution })).toEqual({ success: true });
+    expect(mocks.imageBatch).toHaveBeenCalledOnce();
+    expect(mocks.imageBatch.mock.calls[0][0]).toMatchObject({ imagePromptResolution,
+      imageOutputFormat: 'png', image_urls: [input.outpaintInput!.url] });
+    expect(mocks.store.nodes[0].data.outpaintInput).toEqual(input.outpaintInput);
+  });
+
   it('垫图缺失时拒绝生成，不退回上次结果或重新提交', async () => {
     const input = outpaintData(); input.outpaintInput!.url = undefined;
     mocks.store.nodes = [{ id: 'video', data: input }];

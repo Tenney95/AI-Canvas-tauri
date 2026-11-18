@@ -12,6 +12,7 @@ vi.mock('../../src/services/ai/httpTransport', () => transportMocks);
 
 import { streamAssistantReply } from '../../src/services/ai/assistantStream';
 import { generateImage, generateImagesBatch } from '../../src/services/ai/generateImage';
+import { inspectImagePromptLength } from '../../src/services/ai/generateImage';
 import { generateText } from '../../src/services/ai/generateText';
 import { reversePromptAndTags } from '../../src/services/ai/reversePrompt';
 import { generateVideo } from '../../src/services/ai/generateVideo';
@@ -498,6 +499,63 @@ describe('standard image error credentials', () => {
 });
 
 describe('GPT Image 2.6 的厂商请求合同', () => {
+  it('超长提示词在标准 JSON 与 multipart 参考图读取和发送前拒绝', async () => {
+    const fetch = vi.spyOn(globalThis, 'fetch');
+    for (const edit of [false, true]) {
+      await expect(generateImageStandard({ apiKey: 'fixture', baseUrl: 'https://gateway.example/v1', modelName: 'gpt-image-2.6',
+        prompt: '图'.repeat(38_956), dimensions: { width: 1024, height: 1024 },
+        ...(edit ? { imageUrls: ['asset://localhost/reference.png'], imageReferenceRequestMode: 'edits-multipart' as const } : {}),
+      })).rejects.toMatchObject({ name: 'ImagePromptOverflowError', characters: 38_956, maxCharacters: 32_000 });
+    }
+    expect(fetch).not.toHaveBeenCalled();
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+  });
+
+  it('短 @ 引用展开为超长正文时，预检和实际提交使用相同长度', async () => {
+    useAppStore.setState((state) => ({ config: { ...state.config, providers: {
+      ...state.config.providers, cccapi: { name: 'CCC', apiKey: 'fixture' },
+    } }, nodes: [{ id: 'long-text', type: 'ai-text', position: { x: 0, y: 0 },
+      data: { type: 'ai-text', label: '长文', output: '图'.repeat(38_956) } }] }));
+    const params = { provider: 'cccapi', model: 'cccapi/gpt-image-2.6', prompt: '@{long-text:长文}' };
+    const overflow = await inspectImagePromptLength(params);
+    expect(overflow).toMatchObject({ characters: 38_956, inputCharacters: params.prompt.length });
+    await expect(generateImagesBatch(params, 1)).rejects.toMatchObject({ name: 'ImagePromptOverflowError', characters: 38_956 });
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.example/trimmed.png' }] }));
+    await generateImagesBatch({ ...params, imagePromptResolution: { original: overflow!.prompt, replacement: '图'.repeat(32_000) } }, 1);
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0][1].body)).prompt).toHaveLength(32_000);
+  });
+
+  it('参考图与画幅说明也计入限制，旧提示词选择不能用于新正文', async () => {
+    useAppStore.setState((state) => ({ config: { ...state.config, providers: { ...state.config.providers,
+      cccapi: { name: 'CCC', apiKey: 'fixture' } } } }));
+    const params = { provider: 'cccapi', model: 'cccapi/gpt-image-2.6', prompt: '图'.repeat(31_950),
+      image_urls: ['asset://localhost/reference.png'], aspectRatio: '9:16' };
+    const overflow = await inspectImagePromptLength(params);
+    expect(overflow!.characters).toBeGreaterThan(32_000);
+    expect(overflow!.prompt).toContain('9:16');
+    await expect(generateImagesBatch({ ...params, imagePromptResolution: { original: '旧正文', replacement: '精简描述' } }, 1))
+      .rejects.toThrow('生成输入已变化');
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+  });
+
+  it('原生项目允许提示词预检，但实际生成仍要求受信提交守卫', async () => {
+    useAppStore.setState((state) => ({ currentProjectId: 'native-canvas',
+      projectExecutionContext: { kind: 'canvas', schemaVersion: 2, modelGeneration: 1,
+        projectId: 'native-project', projectEpoch: 1, canvasId: 'native-canvas',
+        canvasEpoch: 1, canvasRevision: 1, episodeId: null },
+      config: { ...state.config, providers: { ...state.config.providers,
+        cccapi: { name: 'CCC', apiKey: 'fixture' } } } }));
+    const params = { provider: 'cccapi', model: 'cccapi/gpt-image-2.6', prompt: '图'.repeat(32_001) };
+    await expect(inspectImagePromptLength(params)).resolves.toMatchObject({
+      name: 'ImagePromptOverflowError', characters: 32_001, maxCharacters: 32_000,
+    });
+    await expect(generateImagesBatch({ ...params, prompt: '风景' }, 1))
+      .rejects.toThrow('没有可耐久续查的完整回执');
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])('CCC 基础款兼容同步／异步结果（async=%s），只使用原分组 Key', async (asyncResult) => {
     const projectId = 'ccc-26-project';
     clearProjectTasks(projectId);

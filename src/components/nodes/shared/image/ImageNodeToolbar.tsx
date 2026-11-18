@@ -12,7 +12,7 @@ import ToolbarZones from '../toolbar/ToolbarZones';
 import { useNodePluginToolbar } from '../toolbar/NodePluginToolbarButtons';
 import { getHiddenDefaultToolbarButtons } from '../toolbar/toolbarRegistry';
 import { resolvePresetAction, resolvePresetDef, createPresetNode } from '../toolbar/presetAction';
-import { executeGeneration } from '../../../../services/generationService';
+import { executeGenerationWithImagePromptChoice as executeGeneration } from '../../../../services/imagePromptOverflowService';
 import { requestPresetSequence } from '../../../../services/presetSequenceService';
 import { useAppStore } from '../../../../store/useAppStore';
 import type { Node } from '@xyflow/react';

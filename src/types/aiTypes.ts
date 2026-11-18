@@ -40,6 +40,7 @@ export interface ImageParameterRange {
 }
 
 export interface AIImageGenParams extends AIGenerateParams, ImageOutputParameters {
+  imagePromptResolution?: { original: string; replacement: string };
   /** 仅供完整交付多候选的图片节点／对话入口使用，不写入厂商请求。 */
   collectCandidates?: boolean;
   /** 角色工作台只使用显式选择的素材，交付到角色任务。 */

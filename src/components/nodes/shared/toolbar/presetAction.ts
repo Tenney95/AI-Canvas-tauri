@@ -10,7 +10,7 @@ import { generateId, useAppStore } from '../../../../store/useAppStore';
 import { derivedNodePlacement } from '../../../../store/store.utils';
 import { defaultModelGroups } from '../defaultModels';
 import { getGenerationNodeType } from '../../../../utils/nodeGeneration';
-import { executeGeneration } from '../../../../services/generationService';
+import { executeGenerationWithImagePromptChoice as executeGeneration } from '../../../../services/imagePromptOverflowService';
 import { requestPresetSequence } from '../../../../services/presetSequenceService';
 
 /** 从 localStorage 读取模型偏好（与 ModelSelector 逻辑一致） */

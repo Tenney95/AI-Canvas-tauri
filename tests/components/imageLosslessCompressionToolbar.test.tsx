@@ -43,7 +43,7 @@ vi.mock('../../src/store/useAppStore', () => ({
   ),
 }));
 vi.mock('../../src/services/imageLosslessCompression', () => ({ compressImageNode: driver.compress }));
-vi.mock('../../src/services/generationService', () => ({ executeGeneration: vi.fn() }));
+vi.mock('../../src/services/imagePromptOverflowService', () => ({ executeGenerationWithImagePromptChoice: vi.fn() }));
 vi.mock('../../src/services/presetSequenceService', () => ({ requestPresetSequence: () => false }));
 vi.mock('../../src/components/nodes/shared/toolbar/presetAction', () => ({
   resolvePresetAction: () => null, resolvePresetDef: () => null, createPresetNode: vi.fn(),
