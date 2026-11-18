@@ -16,6 +16,7 @@ import {
   cancelNodePolling,
   cleanupNodePolling,
   getPendingTasksForProject,
+  isNodePollingCurrent,
   pauseMediaTask,
   pauseVideoNodeTask,
   registerNodePolling,
@@ -1551,9 +1552,9 @@ export async function executeComfyUITextGenerate(
   const sourceWorkflow = sourceState.workflows.find((workflow) => workflow.id === workflowId);
   const comfyUrl = getComfyUIConfig(workflowId);
   assertComfyNodeCanSubmit(params.nodeId);
-  const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
   const requestedSignal = externalSignal ?? params.signal;
-  const signal = nodeSignal && requestedSignal ? AbortSignal.any([nodeSignal, requestedSignal]) : nodeSignal ?? requestedSignal;
+  const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId, requestedSignal) : undefined;
+  const signal = nodeSignal ?? requestedSignal;
   const projectId = params.nodeId ? useAppStore.getState().currentProjectId : null;
   let progressSession: ComfyProgressSession | undefined;
   let submittedTaskId: string | undefined;
@@ -1602,7 +1603,7 @@ export async function executeComfyUITextGenerate(
     }
     if (submittedTaskId && !(error instanceof PollTaskFailedError)) {
       retainPending = true;
-      if (pendingReceipt && !nodeSignal?.aborted) updatePendingTask(pendingReceipt.nodeId, {
+      if (pendingReceipt && nodeSignal && isNodePollingCurrent(pendingReceipt.nodeId, nodeSignal)) updatePendingTask(pendingReceipt.nodeId, {
         comfyRecoveryState: error instanceof ComfyOutputUnavailableError ? 'output_unavailable'
           : error instanceof RangeError ? 'save_pending' : 'disconnected',
         comfyQueryHttpStatus: error instanceof ComfyQueryAuthorizationError ? error.status : undefined,
@@ -1643,10 +1644,8 @@ export async function executeComfyUIGenerate(
   const { workflowId, workflowInputs, prompt, imageSize = '2K', aspectRatio = '1:1' } = params;
   const comfyUrl = comfyBaseUrlFor(workflowId);
   assertComfyNodeCanSubmit(params.nodeId);
-  const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
-  const signal = nodeSignal && externalSignal
-    ? AbortSignal.any([nodeSignal, externalSignal])
-    : nodeSignal ?? externalSignal;
+  const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId, externalSignal) : undefined;
+  const signal = nodeSignal ?? externalSignal;
   const projectId = params.nodeId ? useAppStore.getState().currentProjectId : null;
   let progressSession: ComfyProgressSession | undefined;
   let submittedTaskId: string | undefined;
@@ -1729,7 +1728,7 @@ export async function executeComfyUIGenerate(
     if (submittedTaskId && (error instanceof ComfyPendingError || signal?.aborted)) {
       const outputReceived = retainPending;
       retainPending = true;
-      if (params.nodeId && !nodeSignal?.aborted) {
+      if (params.nodeId && nodeSignal && isNodePollingCurrent(params.nodeId, nodeSignal)) {
         updatePendingTask(params.nodeId, { comfyRecoveryState: error instanceof ComfyOutputUnavailableError ? 'output_unavailable'
           : outputReceived ? 'save_pending' : 'disconnected',
           comfyQueryHttpStatus: error instanceof ComfyQueryAuthorizationError ? error.status : undefined }, submittedTaskId, pendingReceipt?.attemptId);
@@ -1814,10 +1813,8 @@ export async function executeComfyUIVideoGenerate(
   }
   const comfyUrl = comfyBaseUrlFor(workflowId);
   assertComfyNodeCanSubmit(params.nodeId);
-  const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
-  const signal = nodeSignal && externalSignal
-    ? AbortSignal.any([nodeSignal, externalSignal])
-    : nodeSignal ?? externalSignal;
+  const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId, externalSignal) : undefined;
+  const signal = nodeSignal ?? externalSignal;
   const projectId = params.nodeId ? useAppStore.getState().currentProjectId : null;
   let progressSession: ComfyProgressSession | undefined;
   let submittedTaskId: string | undefined;
@@ -1931,13 +1928,13 @@ export async function executeComfyUIVideoGenerate(
     if (submittedTaskId && (error instanceof ComfyPendingError || signal?.aborted)) {
       const outputReceived = retainPending;
       retainPending = true;
-      if (params.nodeId && !nodeSignal?.aborted) {
+      if (params.nodeId && nodeSignal && isNodePollingCurrent(params.nodeId, nodeSignal)) {
         updatePendingTask(params.nodeId, { comfyRecoveryState: error instanceof ComfyOutputUnavailableError ? 'output_unavailable'
           : outputReceived ? 'save_pending' : 'disconnected',
           comfyQueryHttpStatus: error instanceof ComfyQueryAuthorizationError ? error.status : undefined }, submittedTaskId, pendingReceipt?.attemptId);
       }
     }
-    if (retainPending && params.nodeId && !nodeSignal?.aborted) {
+    if (retainPending && params.nodeId && nodeSignal && isNodePollingCurrent(params.nodeId, nodeSignal)) {
       const paused = pauseVideoNodeTask(params.nodeId, submittedTaskId, error, 'query_interrupted');
       if (paused) throw paused;
     }
@@ -1976,10 +1973,8 @@ export async function executeComfyUIAudioGenerate(
   const { workflowId, workflowInputs, prompt } = params;
   const comfyUrl = comfyBaseUrlFor(workflowId);
   assertComfyNodeCanSubmit(params.nodeId);
-  const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
-  const signal = nodeSignal && externalSignal
-    ? AbortSignal.any([nodeSignal, externalSignal])
-    : nodeSignal ?? externalSignal;
+  const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId, externalSignal) : undefined;
+  const signal = nodeSignal ?? externalSignal;
   const projectId = params.nodeId ? useAppStore.getState().currentProjectId : null;
   let progressSession: ComfyProgressSession | undefined;
   let submittedTaskId: string | undefined;
@@ -2034,7 +2029,7 @@ export async function executeComfyUIAudioGenerate(
     if (submittedTaskId && (error instanceof ComfyPendingError || signal?.aborted)) {
       const outputReceived = retainPending;
       retainPending = true;
-      if (params.nodeId && !nodeSignal?.aborted) {
+      if (params.nodeId && nodeSignal && isNodePollingCurrent(params.nodeId, nodeSignal)) {
         updatePendingTask(params.nodeId, { comfyRecoveryState: error instanceof ComfyOutputUnavailableError ? 'output_unavailable'
           : outputReceived ? 'save_pending' : 'disconnected',
           comfyQueryHttpStatus: error instanceof ComfyQueryAuthorizationError ? error.status : undefined }, submittedTaskId, pendingReceipt?.attemptId);

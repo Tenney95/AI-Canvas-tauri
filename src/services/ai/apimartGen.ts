@@ -84,10 +84,8 @@ export async function executeGeneralAsyncTask(
   const mediaDownloadAccess = createMediaDownloadAccess(providerConfigId, baseUrl, { type: 'bearer' });
   let receipt: MediaTaskReceipt | undefined;
   let requestSent = false;
-  const nodeSignal = nodeId ? registerNodePolling(nodeId) : undefined;
-  const signal = nodeSignal && externalSignal
-    ? AbortSignal.any([nodeSignal, externalSignal])
-    : nodeSignal ?? externalSignal;
+  const nodeSignal = nodeId ? registerNodePolling(nodeId, externalSignal) : undefined;
+  const signal = nodeSignal ?? externalSignal;
   try {
     // 预存待续任务（在 fetch 之前），确保关窗重启后能恢复
     if (nodeId) {
@@ -210,10 +208,8 @@ export async function generateApimartImagesBatch(
   let requestSent = false;
   let uncertainSubmission = false;
   let allTasksFailed = false;
-  const nodeSignal = nodeId ? registerNodePolling(nodeId) : undefined;
-  const signal = nodeSignal && externalSignal
-    ? AbortSignal.any([nodeSignal, externalSignal])
-    : nodeSignal ?? externalSignal;
+  const nodeSignal = nodeId ? registerNodePolling(nodeId, externalSignal) : undefined;
+  const signal = nodeSignal ?? externalSignal;
   // 原生批量模型一次提交 n 张；不支持 n 的模型拆成多次 n=1 提交。
   const nativeSubmitBody: Record<string, unknown> = capabilityRequest?.body ?? mapImageParameters(
     'apimart',
@@ -405,10 +401,8 @@ export async function generateApimartVideo(
   let nativePreparation: NativeMediaSubmissionPreparation | undefined;
   let nativeRemoteId: string | undefined;
   const nativeContext = captureLegacyCanvasContext(useAppStore.getState());
-  const nodeSignal = nodeId ? registerNodePolling(nodeId) : undefined;
-  const signal = nodeSignal && externalSignal
-    ? AbortSignal.any([nodeSignal, externalSignal])
-    : nodeSignal ?? externalSignal;
+  const nodeSignal = nodeId ? registerNodePolling(nodeId, externalSignal) : undefined;
+  const signal = nodeSignal ?? externalSignal;
   try {
     if (useAppStore.getState().projectExecutionContext !== undefined && !nativeContext) throw new Error('当前画布尚未就绪，未提交视频任务');
     if (nativeContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(beforeSubmit)) {

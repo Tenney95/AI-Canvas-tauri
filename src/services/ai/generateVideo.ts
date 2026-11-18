@@ -1014,10 +1014,8 @@ async function generateVolcengineVideo(
   let nativePreparation: NativeMediaSubmissionPreparation | undefined;
   let nativeRemoteId: string | undefined;
   const nativeContext = captureLegacyCanvasContext(useAppStore.getState());
-  const nodeSignal = nodeId ? registerNodePolling(nodeId) : undefined;
-  const signal = nodeSignal && externalSignal
-    ? AbortSignal.any([nodeSignal, externalSignal])
-    : nodeSignal ?? externalSignal;
+  const nodeSignal = nodeId ? registerNodePolling(nodeId, externalSignal) : undefined;
+  const signal = nodeSignal ?? externalSignal;
 
   try {
     // 权威上下文尚未就绪时不能把新项目意外当作旧画布提交。

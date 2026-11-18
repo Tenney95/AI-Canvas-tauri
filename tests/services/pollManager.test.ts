@@ -44,9 +44,11 @@ import {
 import { pollTask, PollTimeoutError, PollTaskFailedError } from '../../src/services/pollTask';
 import { useAppStore } from '../../src/store/useAppStore';
 import { HttpResponseError } from '../../src/services/ai/httpUtils';
+import { executeGeneralAsyncTask } from '../../src/services/ai/apimartGen';
 import { createH3QuickAdaptTemplate } from '../../src/services/ai/h3ModelCapabilities';
 import { resolveModelExecutionProfile } from '../../src/services/ai/modelProtocol';
 import { resolvePoll } from '../../src/services/ai/modelProtocolPoll';
+import { generateDreaminaVideo } from '../../src/services/dreaminaService';
 import type { ImageOutputParameters, ResolvedModelProtocolPoll } from '../../src/types/aiTypes';
 import * as fileService from '../../src/services/fileService';
 import * as comfyPolling from '../../src/services/comfyPolling';
@@ -592,6 +594,93 @@ describe('polling runtime hot reload identity', () => {
     );
     expect(useAppStore.getState().nodes[0].data).toMatchObject({ status: 'success', videoUrl: 'asset://recovered-video' });
     expect(getPendingTasksForProject('project-1')).toEqual([]);
+  });
+
+  it('keeps a live original-task query when a canceled generation targets the same node', async () => {
+    const nodeId = 'video-resume-before-canceled-generation';
+    const taskId = 'original-video-still-running';
+    const baseUrl = 'https://gateway.example/v1';
+    const url = 'https://cdn.example/original.mp4';
+    useAppStore.setState((state) => ({
+      nodes: [{ id: nodeId, type: 'ai-video', position: { x: 0, y: 0 },
+        data: { type: 'ai-video', label: '原视频', status: 'idle' } }],
+      config: { ...state.config, providers: { ...state.config.providers,
+        original: { name: '原连接', apiKey: 'fixture-key', baseUrl },
+      } },
+    }));
+    const receipt = savePendingTask({ nodeId, projectId: 'project-1', nodeType: 'ai-video', provider: 'general',
+      providerConfigId: 'original', taskType: 'general', taskId, submitted: true, mediaRecoveryState: 'query_paused' });
+    let finishQuery: (response: Response) => void = () => {};
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+      Promise.reject(new Error('检测到额外的请求')))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { finishQuery = resolve; }));
+    vi.stubGlobal('fetch', fetchMock);
+    const persist = vi.spyOn(fileService, 'persistMediaUrlToProjectData')
+      .mockResolvedValue({ mediaUrl: 'asset://original-video', sourceUrl: url });
+    vi.spyOn(useAppStore.getState(), 'recordOutputHistory').mockResolvedValue(undefined);
+    const originalCaller = new AbortController();
+    const originalQuery = resumeMediaNodeTask(nodeId, originalCaller.signal);
+    const originalSettlement = Promise.allSettled([originalQuery]);
+
+    try {
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+      const querySignal = fetchMock.mock.calls[0][1]?.signal;
+      expect(querySignal?.aborted).toBe(false);
+
+      const caller = new AbortController();
+      const reason = new DOMException('调用已经取消', 'AbortError');
+      caller.abort(reason);
+      await expect(executeGeneralAsyncTask(
+        'fixture-key', baseUrl, 'new-model', '新一轮生成', 'videos', 'original', nodeId, caller.signal,
+      )).rejects.toBe(reason);
+
+      expect(querySignal?.aborted).toBe(false);
+      expect(getMediaTaskReceipt(nodeId)).toEqual(receipt);
+      expect(fetchMock.mock.calls.map(([input, init]) => [String(input), init?.method ?? 'GET']))
+        .toEqual([[`${baseUrl}/tasks/${taskId}?language=zh`, 'GET']]);
+    } finally {
+      if (fetchMock.mock.calls.length === 0) originalCaller.abort();
+      finishQuery(Response.json({ data: { status: 'completed', result: { videos: [{ url }] } } }));
+      await originalSettlement;
+    }
+
+    await expect(originalQuery).resolves.toBeUndefined();
+    expect(persist).toHaveBeenCalledOnce();
+    expect(getMediaTaskReceipt(nodeId)).toBeUndefined();
+    expect(useAppStore.getState().nodes[0].data).toMatchObject({ status: 'success', videoUrl: 'asset://original-video' });
+  });
+
+  it('keeps a newer Dreamina receipt when an older query is canceled for the same task ID', async () => {
+    const nodeId = 'dreamina-stale-query';
+    const taskId = 'dreamina-original-submit-id';
+    const result = { status: 'success', failReason: '', outputs: [{ url: 'https://cdn.example/original.mp4', localPath: '' }] };
+    let finishQuery: (response: typeof result) => void = () => {};
+    const invoke = vi.mocked(tauriCore.invoke)
+      .mockResolvedValueOnce({ submitId: taskId })
+      .mockImplementationOnce(() => new Promise<typeof result>((resolve) => { finishQuery = resolve; }));
+    const caller = new AbortController();
+    const originalQuery = generateDreaminaVideo({
+      nodeId, model: 'dreamina/seedance2.5', prompt: '生成视频', references: [],
+    }, caller.signal);
+    const originalSettlement = Promise.allSettled([originalQuery]);
+
+    try {
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('dreamina_query_result', { submitId: taskId }));
+      const original = getMediaTaskReceipt(nodeId);
+      expect(original).toMatchObject({ taskId });
+      const replacement = savePendingTask({ nodeId, projectId: 'project-1', nodeType: 'ai-video', provider: 'dreamina',
+        taskType: 'dreamina', taskId, submitted: true, mediaRecoveryState: 'query_paused' });
+      expect(replacement.attemptId).not.toBe(original?.attemptId);
+
+      caller.abort();
+      await expect(originalQuery).rejects.toMatchObject({ name: 'AbortError' });
+      expect(getMediaTaskReceipt(nodeId)).toEqual(replacement);
+      expect(invoke.mock.calls.map(([command]) => command)).toEqual(['dreamina_generate', 'dreamina_query_result']);
+    } finally {
+      caller.abort();
+      finishQuery(result);
+      await originalSettlement;
+    }
   });
 
   it.each([

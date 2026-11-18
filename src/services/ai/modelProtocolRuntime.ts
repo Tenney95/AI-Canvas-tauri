@@ -455,13 +455,12 @@ export async function runConfiguredModelProtocol(
   let receipt: MediaTaskReceipt | undefined;
   let nativeTask: NativeMediaTaskRecord | undefined, nativeRemoteId: string | undefined, nativeSent = false;
   let nativePreparation: NativeMediaSubmissionPreparation | undefined;
-  const releaseOperation = options.nodeId ? registerMediaNodeOperation(options.nodeId) : undefined;
-  const nodeSignal = options.nodeId ? registerNodePolling(options.nodeId) : undefined;
-  const signal = nodeSignal && options.signal
-    ? AbortSignal.any([nodeSignal, options.signal])
-    : nodeSignal ?? options.signal;
+  const nodeSignal = options.nodeId ? registerNodePolling(options.nodeId, options.signal) : undefined;
+  const signal = nodeSignal ?? options.signal;
+  let releaseOperation: ReturnType<typeof registerMediaNodeOperation> | undefined;
   try {
     signal?.throwIfAborted();
+    if (options.nodeId) releaseOperation = registerMediaNodeOperation(options.nodeId);
     const submitOptions = { apiKey: provider.apiKey || '', baseUrl, protocol, variables: options.variables, signal, validateResponse,
       ...(usesVolcengineTos ? { sensitive: true } : {}),
       ...(usesRelayonProtocol ? { normalizeSubmitResponse: normalizeRelayonVideoSubmitResponse } : {}),

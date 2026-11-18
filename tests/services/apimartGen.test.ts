@@ -13,7 +13,11 @@ const pollingMocks = vi.hoisted(() => {
   pauseMediaTask: vi.fn((receipt: { taskId: string }, _error?: unknown, reason?: string) => Object.assign(new Error('任务查询已暂停'),
     { name: 'MediaTaskPausedError', taskReceipt: receipt, reason: reason ?? 'query_interrupted' })),
   getMediaTaskReceipt: vi.fn((nodeId: string) => receipts.get(nodeId)),
-  registerNodePolling: vi.fn(() => new AbortController().signal),
+  registerNodePolling: vi.fn((_nodeId: string, parentSignal?: AbortSignal) => {
+    parentSignal?.throwIfAborted();
+    const signal = new AbortController().signal;
+    return parentSignal ? AbortSignal.any([signal, parentSignal]) : signal;
+  }),
   removePendingTask,
   removeFailedMediaTask: vi.fn((receipt: { nodeId: string; taskId: string; attemptId: string }) => {
     removePendingTask(receipt.nodeId, receipt.taskId, receipt.attemptId);
@@ -198,7 +202,6 @@ describe('APIMart Omni 视频合同', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.unstubAllGlobals();
-    pollingMocks.registerNodePolling.mockReturnValue(new AbortController().signal);
     serviceMocks.resolveMediaReferenceUrl.mockImplementation(async (url: string) => url.startsWith('asset:')
       ? 'https://upload.example/reference.png' : url);
   });
@@ -304,7 +307,8 @@ describe('APIMart Omni 视频合同', () => {
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
     controller.abort();
     await expect(request).rejects.toMatchObject({ name: 'MediaTaskPausedError', reason: 'submit_unknown' });
-    expect(pollingMocks.cleanupNodePolling).toHaveBeenCalledWith('node-omni', expect.any(AbortSignal));
+    expect(pollingMocks.registerNodePolling).toHaveBeenCalledWith('node-omni', controller.signal);
+    expect(pollingMocks.cleanupNodePolling).toHaveBeenCalledWith('node-omni', pollingMocks.registerNodePolling.mock.results[0].value);
     expect(pollingMocks.removePendingTask).not.toHaveBeenCalled();
   });
 
@@ -352,7 +356,6 @@ describe('APIMart image polling', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.unstubAllGlobals();
-    pollingMocks.registerNodePolling.mockReturnValue(new AbortController().signal);
     serviceMocks.resolveMediaReferenceUrl.mockImplementation(async (url: string) => url.startsWith('asset:')
       ? 'https://upload.example/reference.png' : url);
   });
@@ -643,7 +646,8 @@ describe('APIMart image polling', () => {
 
     await expect(generation).rejects.toMatchObject({ name: 'MediaTaskPausedError', reason: 'submit_unknown' });
     expect(submitSignal?.aborted).toBe(true);
-    expect(pollingMocks.cleanupNodePolling).toHaveBeenCalledWith('node-1', expect.any(AbortSignal));
+    expect(pollingMocks.registerNodePolling).toHaveBeenCalledWith('node-1', controller.signal);
+    expect(pollingMocks.cleanupNodePolling).toHaveBeenCalledWith('node-1', pollingMocks.registerNodePolling.mock.results[0].value);
     expect(pollingMocks.removePendingTask).not.toHaveBeenCalled();
   });
 });
@@ -652,7 +656,6 @@ describe('APIMart video polling', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.unstubAllGlobals();
-    pollingMocks.registerNodePolling.mockReturnValue(new AbortController().signal);
     serviceMocks.resolveMediaReferenceUrl.mockImplementation(async (url: string) => url.startsWith('asset:')
       ? 'https://upload.example/reference.png' : url);
   });

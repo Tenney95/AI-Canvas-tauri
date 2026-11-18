@@ -241,6 +241,11 @@ export function registerNodePolling(nodeId: string, parentSignal?: AbortSignal):
   return signal;
 }
 
+/** 父信号已取消时，仍可按登记身份保留本轮的续查回执。 */
+export function isNodePollingCurrent(nodeId: string, expectedSignal: AbortSignal): boolean {
+  return abortControllers.get(nodeId)?.signal === expectedSignal;
+}
+
 /** 取消节点的轮询（节点被删除时调用，同时清理 pending task） */
 export function cancelNodePolling(nodeId: string, preservePending = false): void {
   abortNodePolling(nodeId);
@@ -250,7 +255,7 @@ export function cancelNodePolling(nodeId: string, preservePending = false): void
 
 /** 轮询正常结束/失败后清理注册表（不调用 abort） */
 export function cleanupNodePolling(nodeId: string, expectedSignal?: AbortSignal): boolean {
-  if (expectedSignal && abortControllers.get(nodeId)?.signal !== expectedSignal) return false;
+  if (expectedSignal && !isNodePollingCurrent(nodeId, expectedSignal)) return false;
   const projectId = runtime.pollingProjects.get(nodeId);
   abortControllers.delete(nodeId);
   runtime.pollingProjects.delete(nodeId);

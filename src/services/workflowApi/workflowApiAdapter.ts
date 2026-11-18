@@ -352,8 +352,7 @@ export async function executeWorkflowApi(params: {
   const trackingId = params.nodeId ?? `workflow-api-message-${context!.messageId}`;
   if (getPendingTasksForProject(projectId).some((task) => task.nodeId === trackingId)) throw new Error('已有工作流任务，请先继续查询或在平台确认远端任务结束');
   const connection = workflowApiConnection(store.config.providers[manifest.connectionId], manifest);
-  const nodeSignal = registerNodePolling(trackingId);
-  const signal = externalSignal ? AbortSignal.any([nodeSignal, externalSignal]) : nodeSignal;
+  const signal = registerNodePolling(trackingId, externalSignal);
   const guard = params.nodeId && !nativeChat ? registerCanvasDerivation(store, params.nodeId) : null;
   let taskId = '';
   let submitting = false;
@@ -449,7 +448,7 @@ export async function executeWorkflowApi(params: {
     throw error;
   } finally {
     if (guard) completeCanvasDerivation(guard);
-    cleanupNodePolling(trackingId, nodeSignal);
+    cleanupNodePolling(trackingId, signal);
   }
 }
 

@@ -44,7 +44,7 @@ export const grsaiMediaProviderAdapter: MediaProviderAdapter = {
     if (!Number.isInteger(duration) || duration < 1 || duration > capability.maxDuration!) {
       throw new Error(`GRSAI H3 ${resolution} 时长仅支持 1–${capability.maxDuration} 秒`);
     }
-    const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
+    const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId, externalSignal) : undefined;
     const projectId = useAppStore.getState().currentProjectId;
     const videoGeneration = captureVideoTaskGeneration(params.nodeId);
     let receipt: MediaTaskReceipt | undefined;
@@ -54,7 +54,7 @@ export const grsaiMediaProviderAdapter: MediaProviderAdapter = {
     let nativePreparation: NativeMediaSubmissionPreparation | undefined;
     let nativeRemoteId: string | undefined;
     const nativeContext = captureLegacyCanvasContext(useAppStore.getState());
-    const signal = nodeSignal && externalSignal ? AbortSignal.any([nodeSignal, externalSignal]) : nodeSignal ?? externalSignal;
+    const signal = nodeSignal ?? externalSignal;
     try {
       signal?.throwIfAborted();
       const imageReferences = input.references?.filter((ref) => ref.kind === 'image');

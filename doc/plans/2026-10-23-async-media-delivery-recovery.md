@@ -64,3 +64,19 @@
 ```powershell
 npx vitest run tests/services/apimartGen.test.ts tests/services/pollManager.test.ts tests/services/nativeGeneralAsyncTask.test.ts tests/services/apimartMusic.test.ts tests/services/nativeBuiltinAudioRecovery.test.ts tests/services/mediaProviderRegistry.test.ts tests/services/comfyOutputs.test.ts tests/services/comfyTaskRecovery.test.ts
 ```
+
+## 生成轮询取消与回执归属
+
+2026-11-18 首批改动已落地，待用户验收。本次未运行自动化检查或桌面验收。
+
+- APIMart、兼容 `/tasks`、火山方舟、CCC、GRSAI、声明式模型协议、即梦和工作流把调用方信号交给 `registerNodePolling`。已取消的信号在登记前退出，清理使用本次登记返回的信号。无跟踪 ID 的调用沿用调用方信号。RunningHub 与 Workflow API 保留按消息登记的任务，Muse 沿用已有网页和原生取消流程。
+- ComfyUI 文本、图片、视频和音频沿用工作流各自的回执。调用方取消时，本轮仍持有登记才更新恢复状态。节点已被取消或替换时，旧执行不能修改后续登记的回执。
+- 即梦原生图片和视频的轮询登记覆盖等待阶段。停止等待后，已提交的 CLI 任务仍可记录迟到的任务 ID。旧项目的即梦清理按本次任务 ID 和尝试 ID 匹配，并保留视频转场回执规则。已有回执继续通过原任务 ID 查询，续查不重新提交。
+
+桌面验收使用可记录请求的测试连接。在兼容 `/tasks` 的节点启动旧任务续查，再模拟同节点收到一个已取消的调用，确认原查询继续取回结果。用 ComfyUI 提交视频，查询中取消调用方，再续查，核对两次查询对应同一个 ID、生成只提交一次。用即梦原生入口在 CLI 返回前停止等待，核对迟到的 ID 仍可在重开后续查。分别回归普通画布节点、RunningHub 与 Workflow API 的纯消息结果归属，以及无跟踪 ID 的调用。回滚可单独撤销本批代码，无需变更或清空任务记录。
+
+在仓库根目录执行定向模拟验证。
+
+```powershell
+npx vitest run tests/services/pollManager.test.ts tests/services/comfyTaskRecovery.test.ts tests/services/apimartGen.test.ts tests/services/apimartMusic.test.ts tests/services/grsaiMedia.test.ts tests/services/nativeBuiltinImageTask.test.ts tests/services/dreaminaResult.test.ts
+```

@@ -81,10 +81,8 @@ async function generateFlowMusic(
   const projectId = useAppStore.getState().currentProjectId;
   let receipt: MediaTaskReceipt | undefined;
   let requestSent = false;
-  const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
-  const signal = nodeSignal && externalSignal
-    ? AbortSignal.any([nodeSignal, externalSignal])
-    : nodeSignal ?? externalSignal;
+  const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId, externalSignal) : undefined;
+  const signal = nodeSignal ?? externalSignal;
 
   try {
     if (params.nodeId && projectId) {

@@ -12,7 +12,7 @@ type FixtureState = { currentProjectId: string; projectExecutionContext: CanvasC
   commitNativeMediaResult: (record: NativeMediaTaskRecord, path: string, context: CanvasContext, signal?: AbortSignal) => Promise<void> };
 const io = vi.hoisted(() => ({ context: null as unknown as CanvasContext, state: null as unknown as FixtureState,
   listeners: new Set<() => void>(), query: vi.fn(), invoke: vi.fn(), dispatcher: vi.fn(), fetch: vi.fn(), files: new Map<string, string>(),
-  polling: new AbortController(), legacySave: vi.fn(), legacyRemove: vi.fn(), assertInput: vi.fn(), readLocal: vi.fn(), captureLocal: vi.fn(),
+  polling: new AbortController(), cleanupPolling: vi.fn(), legacySave: vi.fn(), legacyRemove: vi.fn(), assertInput: vi.fn(), readLocal: vi.fn(), captureLocal: vi.fn(),
   canvasRevision: 1, preparationReleased: vi.fn(), updateTransient: vi.fn() }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => io.state,
   subscribe: (listener: () => void) => { io.listeners.add(listener); return () => { io.listeners.delete(listener); }; } } }));
@@ -26,7 +26,11 @@ vi.mock('../../src/services/ai/httpTransport', async (original) => ({
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: io.invoke, convertFileSrc: (path: string) => `asset://local/${path}` }));
 vi.mock('../../src/services/pollManager', () => ({ savePendingTask: io.legacySave, updatePendingTask: vi.fn(), removePendingTask: io.legacyRemove,
-  registerNodePolling: () => io.polling.signal, cleanupNodePolling: vi.fn(), getVideoEditorTransitionAnchor: () => undefined,
+  registerNodePolling: (_nodeId: string, parent?: AbortSignal) => {
+    parent?.throwIfAborted();
+    return parent ? AbortSignal.any([io.polling.signal, parent]) : io.polling.signal;
+  },
+  cleanupNodePolling: io.cleanupPolling, getVideoEditorTransitionAnchor: () => undefined,
   resumeNativeMediaLocalDelivery: vi.fn(async () => {}) }));
 vi.mock('../../src/services/fileService', () => ({ persistMediaUrlToProjectData: async (url: string) => {
   if (!io.files.has(url)) io.files.set(url, `media/${String.fromCharCode(97 + io.files.size).repeat(64)}.png`);
@@ -50,7 +54,7 @@ beforeEach(async () => {
   io.listeners.clear(); io.files.clear(); io.query.mockReset(); io.invoke.mockReset(); io.dispatcher.mockReset(); io.fetch.mockReset();
   io.assertInput.mockReset().mockResolvedValue(undefined); io.readLocal.mockReset().mockResolvedValue(undefined);
   io.captureLocal.mockReset().mockImplementation(async (_canvas: string, path: string) => ({ relativePath: path, bytes: 10, sha256: path.slice(6, 70) }));
-  io.legacySave.mockClear(); io.legacyRemove.mockClear(); io.polling = new AbortController();
+  io.legacySave.mockClear(); io.legacyRemove.mockClear(); io.cleanupPolling.mockClear(); io.polling = new AbortController();
   io.canvasRevision = 1; io.preparationReleased.mockClear(); io.updateTransient.mockReset();
   const root = await createNativeProject({ name: '隔离图片合同' });
   io.context = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'fixture-runtime', projectId: root.project.id,
@@ -477,7 +481,7 @@ it('服务商回显当前Key作为taskID时只保留未知意图，不把凭据�
   expect(JSON.stringify(record)).not.toContain('fixture-test-only'); expect(io.query).not.toHaveBeenCalled();
 });
 
-it('Dreamina等待取消后仍保存迟到submitId，重启仅query全部outputs，旧pending队列不变', async () => {
+it.each(['调用方', '节点'])('Dreamina等待被%s取消后仍保存迟到submitId，重启仅query全部outputs，旧pending队列不变', async (cancelSource) => {
   let resolve!: (value: { submitId: string }) => void;
   const delayed = new Promise<{ submitId: string }>((done) => { resolve = done; });
   io.invoke.mockImplementation(async (command: string) => command === 'dreamina_generate' ? delayed
@@ -485,7 +489,12 @@ it('Dreamina等待取消后仍保存迟到submitId，重启仅query全部outputs
   const controller = new AbortController();
   const operation = generateDreaminaImage({ nodeId: 'source', model: 'dreamina/4.0', prompt: '原输入', imageUrls: [], beforeSubmit: async () => {} }, controller.signal);
   await vi.waitFor(() => expect(io.invoke).toHaveBeenCalledWith('dreamina_generate', expect.any(Object)));
-  const pending = expect(operation).rejects.toMatchObject({ name: 'NativeMediaTaskPending' }); controller.abort(); await pending;
+  expect(io.cleanupPolling).not.toHaveBeenCalled();
+  const pending = expect(operation).rejects.toMatchObject({ name: 'NativeMediaTaskPending' });
+  if (cancelSource === '节点') io.polling.abort();
+  else controller.abort();
+  await pending;
+  expect(io.cleanupPolling).toHaveBeenCalledWith('source', expect.any(AbortSignal));
   resolve({ submitId: 'original-cli-task' });
   await vi.waitFor(async () => expect((await listNativeMediaTasks(io.context.projectId))[0].remoteTaskId).toBe('original-cli-task'));
   const record: NativeMediaTaskRecord = (await listNativeMediaTasks(io.context.projectId))[0];

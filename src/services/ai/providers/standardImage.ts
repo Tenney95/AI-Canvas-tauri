@@ -245,8 +245,8 @@ async function generateCccImagesBatch(
   externalSignal?: AbortSignal,
 ): Promise<BatchImageResult> {
   const projectId = useAppStore.getState().currentProjectId;
-  const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
-  const signal = nodeSignal && externalSignal ? AbortSignal.any([nodeSignal, externalSignal]) : nodeSignal ?? externalSignal;
+  const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId, externalSignal) : undefined;
+  const signal = nodeSignal ?? externalSignal;
   let receipt: MediaTaskReceipt | undefined;
   let requestSent = false;
   let allTasksFailed = false;

@@ -772,6 +772,36 @@ describe('ComfyUI 任务恢复合同', () => {
     });
     await expect(pollComfyHistory(task.baseUrl, task.taskId, 'timeout', () => ({ url: 'out' }), controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
   });
+
+  it('已取消的生成请求不会替换同节点活跃的轮询登记', async () => {
+    const active = registerNodePolling('n1');
+    const reason = new DOMException('caller stopped', 'AbortError');
+
+    await expect(executeComfyUIGenerate(params, AbortSignal.abort(reason))).rejects.toBe(reason);
+
+    expect(active.aborted).toBe(false);
+    expect(mocks.fetch).not.toHaveBeenCalled();
+    expect(pending()).toEqual([]);
+    expect(cleanupNodePolling('n1', active)).toBe(true);
+  });
+
+  it('调用方取消视频查询后保留原回执，续查使用同一个任务 ID', async () => {
+    configureVideo();
+    const controller = new AbortController();
+    mocks.history.mockImplementationOnce(async () => {
+      controller.abort();
+      return completedVideo();
+    });
+
+    await expect(executeComfyUIVideoGenerate(params, controller.signal)).rejects.toBeInstanceOf(VideoPollingPausedError);
+    expect(pending()[0]).toMatchObject({ taskId: task.taskId, comfyRecoveryState: 'disconnected', videoRecoveryState: 'paused' });
+
+    await resumeComfyUINodeTask('n1');
+
+    expect(mocks.history.mock.calls.map(([url]) => new URL(url).pathname)).toEqual([`/history/${task.taskId}`, `/history/${task.taskId}`]);
+    expect(promptCalls()).toHaveLength(1);
+    expect(pending()).toEqual([]);
+  });
 });
 
 describe('ComfyUI 文本原任务恢复', () => {

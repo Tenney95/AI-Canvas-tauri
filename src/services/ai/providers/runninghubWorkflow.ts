@@ -156,8 +156,8 @@ export async function executeRunningHubWorkflow(params: {
   const nativeChat = nativeMode && context?.deliveryMode === 'chat';
   const trackingId = nodeId ?? (context ? `runninghub-message-${context.messageId}` : undefined);
   if (trackingId && projectId && getPendingTasksForProject(projectId).some((task) => task.nodeId === trackingId && task.taskType === 'runninghub-workflow')) throw new Error('已有 RunningHub 任务，请先继续查询或确认远端任务结束');
-  const nodeSignal = trackingId ? registerNodePolling(trackingId) : undefined;
-  const signal = nodeSignal && externalSignal ? AbortSignal.any([nodeSignal, externalSignal]) : nodeSignal ?? externalSignal;
+  const nodeSignal = trackingId ? registerNodePolling(trackingId, externalSignal) : undefined;
+  const signal = nodeSignal ?? externalSignal;
   const guard = nodeId && !nativeChat ? registerCanvasDerivation(store, nodeId) : null;
   const fresh = () => !signal?.aborted && (!nodeId || nativeChat || (!!guard && isCanvasDerivationFresh(guard, useAppStore.getState())))
     && (!context || (useAppStore.getState().currentProjectId === context.projectId && useAppStore.getState().messages.some((message) => message.id === context.messageId && message.conversationId === context.conversationId)));

@@ -26,7 +26,10 @@ const mocks = vi.hoisted(() => {
   captureVideoTaskGeneration: vi.fn(),
   pauseMediaTask: vi.fn((receipt: { taskId: string }, _error?: unknown, reason?: string) => Object.assign(new Error('任务查询已暂停'),
     { name: 'MediaTaskPausedError', taskReceipt: receipt, reason: reason ?? 'query_interrupted' })),
-  registerNodePolling: vi.fn(() => new AbortController().signal),
+  registerNodePolling: vi.fn((_nodeId: string, parentSignal?: AbortSignal) => {
+    parentSignal?.throwIfAborted();
+    return parentSignal ?? new AbortController().signal;
+  }),
   images: vi.fn(async (urls: string[]) => urls.map((url) => url.replace('asset://', 'https://uploads.example/'))),
   media: vi.fn(async (url: string) => url.replace('asset://', 'https://uploads.example/')),
   state: { config: { providers: { grsai: { name: 'GRSAI', apiKey: 'fixture-key', baseUrl: '' } } }, currentProjectId: 'project' },
@@ -179,6 +182,7 @@ describe('GRSAI H3 独立视频合同', () => {
     const controller = new AbortController();
     mocks.fetch.mockImplementationOnce(async () => { controller.abort(); return json({ id: 'task', status: 'running' }); });
     await expect(generate({}, {}, controller.signal)).rejects.toThrow();
+    expect(mocks.registerNodePolling).toHaveBeenCalledWith('node', controller.signal);
     expect(mocks.fetch).toHaveBeenCalledTimes(1);
   });
 });

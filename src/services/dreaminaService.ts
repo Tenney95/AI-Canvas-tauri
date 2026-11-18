@@ -11,7 +11,7 @@ import { savePendingTask, updatePendingTask, removePendingTask, registerNodePoll
 import { useAppStore } from '../store/useAppStore';
 import { logAiRequest } from './ai/httpTransport';
 import { getDreaminaImageModel, getDreaminaVideoCapability } from './ai/dreaminaModels';
-import type { MediaReference } from '../types/aiTypes';
+import type { MediaReference, MediaTaskReceipt } from '../types/aiTypes';
 import { invoke } from '@tauri-apps/api/core';
 import { isNativeVideoSubmissionGuard } from './nativeVideoSubmission';
 import { isCharacterImageTaskContext } from './characterImageTaskContext';
@@ -114,10 +114,9 @@ export async function generateDreaminaImage(opts: {
   const dims = mapImageDimensions(opts.imageSize || '2K', opts.aspectRatio || '1:1');
   const modelVersion = modelVersionOf(opts.model);
   const kind = opts.imageUrls.length > 0 ? 'image2image' : 'text2image';
-  const nodeSignal = opts.nodeId ? registerNodePolling(opts.nodeId) : undefined;
-  const signal = nodeSignal && externalSignal
-    ? AbortSignal.any([nodeSignal, externalSignal])
-    : nodeSignal ?? externalSignal;
+  const nodeSignal = opts.nodeId ? registerNodePolling(opts.nodeId, externalSignal) : undefined;
+  const signal = nodeSignal ?? externalSignal;
+  let receipt: MediaTaskReceipt | undefined;
   try {
     const imageModel = getDreaminaImageModel(opts.model);
     if (!imageModel) throw new Error(`即梦不支持图片模型版本“${modelVersion}”`);
@@ -133,13 +132,13 @@ export async function generateDreaminaImage(opts: {
     // image2image 不支持 1k；model_version 为版本号时透传
     if (modelVersion && /^\d/.test(modelVersion)) params.modelVersion = modelVersion;
     if (kind === 'image2image') params.images = opts.imageUrls;
-    if (native) return runNativeDreamina(params, { nodeId: opts.nodeId, model: opts.model, category: 'image', beforeSubmit: opts.beforeSubmit }, signal);
+    if (native) return await runNativeDreamina(params, { nodeId: opts.nodeId, model: opts.model, category: 'image', beforeSubmit: opts.beforeSubmit }, signal);
 
     // 预存待续任务（在 invoke 之前），确保关窗重启后能恢复
     if (opts.nodeId) {
       const projectId = useAppStore.getState().currentProjectId;
       if (projectId) {
-        savePendingTask({
+        receipt = savePendingTask({
           nodeId: opts.nodeId,
           projectId,
           nodeType: 'ai-image',
@@ -154,17 +153,16 @@ export async function generateDreaminaImage(opts: {
     const { submitId } = await invokeTauri<{ submitId: string }>('dreamina_generate', { params }, signal);
 
     // 回填 submitId，标记为已提交
-    if (opts.nodeId) {
-      updatePendingTask(opts.nodeId, { taskId: submitId, submitted: true });
+    if (receipt) {
+      receipt = updatePendingTask(receipt.nodeId, { taskId: submitId, submitted: true }, receipt.taskId, receipt.attemptId) ?? receipt;
     }
 
     const [url] = await queryDreaminaResult(submitId, { signal, firstOnly: true, logQuery: true });
     if (!url) throw new Error('即梦未返回生成结果');
     return { url, width: dims.width, height: dims.height };
   } finally {
-    if (opts.nodeId) {
-      cleanupNodePolling(opts.nodeId, nodeSignal);
-      if (!native) removePendingTask(opts.nodeId);
+    if (opts.nodeId && cleanupNodePolling(opts.nodeId, nodeSignal) && receipt) {
+      removePendingTask(receipt.nodeId, receipt.taskId, receipt.attemptId);
     }
   }
 }
@@ -262,20 +260,19 @@ export async function generateDreaminaVideo(opts: {
   beforeSubmit?: () => void | Promise<void>;
 }, externalSignal?: AbortSignal): Promise<{ url: string }> {
   const native = useAppStore.getState().projectExecutionContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(opts.beforeSubmit);
-  const nodeSignal = opts.nodeId ? registerNodePolling(opts.nodeId) : undefined;
-  const signal = nodeSignal && externalSignal
-    ? AbortSignal.any([nodeSignal, externalSignal])
-    : nodeSignal ?? externalSignal;
+  const nodeSignal = opts.nodeId ? registerNodePolling(opts.nodeId, externalSignal) : undefined;
+  const signal = nodeSignal ?? externalSignal;
+  let receipt: MediaTaskReceipt | undefined;
   try {
     const params = buildDreaminaVideoParams(opts);
-    if (native) return runNativeDreamina(params, { nodeId: opts.nodeId, model: opts.model, category: 'video', beforeSubmit: opts.beforeSubmit }, signal);
+    if (native) return await runNativeDreamina(params, { nodeId: opts.nodeId, model: opts.model, category: 'video', beforeSubmit: opts.beforeSubmit }, signal);
     if (opts.beforeSubmit) await opts.beforeSubmit();
 
     // 预存待续任务（在 invoke 之前），确保关窗重启后能恢复
     if (opts.nodeId) {
       const projectId = useAppStore.getState().currentProjectId;
       if (projectId) {
-        savePendingTask({
+        receipt = savePendingTask({
           nodeId: opts.nodeId,
           projectId,
           nodeType: 'ai-video',
@@ -290,17 +287,16 @@ export async function generateDreaminaVideo(opts: {
     const { submitId } = await invokeTauri<{ submitId: string }>('dreamina_generate', { params }, signal);
 
     // 回填 submitId，标记为已提交
-    if (opts.nodeId) {
-      updatePendingTask(opts.nodeId, { taskId: submitId, submitted: true });
+    if (receipt) {
+      receipt = updatePendingTask(receipt.nodeId, { taskId: submitId, submitted: true }, receipt.taskId, receipt.attemptId) ?? receipt;
     }
 
     const [url] = await queryDreaminaResult(submitId, { signal, firstOnly: true, logQuery: true });
     if (!url) throw new Error('即梦未返回生成结果');
     return { url };
   } finally {
-    if (opts.nodeId) {
-      cleanupNodePolling(opts.nodeId, nodeSignal);
-      if (!native && !getVideoEditorTransitionAnchor(opts.nodeId)) removePendingTask(opts.nodeId);
+    if (opts.nodeId && cleanupNodePolling(opts.nodeId, nodeSignal) && receipt && !getVideoEditorTransitionAnchor(opts.nodeId)) {
+      removePendingTask(receipt.nodeId, receipt.taskId, receipt.attemptId);
     }
   }
 }

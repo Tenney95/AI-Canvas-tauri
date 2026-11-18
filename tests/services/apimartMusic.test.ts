@@ -25,7 +25,10 @@ const mocks = vi.hoisted(() => {
   removeFailedMediaTask: vi.fn((receipt: { nodeId: string; taskId: string; attemptId: string }) => {
     removePendingTask(receipt.nodeId, receipt.taskId, receipt.attemptId);
   }), cleanupNodePolling: vi.fn(),
-  registerNodePolling: vi.fn(() => new AbortController().signal),
+  registerNodePolling: vi.fn((_nodeId: string, parentSignal?: AbortSignal) => {
+    parentSignal?.throwIfAborted();
+    return parentSignal ?? new AbortController().signal;
+  }),
   state: { config: { providers: { apimart: { apiKey: 'test-key', baseUrl: 'https://api.example/v1' } } }, currentProjectId: 'project', nodes: [] },
 }; });
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => mocks.state } }));
