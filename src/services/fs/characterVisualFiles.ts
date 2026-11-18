@@ -1,3 +1,4 @@
+import { appDataDir } from '@tauri-apps/api/path';
 import { exists, mkdir, remove, writeFile } from '@tauri-apps/plugin-fs';
 import type { MediaDownloadAccess } from '../../types/aiTypes';
 import { isRemoteMediaUrl, isTauriAssetUrl } from '../../utils/mediaUrl';
@@ -47,10 +48,15 @@ export async function saveCharacterVisualResult(
 ): Promise<{ filePath: string; width: number; height: number }> {
   if (!/^[a-z0-9-]{1,64}$/i.test(stem)) throw new Error(t('原候选图片文件不可用'));
   await mkdir(directory, { recursive: true });
-  const stagingPath = joinPath(directory, `.${crypto.randomUUID()}.incoming`);
   let downloaded: string | undefined;
   try {
-    if (isRemoteMediaUrl(url)) downloaded = await downloadGeneratedImageToPath(url, stagingPath, { mediaDownloadAccess: access, signal });
+    if (isRemoteMediaUrl(url)) {
+      // macOS 的 asset 协议不读取通配范围内的隐藏文件，暂存也放在素材目录之外。
+      const stagingDirectory = joinPath(await appDataDir(), 'character-visual-downloads');
+      await mkdir(stagingDirectory, { recursive: true });
+      const stagingPath = joinPath(stagingDirectory, `${crypto.randomUUID()}.incoming`);
+      downloaded = await downloadGeneratedImageToPath(url, stagingPath, { mediaDownloadAccess: access, signal });
+    }
     const source = downloaded ? await getAssetUrlFromPath(downloaded) : url;
     if (!isCharacterVisualInputUrl(source)) throw new Error(t('原候选图片文件不可用'));
     const bytes = new Uint8Array(await (await readImageSourceBlob(source, signal)).arrayBuffer());

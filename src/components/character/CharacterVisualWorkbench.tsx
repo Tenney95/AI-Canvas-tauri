@@ -130,12 +130,12 @@ function LibraryImages({ projectId, onSelect }: {
       {!matches ? <p className="text-xs text-canvas-text-secondary" role="status">{t('加载中…')}</p>
         : matches.length === 0 ? <p className="text-xs text-canvas-text-secondary">{t('没有匹配的图片')}</p>
         : (
-          <div className="grid max-h-60 grid-cols-3 gap-2 overflow-auto sm:grid-cols-6">
+          <div className="grid max-h-60 auto-rows-max grid-cols-3 content-start gap-2 overflow-y-auto sm:grid-cols-6">
             {matches.slice(0, visibleCount).map((file) => (
               <button type="button" key={file.path} title={file.name}
                 className="ui-card ui-card--interactive min-w-0 items-stretch gap-1 p-2 text-left text-xs"
                 onClick={() => onSelect({ id: file.assetId ?? crypto.randomUUID(), url: file.assetUrl!, label: file.name })}>
-                <ViewportImage src={file.assetUrl} alt="" className="aspect-square w-full rounded object-cover" />
+                <ViewportImage src={file.assetUrl} alt="" className="h-20 w-full shrink-0 rounded bg-canvas-surface object-contain sm:h-24" />
                 <span className="truncate">{file.name}</span>
                 <span className="truncate text-canvas-text-muted">{t(file.source === 'global' ? '全局素材' : '项目素材')}</span>
               </button>
@@ -757,7 +757,7 @@ export default function CharacterVisualWorkbench({
           </section>
         </div>
 
-        <section className="ui-card ui-stack p-3" aria-label={t('生图设置')}>
+        <section className="ui-card ui-stack shrink-0 p-3" aria-label={t('生图设置')}>
           <div className="flex flex-wrap gap-2">
             {(Object.keys(OPERATION_LABELS) as CharacterVisualOperation[]).map((key) => (
               <button type="button" key={key} aria-pressed={operation === key && channel === 'standard'} disabled={Boolean(pending)}
