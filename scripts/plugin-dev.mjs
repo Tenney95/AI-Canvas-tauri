@@ -1,7 +1,7 @@
 /**
  * plugin-dev — 监听本地插件源码并生成开发用插件包。
  */
-import { readFile, writeFile, mkdir, rename, stat } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename, stat, realpath } from 'node:fs/promises';
 import { watch } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve, dirname, join, basename } from 'node:path';
@@ -219,7 +219,8 @@ async function main() {
     } while (dirty);
     running = false;
   };
-  const watcher = watch(root, { recursive: true }, (_event, filename) => {
+  // Windows 的 8.3 临时目录别名与通知中的完整名称可能不同，监听前统一真实路径。
+  const watcher = watch(await realpath(root), { recursive: true }, (_event, filename) => {
     const path = String(filename ?? '').replaceAll('\\', '/');
     if (!['manifest.json', 'tsconfig.json', 'host.d.ts'].includes(path)
       && !path.startsWith('src/') && !declaredResources.has(path)) return;
