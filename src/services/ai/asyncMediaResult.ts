@@ -18,7 +18,7 @@ export function readAsyncMediaResultUrls(payload: unknown, field: AsyncMediaResu
   };
   const splitUrls = (url: string) => {
     if (/^data:/i.test(url)) return [url];
-    if (field !== 'images') return splitCommaSeparatedUrls([url]);
+    if (field === 'audios') return splitCommaSeparatedUrls([url]);
     // 只有后续项目明确是另一个地址时拆分，保留签名 URL 查询参数中的字面逗号。
     return url.split(/,\s*(?=(?:https?:\/\/|asset:|blob:))/i).map((item) => item.trim()).filter(Boolean);
   };
@@ -39,7 +39,9 @@ export function readAsyncMediaResultUrls(payload: unknown, field: AsyncMediaResu
   };
   let urls: string[] | undefined;
   for (const container of containers) { urls = collection(container[field]); if (urls) break; }
-  if (!urls && field !== 'images') for (const container of containers) { urls = collection(container.images); if (urls) break; }
+  if ((!urls || field === 'videos' && urls.length === 0) && field !== 'images') {
+    for (const container of containers) { urls = collection(container.images); if (urls) break; }
+  }
   if (!urls?.length) for (const container of containers) {
     const candidates = collection(container.data);
     if (candidates?.length) { urls = candidates; break; }
@@ -50,15 +52,15 @@ export function readAsyncMediaResultUrls(payload: unknown, field: AsyncMediaResu
   return urls;
 }
 
-type ImageTaskQuery = Pick<PollTaskOptions<unknown, string[]>,
+type AsyncTaskQuery = Pick<PollTaskOptions<unknown, string[]>,
   'fetchState' | 'interval' | 'maxDuration' | 'onFetchError' | 'signal'> & {
   missingResult: string;
   failureMessage: (task: Record<string, unknown>, status: string) => string;
-  allowPartial?: boolean;
+  readUrls: (task: Record<string, unknown>, raw: unknown) => string[];
 };
 
-/** 统一兼容异步图片任务状态和有序候选。轮询时限由调用方提供。 */
-export function queryAsyncImageResult({ missingResult, failureMessage, allowPartial, ...pollOptions }: ImageTaskQuery): Promise<string[]> {
+/** 统一异步任务完成、失败与候选缺失的处理。 */
+export function queryAsyncMediaResult({ missingResult, failureMessage, readUrls, ...pollOptions }: AsyncTaskQuery): Promise<string[]> {
   const taskState = (raw: unknown): Record<string, unknown> =>
     recordObject(raw) ? recordObject(raw.data) ? raw.data : raw : {};
   const readStatus = (raw: unknown, task: Record<string, unknown>) => {
@@ -70,8 +72,7 @@ export function queryAsyncImageResult({ missingResult, failureMessage, allowPart
     isComplete: (raw) => {
       const task = taskState(raw);
       if (!['completed', 'succeeded', 'success'].includes(readStatus(raw, task))) return null;
-      const taskUrls = readAsyncMediaResultUrls(task, 'images', allowPartial);
-      const urls = taskUrls.length > 0 || task === raw ? taskUrls : readAsyncMediaResultUrls(raw, 'images', allowPartial);
+      const urls = readUrls(task, raw);
       if (urls.length === 0) throw new Error(missingResult);
       return urls;
     },
@@ -83,27 +84,59 @@ export function queryAsyncImageResult({ missingResult, failureMessage, allowPart
   });
 }
 
-/** 查询通用 /tasks 图片契约，供实时调用和旧回执恢复共同使用。 */
-export function queryCompatibleImageTask(apiKey: string, baseUrl: string, taskId: string, options: {
-  signal?: AbortSignal; maxDuration: number; timeoutAsPause?: boolean; allowPartial?: boolean;
+export function queryAsyncImageResult({ allowPartial, ...options }: Omit<AsyncTaskQuery, 'readUrls'> & {
+  allowPartial?: boolean;
 }): Promise<string[]> {
-  const { signal, maxDuration, timeoutAsPause = true } = options;
-  return queryAsyncImageResult({
-    fetchState: async (querySignal) => {
-      try {
-        const response = await corsSafeFetch(`${baseUrl.replace(/\/+$/, '')}/tasks/${encodeURIComponent(taskId)}?language=zh`, {
-          headers: { Authorization: `Bearer ${apiKey}` }, signal: querySignal,
-        });
-        if (timeoutAsPause && [408, 504].includes(response.status)) throw new PollTimeoutError();
-        if (!response.ok) throw new Error(`原通用查询失败（HTTP ${response.status}）`);
-        return await response.json() as unknown;
-      } catch (error) {
-        throw redactModelProtocolError(error, apiKey);
-      }
+  return queryAsyncMediaResult({
+    ...options,
+    readUrls: (task, raw) => {
+      const urls = readAsyncMediaResultUrls(task, 'images', allowPartial);
+      return urls.length > 0 || task === raw ? urls : readAsyncMediaResultUrls(raw, 'images', allowPartial);
     },
+  });
+}
+
+type CompatibleTaskOptions = {
+  signal?: AbortSignal; maxDuration: number; timeoutAsPause?: boolean; allowPartial?: boolean;
+};
+
+async function fetchCompatibleTaskState(
+  apiKey: string, baseUrl: string, taskId: string, signal?: AbortSignal, timeoutAsPause = true,
+): Promise<unknown> {
+  try {
+    const response = await corsSafeFetch(`${baseUrl.replace(/\/+$/, '')}/tasks/${encodeURIComponent(taskId)}?language=zh`, {
+      method: 'GET', headers: { Authorization: `Bearer ${apiKey}` }, signal,
+    });
+    if (timeoutAsPause && [408, 504].includes(response.status)) throw new PollTimeoutError();
+    if (!response.ok) throw new Error(`原通用查询失败（HTTP ${response.status}）`);
+    return await response.json() as unknown;
+  } catch (error) {
+    throw redactModelProtocolError(error, apiKey);
+  }
+}
+
+/** 查询通用 /tasks 图片契约，供实时调用和旧回执恢复共同使用。 */
+export function queryCompatibleImageTask(apiKey: string, baseUrl: string, taskId: string, options: CompatibleTaskOptions): Promise<string[]> {
+  const { signal, maxDuration, timeoutAsPause, allowPartial } = options;
+  return queryAsyncImageResult({
+    fetchState: (querySignal) => fetchCompatibleTaskState(apiKey, baseUrl, taskId, querySignal, timeoutAsPause),
     missingResult: '原通用任务完成但没有完整图片',
     failureMessage: () => '服务商已确认原通用图片任务失败',
-    allowPartial: options.allowPartial,
+    allowPartial,
+    interval: 3000,
+    maxDuration,
+    signal,
+  });
+}
+
+/** 首次取回和续查均对同一个 /tasks 原任务 ID 执行 GET。 */
+export function queryCompatibleVideoTask(apiKey: string, baseUrl: string, taskId: string, options: CompatibleTaskOptions): Promise<string[]> {
+  const { signal, maxDuration, timeoutAsPause, allowPartial } = options;
+  return queryAsyncMediaResult({
+    fetchState: (querySignal) => fetchCompatibleTaskState(apiKey, baseUrl, taskId, querySignal, timeoutAsPause),
+    readUrls: (task, raw) => readAsyncMediaResultUrls(recordObject(task.result) ? task.result : raw, 'videos', allowPartial),
+    missingResult: '原通用任务完成但没有完整视频',
+    failureMessage: (_task, status) => `任务失败: ${status}`,
     interval: 3000,
     maxDuration,
     signal,

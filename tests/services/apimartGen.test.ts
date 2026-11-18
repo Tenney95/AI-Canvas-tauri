@@ -60,6 +60,7 @@ import {
   generateApimartVideo,
 } from '../../src/services/ai/apimartGen';
 import { queryApimartImageResult } from '../../src/services/ai/apimartImageResult';
+import { queryApimartVideoResult } from '../../src/services/ai/apimartVideoResult';
 import { queryCompatibleImageTask } from '../../src/services/ai/asyncMediaResult';
 import { buildApimartSeedanceRequest, isApimartSeedanceModel } from '../../src/services/ai/apimartVideoModels';
 import { apimartMediaProviderAdapter } from '../../src/services/ai/providers/apimartMedia';
@@ -656,6 +657,40 @@ describe('APIMart video polling', () => {
       ? 'https://upload.example/reference.png' : url);
   });
 
+  it('keeps ordered APIMart video candidates after empty entries and falls back only when no videos were returned', async () => {
+    const first = 'https://cdn.example/one.mp4?signature=a,b';
+    const second = 'https://cdn.example/two.mp4';
+    const fallback = 'https://cdn.example/fallback.mp4';
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { status: 'completed', result: {
+        videos: [{ url: [] }, { url: ['', first] }, { url: second }],
+        images: [{ url: fallback }],
+      } } }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'completed', result: {
+        videos: [{ url: [' '] }], images: [{ url: fallback }],
+      } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const options = { maxDuration: 1000 };
+
+    await expect(queryApimartVideoResult('key', 'https://api.example/v1', 'ordered', options))
+      .resolves.toEqual([first, second]);
+    await expect(queryApimartVideoResult('key', 'https://api.example/v1', 'fallback', options))
+      .resolves.toEqual([fallback]);
+  });
+
+  it('requires a real videos result collection for strict editor transition queries', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ data: { status: 'completed', result: {
+      videos: [{ url: [] }],
+      images: [{ url: 'https://cdn.example/preview.png' }],
+    } } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(queryApimartVideoResult('key', 'https://api.example/v1', 'transition', {
+      maxDuration: 1000, allowImageFallback: false, missingResult: '原 APIMart 任务完成但未返回视频',
+    })).rejects.toThrow('原 APIMart 任务完成但未返回视频');
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it('uses the documented Seedance 2.0 defaults while preserving an explicit audio opt-out', () => {
     expect(buildApimartSeedanceRequest(
       'apimart/doubao-seedance-2.0-fast',
@@ -1178,6 +1213,34 @@ describe('媒体任务交付回执', () => {
 });
 
 describe('legacy general media requests', () => {
+  it.each([
+    ['APIMart', 'string'],
+    ['compatible', 'array'],
+  ] as const)('%s first fetch preserves the signed URL returned as a %s', async (provider, shape) => {
+    const baseUrl = 'https://api.example/v1';
+    const taskId = 'original-video-result';
+    const url = 'https://cdn.example/video.mp4?signature=alpha,beta&nonce=first-result';
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ data: [{ task_id: taskId }] }))
+      .mockResolvedValueOnce(jsonResponse({ data: {
+        status: 'completed',
+        result: {
+          videos: [{ url: shape === 'array' ? [url, 'https://cdn.example/second.mp4'] : url }],
+          images: [{ url: 'https://cdn.example/preview.png' }],
+        },
+      } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = provider === 'APIMart'
+      ? await generateApimartVideo('key', baseUrl, 'wan3.0-video', 'prompt')
+      : await executeGeneralAsyncTask('key', baseUrl, 'video', 'prompt', 'videos', 'custom');
+
+    expect(result.url).toBe(url);
+    expect(fetchMock.mock.calls.map(([request, init]) => [String(request), init?.method ?? 'GET'])).toEqual([
+      [`${baseUrl}/videos/generations`, 'POST'],
+      [`${baseUrl}/tasks/${taskId}?language=zh`, 'GET'],
+    ]);
+  });
+
   it('retains a known video task on query HTTP 504 without sending another POST', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ task_id: 'slow-task' }))
       .mockResolvedValueOnce(new Response('', { status: 504 }));

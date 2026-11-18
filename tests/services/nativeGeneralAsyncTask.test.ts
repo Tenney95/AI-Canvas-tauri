@@ -28,17 +28,23 @@ import { executeNativeGeneralAsyncTask, resumeNativeGeneralAsyncTask, nativeGene
 beforeEach(() => {
   vi.stubGlobal('indexedDB', new IDBFactory()); vi.stubGlobal('IDBKeyRange', IDBKeyRange); vi.stubGlobal('crypto', webcrypto);
   driver.fetch.mockReset(); driver.deliver.mockReset().mockResolvedValue(undefined);
-  driver.save.mockReset().mockImplementation(async (url: string) => ({ filePath: `/isolated/${createHash('sha256').update(url).digest('hex')}.wav`, assetUrl: 'asset://synthetic' }));
+  driver.save.mockReset().mockImplementation(async (url: string, _canvasId: string, nodeType: string) => ({
+    filePath: `/isolated/${createHash('sha256').update(url).digest('hex')}.${nodeType === 'ai-video' ? 'mp4' : 'wav'}`, assetUrl: 'asset://synthetic',
+  }));
   driver.capture.mockReset().mockImplementation(async (_canvasId: string, path: string) => {
-    const sha256 = path.split('/').at(-1)!.replace(/\.wav$/, ''); return { relativePath: `media/${sha256}.wav`, sha256, bytes: 10 };
+    const filename = path.split('/').at(-1)!;
+    return { relativePath: `media/${filename}`, sha256: filename.split('.')[0], bytes: 10 };
   });
 });
 afterEach(() => vi.unstubAllGlobals());
-async function fixture() {
-  const root = await createNativeProject({ name: '通用音频隔离项目' });
+async function fixture(category: 'audio' | 'video' = 'audio') {
+  const nodeType = `ai-${category}` as const;
+  const modelName = `remote-${category}`;
+  const resultField = category === 'video' ? 'videos' as const : 'audios' as const;
+  const root = await createNativeProject({ name: '通用媒体隔离项目' });
   const canvas = await saveNativeCanvas({ projectId: root.project.id, canvasId: root.canvas!.id, episodeId: null,
     expectedProjectEpoch: root.project.epoch, expectedCanvasEpoch: root.canvas!.epoch, expectedCanvasRevision: 0,
-    document: { nodes: [{ id: 'audio', type: 'ai-audio', position: { x: 0, y: 0 }, data: { type: 'ai-audio', model: 'general/model', prompt: '合成输入' } }], edges: [], groups: [] } });
+    document: { nodes: [{ id: category, type: nodeType, position: { x: 0, y: 0 }, data: { type: nodeType, model: 'general/model', prompt: '合成输入' } }], edges: [], groups: [] } });
   const context: CanvasContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, projectId: root.project.id, canvasId: canvas.id,
     projectEpoch: root.project.epoch, canvasEpoch: canvas.epoch, canvasRevision: canvas.revision, episodeId: null, runtimeEpoch: 'initial-view' };
   driver.context = context; driver.revision = canvas.revision;
@@ -59,9 +65,9 @@ async function fixture() {
       return { context: captured, canvasRevision: saved.revision, assertCurrent, release: () => { released = true; } };
     },
     config: { providers: { custom: { apiKey: 'synthetic-key', baseUrl: 'https://general.example/v1' } },
-      generalModels: [{ id: 'model', name: '合成音频', modelId: 'remote-audio', category: 'audio', providerConfigId: 'custom' }] } };
-  return { context, input: { apiKey: 'synthetic-key', baseUrl: 'https://general.example/v1', modelName: 'remote-audio', prompt: '合成输入',
-    resultField: 'audios' as const, providerConfigId: 'custom', nodeId: 'audio', modelRef: 'general/model', beforeSubmit: async () => {} } };
+      generalModels: [{ id: 'model', name: '合成媒体', modelId: modelName, category, providerConfigId: 'custom' }] } };
+  return { context, input: { apiKey: 'synthetic-key', baseUrl: 'https://general.example/v1', modelName, prompt: '合成输入',
+    resultField, providerConfigId: 'custom', nodeId: category, modelRef: 'general/model', beforeSubmit: async () => {} } };
 }
 it('完整解析多个原ID与每项多个URL，不能悄悄省略无效候选', () => {
   expect(nativeGeneralTaskIds({ data: [{ task_id: 'original-a' }, { task_id: 'original-b' }], task_id: 'original-a' })).toEqual(['original-a', 'original-b']);
@@ -83,6 +89,32 @@ it('正常提交在POST前已有未知意图，所有原task和候选保存后�
   expect(record.pollContext).toEqual({ taskIds: ['task-a', 'task-b'] }); expect(record.localResults).toHaveLength(2);
   expect(record.completion).toEqual({ taskCount: 2, failedTasks: 0 }); expect(driver.deliver).toHaveBeenCalledWith(record.operationId, expect.any(AbortSignal));
   expect(driver.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+});
+it('原生视频查询超时后只用原连接和原 ID 续查，无第二次 POST', async () => {
+  const { context, input } = await fixture('video');
+  const taskId = `original-video-${crypto.randomUUID()}`;
+  const outputUrl = 'https://cdn.example/video.mp4?signature=a,b';
+  driver.fetch
+    .mockResolvedValueOnce(Response.json({ data: [{ task_id: taskId }] }))
+    .mockResolvedValueOnce(new Response('', { status: 504 }))
+    .mockResolvedValueOnce(Response.json({ data: { status: 'completed', result: { videos: [{ url: outputUrl }] } } }));
+
+  await expect(executeNativeGeneralAsyncTask(input))
+    .rejects.toMatchObject({ name: 'NativeMediaTaskPending', remoteTaskKnown: true });
+  const [receipt] = await listNativeMediaTasks(context.projectId);
+  expect(receipt).toMatchObject({ status: 'submitted', remoteTaskId: taskId, pollContext: { taskIds: [taskId] } });
+  expect(driver.save).not.toHaveBeenCalled();
+
+  await resumeNativeGeneralAsyncTask(receipt.operationId);
+
+  const queryUrl = `${input.baseUrl}/tasks/${taskId}?language=zh`;
+  expect(driver.fetch.mock.calls.map(([url, init]) => [url, init.method, init.headers.Authorization])).toEqual([
+    [`${input.baseUrl}/videos/generations`, 'POST', 'Bearer synthetic-key'],
+    [queryUrl, 'GET', 'Bearer synthetic-key'],
+    [queryUrl, 'GET', 'Bearer synthetic-key'],
+  ]);
+  expect(driver.save).toHaveBeenCalledExactlyOnceWith(outputUrl, context.canvasId, 'ai-video', '原通用产物 1', expect.any(Object));
+  expect(driver.deliver).toHaveBeenCalledExactlyOnceWith(receipt.operationId, expect.any(AbortSignal));
 });
 it('一个原任务失败时仍保存其余全部已确认候选，并单独冻结失败计数', async () => {
   const { context, input } = await fixture();

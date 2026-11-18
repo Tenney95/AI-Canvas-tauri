@@ -7,7 +7,7 @@ import type { MediaReference, ProtocolJsonValue } from '../types/aiTypes';
 import type { VideoEditorAiTransitionRequest } from './videoEditorWindowService';
 import { useAppStore } from '../store/useAppStore';
 import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from './projectExecutionContext';
-import { extractModelName, resolveGeneralModelConnection, splitCommaSeparatedUrls } from './ai/helpers';
+import { extractModelName, resolveGeneralModelConnection } from './ai/helpers';
 import { getProviderPolicy, resolveProviderCatalogId } from './ai/providerPolicies';
 import { buildCanonicalVideoProtocolVariables, buildVolcengineVideoRequestBody } from './ai/generateVideo';
 import { buildModelProtocolRequest, resolveModelExecutionProfile, submitModelProtocol } from './ai/modelProtocol';
@@ -34,7 +34,7 @@ import { resolveCanonicalVideoRequest } from './ai/videoRequestResolver';
 import { resolveVideoModelCapability } from './ai/videoModelCapabilityResolver';
 import { resolveImageUrlsSequentially } from './ai/referenceMediaPreparation';
 import { pollVolcengineVideoTask } from './ai/providers/volcengineVideoQuery';
-import { fetchApimartTask, type ApimartTaskResult } from './ai/apimartGen';
+import { queryApimartVideoResult } from './ai/apimartVideoResult';
 import { createBillingRun, findBillingRunByTask, updateBillingRun, type BillingRun } from './billing/volcengineBillingService';
 import { quoteVolcengineVideo } from './billing/volcenginePricing';
 import { VIDEO_POLL_MAX_DURATION_MS } from './pollManager';
@@ -393,16 +393,12 @@ export async function recoverNativeEditorTransition(operationId: string, anchorN
       for (const taskId of ids) {
         guard();
         try {
-          urls.push(...await pollTask<ApimartTaskResult<{ videos?: Array<{ url: string[] }> }>, string[]>({
-            fetchState: (querySignal) => fetchApimartTask(selected.apiKey, selected.baseUrl, taskId, querySignal, true),
-            isComplete: (task) => {
-              if (task.status !== 'completed') return null;
-              const candidates = task.result?.videos?.flatMap((video) => splitCommaSeparatedUrls(video.url)) ?? [];
-              if (!candidates.length) throw new Error('原 APIMart 任务完成但未返回视频');
-              return candidates;
-            },
-            isFailed: (task) => ['failed', 'cancelled', 'error'].includes(task.status ?? '') ? '原 APIMart 转场任务已失败或取消' : null,
-            interval: 3000, maxDuration: VIDEO_POLL_MAX_DURATION_MS, signal: activeSignal, onFetchError: 'throw',
+          urls.push(...await queryApimartVideoResult(selected.apiKey, selected.baseUrl, taskId, {
+            allowImageFallback: false,
+            failureMessage: () => '原 APIMart 转场任务已失败或取消',
+            missingResult: '原 APIMart 任务完成但未返回视频',
+            maxDuration: VIDEO_POLL_MAX_DURATION_MS,
+            signal: activeSignal,
           }));
         } catch (error) { if (!(error instanceof PollTaskFailedError)) throw error; failedTasks++; }
       }

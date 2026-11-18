@@ -54,10 +54,6 @@ export function extractApimartUrls(
       return typeof url === 'string' ? splitCommaSeparatedUrls([url]) : [];
     });
   };
-  if (nodeType === 'ai-video') {
-    const urls = extractUrls(result.videos);
-    if (urls.length > 0) return [urls[0]];
-  }
   if (nodeType === 'ai-audio') {
     const urls = extractUrls(result.audios);
     if (urls.length > 0) return [urls[0]];

@@ -5,13 +5,12 @@ import { claimNativeMediaRecovery, failNativeMediaTask, isNativeMediaLeaseCurren
 import { pollVolcengineVideoTask } from './ai/providers/volcengineVideoQuery';
 import { persistMediaUrlToProjectData } from './fileService';
 import { APIMART_BASE_URL, GRSAI_BASE_URL, VOLCENGINE_BASE_URL } from '../constants/api';
-import { pollTask, PollTaskFailedError } from './pollTask';
+import { PollTaskFailedError } from './pollTask';
 import { GRSAI_H3_PROTOCOL } from './ai/grsaiModels';
 import { resolvePoll, pollResolvedModelProtocol } from './ai/modelProtocolPoll';
 import { sha256BytesHex } from './mediaDataUrl';
 import { projectModelSourceToken } from './projectModelComparisonMaterial';
-import { fetchApimartTask, type ApimartTaskResult } from './ai/apimartGen';
-import { splitCommaSeparatedUrls } from './ai/helpers';
+import { queryApimartVideoResult } from './ai/apimartVideoResult';
 import { createMediaDownloadAccess } from './ai/mediaDownloadAccess';
 import { VIDEO_POLL_MAX_DURATION_MS } from './pollManager';
 import { resolveNativeProtocolConnection } from './nativeProtocolConnection';
@@ -155,22 +154,15 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
           if (error instanceof PollTaskFailedError) remoteFailed = 'failed';
           throw error;
         }
-      })() : await pollTask<ApimartTaskResult<{ videos?: Array<{ url: string[] }>; images?: Array<{ url: string[] }> }>, { urls: string[] }>({
-        fetchState: (signal) => fetchApimartTask(provider.apiKey!, baseUrl, taskId, signal, true),
-        isComplete: (task) => {
-          if (task.status !== 'completed') return null;
-          const videos = task.result?.videos?.flatMap((item) => splitCommaSeparatedUrls(item.url)) ?? [];
-          const images = task.result?.images?.flatMap((item) => splitCommaSeparatedUrls(item.url)) ?? [];
-          const urls = videos.length ? videos : images;
-          if (!urls.length || urls.length > 128) throw new Error('原视频任务产物集合为空或超过安全上限');
-          return { urls };
-        },
-        isFailed: (task) => {
-          if (!['failed', 'cancelled', 'error'].includes(task.status ?? '')) return null;
-          remoteFailed = task.status === 'cancelled' ? 'cancelled' : 'failed';
-          return '原视频任务已确认失败或取消';
-        }, interval: 3000, maxDuration: VIDEO_POLL_MAX_DURATION_MS, signal: controller.signal, onFetchError: 'throw',
-      });
+      })() : {
+        urls: await queryApimartVideoResult(provider.apiKey!, baseUrl, taskId, {
+          onFailed: (status) => { remoteFailed = status; },
+          failureMessage: () => '原视频任务已确认失败或取消',
+          missingResult: '原视频任务产物集合为空或超过安全上限',
+          maxDuration: VIDEO_POLL_MAX_DURATION_MS,
+          signal: controller.signal,
+        }),
+      };
     const savedIds = !generalExpected && record.pollContext?.taskIds;
     const taskIds = Array.isArray(savedIds) ? savedIds : [record.remoteTaskId!];
     if (!taskIds.length || taskIds.length > 128 || taskIds[0] !== record.remoteTaskId

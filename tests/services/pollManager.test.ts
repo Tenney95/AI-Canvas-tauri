@@ -553,6 +553,47 @@ describe('polling runtime hot reload identity', () => {
     expect(useAppStore.getState().nodes[0].data.status).toBe('success');
   });
 
+  it.each(['apimart', 'general'] as const)('recovers a %s video using only the original task ID and fresh signed URLs', async (provider) => {
+    const nodeId = 'video-retry';
+    const taskId = 'original-video-to-recover';
+    const providerConfigId = provider === 'apimart' ? 'apimart' : 'original';
+    const baseUrl = 'https://gateway.example/v1';
+    const firstUrl = 'https://cdn.example/video.mp4?signature=a,b&nonce=first';
+    const retryUrl = 'https://cdn.example/video.mp4?signature=c,d&nonce=retry';
+    useAppStore.setState((state) => ({ nodes: [{ id: nodeId, type: 'ai-video', position: { x: 0, y: 0 },
+      data: { type: 'ai-video', label: '原视频', status: 'idle' } }], config: { ...state.config, providers: {
+      ...state.config.providers, [providerConfigId]: { name: '原连接', apiKey: 'fixture-key', baseUrl },
+    } } }));
+    const receipt = savePendingTask({ nodeId, projectId: 'project-1', nodeType: 'ai-video', provider,
+      providerConfigId, taskType: provider, taskId, submitted: true, mediaRecoveryState: 'query_paused' });
+    const fetchMock = vi.fn();
+    for (const url of [firstUrl, retryUrl]) {
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+        data: { status: 'completed', result: { videos: [{ url: [url] }] } },
+      })));
+    }
+    vi.stubGlobal('fetch', fetchMock);
+    const persist = vi.spyOn(fileService, 'persistMediaUrlToProjectData')
+      .mockRejectedValueOnce(new fileService.MediaPersistenceError('媒体下载响应等待超时'))
+      .mockResolvedValueOnce({ mediaUrl: 'asset://recovered-video', sourceUrl: retryUrl });
+    vi.spyOn(useAppStore.getState(), 'recordOutputHistory').mockResolvedValue(undefined);
+
+    await resumeMediaNodeTask(nodeId);
+    expect(getMediaTaskReceipt(nodeId)).toEqual(receipt);
+    expect(getPendingTasksForProject('project-1')[0]).toMatchObject({ taskId, mediaRecoveryState: 'delivery_pending' });
+    await resumeMediaNodeTask(nodeId);
+
+    expect(persist.mock.calls.map(([url, projectId, kind]) => [url, projectId, kind])).toEqual([
+      [firstUrl, 'project-1', 'ai-video'],
+      [retryUrl, 'project-1', 'ai-video'],
+    ]);
+    expect(fetchMock.mock.calls.map(([request, init]) => [String(request), init?.method ?? 'GET', init?.headers])).toEqual(
+      Array.from({ length: 2 }, () => [`${baseUrl}/tasks/${taskId}?language=zh`, 'GET', { Authorization: 'Bearer fixture-key' }]),
+    );
+    expect(useAppStore.getState().nodes[0].data).toMatchObject({ status: 'success', videoUrl: 'asset://recovered-video' });
+    expect(getPendingTasksForProject('project-1')).toEqual([]);
+  });
+
   it('does not restore saving ownership to an older operation after a newer one finishes', () => {
     const older = registerMediaNodeOperation('parallel-image', true);
     const newer = registerMediaNodeOperation('parallel-image', true);

@@ -19,7 +19,8 @@ import { mapImageDimensions } from './aiDimensions';
 import { parseMultiPathResponse } from './ai/helpers';
 import { extractApimartUrls, fetchApimartTask, pollRunningHubTask, type ApimartTaskResult } from './pollManagerQueries';
 import { queryApimartImageResult } from './ai/apimartImageResult';
-import { queryCompatibleImageTask } from './ai/asyncMediaResult';
+import { queryApimartVideoResult } from './ai/apimartVideoResult';
+import { queryCompatibleImageTask, queryCompatibleVideoTask } from './ai/asyncMediaResult';
 import { resolveComfyOutputUrl, sanitizeComfyOutputFile, type ComfyOutputFile, type ComfyOutputKind, type ComfyOutputs } from './comfyOutputs';
 import { ComfyOutputUnavailableError, ComfyPendingError, ComfyQueryAuthorizationError, getComfyQueryAuthorizationMessage, pollComfyHistory, pollComfyTextHistory } from './comfyPolling';
 import { maybeAutoReleaseComfyMemory } from './comfyMemory';
@@ -1606,11 +1607,14 @@ async function resumeApimart(task: PendingTask, parentSignal?: AbortSignal): Pro
           interval: 3000, maxDuration: MEDIA_POLL_MAX_DURATION_MS, signal: batchSignal,
         });
       }
+      if (nodeType === 'ai-video') {
+        return queryApimartVideoResult(apiKey, baseUrl, taskId, {
+          maxDuration: MEDIA_POLL_MAX_DURATION_MS, signal: batchSignal, allowPartial: true, firstVideoOnly: true,
+          failureMessage: (status) => `任务失败: ${status}`,
+        });
+      }
       return pollTask<ApimartTaskResult, string[]>({
-        fetchState: async (querySignal) => {
-          try { return await fetchApimartTask(apiKey, baseUrl, taskId, querySignal, true); }
-          catch (error) { if (nodeType === 'ai-video' && isPollTimeoutError(error)) throw new PollTimeoutError(); throw error; }
-        },
+        fetchState: (querySignal) => fetchApimartTask(apiKey, baseUrl, taskId, querySignal, true),
         isComplete: (t) => {
           if (t.status !== 'completed') return null;
           const resolved = extractApimartUrls(t.result, nodeType);
@@ -2070,7 +2074,11 @@ async function resumeGeneral(task: PendingTask, parentSignal?: AbortSignal): Pro
   const query = guardVideoTaskQuery(task, signal);
 
   try {
-    const url = resultField === 'images'
+    const url = resultField === 'videos'
+      ? (await queryCompatibleVideoTask(apiKey, baseUrl, taskId, {
+        maxDuration: MEDIA_POLL_MAX_DURATION_MS, signal, allowPartial: true,
+      }))[0]
+      : resultField === 'images'
       ? (await queryCompatibleImageTask(apiKey, baseUrl, taskId, {
         maxDuration: MEDIA_POLL_MAX_DURATION_MS, signal, allowPartial: true,
       }))[0]

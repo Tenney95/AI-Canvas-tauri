@@ -36,3 +36,33 @@ npx vitest run tests/services/pollTask.test.ts tests/services/pollManager.test.t
 ## 回滚
 
 撤销本批源码、用例与文档补丁即可，不迁移配置、数据库或凭据。任务仍使用既有待续记录格式；独立恢复节点及已经保存的视频保留。回滚前应先取回需要的暂停任务，因为旧版本不会识别新增暂停标记。
+
+## 本轮视频结果查询收口
+
+2026-11-18 首批接入共享查询。定向回归 409 项通过，覆盖原 ID 续查和无二次提交。Lint、应用和测试类型检查、生产构建通过。全量为 14883 通过、2 失败，与基线同为 Windows 发布脚本的两项失败。真实厂商及 Tauri 实机待验收。
+
+- APIMart 的首次取回、旧回执续查、原生画布恢复及原生转场使用 `queryApimartVideoResult`。支持单个 URL 和 URL 数组，保留签名地址中的逗号。画布保留兼容结果字段，原生转场只接收 `videos`。
+- 兼容 `/tasks` 的首次取回、旧回执续查及原生恢复使用 `queryCompatibleVideoTask`。普通入口仍选用首条候选，原生回执仍校验和保留完整候选。超时或下载失败可用原回执续查，明确失败与取消由原处结算。
+- 两个查询入口只对原任务 ID 发 GET。原连接核验、保存鉴权、画布和剪辑归属、回执结构沿用现有链路。回滚可按 APIMart 或兼容接口撤销接入，现有回执和本地视频保留。
+
+### 其他厂商与工作流核对
+
+| 入口 | 首次取回与恢复 |
+| --- | --- |
+| 火山方舟 | 画布、旧回执、原生恢复和转场共用 [方舟视频查询](../../src/services/ai/providers/volcengineVideoQuery.ts) |
+| GRSAI H3、万象及其他声明式模型 | 共用 [声明式协议轮询](../../src/services/ai/modelProtocolPoll.ts)。原生回执先核验原任务协议 |
+| Muse | [Muse 原生会话查询](../../src/services/museService.ts) 由媒体适配层和新旧恢复复用 |
+| RunningHub 模型与工作流 | 模型沿用 [标准模型查询](../../src/services/ai/providers/runninghubMedia.ts)，工作流沿用 [工作流查询](../../src/services/ai/providers/runninghubWorkflow.ts)。当前视频使用模型或工作流回执 |
+| Workflow API | 运行和恢复共用 [工作流任务查询](../../src/services/workflowApi/workflowApiAdapter.ts) |
+| ComfyUI | 首次、旧回执和原生恢复共用 [历史查询](../../src/services/comfyPolling.ts) 和 [产物解析](../../src/services/comfyOutputs.ts)。按各工作流保留首条或多条产物 |
+| 即梦 | [首次生成](../../src/services/dreaminaService.ts)、[旧回执](../../src/services/pollManager.ts)、[原生画布](../../src/services/nativeBuiltinImageTask.ts) 和 [原生转场](../../src/services/nativeEditorTransitionService.ts) 仍各自调用并解析 `dreamina_query_result`。后续可收口查询，保留本地文件优先和候选数量规则 |
+
+### 本轮验收
+
+先在配置了 APIMart Seedance 和兼容异步连接的 Tauri 测试项目中生成视频。分别检查首次取回与查询暂停后重试。在厂商后台核对任务 ID 和提交次数，在原项目检查视频落盘与播放。再核对保存失败后重试、上游取消、切换画布和转场只接受视频。若旧回执已存在，直接使用其「重试」入口。
+
+在仓库根目录执行定向模拟验证：
+
+```powershell
+npx vitest run tests/services/apimartGen.test.ts tests/services/pollManager.test.ts tests/services/nativeGeneralAsyncTask.test.ts tests/services/nativeEditorProtocols.test.ts
+```
