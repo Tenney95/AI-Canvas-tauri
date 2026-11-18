@@ -6,14 +6,14 @@
  * 卡片走 onMouseDown + preventDefault，避免抢走 contenteditable 的光标。
  */
 import { Icon } from '@iconify/react';
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { CharacterCropRect } from '../../types/dramaAssets';
 import { AVATAR_ASPECT, cropImageStyle } from '../character/characterReferencePresentation';
 import ViewportImage from './ViewportImage';
 import ExpandableSearch, { type ExpandableSearchProps } from './ExpandableSearch';
 import VideoThumbnail from './VideoThumbnail';
 import { useT } from '../../i18n';
-import { acquireComfyMediaSource } from '../../services/comfyMediaSource';
+import { useCharacterVoicePreview } from '../../hooks/useCharacterVoicePreview';
 
 export interface MentionPickerTab {
   id: string;
@@ -96,17 +96,6 @@ export default function MentionPicker({
   const hasChipRow = !!leading || (chips?.length ?? 0) > 0;
   const gridRef = useRef<HTMLDivElement>(null);
   const activeItemRef = useRef<HTMLButtonElement>(null);
-  const playerRef = useRef<HTMLAudioElement | null>(null);
-  const previewRequestRef = useRef<{ controller: AbortController; release?: () => void } | null>(null);
-  const stopPreview = useCallback(() => {
-    const request = previewRequestRef.current;
-    previewRequestRef.current = null;
-    request?.controller.abort();
-    const player = playerRef.current;
-    playerRef.current = null;
-    if (player) { player.pause(); player.removeAttribute('src'); player.load(); }
-    request?.release?.();
-  }, []);
   const previousGridRef = useRef<{
     tab: string; chip?: string; query: string; expanded: boolean; signature: string; activeKey?: string;
   } | null>(null);
@@ -115,9 +104,11 @@ export default function MentionPicker({
   const measuredHeightRef = useRef<number | null>(null);
   const heightCallbackRef = useRef(onHeightChange);
   const [height, setHeight] = useState<number | undefined>(undefined);
-  const [playingKey, setPlayingKey] = useState<string | null>(null);
-  const [previewError, setPreviewError] = useState(false);
   const previewSources = JSON.stringify(items.map((item) => [item.key, item.audioPreviewUrl]));
+  const { playingId: playingKey, error: previewError, toggle: togglePreview } = useCharacterVoicePreview(
+    `${activeTab}\n${previewSources}`,
+    { showPending: true },
+  );
   const searchQuery = search?.value ?? '';
   const searchExpanded = search?.expanded ?? false;
 
@@ -179,50 +170,6 @@ export default function MentionPicker({
     if (item.top < viewport.top) grid.scrollTop += (item.top - viewport.top) / scaleY;
     else if (item.bottom > viewport.bottom) grid.scrollTop += (item.bottom - viewport.bottom) / scaleY;
   }, [activeKey, activeTab, activeChip, previewSources, searchQuery, searchExpanded]);
-
-  useEffect(() => {
-    return () => {
-      stopPreview();
-      setPlayingKey(null);
-      setPreviewError(false);
-    };
-  }, [previewSources, activeTab, stopPreview]);
-
-  const togglePreview = (item: MentionPickerItem) => {
-    const wasPlaying = playingKey === item.key;
-    stopPreview();
-    setPlayingKey(null);
-    setPreviewError(false);
-    if (wasPlaying || !item.audioPreviewUrl) return;
-    const request = { controller: new AbortController(), release: undefined as (() => void) | undefined };
-    previewRequestRef.current = request;
-    setPlayingKey(item.key);
-    void acquireComfyMediaSource(item.audioPreviewUrl, request.controller.signal).then((lease) => {
-      if (request.controller.signal.aborted) { lease.release(); return; }
-      request.release = lease.release;
-      const player = new Audio(lease.src);
-      playerRef.current = player;
-      player.onended = () => {
-        if (playerRef.current === player) {
-          stopPreview();
-          setPlayingKey(null);
-        }
-      };
-      const fail = () => {
-        if (playerRef.current === player) {
-          stopPreview();
-          setPlayingKey(null);
-          setPreviewError(true);
-        }
-      };
-      player.onerror = fail;
-      setPlayingKey(item.key);
-      void player.play().catch(fail);
-    }, () => {
-      if (previewRequestRef.current !== request || request.controller.signal.aborted) return;
-      stopPreview(); setPlayingKey(null); setPreviewError(true);
-    });
-  };
 
   return (
     <div ref={pickerRef} className={`mention-picker nowheel nodrag nopan ${className}`}
@@ -332,7 +279,7 @@ export default function MentionPicker({
                 title={playingKey === item.key ? t('暂停试听') : t('试听')}
                 disabled={item.disabled}
                 onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
-                onClick={(event) => { event.stopPropagation(); togglePreview(item); }}
+                onClick={(event) => { event.stopPropagation(); if (item.audioPreviewUrl) void togglePreview(item.key, item.audioPreviewUrl); }}
               >
                 <Icon icon={playingKey === item.key ? 'lucide:pause' : 'lucide:play'} width="14" height="14" />
               </button>

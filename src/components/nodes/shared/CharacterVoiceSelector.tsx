@@ -6,6 +6,7 @@ import { createPortal } from 'react-dom';
 import { Icon } from '@iconify/react';
 import { calcAnchoredPosition } from '../../../utils/popupPosition';
 import { useT } from '../../../i18n';
+import { useCharacterVoicePreview } from '../../../hooks/useCharacterVoicePreview';
 
 export interface CharacterVoiceChoice {
   id: string;
@@ -27,27 +28,15 @@ interface CharacterVoiceSelectorProps {
 export default function CharacterVoiceSelector({ choices, value, disabled, onChange, onPlaybackError }: CharacterVoiceSelectorProps) {
   const t = useT();
   const [open, setOpen] = useState(false);
-  const [playingId, setPlayingId] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const playerRef = useRef<HTMLAudioElement | null>(null);
   const menuId = useId();
   const active = choices.find((choice) => choice.value === value);
-  const sources = JSON.stringify(choices.map(({ id, url }) => [id, url]));
   const expanded = open && !disabled;
-
-  const stopPreview = useCallback(() => {
-    const player = playerRef.current;
-    playerRef.current = null;
-    if (player) {
-      player.onended = null;
-      player.onerror = null;
-      player.pause();
-      player.removeAttribute('src');
-      player.load();
-    }
-    setPlayingId(null);
-  }, []);
+  const { playingId, toggle: preview, stop: stopPreview } = useCharacterVoicePreview(
+    JSON.stringify([expanded, choices.map(({ id, url }) => [id, url])]),
+    { showPending: true, onError: onPlaybackError },
+  );
 
   const close = useCallback(() => {
     stopPreview();
@@ -60,11 +49,8 @@ export default function CharacterVoiceSelector({ choices, value, disabled, onCha
       if (!triggerRef.current?.contains(event.target as Node) && !menuRef.current?.contains(event.target as Node)) close();
     };
     document.addEventListener('pointerdown', outside, true);
-    return () => {
-      document.removeEventListener('pointerdown', outside, true);
-      stopPreview();
-    };
-  }, [expanded, sources, close, stopPreview]);
+    return () => document.removeEventListener('pointerdown', outside, true);
+  }, [expanded, close]);
 
   useLayoutEffect(() => {
     if (!expanded) return;
@@ -89,24 +75,6 @@ export default function CharacterVoiceSelector({ choices, value, disabled, onCha
       window.removeEventListener('scroll', position, true);
     };
   }, [expanded]);
-
-  const preview = async (choice: CharacterVoiceChoice) => {
-    const wasPlaying = playingId === choice.id;
-    stopPreview();
-    if (wasPlaying) return;
-    const player = new Audio();
-    playerRef.current = player;
-    setPlayingId(choice.id);
-    const failed = () => {
-      if (playerRef.current !== player) return;
-      stopPreview();
-      onPlaybackError();
-    };
-    player.onended = () => { if (playerRef.current === player) stopPreview(); };
-    player.onerror = failed;
-    player.src = choice.url;
-    try { await player.play(); } catch { failed(); }
-  };
 
   const select = (next: string) => {
     onChange(next);
@@ -164,7 +132,7 @@ export default function CharacterVoiceSelector({ choices, value, disabled, onCha
                   <button type="button" className={`ui-btn ui-btn--ghost ui-btn--sm mr-1 shrink-0 ${playingId === choice.id ? 'is-active' : ''}`}
                     aria-label={t(playingId === choice.id ? '停止试听 {label}' : '试听 {label}', { label: choice.label })}
                     title={t(playingId === choice.id ? '停止试听' : '试听')}
-                    onClick={() => void preview(choice)}>
+                    onClick={() => void preview(choice.id, choice.url)}>
                     <Icon icon={playingId === choice.id ? 'lucide:square' : 'lucide:play'} width={14} />
                   </button>
                 </div>

@@ -1,7 +1,10 @@
 /**
  * mentionPicker — 回归测试：MentionPicker 滚动定位。
  */
-vi.mock('../../src/services/comfyMediaSource', () => ({ acquireComfyMediaSource: async (src: string) => ({ src, release: () => {} }) }));
+vi.mock('../../src/services/comfyMediaSource', () => ({
+  acquireComfyMediaSource: async (src: string) => ({ src, release: () => {} }),
+  shouldLoadNativeComfyMedia: () => false,
+}));
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactElement } from 'react';
 

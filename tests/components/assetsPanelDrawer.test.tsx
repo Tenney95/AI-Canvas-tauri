@@ -48,6 +48,16 @@ vi.mock('react', async () => {
     }
     return driver.memos[index].value as T;
   };
+  const effect = (run: () => void | (() => void), deps?: readonly unknown[]) => {
+    const index = driver.effectIndex++;
+    const previous = driver.effects[index];
+    if (previous && deps?.length === previous.deps?.length && deps?.every((dep, i) => Object.is(dep, previous.deps?.[i]))) return;
+    // render 阶段的状态调整可能重绘；提交最后一次渲染的 effect。
+    driver.pending[index] = () => {
+      previous?.cleanup?.();
+      driver.effects[index] = { deps, cleanup: run() ?? undefined };
+    };
+  };
   return {
   ...await vi.importActual<typeof import('react')>('react'),
   useCallback: <T,>(callback: T, deps: readonly unknown[]) => memo(() => callback, deps),
@@ -74,16 +84,8 @@ vi.mock('react', async () => {
     driver.refs[index] ??= { current: `asset-selection-${index}` };
     return String(driver.refs[index].current);
   },
-  useEffect: (effect: () => void | (() => void), deps?: readonly unknown[]) => {
-    const index = driver.effectIndex++;
-    const previous = driver.effects[index];
-    if (previous && deps?.length === previous.deps?.length && deps?.every((dep, i) => Object.is(dep, previous.deps?.[i]))) return;
-    // render 阶段的状态调整可能重绘；提交最后一次渲染的 effect。
-    driver.pending[index] = () => {
-      previous?.cleanup?.();
-      driver.effects[index] = { deps, cleanup: effect() ?? undefined };
-    };
-  },
+  useEffect: effect,
+  useLayoutEffect: effect,
   };
 });
 vi.mock('zustand/react/shallow', () => ({ useShallow: <T,>(selector: T) => selector }));

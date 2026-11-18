@@ -48,7 +48,7 @@ import {
 } from './character/characterReferencePresentation';
 import { readAudioDuration } from './character/characterVoiceMedia';
 import { actionMediaFromCanvasNode } from './character/characterActionMedia';
-import { acquireComfyMediaSource } from '../services/comfyMediaSource';
+import { useCharacterVoicePreview } from '../hooks/useCharacterVoicePreview';
 import { copyDramaAssetSelection } from '../services/dramaAssetBatchCopy';
 import { configValuesEqual } from '../services/configPatch';
 
@@ -218,11 +218,6 @@ export default function CharacterLibraryPanel() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [voicePickerOpen, setVoicePickerOpen] = useState(false);
   const [voiceDockState, setVoiceDockState] = useState({ context: '', expanded: false });
-  // 记角色归属，切换角色时自然失效，不必在 effect 里回收状态
-  const [playingVoice, setPlayingVoice] = useState<{
-    characterId: string;
-    clipId: string;
-  } | null>(null);
   const [bindingVoice, setBindingVoice] = useState(false);
   const [captureNodeId, setCaptureNodeId] = useState<string | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -241,23 +236,6 @@ export default function CharacterLibraryPanel() {
   const [hideActionNode, setHideActionNode] = useState(true);
   const [uploadingActionMedia, setUploadingActionMedia] = useState(false);
   const [savingAction, setSavingAction] = useState(false);
-  const voicePlayerRef = useRef<HTMLAudioElement>(null);
-  const voicePlaybackRef = useRef<{
-    clipId: string;
-    player: HTMLAudioElement;
-    controller: AbortController;
-    release?: () => void;
-  } | null>(null);
-  const stopVoicePlayback = useCallback(() => {
-    const playback = voicePlaybackRef.current;
-    voicePlaybackRef.current = null;
-    const player = playback?.player ?? voicePlayerRef.current;
-    player?.pause();
-    player?.removeAttribute('src');
-    player?.load();
-    playback?.controller.abort();
-    playback?.release?.();
-  }, []);
   const actionMediaInputRef = useRef<HTMLInputElement>(null);
 
   // 资源库分类可直接定位同一份全局人物、声音或动作，不另建角色状态。
@@ -390,12 +368,14 @@ export default function CharacterLibraryPanel() {
       ...(actionNodePickerTargetId ? pickableActionNodes.map((node) => `node:${node.id}`) : []),
     ],
   );
-  const playingVoiceClipId = playingVoice?.characterId === selectedCharacter?.id
-    ? playingVoice?.clipId ?? null
-    : null;
-
-  // 切换角色或关闭面板时停止试听，避免声音跟着上一个角色继续播
-  useEffect(() => stopVoicePlayback, [open, scope, selectedCharacter?.id, stopVoicePlayback]);
+  const { playingId: playingVoiceClipId, toggle: toggleVoicePlayback, stop: stopVoicePlayback } = useCharacterVoicePreview(
+    JSON.stringify([open, scope, currentProjectId, selectedCharacter?.id]),
+    {
+      stopOnPause: true,
+      getSource: (id) => voiceClips.find((clip) => clip.id === id)?.audioUrl,
+      onError: () => showToast(t('音频播放失败'), 'error'),
+    },
+  );
 
   const switchScope = (nextScope: CharacterLibraryScope) => {
     setWeaponTarget(null);
@@ -403,35 +383,6 @@ export default function CharacterLibraryPanel() {
     setSelectedCharacterId(null);
     setSelectedReferenceId(null);
     setVoicePickerOpen(false);
-  };
-
-  const toggleVoicePlayback = async (clip: CharacterVoiceClip) => {
-    const player = voicePlayerRef.current;
-    if (!player || !clip.audioUrl || !selectedCharacter) return;
-    if (voicePlaybackRef.current?.clipId === clip.id) {
-      stopVoicePlayback();
-      setPlayingVoice(null);
-      return;
-    }
-    stopVoicePlayback();
-    setPlayingVoice(null);
-    const playback = { clipId: clip.id, player, controller: new AbortController(), release: undefined as (() => void) | undefined };
-    voicePlaybackRef.current = playback;
-    try {
-      const lease = await acquireComfyMediaSource(clip.audioUrl, playback.controller.signal);
-      if (playback.controller.signal.aborted || voicePlaybackRef.current !== playback || voicePlayerRef.current !== player) {
-        lease.release();
-        return;
-      }
-      playback.release = lease.release;
-      player.src = lease.src;
-      await player.play();
-      if (voicePlaybackRef.current === playback) setPlayingVoice({ characterId: selectedCharacter.id, clipId: clip.id });
-    } catch {
-      if (playback.controller.signal.aborted || voicePlaybackRef.current !== playback) return;
-      stopVoicePlayback();
-      showToast(t('音频播放失败'), 'error');
-    }
   };
 
   const handleBindVoiceNode = async (nodeId: string) => {
@@ -460,7 +411,7 @@ export default function CharacterLibraryPanel() {
 
   const handleRemoveVoiceClip = async (clip: CharacterVoiceClip) => {
     if (!selectedCharacter) return;
-    if (voicePlaybackRef.current?.clipId === clip.id) { stopVoicePlayback(); setPlayingVoice(null); }
+    stopVoicePlayback(clip.id);
     if (await removeCharacterVoiceClip(scope, selectedCharacter.id, clip.id)) {
       showToast(t('已移除该声音'));
     }
@@ -885,7 +836,7 @@ export default function CharacterLibraryPanel() {
                             className="character-voice-play"
                             aria-label={playingVoiceClipId === clip.id ? t('暂停试听') : t('试听')}
                             disabled={!clip.audioUrl}
-                            onClick={() => void toggleVoicePlayback(clip)}
+                            onClick={() => void toggleVoicePlayback(clip.id, clip.audioUrl)}
                           >
                             <Icon
                               icon={playingVoiceClipId === clip.id ? 'lucide:pause' : 'lucide:play'}
@@ -1049,21 +1000,6 @@ export default function CharacterLibraryPanel() {
                   </div>
                 </section>
               </div>
-
-              <audio
-                ref={voicePlayerRef}
-                className="sr-only"
-                onPause={(event) => {
-                  if (event.currentTarget.paused && voicePlaybackRef.current?.release) stopVoicePlayback();
-                  setPlayingVoice(null);
-                }}
-                onEnded={() => { stopVoicePlayback(); setPlayingVoice(null); }}
-                onError={(event) => {
-                  if (!event.currentTarget.error || !voicePlaybackRef.current) return;
-                  stopVoicePlayback(); setPlayingVoice(null);
-                  showToast(t('音频播放失败'), 'error');
-                }}
-              />
             </section>
           ) : (
             <div className="character-library-empty">
