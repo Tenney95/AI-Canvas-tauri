@@ -9,6 +9,7 @@ import type { EpisodeCreativeInfo } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { isTauriEnv } from '../services/fs/core';
 import { listEpisodes, seriesOwnerId } from '../store/store.utils';
+import { needsNativeEpisodeContent } from '../store/nativeProjectView';
 import {
   analyzeEpisodeScript,
   buildCreativeFieldPolishPrompt,
@@ -332,6 +333,10 @@ export default function ScriptWorkbench({
     projects,
     currentProjectId,
     projectLoadStatus,
+    projectExecutionContext,
+    switchingProjectName,
+    isCreatingProject,
+    isReturningToStartPage,
     updateEpisodeCreative,
     openChatWithDraft,
     showToast,
@@ -349,6 +354,10 @@ export default function ScriptWorkbench({
     projects: state.projects,
     currentProjectId: state.currentProjectId,
     projectLoadStatus: state.projectLoadStatus,
+    projectExecutionContext: state.projectExecutionContext,
+    switchingProjectName: state.switchingProjectName,
+    isCreatingProject: state.isCreatingProject,
+    isReturningToStartPage: state.isReturningToStartPage,
     updateEpisodeCreative: state.updateEpisodeCreative,
     openChatWithDraft: state.openChatWithDraft,
     showToast: state.showToast,
@@ -389,10 +398,24 @@ export default function ScriptWorkbench({
   const pendingCloseDestination = useRef<'canvas' | 'start'>('canvas');
   const acceptedEditSequenceRef = useRef(0);
   const [acceptedEditSequence, setAcceptedEditSequence] = useState(0);
-  const workspaceState = useAppStore.getState();
-  const contextReady = !!series && !!currentProjectId && seriesOwnerId(projects, currentProjectId) === seriesId
-    && projectLoadStatus === 'ready' && !workspaceState.isCreatingProject && !workspaceState.isReturningToStartPage
-    && workspaceState.switchingProjectName === null;
+  const workspaceReady = !!series && !!currentProjectId && seriesOwnerId(projects, currentProjectId) === seriesId
+    && projectLoadStatus === 'ready' && !isCreatingProject && !isReturningToStartPage && switchingProjectName === null;
+  const contentPending = needsNativeEpisodeContent(currentEpisode);
+  const runtimeEpoch = projectExecutionContext?.runtimeEpoch;
+  const [episodeReadFailure, setEpisodeReadFailure] = useState<{ episodeId: string; runtimeEpoch?: string; attempt: number }>();
+  const [episodeReadAttempt, setEpisodeReadAttempt] = useState(0);
+  useEffect(() => {
+    if (!isOpen || !workspaceReady || !contentPending || !currentEpisodeId) return;
+    let live = true;
+    void useAppStore.getState().loadEpisodeCreative(currentEpisodeId).catch(() => {
+      if (live) setEpisodeReadFailure({ episodeId: currentEpisodeId, runtimeEpoch, attempt: episodeReadAttempt });
+    });
+    return () => { live = false; };
+  }, [isOpen, workspaceReady, contentPending, currentEpisodeId, runtimeEpoch, episodeReadAttempt]);
+  const episodeContentLoad = workspaceReady && contentPending
+    ? episodeReadFailure?.episodeId === currentEpisodeId && episodeReadFailure?.runtimeEpoch === runtimeEpoch
+      && episodeReadFailure?.attempt === episodeReadAttempt ? 'error' : 'loading' : undefined;
+  const contextReady = workspaceReady && !contentPending;
   const [activeTab, setActiveTab] = useState<EditorTab>('outline');
   const activeAssetKind = WORKBENCH_ASSET_KINDS[activeTab];
   const [emptyStoryGraph] = useState(() => createEmptyStoryGraph());
@@ -479,7 +502,7 @@ export default function ScriptWorkbench({
     : persistedDraft;
   const isDirty = currentEpisode !== null
     && draftsByEpisode[currentEpisode.id] !== undefined
-    && draftSignature(draft) !== draftSignature(persistedDraft);
+    && (contentPending || draftSignature(draft) !== draftSignature(persistedDraft));
   const editorWriteLocked = useSyncExternalStore(subscribeEpisodeEditorWrites,
     () => isEpisodeEditorWriteLocked(currentEpisode?.id), () => false);
   const unsettledEditor = useSyncExternalStore(subscribeEpisodeEditorWrites,
@@ -557,7 +580,7 @@ export default function ScriptWorkbench({
     const episodeId = currentEpisode?.id;
     const local = episodeId ? draftsRef.current[episodeId] : undefined;
     const saved = useAppStore.getState().projects.find((item) => item.id === episodeId);
-    if (episodeId && local && draftSignature(local) === draftSignature(createDraft(saved ?? null))) {
+    if (episodeId && local && !needsNativeEpisodeContent(saved) && draftSignature(local) === draftSignature(createDraft(saved ?? null))) {
       replaceEpisodeDraft(episodeId, undefined);
     }
     if (destination === 'start') {
@@ -571,7 +594,8 @@ export default function ScriptWorkbench({
   const currentDirty = () => {
     const episodeId = selectedEpisodeRef.current;
     const local = episodeId ? draftsRef.current[episodeId] : undefined;
-    return !!local && draftSignature(local) !== draftSignature(createDraft(useAppStore.getState().projects.find((item) => item.id === episodeId) ?? null));
+    const saved = useAppStore.getState().projects.find((item) => item.id === episodeId);
+    return !!local && (needsNativeEpisodeContent(saved) || draftSignature(local) !== draftSignature(createDraft(saved ?? null)));
   };
 
   useEffect(() => {
@@ -580,7 +604,8 @@ export default function ScriptWorkbench({
     return registerEpisodeEditorSession(episodeId, () => {
       const episode = useAppStore.getState().projects.find((item) => item.id === episodeId);
       const local = draftsRef.current[episodeId];
-      return { dirty: (!!local && draftSignature(local) !== draftSignature(createDraft(episode ?? null))) || graphEditorLease.current !== null || !!originalWriting?.isDirty() || !!outlineDocuments?.isDirty(),
+      return { dirty: (!!local && (needsNativeEpisodeContent(episode) || draftSignature(local) !== draftSignature(createDraft(episode ?? null))))
+        || graphEditorLease.current !== null || !!originalWriting?.isDirty() || !!outlineDocuments?.isDirty(),
         saving: savingEpisodeRef.current === episodeId || graphWritesInFlight.current > 0 || !!originalWriting?.isBusy() || !!outlineDocuments?.isBusy() };
     }, () => {
       const version = draftVersions.current.get(episodeId) ?? 0;
@@ -701,7 +726,7 @@ export default function ScriptWorkbench({
     if (episodeId === selectedEpisodeRef.current || !episodes.some((episode) => episode.id === episodeId)) return;
     setSeriesAssetPreview(null);
     if (currentDirty()) setPendingAction({ type: 'switch', episodeId });
-    else { selectedEpisodeRef.current = episodeId; setSelectedEpisodeId(episodeId); }
+    else { selectedEpisodeRef.current = episodeId; setSelectedEpisodeId(episodeId); setEpisodeReadAttempt((attempt) => attempt + 1); }
   };
 
   const readGraphContext = () => {
@@ -719,7 +744,14 @@ export default function ScriptWorkbench({
     if (part !== 'outline' && part !== 'script') throw new Error(t('关系图来源类型无效'));
     const episode = listEpisodes(state.projects, owner.id).find((entry) => entry.id === episodeId);
     if (!episode) throw new Error(t('关系图来源分集已删除或不属于本剧'));
+    if (needsNativeEpisodeContent(episode)) throw new Error(t('关系图来源分集正文尚未加载，请重新读取'));
     return { episode, text: (part === 'outline' ? episode.episodeOutline : episode.episodeScript) ?? '' };
+  };
+  const loadGraphSource = async (episodeId: string, part: 'outline' | 'script') => {
+    const { owner } = readGraphContext();
+    const episode = await useAppStore.getState().loadEpisodeCreative(episodeId);
+    if (episode.parentId !== owner.id) throw new Error(t('关系图来源分集已删除或不属于本剧'));
+    return readGraphSource(episodeId, part);
   };
   const modelFingerprint = async (modelId: string) => {
     const { state } = readGraphContext();
@@ -752,7 +784,7 @@ export default function ScriptWorkbench({
       }
       for (const evidence of item.evidence) {
         if (previous?.evidence.some((entry) => configValuesEqual(entry, evidence))) continue;
-        const { text } = readGraphSource(evidence.episodeId, evidence.part);
+        const { text } = await loadGraphSource(evidence.episodeId, evidence.part);
         const source: StoryGraphSource = { episodeId: evidence.episodeId, part: evidence.part, text, sourceHash: await hashStoryGraphSource(text) };
         if (!validateStoryGraphEvidence(evidence, source)) throw new Error(t('原文证据已变化，请重新绑定'));
         checkedSources.push(source);
@@ -824,7 +856,7 @@ export default function ScriptWorkbench({
       const sources: StoryGraphSource[] = [];
       for (const episodeId of [...new Set(input.episodeIds)]) {
         for (const part of [...new Set(input.parts)]) {
-          const { episode, text } = readGraphSource(episodeId, part);
+          const { episode, text } = await loadGraphSource(episodeId, part);
           const local = draftsRef.current[episodeId];
           if ((local && draftSignature(local) !== draftSignature(createDraft(episode))) || isEpisodeEditorWriteLocked(episodeId)
             || hasUnsettledEpisodeEditorSession(episodeId)) throw new Error(t('请先保存所选分集的稿件，再提取关系图'));
@@ -1201,13 +1233,14 @@ export default function ScriptWorkbench({
     draftVersion: currentEpisodeId ? draftVersionByEpisode[currentEpisodeId] ?? 0 : 0,
     series: series ? { id: series.id, name: series.name, hasScript: !!series.series?.script?.trim(), hasOriginal: !!series.series?.originalWork,
       originalAddedAt: series.series?.originalWork?.addedAt, updatedAt: series.updatedAt, exchangeEpoch: series.exchangeEpoch ?? 0 } : null,
-    episodes: episodes.map((episode) => ({ id: episode.id, name: episode.name, scriptLength: episode.episodeScript?.length ?? 0, hasOutline: !!episode.episodeOutline?.trim() })),
+    episodes: episodes.map((episode) => ({ id: episode.id, name: episode.name, scriptLength: episode.episodeScript?.length ?? 0,
+      hasOutline: !!episode.episodeOutline?.trim(), ...(needsNativeEpisodeContent(episode) ? { contentPending: true } : {}) })),
     currentEpisode: currentEpisode ? { id: currentEpisode.id, parentId: currentEpisode.parentId, name: currentEpisode.name,
       episodeOutline: currentEpisode.episodeOutline, episodeScript: currentEpisode.episodeScript, episodeScriptFile: currentEpisode.episodeScriptFile,
       episodeCreative: currentEpisode.episodeCreative, episodeAssetRoster: currentEpisode.episodeAssetRoster,
       creationProfile: currentEpisode.creationProfile, teamProfileOverride: currentEpisode.teamProfileOverride } : null,
     canvasProjectId: currentProjectId, activeTab, draft, analysis, isDirty, isSaving, isStartingTeam,
-    contextReady, editorWriteLocked, unsettledEditor, pendingAction, splitOpen, splitSource,
+    contextReady, episodeContentLoad, editorWriteLocked, unsettledEditor, pendingAction, splitOpen, splitSource,
     splitSkills, sourceOpen, renamingEpisodeId, extractingAssetKind,
     seriesAssetPreview: seriesAssetPreview && contextReady ? { kind: seriesAssetPreview.kind, assets: seriesAssetPreview.assets } : null,
     existingAssets: (seriesAssetPreview?.kind === 'character' ? dramaAssets.characters : seriesAssetPreview?.kind === 'scene' ? dramaAssets.scenes : dramaAssets.props)
@@ -1266,6 +1299,8 @@ export default function ScriptWorkbench({
       }
     }
     const uiOnly = ['flush_draft', 'close', 'dock', 'detach', 'cancel_pending', 'discard_pending', 'close_source', 'close_split', 'close_rename', 'close_asset_preview', 'story_graph_cancel', 'story_graph_discard', 'story_graph_editor', 'original_edit', 'original_cancel', 'original_discard_candidate', 'outline_edit', 'article_cancel', 'article_discard_candidate'];
+    if (episodeContentLoad && action.type === 'select_episode') { articleAssistant.cancel(); return requestEpisodeSwitch(action.episodeId); }
+    if (episodeContentLoad && action.type === 'reload_episode') { setEpisodeReadAttempt((attempt) => attempt + 1); return true; }
     if (!contextReady && !uiOnly.includes(action.type)) throw new Error(t('画布已离开本剧集，请先回到原剧集处理工作台修改'));
     if (action.type.startsWith('article_')) {
       if (action.type === 'article_apply') {
@@ -1488,7 +1523,7 @@ export default function ScriptWorkbench({
         const evidenceStatuses: StoryGraphDetail['evidenceStatuses'] = [];
         for (const evidence of item.evidence) {
           try {
-            const { text } = readGraphSource(evidence.episodeId, evidence.part);
+            const { text } = await loadGraphSource(evidence.episodeId, evidence.part);
             const hash = await hashStoryGraphSource(text);
             const currentText = readGraphSource(evidence.episodeId, evidence.part).text;
             evidenceStatuses.push(text === currentText && validateStoryGraphEvidence(evidence, { ...evidence, text, sourceHash: hash }) ? 'current' : 'changed');
@@ -1510,7 +1545,7 @@ export default function ScriptWorkbench({
         const { owner } = readGraphContext();
         const epoch = owner.exchangeEpoch ?? 0;
         const selectedId = selectedEpisodeRef.current;
-        const { text } = readGraphSource(query.episodeId, query.part);
+        const { text } = await loadGraphSource(query.episodeId, query.part);
         const start = text.indexOf(query.quote);
         if (start < 0 || text.indexOf(query.quote, start + 1) >= 0) throw new Error(t('摘录需在已保存稿件中唯一匹配，请调整摘录'));
         const sourceHash = await hashStoryGraphSource(text);
@@ -1525,7 +1560,7 @@ export default function ScriptWorkbench({
         const { owner } = readGraphContext();
         const epoch = owner.exchangeEpoch ?? 0;
         const selectedId = selectedEpisodeRef.current;
-        const { text, episode } = readGraphSource(evidence.episodeId, evidence.part);
+        const { text, episode } = await loadGraphSource(evidence.episodeId, evidence.part);
         const targetDraft = draftsRef.current[evidence.episodeId];
         if ((targetDraft && draftSignature(targetDraft) !== draftSignature(createDraft(episode)))
           || isEpisodeEditorWriteLocked(evidence.episodeId) || hasUnsettledEpisodeEditorSession(evidence.episodeId)) {
@@ -1584,7 +1619,7 @@ export default function ScriptWorkbench({
         if (graphContinuation.current?.candidate.id !== candidate.id || graphContinuation.current.epoch !== epoch) throw new Error(t('关系图候选已变化，请重新核对'));
         const sourceTexts = new Map<string, string>();
         for (const binding of candidate.sourceBindings) {
-          const { text } = readGraphSource(binding.episodeId, binding.part);
+          const { text } = await loadGraphSource(binding.episodeId, binding.part);
           if (await hashStoryGraphSource(text) !== binding.sourceHash) throw new Error(t('候选来源已变化，请重新提取'));
           sourceTexts.set(`${binding.episodeId}:${binding.part}`, text);
         }
@@ -1958,7 +1993,12 @@ export function ScriptWorkbenchView({ snapshot, dispatch: dispatchAction, standa
           {!pageHeader && <PopupCloseButton ariaLabel={t('关闭剧本创作工作台')} onClick={requestClose} />}
         </header>
 
-        {!contextReady && <div role="status" className="ui-hint flex shrink-0 flex-wrap items-center gap-2 border-b border-canvas-border p-3">
+        {snapshot.episodeContentLoad && <div role="status" className="ui-hint flex shrink-0 flex-wrap items-center gap-2 border-b border-canvas-border p-3">
+          <span className="min-w-0 flex-1">{t(snapshot.episodeContentLoad === 'loading' ? '正在读取本集正文…' : '本集正文读取失败，草稿已保留')}</span>
+          {snapshot.episodeContentLoad === 'error' && <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary"
+            onClick={() => fire({ type: 'reload_episode' })}>{t('重试')}</button>}
+        </div>}
+        {!contextReady && !snapshot.episodeContentLoad && <div role="status" className="ui-hint flex shrink-0 flex-wrap items-center gap-2 border-b border-canvas-border p-3">
           <span className="min-w-0 flex-1">{t('画布已离开本剧集，请先回到原剧集处理工作台修改')}</span>
           {onReturnToProject && <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary"
             disabled={returningToProject} aria-busy={returningToProject} onClick={() => { void onReturnToProject(); }}>
@@ -2039,7 +2079,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch: dispatchAction, standa
                     >
                       <span className="block truncate text-[11px] font-medium text-canvas-text">{episode.name}</span>
                       <span className="mt-1 block truncate text-[10px] text-canvas-text-muted">
-                        {episode.scriptLength > 0
+                        {episode.contentPending ? t('选择后读取正文') : episode.scriptLength > 0
                           ? t('正文 {count} 字', { count: episode.scriptLength })
                           : episode.hasOutline
                             ? t('已有大纲')

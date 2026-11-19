@@ -14,9 +14,23 @@ export interface NativeProjectViewBinding {
   readonly orderRank?: number;
   /** 分集元数据版本，与显示集号、画布版本和正文版本分别计数。 */
   readonly episodeRevision?: number;
+  /** 仅已加载分集具有正文版本，包括正文为空的分集。 */
+  readonly episodeContentRevision?: number;
 }
 
 export type NativeProjectViewItem = CanvasProject & { nativeView: NativeProjectViewBinding };
+
+export function needsNativeEpisodeContent(project: CanvasProject | null | undefined): boolean {
+  const binding = (project as NativeProjectViewItem | undefined)?.nativeView;
+  return !!binding?.episodeId && binding.episodeContentRevision === undefined;
+}
+
+export function applyNativeEpisodeContent(item: NativeProjectViewItem, content: EpisodeContent): NativeProjectViewItem {
+  if (item.nativeView.episodeId !== content.episodeId) throw new Error('新项目分集正文与导航身份不一致');
+  return { ...item, episodeOutline: content.outline, episodeScript: content.script, episodeScriptFile: content.scriptFile,
+    episodeCreative: content.creative, episodeAssetRoster: content.assetRoster,
+    nativeView: { ...item.nativeView, episodeContentRevision: content.revision } };
+}
 
 /** 输入按 orderRank 排列；旧新结构记录可能无集号或有重复，只在视图中避让，不改原记录。 */
 export function nativeEpisodeDisplayNumbers(ordered: readonly Pick<EpisodeRecord, 'displayNo'>[]): number[] {
@@ -50,10 +64,12 @@ export function projectNativeCatalogEntry(entry: Extract<ProjectCatalogEntry, { 
       nativeView: { projectId: project.id, episodeId: null, canvasId } }];
   }
   const ordered = [...episodes].sort((left, right) => left.orderRank - right.orderRank);
+  const knownCanvases = new Set(canvasIds), knownEpisodes = new Set(entry.episodeIds);
   if (ordered.length !== canvasIds.length || ordered.length !== entry.episodeIds.length
-    || new Set(canvasIds).size !== canvasIds.length || new Set(ordered.map((item) => item.id)).size !== ordered.length
+    || knownCanvases.size !== canvasIds.length || knownEpisodes.size !== entry.episodeIds.length
+    || new Set(ordered.map((item) => item.id)).size !== ordered.length
     || new Set(ordered.map((item) => item.canvasId)).size !== ordered.length
-    || ordered.some((item) => item.projectId !== project.id || !entry.episodeIds.includes(item.id) || !canvasIds.includes(item.canvasId))) {
+    || ordered.some((item) => item.projectId !== project.id || !knownEpisodes.has(item.id) || !knownCanvases.has(item.canvasId))) {
     throw new Error('新剧集画布关系不完整');
   }
   const owner: NativeProjectViewItem = { id: project.id, name: project.name, createdAt: project.createdAt,
@@ -75,7 +91,6 @@ export function projectNativeCatalogEntry(entry: Extract<ProjectCatalogEntry, { 
 export function hydrateNativeProjectView(
   entry: Extract<ProjectCatalogEntry, { dataModel: 'native' }>,
   loaded: NonNullable<Awaited<ReturnType<typeof readNativeProjectView>>>,
-  allEpisodeContents?: readonly EpisodeContent[],
 ): NativeProjectViewItem[] {
   const { selection, content, episodeContent } = loaded;
   const orderedEpisodes = [...entry.episodes].sort((a, b) => a.orderRank - b.orderRank);
@@ -84,14 +99,12 @@ export function hydrateNativeProjectView(
     || (selection.episode?.id !== episodeContent?.episodeId && (selection.episode !== null || episodeContent !== null))) {
     throw new Error('新项目正文与导航身份不一致');
   }
-  if (allEpisodeContents && (allEpisodeContents.length !== entry.episodes.length
-    || new Set(allEpisodeContents.map((item) => item.episodeId)).size !== entry.episodes.length
-    || allEpisodeContents.some((item) => !entry.episodeIds.includes(item.episodeId)))) throw new Error('新项目分集正文不完整');
+  const canvasByEpisode = new Map(entry.episodes.map((episode) => [episode.id, episode.canvasId]));
   const series = entry.project.kind === 'series' ? {
     ...(content.originalWork ? { originalWork: content.originalWork } : {}),
     ...(content.script !== undefined ? { script: content.script } : {}),
     ...(content.storyGraph ? { storyGraph: remapStoryGraphBindings(content.storyGraph,
-      (id) => entry.episodes.find((episode) => episode.id === id)?.canvasId ?? id, (asset) => asset.id) } : {}),
+      (id) => canvasByEpisode.get(id) ?? id, (asset) => asset.id) } : {}),
   } : undefined;
   const view = projectNativeCatalogEntry(entry);
   if (selection.canvas && !view.some((item) => item.nativeView.canvasId === selection.canvas?.id)) {
@@ -99,10 +112,9 @@ export function hydrateNativeProjectView(
   }
   return view.map((item) => {
     if (!item.parentId && series) return { ...item, series };
-    const creative = item.nativeView.episodeId
-      ? allEpisodeContents?.find((body) => body.episodeId === item.nativeView.episodeId)
-        ?? (item.nativeView.episodeId === episodeContent?.episodeId ? episodeContent : undefined)
-      : item.nativeView.canvasId === selection.canvas?.id ? content.standaloneCreative : undefined;
+    if (item.nativeView.episodeId) return episodeContent?.episodeId === item.nativeView.episodeId
+      ? applyNativeEpisodeContent(item, episodeContent) : item;
+    const creative = item.nativeView.canvasId === selection.canvas?.id ? content.standaloneCreative : undefined;
     if (!creative) return item;
     return { ...item,
       ...(creative.outline !== undefined ? { episodeOutline: creative.outline } : {}),

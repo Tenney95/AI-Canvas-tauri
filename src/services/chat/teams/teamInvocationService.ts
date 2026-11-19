@@ -1,6 +1,7 @@
 /** 助手与剧本工作台共用团队发起、排队与恢复入口；主窗口是唯一执行源。 */
 import { useAppStore } from '../../../store/useAppStore';
 import { listEpisodes } from '../../../store/store.utils';
+import { needsNativeEpisodeContent } from '../../../store/nativeProjectView';
 import { isConversationInProjectScope, resolveConversationProjectScope } from '../conversationProjectScope';
 import type { AgentMode, AgentTask } from '../../../types/agent';
 import type { AgentTeamProfile, TeamInvocationContext, TeamTemplateId } from '../../../types/agentTeam';
@@ -252,8 +253,11 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
     // 同一请求只核对原始提交与稿件。仅新任务投影当前已保存图谱，后续阶段沿用材料快照。
     const target = runContext.source === 'script-workbench' ? runContext.target : undefined;
     if (target) {
-      const live = useAppStore.getState();
-      const scope = readEpisodeWorkspaceScope(live, target.episodeId);
+      const before = useAppStore.getState();
+      const initialScope = readEpisodeWorkspaceScope(before, target.episodeId);
+      if (needsNativeEpisodeContent(initialScope?.episode)) await before.loadEpisodeCreative(target.episodeId);
+      if (!sourceAvailable()) return;
+      const live = useAppStore.getState(), scope = readEpisodeWorkspaceScope(live, target.episodeId);
       if (!scope || scope.owner.id !== target.seriesId) throw new Error('工作台分集或剧集已变化，请重新发起');
       const separator = runMaterials ? '\n\n' : '';
       const graphContext = buildStoryGraphWritingContext(scope.owner.series?.storyGraph, {

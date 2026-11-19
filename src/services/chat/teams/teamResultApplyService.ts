@@ -5,7 +5,7 @@ import { useAppStore } from '../../../store/useAppStore';
 import { isWorkbenchTeamTaskInScope, readEpisodeWorkspaceScope } from '../../episodeWorkspaceScope';
 import { loadProjectData } from '../../fileService';
 import { readNativeProjectView } from '../../nativeProjectNavigation';
-import type { NativeProjectViewItem } from '../../../store/nativeProjectView';
+import { needsNativeEpisodeContent, type NativeProjectViewItem } from '../../../store/nativeProjectView';
 import { episodeTeamSourceSnapshot } from '../../seriesCreativeService';
 import { assertEpisodeEditorReady, prepareEpisodeEditorRebase, withEpisodeEditorWrite } from '../../episodeEditorSessionService';
 import { executeRegisteredAgentToolCall } from '../agentToolExecution';
@@ -45,11 +45,16 @@ function readTargetValue(target: TeamEpisodeTarget, allowSameSeries = false): st
   const episode = state.projects.find((item) => item.id === target.episodeId);
   const workspace = allowSameSeries ? readEpisodeWorkspaceScope(state, target.episodeId) : null;
   if (state.projectLoadStatus !== 'ready' || (state.currentProjectId !== target.episodeId && !workspace)
-    || !episode || episode.parentId !== target.seriesId || !TEXT_FIELDS.has(target.field)
+    || !episode || episode.parentId !== target.seriesId || needsNativeEpisodeContent(episode) || !TEXT_FIELDS.has(target.field)
     || state.switchingProjectName !== null || state.isCreatingProject || state.isReturningToStartPage) {
     throw new Error('请先回到任务绑定的原分集，再比较或应用团队成果');
   }
   return target.field === 'outline' ? episode.episodeOutline ?? '' : episode.episodeScript ?? '';
+}
+
+async function loadTargetEpisode(episodeId: string): Promise<void> {
+  const state = useAppStore.getState();
+  if (needsNativeEpisodeContent(state.projects.find((item) => item.id === episodeId))) await state.loadEpisodeCreative(episodeId);
 }
 
 export async function captureEpisodeTeamContext(
@@ -57,12 +62,14 @@ export async function captureEpisodeTeamContext(
   field: TeamEpisodeTarget['field'],
 ): Promise<{ context: TeamInvocationContext; materials: string; originalText: string }> {
   const state = useAppStore.getState();
-  const workspace = readEpisodeWorkspaceScope(state, episodeId);
+  const expected = captureProjectWindowContext(state, episodeId);
+  await loadTargetEpisode(episodeId);
+  if (!isProjectWindowContextCurrent(expected, useAppStore.getState())) throw new Error('工作台项目或分集版本已变化，请重新发起');
+  const workspace = readEpisodeWorkspaceScope(useAppStore.getState(), episodeId);
   if (!workspace || !TEXT_FIELDS.has(field)) {
     throw new Error('请先打开要处理的准确分集');
   }
   const { episode, owner: series } = workspace;
-  const expected = captureProjectWindowContext(state, episodeId);
   assertEpisodeEditorReady(episodeId);
   const originalText = field === 'outline' ? episode.episodeOutline ?? '' : episode.episodeScript ?? '';
   const sourceSnapshot = episodeTeamSourceSnapshot(episode, field);
@@ -113,6 +120,8 @@ async function executeResultWrite(taskId: string, restore: boolean, signal: Abor
   assertProject();
   const run = initial.teamRun!;
   const target = targetForTask(initial);
+  await loadTargetEpisode(target.episodeId);
+  assertProject();
   const result = run.artifacts.find((item) => item.id === run.resultArtifactId);
   if (!result || !['outline', 'draft', 'revision'].includes(result.kind)) throw new Error('该团队产物不是可应用的正文');
   if (run.application && ['pending', 'restore-pending'].includes(run.application.status)) {
@@ -214,6 +223,8 @@ async function dispatchResultWrite(taskId: string, restore: boolean): Promise<vo
     };
     assertCurrent();
     const target = targetForTask(task);
+    await loadTargetEpisode(target.episodeId);
+    assertCurrent();
     readTargetValue(target, task.teamRun!.source === 'script-workbench');
     if (task.mode === 'plan') throw new Error('规划模式只提供建议，不能应用或恢复原稿');
     const status = task.teamRun!.application?.status;
@@ -283,6 +294,8 @@ export async function reconcileTeamResult(taskId: string): Promise<string> {
   const receipt = task.teamRun!.application;
   if (!receipt || !['pending', 'restore-pending'].includes(receipt.status)) return '当前没有待核对的成果保存';
   const allowSameSeries = task.teamRun!.source === 'script-workbench';
+  await loadTargetEpisode(target.episodeId);
+  assertCurrent();
   const inMemory = readTargetValue(target, allowSameSeries);
   const view = useAppStore.getState().projects.find((item) => item.id === target.episodeId) as NativeProjectViewItem | undefined;
   let persisted: string;

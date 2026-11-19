@@ -41,6 +41,7 @@ const nativeMocks = vi.hoisted(() => ({
   projects: new Map<string, NativeProjectAggregate>(),
   create: vi.fn(),
   save: vi.fn(),
+  readEpisode: vi.fn(),
 }));
 vi.mock('../../src/services/projectModelRouter', () => ({
   listProjectCatalog: async (): Promise<ProjectCatalogEntry[]> => [
@@ -54,15 +55,19 @@ vi.mock('../../src/services/indexedDb/nativeProjectRepository', async () => ({
   ...await vi.importActual<typeof import('../../src/services/indexedDb/nativeProjectRepository')>('../../src/services/indexedDb/nativeProjectRepository'),
   createNativeProject: nativeMocks.create,
   saveNativeProjectView: nativeMocks.save,
+  readNativeEpisodeContent: nativeMocks.readEpisode,
 }));
 vi.mock('../../src/services/nativeProjectNavigation', () => ({
-  readNativeProjectView: async (projectId: string) => {
+  readNativeProjectView: async (projectId: string, canvasId?: string) => {
     const aggregate = nativeMocks.projects.get(projectId);
     if (!aggregate) return null;
-    const { project, canvas, episodes, content } = aggregate;
-    return { selection: { project, canvas, episodes, episode: null, changeRevision: 0,
-      context: { projectId, projectEpoch: project.epoch, episodeId: null, canvasId: canvas?.id ?? null,
-        canvasEpoch: canvas?.epoch ?? null, canvasRevision: canvas?.revision ?? null } }, content, episodeContent: null };
+    const { project, episodes, content } = aggregate;
+    const canvas = canvasId ? aggregate.canvases.find((item) => item.id === canvasId) ?? null : aggregate.canvas;
+    const episode = episodes.find((item) => item.id === canvas?.episodeId) ?? null;
+    const episodeContent = aggregate.episodeContents.find((item) => item.episodeId === episode?.id) ?? null;
+    return { selection: { project, canvas, episodes, episode, changeRevision: 0,
+      context: { projectId, projectEpoch: project.epoch, episodeId: episode?.id ?? null, canvasId: canvas?.id ?? null,
+        canvasEpoch: canvas?.epoch ?? null, canvasRevision: canvas?.revision ?? null } }, content, episodeContent };
   },
 }));
 vi.mock('../../src/services/storageService', async () => ({
@@ -141,6 +146,7 @@ beforeEach(() => {
   fileMocks.loadProjectData.mockReset();
   fileMocks.loadProjectsList.mockReset();
   nativeMocks.projects.clear();
+  nativeMocks.readEpisode.mockReset();
   nativeMocks.create.mockReset().mockImplementation(async ({ projectId, canvasId, name }: { projectId: string; canvasId: string; name: string }) => {
     const now = Date.now(), rootRef = `r2-${projectId.slice(3)}`, dataFolder = `project-${projectId}`;
     const project = { id: projectId, name, kind: 'standalone' as const, epoch: 1, createdAt: now, updatedAt: now,
@@ -843,6 +849,49 @@ describe('project creation', () => {
     expect(useAppStore.getState().projects[0].series?.script).toBe('保留正文');
     expect(fileMocks.saveProject).not.toHaveBeenCalled();
     expect(nativeMocks.create).not.toHaveBeenCalled();
+  });
+
+  it('只等待当前集正文，工作台可以独立重试其他分集', async () => {
+    stubInitializationActions();
+    const identity = (prefix: string, digit: string) =>
+      `${prefix}-${digit.repeat(8)}-${digit.repeat(4)}-4${digit.repeat(3)}-8${digit.repeat(3)}-${digit.repeat(12)}`;
+    const projectId = identity('p2', '1'), rootRef = identity('r2', '2'), dataFolder = `project-${projectId}`;
+    const episodes: NativeProjectAggregate['episodes'] = ['3', '4'].map((digit, orderRank) => ({
+      id: identity('e2', digit), projectId, canvasId: identity('c2', digit), name: `第 ${orderRank + 1} 集`, orderRank,
+      createdAt: 1, updatedAt: 1, epoch: 1, revision: 0, settingsPolicy: { mode: 'inherit', overrides: {} },
+    }));
+    const canvases: NativeProjectAggregate['canvases'] = episodes.map((item) => ({
+      id: item.canvasId, projectId, episodeId: item.id, storageRootRef: rootRef, epoch: 1, revision: 0,
+      revisionScope: 'project', nodes: [], edges: [], groups: [],
+    }));
+    const [first, second] = episodes;
+    const bodies = episodes.map((item, index) => ({ episodeId: item.id, revision: 0, storageRootRef: rootRef, script: `正文 ${index + 1}` }));
+    const project: NativeProjectAggregate['project'] = { id: projectId, name: '多集作品', kind: 'series', epoch: 1,
+      createdAt: 1, updatedAt: 1, dataFolder, storageRootRef: rootRef, lastOpenedCanvasId: first.canvasId,
+      storageBindings: [{ rootRef, folderName: dataFolder, sourceRecordIds: [], source: 'project-managed' }] };
+    nativeMocks.projects.set(projectId, { project, content: { projectId, revisions: { source: 0, script: 0, storyGraph: 0, assets: 0 } },
+      canvas: canvases[0], canvases, episodes, episodeContents: bodies });
+    const secondBody = { project, episode: second, content: bodies[1], changeRevision: 0 };
+    let finishEpisodeRead!: (value: typeof secondBody) => void;
+    nativeMocks.readEpisode.mockRejectedValueOnce(new Error('第二集暂时无法读取')).mockImplementationOnce(
+      () => new Promise<typeof secondBody>((resolve) => { finishEpisodeRead = resolve; }));
+    fileMocks.loadProjectsList.mockResolvedValue([]);
+    useAppStore.setState({ config: { ...useAppStore.getState().config, startupView: 'last-project' } });
+
+    await useAppStore.getState().initFromDb();
+    expect(useAppStore.getState()).toMatchObject({ currentProjectId: first.canvasId, projectLoadStatus: 'ready' });
+    expect(useAppStore.getState().projects.find((item) => item.id === first.canvasId)?.episodeScript).toBe('正文 1');
+    expect(nativeMocks.readEpisode).not.toHaveBeenCalled();
+    await expect(useAppStore.getState().loadEpisodeCreative(second.canvasId)).rejects.toThrow('暂时无法读取');
+    expect(useAppStore.getState()).toMatchObject({ currentProjectId: first.canvasId, projectLoadStatus: 'ready' });
+    const pending = useAppStore.getState().loadEpisodeCreative(second.canvasId);
+    useAppStore.setState((state) => ({ projects: state.projects.map((item) => item.id === second.canvasId
+      ? { ...item, snapshot: 'preview-received-while-loading' } : item) }));
+    finishEpisodeRead(secondBody);
+    await expect(pending).resolves.toMatchObject({ episodeScript: '正文 2', snapshot: 'preview-received-while-loading' });
+    expect(nativeMocks.readEpisode).toHaveBeenLastCalledWith(projectId, second.id);
+    await expect(useAppStore.getState().loadEpisodeCreative(second.canvasId)).resolves.toMatchObject({ episodeScript: '正文 2' });
+    expect(nativeMocks.readEpisode).toHaveBeenCalledTimes(2);
   });
 });
 

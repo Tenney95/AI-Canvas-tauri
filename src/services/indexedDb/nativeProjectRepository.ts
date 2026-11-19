@@ -421,6 +421,22 @@ Promise<{ project: ProjectRecord; content: ProjectContent; changeRevision: numbe
   } finally { database.close(); }
 }
 
+/** 只找指定的 (作品, 画布) 索引项，避免逐集复制整部作品的主键列表。 */
+function nativeCanvasBelongsToProject(index: IDBIndex, projectId: string, canvasId: string): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const cursor = index.openKeyCursor(IDBKeyRange.only(projectId));
+    cursor.onerror = () => reject(cursor.error);
+    cursor.onsuccess = () => {
+      const item = cursor.result;
+      if (item && typeof item.primaryKey === 'string' && item.primaryKey < canvasId) {
+        item.continuePrimaryKey(projectId, canvasId);
+      } else {
+        resolve(item?.primaryKey === canvasId);
+      }
+    };
+  });
+}
+
 /** 只读指定分集的稿件与元数据；画布成员身份由项目索引核对，不读取画布正文。 */
 export async function readNativeEpisodeContent(projectId: string, episodeId: string, options: NativeProjectOptions = {}):
 Promise<{ project: ProjectRecord; episode: EpisodeRecord; content: EpisodeContent; changeRevision: number } | null> {
@@ -429,18 +445,19 @@ Promise<{ project: ProjectRecord; episode: EpisodeRecord; content: EpisodeConten
   if (!database) return null;
   try {
     return await transact(database, 'readonly', options, async (tx) => {
-      const [project, episode, content, revision, canvasKeys] = await Promise.all([
+      const [project, episode, content, revision] = await Promise.all([
         request(tx.objectStore(ROOTS).get(projectId)) as Promise<ProjectRecord | undefined>,
         request(tx.objectStore(EPISODES).get(episodeId)) as Promise<EpisodeRecord | undefined>,
         request(tx.objectStore(EPISODE_CONTENTS).get(episodeId)) as Promise<EpisodeContent | undefined>,
         request(tx.objectStore(REVISIONS).get(projectId)) as Promise<{ projectId: string; changeRevision: number } | undefined>,
-        request(tx.objectStore(CANVASES).index('projectId').getAllKeys(projectId)),
       ]);
       if (!project && !episode && !content && !revision) return null;
       if (!project || project.id !== projectId || project.kind !== 'series' || !episode || episode.id !== episodeId
         || episode.projectId !== projectId || !content || content.episodeId !== episodeId || !revision || revision.projectId !== projectId
         || !Number.isSafeInteger(revision.changeRevision) || revision.changeRevision < 0 || !isNativeCanvasId(episode.canvasId)
-        || !canvasKeys.includes(episode.canvasId)) return fail('invalid-membership');
+        || !await nativeCanvasBelongsToProject(tx.objectStore(CANVASES).index('projectId'), projectId, episode.canvasId)) {
+        return fail('invalid-membership');
+      }
       assertNativeRoot(project);
       const scopedProject: ProjectRecord = { ...project, lastOpenedCanvasId: episode.canvasId };
       const placeholder: CanvasDocument = { id: episode.canvasId, projectId, episodeId, storageRootRef: project.storageRootRef,

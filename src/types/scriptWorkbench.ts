@@ -44,11 +44,12 @@ export interface ScriptWorkbenchSnapshot {
   windowContext?: ProjectWindowContext | null;
   sessionId: string; revision: number; acceptedEditSequence: number; draftVersion: number;
   series: { id: string; name: string; hasScript: boolean; hasOriginal: boolean; originalAddedAt?: number; updatedAt?: number; exchangeEpoch?: number } | null;
-  episodes: Array<{ id: string; name: string; scriptLength: number; hasOutline: boolean }>;
+  episodes: Array<{ id: string; name: string; scriptLength: number; hasOutline: boolean; contentPending?: boolean }>;
   currentEpisode: WorkbenchEpisode | null;
   canvasProjectId: string | null;
   activeTab: WorkbenchEditorTab; draft: WorkbenchDraft; analysis: CreativeAnalysis;
   isDirty: boolean; isSaving: boolean; isStartingTeam: boolean; contextReady: boolean;
+  episodeContentLoad?: 'loading' | 'error';
   editorWriteLocked: boolean; unsettledEditor: boolean;
   pendingAction: WorkbenchPendingAction | null;
   splitOpen: boolean; splitSource: SeriesSourcePart; splitSkills?: SeriesSplitSkillOption[];
@@ -90,6 +91,7 @@ export type ScriptWorkbenchAction =
   | { type: 'edit_text'; field: 'outline' | 'script'; value: string }
   | { type: 'edit_creative'; field: keyof WorkbenchCreativeDraft; value: string }
   | { type: 'select_episode'; episodeId: string }
+  | { type: 'reload_episode' }
   | { type: 'set_tab'; tab: WorkbenchEditorTab }
   | { type: 'save' } | { type: 'close' } | { type: 'dock' } | { type: 'detach' }
   | { type: 'cancel_pending' } | { type: 'discard_pending' } | { type: 'save_pending' }

@@ -86,7 +86,8 @@ import { createNativeProject, saveNativeProjectView, saveNativeProjectContent, c
   updateNativeEpisodeComposite, readNativeEpisodeContent, readNativeProjectContent } from '../services/indexedDb/nativeProjectRepository';
 import { listProjectCatalog, resolveProjectModel, type ProjectCatalogEntry } from '../services/projectModelRouter';
 import { readNativeProjectView } from '../services/nativeProjectNavigation';
-import { hydrateNativeProjectView, nativeEpisodeDisplayNumbers, projectNativeCatalogEntry, type NativeProjectViewItem } from './nativeProjectView';
+import { applyNativeEpisodeContent, hydrateNativeProjectView, nativeEpisodeDisplayNumbers, needsNativeEpisodeContent,
+  projectNativeCatalogEntry, type NativeProjectViewItem } from './nativeProjectView';
 import { restoreProjectRecord } from '../services/storageService';
 import { waitForPendingNodeFileDeletions } from '../services/fs/trash';
 import { resolveProjectModelSettings } from '../services/projectModelSettings';
@@ -105,6 +106,7 @@ interface NativeRuntime {
   library: AppState['dramaAssets'];
   tail: Promise<void>;
   savedView: Pick<AppState, 'nodes' | 'edges' | 'groups'>;
+  episodeReads: Map<string, Promise<CanvasProject>>;
   /** 排队的保存需重取事务投影后的视图，不能用旧快照覆盖已交付产物或引用。 */
   mediaGeneration?: number;
 }
@@ -169,14 +171,7 @@ async function activateNativeProject(set: ProjectSliceSet, get: ProjectSliceGet,
   if (!loaded || (loaded.selection.canvas?.id ?? null) !== binding.canvasId) throw new Error('项目画布身份已变化');
   const canvas = loaded.selection.canvas;
   const activeId = canvas?.id ?? entry.project.id;
-  // 现有工作台可同时查看各集稿件；只读各集正文，不加载其他画布，并核对同一项目提交版本。
-  const episodeBodies = await Promise.all(entry.episodes.map((episode) => readNativeEpisodeContent(entry.project.id, episode.id)));
-  assertCurrent();
-  if (episodeBodies.some((body, index) => !body || body.changeRevision !== loaded.selection.changeRevision
-    || !configValuesEqual(body.project, loaded.selection.project) || !configValuesEqual(body.episode, entry.episodes[index]))) {
-    throw new Error('项目在打开期间发生变化，请重新打开');
-  }
-  const projected = hydrateNativeProjectView(entry, loaded, episodeBodies.map((body) => body!.content));
+  const projected = hydrateNativeProjectView(entry, loaded);
   const selected = projected.find((item) => item.id === activeId);
   if (!selected) throw new Error('新项目画布身份已变化');
   const data = await restoreProjectRecord({ ...selected, nodes: canvas?.nodes ?? [], edges: canvas?.edges ?? [], groups: canvas?.groups ?? [],
@@ -190,7 +185,7 @@ async function activateNativeProject(set: ProjectSliceSet, get: ProjectSliceGet,
   assertCurrent();
   const library = data.dramaAssets ?? emptyDramaAssetLibrary();
   const view = { nodes: data.nodes as Node<BaseNodeData>[], edges: data.edges as Edge[], groups: getProjectGroups(data) };
-  nativeRuntime.set(get, { loaded, activeId, library, savedView: view, tail: Promise.resolve() });
+  nativeRuntime.set(get, { loaded, activeId, library, savedView: view, tail: Promise.resolve(), episodeReads: new Map() });
   const projectContext = { schemaVersion: 2 as const, modelGeneration: 1, runtimeEpoch: crypto.randomUUID(),
     projectId: entry.project.id, projectEpoch: entry.project.epoch };
   const context: ProjectExpectedContext = canvas ? { kind: 'canvas', ...projectContext,
@@ -1042,6 +1037,8 @@ export interface ProjectSlice {
   updateSeriesInfo: (info: Omit<ProjectSeriesInfo, 'storyGraph'>, options?: SeriesInfoWriteOptions) => Promise<boolean>;
   updateStoryGraph: (seriesId: string, patch: StoryGraphPatch, expectedRevision: number,
     guards?: StoryGraphWriteOptions) => Promise<StoryGraph>;
+  /** 按需读取当前作品下的一集正文。已就绪的视图直接复用。 */
+  loadEpisodeCreative: (episodeId: string) => Promise<CanvasProject>;
   /** 写入某一集的大纲。兼容既有 Agent 工具。 */
   updateEpisodeOutline: (episodeId: string, outline: string) => Promise<boolean>;
   /** 原子更新某一集的大纲、正文和创作要点。 */
@@ -2330,6 +2327,46 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
 
   updateEpisodeOutline: async (episodeId, outline) => get().updateEpisodeCreative(episodeId, { outline }),
 
+  loadEpisodeCreative: async (episodeId) => {
+    const current = readEpisodeWorkspaceScope(get(), episodeId);
+    if (!current) throw new Error('分集已切换或不属于当前剧集');
+    const initial = current.episode;
+    if (!needsNativeEpisodeContent(initial)) return initial;
+    const runtime = nativeRuntime.get(get), binding = nativeBinding(initial);
+    const sequence = projectSwitchSequence;
+    if (!runtime || runtime.activeId !== current.canvasProjectId || !binding?.episodeId
+      || binding.canvasId !== episodeId || binding.projectId !== current.owner.id) throw new Error('分集正文上下文不可用');
+    const projectId = binding.projectId, nativeEpisodeId = binding.episodeId;
+    const reads = runtime.episodeReads ??= new Map();
+    const pending = reads.get(episodeId);
+    if (pending) return pending;
+    const read = (async () => {
+      const loaded = await readNativeEpisodeContent(projectId, nativeEpisodeId);
+      const scope = readEpisodeWorkspaceScope(get(), episodeId);
+      if (!scope || scope.canvasProjectId !== current.canvasProjectId || scope.owner.id !== projectId
+        || nativeRuntime.get(get) !== runtime || projectSwitchSequence !== sequence
+        || projectImportsApplying.has(projectId) || projectAssetSyncBarriers.has(projectId)) {
+        throw new Error('分集已切换，读取已停止');
+      }
+      const latest = scope.episode as NativeProjectViewItem;
+      const target = nativeBinding(latest);
+      if (!target || target.projectId !== projectId || target.canvasId !== episodeId || target.episodeId !== nativeEpisodeId
+        || (latest.exchangeEpoch ?? 0) !== (initial.exchangeEpoch ?? 0)) throw new Error('分集已变化，请重新读取');
+      // 并发保存已经投影新正文时，直接使用它，旧读取不能覆盖本次保存。
+      if (!needsNativeEpisodeContent(latest)) return latest;
+      if (!loaded || loaded.project.epoch !== (scope.owner.exchangeEpoch ?? 0) || loaded.episode.canvasId !== episodeId
+        || loaded.episode.epoch !== (latest.exchangeEpoch ?? 0) || loaded.episode.revision !== target.episodeRevision) {
+        throw new Error('分集正文已变化或无法读取，请重新打开');
+      }
+      const view = applyNativeEpisodeContent(latest, loaded.content);
+      set((state) => ({ projects: state.projects.map((item) => item === latest ? view : item) }));
+      return view;
+    })();
+    reads.set(episodeId, read);
+    try { return await read; }
+    finally { if (reads.get(episodeId) === read) reads.delete(episodeId); }
+  },
+
   updateEpisodeCreative: async (episodeId, updates, options) => serializeEpisodeCreativeWrite(episodeId, async () => {
     const native = nativeBinding(get().projects.find((item) => item.id === episodeId));
     if (native) {
@@ -2356,6 +2393,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         assertCurrent();
         const episode = loaded?.selection.episode, body = loaded?.episodeContent;
         if (!loaded || !episode || !body || episode.id !== native.episodeId) throw new Error('分集正文已变化');
+        if (native.episodeContentRevision !== undefined && body.revision !== native.episodeContentRevision
+          && ('outline' in updates || 'script' in updates || 'creative' in updates)) throw new Error('分集正文已变化，草稿已保留');
         const expected = options?.expected;
         if (expected) {
           if (expected.kind !== 'episode' || expected.episodeId !== episodeId || expected.seriesId !== native.projectId
@@ -2401,12 +2440,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           selection: { ...runtime.loaded.selection, episode: saved.episode,
             episodes: runtime.loaded.selection.episodes.map((item) => item.id === saved.episode.id ? saved.episode : item) } };
         set((current) => ({ projects: current.projects.map((item) => item.id === episodeId
-          ? { ...item, ...(patch.outline !== undefined ? { episodeOutline: patch.outline } : {}),
-            ...(patch.script !== undefined ? { episodeScript: patch.script } : {}),
-            ...(patch.scriptFile ? { episodeScriptFile: patch.scriptFile } : {}),
-            ...(patch.creative ? { episodeCreative: patch.creative } : {}),
-            ...('creationProfile' in metadata ? { creationProfile: metadata.creationProfile ?? undefined } : {}),
-            ...('teamProfileOverride' in metadata ? { teamProfileOverride: metadata.teamProfileOverride ?? undefined } : {}) } : item) }));
+          ? applyNativeEpisodeContent({ ...item, creationProfile: saved.episode.creationProfile, teamProfileOverride: saved.episode.teamProfileOverride,
+            nativeView: { ...native, episodeRevision: saved.episode.revision } }, saved.content) : item) }));
         return true;
       } catch (error) {
         if (receipt && !committed) await receipt.rollback(assertCurrent).catch(() => false);

@@ -49,6 +49,7 @@ import {
 } from '../skillPromptService';
 import { useAppStore } from '../../store/useAppStore';
 import { listEpisodes } from '../../store/store.utils';
+import { needsNativeEpisodeContent } from '../../store/nativeProjectView';
 import { formatChatImageReference, parseChatImageReferences, MAX_CHAT_IMAGES } from './chatImageReferenceService';
 import { GENERAL_ASSISTANT_SCOPE_ID, isGeneralAssistantScope, resolveAssistantToolAllowlist } from './assistantScope';
 import { resolveNativeConversationCanvas } from './conversationProjectScope';
@@ -568,9 +569,13 @@ function driveAgentTask(
           || task.toolAllowlist !== undefined
           || !!task.creationProfile
         ) {
-          const live = useAppStore.getState();
           const target = task.workbenchTarget;
-          const scope = target && isWorkbenchAgentTaskInScope(live, task)
+          const before = useAppStore.getState();
+          const initialScope = target && isWorkbenchAgentTaskInScope(before, task)
+            ? readEpisodeWorkspaceScope(before, target.episodeId) : null;
+          if (target && needsNativeEpisodeContent(initialScope?.episode)) await before.loadEpisodeCreative(target.episodeId);
+          signal.throwIfAborted();
+          const live = useAppStore.getState(), scope = target && isWorkbenchAgentTaskInScope(live, task)
             ? readEpisodeWorkspaceScope(live, target.episodeId) : null;
           const graphContext = scope ? buildStoryGraphWritingContext(scope.owner.series?.storyGraph, {
             episodes: listEpisodes(live.projects, scope.owner.id),

@@ -1,6 +1,6 @@
 /** 仓储测试仅使用独立 fake IndexedDB，不操作真实项目。 */
 import { webcrypto } from 'node:crypto';
-import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
+import { IDBFactory, IDBIndex, IDBKeyRange } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createNativeProject, readNativeProject, readNativeProjectByCanvasId, listNativeProjectIdentities,
   listNativeEpisodes, convertNativeProjectToSeries, createNativeEpisode, saveNativeCanvas, saveNativeEpisodeContent,
@@ -16,6 +16,7 @@ import { prepareProjectModelArchiveCapture, materializeProjectModelArchiveBusine
 import type { ProjectModelTransferCapture, ProjectModelTransferExchange } from '../../src/types/projectModelTransfer';
 import { listNativeVideoEditorProjectsForProject } from '../../src/services/indexedDb/nativeVideoEditorRepository';
 import { readNativeProjectExchange, verifiedExchange } from '../../src/services/indexedDb/projectModelTransferRepository';
+import { readNativeProjectView } from '../../src/services/nativeProjectNavigation';
 
 const id = (prefix: 'p2' | 'e2' | 'c2', digit: string) => `${prefix}-${digit.repeat(8)}-${digit.repeat(4)}-4${digit.repeat(3)}-8${digit.repeat(3)}-${digit.repeat(12)}`;
 let factory: IDBFactory;
@@ -455,19 +456,27 @@ describe('独立新项目仓储', () => {
       episodeId: id('e2', '2'), canvasId: id('c2', '3') }, { factory });
     const second = await createNativeEpisode({ projectId: initial.project.id, expectedProjectEpoch: first.project.epoch, name: '二',
       episodeId: id('e2', '4'), canvasId: id('c2', '5') }, { factory });
+    const listCanvasKeys = vi.spyOn(IDBIndex.prototype, 'getAllKeys');
+    expect((await readNativeEpisodeContent(initial.project.id, id('e2', '4'), { factory }))?.episode.canvasId).toBe(id('c2', '5'));
+    expect(listCanvasKeys).not.toHaveBeenCalled();
+    listCanvasKeys.mockRestore();
     const other = second.canvases.find((item) => item.id === id('c2', '5'))!;
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const opening = factory.open(NATIVE_PROJECT_DATABASE_NAME); opening.onsuccess = () => resolve(opening.result); opening.onerror = () => reject(opening.error);
     });
     try {
       await new Promise<void>((resolve, reject) => {
-        const tx = db.transaction('canvasDocuments', 'readwrite');
+        const tx = db.transaction(['canvasDocuments', 'episodeContents'], 'readwrite');
         tx.objectStore('canvasDocuments').put({ ...other, nodes: 'broken-other-canvas' });
+        tx.objectStore('episodeContents').put({ ...second.episodeContents.find((item) => item.episodeId === id('e2', '4'))!,
+          revision: 'broken-other-body' });
         tx.oncomplete = () => resolve(); tx.onabort = () => reject(tx.error);
       });
     } finally { db.close(); }
     const selection = await readNativeProjectSelection(initial.project.id, id('c2', '3'), { factory });
     expect(selection?.context).toMatchObject({ projectId: initial.project.id, episodeId: id('e2', '2'), canvasId: id('c2', '3') });
+    expect((await readNativeProjectView(initial.project.id, id('c2', '3'), { factory }))?.episodeContent?.episodeId).toBe(id('e2', '2'));
+    await expect(readNativeEpisodeContent(initial.project.id, id('e2', '4'), { factory })).rejects.toThrow();
     const saved = await saveNativeCanvas({ projectId: initial.project.id, expectedProjectEpoch: second.project.epoch,
       canvasId: id('c2', '3'), episodeId: id('e2', '2'), expectedCanvasEpoch: 1, expectedCanvasRevision: 0,
       document: { nodes: [], edges: [], groups: [] } }, { factory });

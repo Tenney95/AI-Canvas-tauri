@@ -3,6 +3,7 @@
  */
 import { useAppStore } from '../../../store/useAppStore';
 import { resolveOpenTargetId, seriesOwnerId } from '../../../store/store.utils';
+import { needsNativeEpisodeContent } from '../../../store/nativeProjectView';
 import type { CanvasProject, ProjectSettings } from '../../../types';
 import { isMcpGlobalToolContext } from '../../mcp/mcpSettingsScope';
 import type { AgentToolSchema } from '../agentToolSchemas';
@@ -349,8 +350,10 @@ export function registerProjectAgentTools(): Array<() => void> {
         const unavailable = projectListUnavailable();
         if (unavailable) return unavailable;
         const store = useAppStore.getState();
-        const project = store.projects.find((candidate) => candidate.id === input.projectId);
-        if (!project) return failure('项目不存在', 'PROJECT_NOT_FOUND');
+        const target = store.projects.find((candidate) => candidate.id === input.projectId);
+        if (!target) return failure('项目不存在', 'PROJECT_NOT_FOUND');
+        const project = store.currentProjectId && target.parentId === seriesOwnerId(store.projects, store.currentProjectId)
+          && needsNativeEpisodeContent(target) ? await store.loadEpisodeCreative(target.id) : target;
         return success(`已读取项目“${project.name}”`, {
           ...safeProjectSummary(project, store.projects, store.currentProjectId),
           settings: safeProjectSettings(project.settings),
