@@ -187,7 +187,7 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
     if (!view || !viewport) return;
     const captured = new WeakSet<Event>();
     let contactPointerId: number | undefined;
-    let canvasHandleMousePointer: number | undefined;
+    let nearHandleMousePointer: number | undefined;
     let suppressHandleDragClick = false;
     let touchRoute: { touch: Touch; target: Element; wrapper: Element } | undefined;
     let contactTimer: number | undefined;
@@ -273,11 +273,9 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
       const press = pointer?.type === 'pointerdown';
       const direct = pointer?.pointerType === 'touch' || pointer?.pointerType === 'pen';
       if (press && pointer) {
-        canvasHandleMousePointer = undefined;
+        nearHandleMousePointer = undefined;
         suppressHandleDragClick = false;
         if (direct && !pointer.isPrimary) return;
-        if (pointer.isTrusted && event.target instanceof Element && surface.contains(event.target)
-          && leaveKeyboardMode(event)) return;
       }
       if (suppressHandleDragClick && event.type === 'click' && event.isTrusted && event.detail > 0) {
         suppressHandleDragClick = false;
@@ -287,22 +285,27 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
           return;
         }
       }
-      const target = press
+      const useOriginalTarget = press && pointer.isTrusted && event.target instanceof Element
+        && surface.contains(event.target) && leaveKeyboardMode(event);
+      const target = useOriginalTarget ? undefined : press
         ? restoreCard(event, direct)
         : contactTarget(event) ?? (direct ? undefined
           : (near ? restoredTarget(event, input.current.hoverId) : undefined) ?? restoreCard(event, false));
+      const pressTarget = target ?? event.target;
+      if (near && press && pointer?.isTrusted && pointer.pointerType === 'mouse'
+        && pressTarget instanceof Element && surface.contains(pressTarget) && pressTarget.closest('.react-flow__handle')) {
+        nearHandleMousePointer = pointer.pointerId;
+      }
       if (!target) return;
       if (press && direct) contactPointerId = pointer?.pointerId;
-      if (near && press && pointer?.isTrusted && pointer.pointerType === 'mouse'
-        && target.closest('.react-flow__handle')) canvasHandleMousePointer = pointer.pointerId;
       // Route the first press to the restored wrapper before the pane can begin a selection.
       forward(event, pointer ? new PointerEvent(event.type, pointer) : new MouseEvent(event.type, event), target);
     };
     const onPointerEnd = (event: PointerEvent) => {
-      if (event.pointerId === canvasHandleMousePointer) {
-        canvasHandleMousePointer = undefined;
+      if (event.pointerId === nearHandleMousePointer) {
+        nearHandleMousePointer = undefined;
         // React Flow still has the drag at pointerup. Its later mouseup completes the connection.
-        // A click targeted at the original pane must not become a fresh click on the drop handle.
+        // The browser's click following release must not start a new connection on the drop handle.
         suppressHandleDragClick = event.type === 'pointerup' && store.getState().connection.inProgress;
       }
       if (event.pointerId !== contactPointerId) return;
@@ -350,7 +353,7 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
     const onBlur = () => {
       const route = touchRoute;
       contactPointerId = undefined;
-      canvasHandleMousePointer = undefined;
+      nearHandleMousePointer = undefined;
       suppressHandleDragClick = false;
       touchRoute = undefined;
       if (route?.wrapper.isConnected) {
@@ -421,8 +424,8 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
   const hasStaticCards = staticCards.length > 0;
   useLayoutEffect(() => {
     if (!surface || hasStaticCards) return;
-    surface.dataset.canvasFarFallbackReason = fallbackReason ?? 'interactive-card';
-    return () => { delete surface.dataset.canvasFarFallbackReason; };
+    surface.setAttribute('data-canvas-far-fallback-reason', fallbackReason ?? 'interactive-card');
+    return () => surface.removeAttribute('data-canvas-far-fallback-reason');
   }, [fallbackReason, hasStaticCards, surface]);
   const staticIds = useMemo(() => new Set(staticCards.map((card) => card.id)), [staticCards]);
   const visibleFarIds = useMemo(() => staticIds.size

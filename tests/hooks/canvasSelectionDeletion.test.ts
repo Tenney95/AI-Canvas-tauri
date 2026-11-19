@@ -22,7 +22,10 @@ beforeEach(() => {
   driver.keydown = undefined;
   blockedByDialog = false;
   useAppStore.setState(useAppStore.getInitialState(), true);
-  useAppStore.setState({ currentProjectId: 'project', selectedNodeIds: ['selected'], deleteSelectedCanvasElements: vi.fn(() => true) });
+  useAppStore.setState({
+    currentProjectId: 'project', projectLoadStatus: 'ready',
+    selectedNodeIds: ['selected'], deleteSelectedCanvasElements: vi.fn(() => true),
+  });
   vi.stubGlobal('document', {
     addEventListener: (type: string, listener: (event: KeyboardEvent) => unknown) => {
       if (type === 'keydown') driver.keydown = listener;
@@ -63,9 +66,10 @@ describe('键盘选区删除入口', () => {
     expect(useAppStore.getState().deleteSelectedCanvasElements).toHaveBeenCalledExactlyOnceWith();
   });
 
-  it.each(['empty', 'input', 'dialog', 'no-project'])('%s 情况不吞删除键或修改画布', async (condition) => {
+  it.each(['empty', 'input', 'dialog', 'no-project', 'loading'])('%s 情况不吞删除键或修改画布', async (condition) => {
     if (condition === 'empty') useAppStore.setState({ selectedNodeIds: [] });
     if (condition === 'no-project') useAppStore.setState({ currentProjectId: null });
+    if (condition === 'loading') useAppStore.setState({ projectLoadStatus: 'loading' });
     blockedByDialog = condition === 'dialog';
     const event = keyEvent('Delete', condition === 'input' ? 'INPUT' : 'DIV');
     await driver.keydown!(event);
