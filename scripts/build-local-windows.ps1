@@ -16,11 +16,22 @@ $OutputRoot = [IO.Path]::GetFullPath($OutputRoot)
 $originalLocation = Get-Location
 $writer = $null
 $buildLock = $null
+$resourceDirectory = $null
+$stagedRuntimeDll = $null
 $exitCode = 1
 
 function Write-BuildMessage([string]$Message) {
     Write-Host $Message
     if ($script:writer) { $script:writer.WriteLine($Message); $script:writer.Flush() }
+}
+
+function Get-Sha256([string]$Path) {
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $hash = [Security.Cryptography.SHA256]::Create()
+        try { return [BitConverter]::ToString($hash.ComputeHash($stream)).Replace('-', '').ToLowerInvariant() }
+        finally { $hash.Dispose() }
+    } finally { $stream.Dispose() }
 }
 
 function Invoke-BuildStep([string]$Label, [string]$Executable, [string[]]$Arguments) {
@@ -134,10 +145,17 @@ try {
     if (!$directML) { throw 'The default ONNX build did not produce DirectML.dll. Refusing to create an incomplete installer.' }
     $runtimeDll = Join-Path $releaseRoot 'DirectML.dll'
     if ([IO.Path]::GetFullPath($directML) -ne [IO.Path]::GetFullPath($runtimeDll)) { Copy-Item -LiteralPath $directML -Destination $runtimeDll -Force }
-    $runtimeHash = (Get-FileHash -LiteralPath $runtimeDll -Algorithm SHA256).Hash.ToLowerInvariant()
+    $runtimeHash = Get-Sha256 $runtimeDll
+    # Tauri resolves resource paths from src-tauri and strips drive prefixes.
+    # Stage on the source drive so an external CARGO_TARGET_DIR works too.
+    $relativeResourceDirectory = 'target/local-nsis-' + [Guid]::NewGuid().ToString('N')
+    $resourceDirectory = Join-Path (Join-Path $projectRoot 'src-tauri') $relativeResourceDirectory
+    [IO.Directory]::CreateDirectory($resourceDirectory) | Out-Null
+    $stagedRuntimeDll = Join-Path $resourceDirectory 'DirectML.dll'
+    Copy-Item -LiteralPath $runtimeDll -Destination $stagedRuntimeDll
     $resources = [ordered]@{}
     foreach ($resource in $tauri.bundle.resources.PSObject.Properties) { $resources[$resource.Name] = $resource.Value }
-    $resources[$runtimeDll] = 'DirectML.dll'
+    $resources["$relativeResourceDirectory/DirectML.dll"] = 'DirectML.dll'
     $bundleConfig = @{ bundle = @{ createUpdaterArtifacts = $false; resources = $resources } }
     [IO.File]::WriteAllText($localConfig, ($bundleConfig | ConvertTo-Json -Depth 5), $utf8)
     Write-BuildMessage ('DirectML runtime SHA-256: ' + $runtimeHash)
@@ -152,7 +170,7 @@ try {
     foreach ($installer in $installers) {
         $destination = Join-Path $outputDirectory $installer.Name
         Copy-Item -LiteralPath $installer.FullName -Destination $destination
-        $artifacts += @{ file = $installer.Name; bytes = $installer.Length; sha256 = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() }
+        $artifacts += @{ file = $installer.Name; bytes = $installer.Length; sha256 = Get-Sha256 $destination }
     }
     $sourceHead = $null
     $sourceDirty = $null
@@ -171,8 +189,15 @@ try {
     Write-BuildMessage ('BUILD FAILED: ' + $_.Exception.Message)
     Write-BuildMessage 'Resolve the reported error, then run the launcher again. Existing caches will be reused.'
 } finally {
-    if ($writer) { $writer.Dispose() }
-    if ($buildLock) { $buildLock.Dispose() }
-    Set-Location -LiteralPath $originalLocation.Path
+    try {
+        if ($stagedRuntimeDll -and [IO.File]::Exists($stagedRuntimeDll)) { [IO.File]::Delete($stagedRuntimeDll) }
+        if ($resourceDirectory -and [IO.Directory]::Exists($resourceDirectory)) { [IO.Directory]::Delete($resourceDirectory) }
+    } catch {
+        Write-Warning ('Could not remove staged NSIS resources: ' + $_.Exception.Message)
+    } finally {
+        if ($writer) { $writer.Dispose() }
+        if ($buildLock) { $buildLock.Dispose() }
+        Set-Location -LiteralPath $originalLocation.Path
+    }
 }
 exit $exitCode

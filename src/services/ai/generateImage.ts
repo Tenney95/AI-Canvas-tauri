@@ -267,8 +267,9 @@ export function supportsCharacterImageModel(
 }
 
 export async function inspectImagePromptLength(
-  params: AIImageGenParams, inputCharacters = imagePromptCharacterCount(params.prompt),
+  params: AIImageGenParams, inputCharacters = imagePromptCharacterCount(params.prompt), signal?: AbortSignal,
 ): Promise<ImagePromptOverflowError | undefined> {
+  signal?.throwIfAborted();
   if (params.workflowId) return;
   const generalModel = params.provider === 'general' ? resolveGeneralModel(params.model) : undefined;
   const modelId = generalModel?.modelId ?? extractModelName(params.model, params.provider);
@@ -277,7 +278,8 @@ export async function inspectImagePromptLength(
   const definition = getProviderDefinition(connectionId, state.config.providers[connectionId]);
   const limit = imagePromptCharacterLimit(modelId, generalModel?.executionProfile?.preset, definition?.id);
   if (limit === undefined && definition?.id !== 'minimax') return;
-  const prepared = await runImageBatch(params, 1, undefined, undefined, true);
+  const prepared = await runImageBatch(params, 1, signal, undefined, true);
+  signal?.throwIfAborted();
   if (prepared.limit !== undefined && imagePromptCharacterCount(prepared.prompt) > prepared.limit) {
     return new ImagePromptOverflowError(prepared.modelName, prepared.prompt, prepared.limit, inputCharacters);
   }
@@ -462,13 +464,13 @@ async function runImageBatch(
   if (isRunningHubWorkflow(selectedWorkflow)) rawPrompt = splitRunningHubPrompt(rawWorkflowPrompt).prompt;
   const cameraSettings = useAppStore.getState().nodes.find((node) => node.id === params.nodeId)?.data.cameraSettings;
   const comfyMedia = isComfyWorkflow ? await resolvePromptWithMediaRefs(rawPrompt, { cameraSettings }) : undefined;
-  const runninghubMedia = isRunningHub ? await resolvePromptWithMediaRefs(rawPrompt, { preserveBindings: true, cameraSettings }) : undefined;
+  const runninghubMedia = isRunningHub ? await resolvePromptWithMediaRefs(rawPrompt, { preserveBindings: true, cameraSettings, signal }) : undefined;
   const localMedia = runninghubMedia ?? comfyMedia;
   const { prompt: resolvedPrompt, imageUrls } = characterWorkbench
     ? { prompt: rawPrompt, imageUrls: [] }
     : localMedia
     ? { prompt: localMedia.prompt, imageUrls: getMediaReferenceUrls(localMedia.references, 'image', 'local') }
-    : await resolvePromptWithImageRefs(rawPrompt, { preferLocalImages: usesImageMultipart || usesCustomImageFiles || usesImageDataUrls || usesVolcengineTos || usesMinimaxImageProtocol || referencesUseRequestFiles || providerDefinition?.id === 'toapis' || isLibapi || !!providerConfig?.imageHosting?.enabled, cameraSettings });
+    : await resolvePromptWithImageRefs(rawPrompt, { preferLocalImages: usesImageMultipart || usesCustomImageFiles || usesImageDataUrls || usesVolcengineTos || usesMinimaxImageProtocol || referencesUseRequestFiles || providerDefinition?.id === 'toapis' || isLibapi || !!providerConfig?.imageHosting?.enabled, cameraSettings, signal });
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
 
   // 仅归一同一节点的来源别名；裸 URL 或其他节点仍可能明确需要未标注的原图。

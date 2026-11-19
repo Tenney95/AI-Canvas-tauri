@@ -62,6 +62,26 @@ describe('ComfyUI image utility reads', () => {
     expect(URL.createObjectURL).not.toHaveBeenCalled();
   });
 
+  it('propagates cancellation during a native probe as an abort', async () => {
+    native.read.mockImplementationOnce((_url: string, signal: AbortSignal) => new Promise((_, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }));
+    const controller = new AbortController();
+    const pending = imageUrlReachable(source, undefined, controller.signal);
+    controller.abort();
+    await expect(pending).rejects.toBe(controller.signal.reason);
+    expect(images).toHaveLength(0);
+  });
+
+  it('clears the browser image request when a probe is cancelled', async () => {
+    native.matches.mockReturnValue(false);
+    const controller = new AbortController();
+    const pending = imageUrlReachable('https://cdn.example/image.png', undefined, controller.signal);
+    controller.abort();
+    await expect(pending).rejects.toBe(controller.signal.reason);
+    expect(images[0].removeAttribute).toHaveBeenCalledWith('src');
+  });
+
   it('releases a failed native decode without retrying the original URL', async () => {
     failDecode = true;
     await expect(loadImage(source)).rejects.toThrow('decode failed');
