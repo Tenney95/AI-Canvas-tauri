@@ -1627,6 +1627,9 @@ async fn move_to_trash(
     }
     path_policy::ensure_trusted_caller(&webview)?;
     let target = path_policy::authorize_path(&app, &path, path_policy::PathAccess::Read)?;
+    if target.is_dir() && std::fs::symlink_metadata(target.join(path_policy::NATIVE_PROJECT_BINDING_FILE)).is_ok() {
+        return Err("请从项目库回收原生项目目录".into());
+    }
     trash::delete(&target).map_err(|e| format!("移动文件到回收站失败: {}", e))
 }
 

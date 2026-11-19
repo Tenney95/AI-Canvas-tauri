@@ -9,6 +9,7 @@ import {
   joinPath,
   getBaseDir,
   getNativeProjectOwner,
+  getProjectDataDir,
   getConvertFileSrc,
   resolveUniqueDestPath,
   getFileCategory,
@@ -18,11 +19,12 @@ import {
 } from './core';
 import { moveToTrash } from './trash';
 import { getRelativeAssetPath, identifyAsset, identifyAssetBatch } from './assetIndex';
-import { getAllAssetIndexes, getAssetIndexByPath, putAssetIndex, type AssetIndexRecord } from '../indexedDbService';
+import { getAllAssetIndexes, getAssetIndexByPath, putAssetIndex, putAssetIndexes, type AssetIndexRecord } from '../indexedDbService';
 import { mediaFileAllocationKey, retiredMediaPaths } from '../indexedDb/mediaRelocations';
 import { decodeDataUrlBytesAsync } from '../mediaDataUrl';
 import { isProjectAgentInternalFile, isProjectAgentWorkspaceDirectory } from '../../utils/agentProjectWorkspace';
 import { isNativeMediaPendingFile } from '../../utils/nativeMediaPendingFile';
+import { isNativeProjectBindingFile, NATIVE_PROJECT_BINDING_FILE } from '../../utils/nativeProjectBindingFile';
 
 /** 仅用于目录浏览的运行时条目，不写入资产索引或持久化配置。 */
 export interface AssetFolderEntry {
@@ -70,9 +72,17 @@ function comparablePath(path: string): string {
   return /^[a-z]:\//i.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
 }
 
+/** 直接登记项目子目录时仍检查其所在作品的归属边界。 */
+export async function hasNativeAssetRootAncestor(path: string): Promise<boolean> {
+  const base = await getBaseDir();
+  const relative = base && getRelativeAssetPath(path, base);
+  if (!base || !relative || relative.split('/').some((part) => !part || part === '.' || part === '..')) return false;
+  return exists(joinPath(base, relative.split('/')[0], NATIVE_PROJECT_BINDING_FILE));
+}
+
 /** 按实际父目录筛选，兼容 Windows 分隔符和重复登记的父/子目录。 */
 export function selectAssetFolderFiles(files: AssetFileEntry[], selection: AssetFolderSelection): AssetFileEntry[] {
-  const visible = files.filter((file) => !isNativeMediaPendingFile(file.path));
+  const visible = files.filter((file) => !isNativeMediaPendingFile(file.path) && !isNativeProjectBindingFile(file.path));
   if (selection.kind === 'all') return visible;
   if (selection.kind === 'global') return visible.filter((file) => file.source === 'global' && !file.relativePath?.includes('/'));
   const directory = comparablePath(`${selection.rootPath.replace(/[\\/]+$/, '')}/${selection.relativePath}`);
@@ -132,7 +142,11 @@ export async function resolveAssetFolderDirectory(selection: AssetFolderSelectio
   if (selection.relativePath && selection.relativePath.split(/[\\/]/).some((part) => !part || part === '.' || part === '..' || part.includes(':'))) {
     throw new Error('文件夹相对路径无效');
   }
-  return selection.relativePath ? joinPath(selection.rootPath, selection.relativePath) : selection.rootPath;
+  const directory = selection.relativePath ? joinPath(selection.rootPath, selection.relativePath) : selection.rootPath;
+  if (await hasNativeAssetRootAncestor(directory) || await exists(joinPath(directory, NATIVE_PROJECT_BINDING_FILE))) {
+    throw new Error('请在项目资源库中管理此文件夹');
+  }
+  return directory;
 }
 
 export async function createAssetSubfolder(selection: AssetFolderSelection, roots: readonly string[], name: string): Promise<string> {
@@ -163,11 +177,18 @@ export async function scanDirectoryFiles(
 ): Promise<AssetDirectoryScanResult> {
   throwIfScanAborted(opts.signal);
   if (!isTauriEnv()) return { files: [], folders: [], truncated: false, complete: false, failedDirectories: 0, failedFiles: 0 };
+  const projectScan = opts.source === 'project';
+  if (!projectScan && await hasNativeAssetRootAncestor(rootDir)) {
+    throwIfScanAborted(opts.signal);
+    return { files: [], folders: [], truncated: false, complete: true, failedDirectories: 0, failedFiles: 0 };
+  }
   const maxFiles = opts.maxFiles ?? 3000;
   const maxDepth = opts.maxDepth ?? 8;
   const maxDirectories = Math.max(1, opts.maxDirectories ?? 3000);
   const excludedFiles = new Set((opts.excludedFilePaths ?? []).map(comparablePath));
-  const retiredPaths = opts.source === 'project' ? await retiredMediaPaths() : undefined;
+  const retiredPaths = projectScan ? await retiredMediaPaths() : undefined;
+  const nativeOwner = projectScan && opts.projectId ? getNativeProjectOwner(opts.projectId) : undefined;
+  let confirmedOwnerRoot: Promise<boolean> | undefined;
   throwIfScanAborted(opts.signal);
   const indexedFilePaths = new Map<string, string>();
   let indexedAliases: Map<string, AssetIndexRecord | null> | undefined;
@@ -202,6 +223,7 @@ export async function scanDirectoryFiles(
     name: rootDir.split(/[\\/]/).filter(Boolean).pop() || rootDir, fileCount: 0, availability: 'unscanned',
   };
   const folders: AssetFolderEntry[] = [root];
+  const projectFolders = new Set<AssetFolderEntry>();
   const stack: { dir: string; depth: number; folder: AssetFolderEntry }[] = [{ dir: rootDir, depth: 0, folder: root }];
   let truncated = false;
   let failedDirectories = 0;
@@ -221,14 +243,15 @@ export async function scanDirectoryFiles(
       continue;
     }
     throwIfScanAborted(opts.signal);
+    if (!projectScan && entries.some((entry) => isNativeProjectBindingFile(entry.name))) {
+      projectFolders.add(folder);
+      continue;
+    }
     // 不跟随符号链接扩大外部目录授权或形成遍历环。
     const fileEntries: typeof entries = [];
     for (const entry of entries) {
-      if (!entry.isFile || entry.isSymlink || isNativeMediaPendingFile(entry.name)) continue;
-      if (opts.source === 'project' && isProjectAgentInternalFile(folder.relativePath ? `${folder.relativePath}/${entry.name}` : entry.name)) continue;
-      // 原生归属标记不是用户素材；删除它会让整个作品根无法验证。
-      if (depth === 0 && entry.name === '.ai-canvas-native-project.json'
-        && opts.projectId && getNativeProjectOwner(opts.projectId)) continue;
+      if (!entry.isFile || entry.isSymlink || isNativeMediaPendingFile(entry.name) || isNativeProjectBindingFile(entry.name)) continue;
+      if (projectScan && isProjectAgentInternalFile(folder.relativePath ? `${folder.relativePath}/${entry.name}` : entry.name)) continue;
       const filePath = getFilePath(dir, entry.name);
       if (excludedFiles.has(comparablePath(filePath))) continue;
       if (retiredPaths?.has(mediaFileAllocationKey(filePath))) {
@@ -251,6 +274,7 @@ export async function scanDirectoryFiles(
     }
     const subDirs = entries.filter((e) => e.isDirectory && !e.isSymlink
       && !opts.excludedDirectories?.includes(e.name)
+      && !isNativeProjectBindingFile(e.name)
       && !(opts.source === 'project' && isProjectAgentWorkspaceDirectory(folder.relativePath ? `${folder.relativePath}/${e.name}` : e.name))
       && !(depth === 0 && opts.excludedRootDirectories?.includes(e.name)));
 
@@ -299,7 +323,22 @@ export async function scanDirectoryFiles(
           if (opts.source !== 'project' || !opts.projectId || !opts.projectIdentityScope.includes(opts.projectId) || !relativePath) {
             throw new Error('项目文件身份范围无效，请重新预览');
           }
-          const indexed = await getAssetIndexByPath(r.filePath);
+          let indexed = await getAssetIndexByPath(r.filePath);
+          if (indexed?.source === 'folder' && indexed.projectId === undefined && !indexed.assetId.startsWith('na2-')
+            && indexed.rootPath && indexed.relativePath && !retiredPaths?.has(mediaFileAllocationKey(indexed.path))
+            && getRelativeAssetPath(indexed.path, indexed.rootPath) === indexed.relativePath
+            && nativeOwner && opts.projectIdentityScope.includes(nativeOwner)) {
+            // 只在原生绑定复核后的作品主根修补同一物理路径的旧外部投影，保留原素材 ID 和标签。
+            confirmedOwnerRoot ??= getProjectDataDir(nativeOwner).then((directory) => !!directory
+              && comparablePath(directory) === comparablePath(rootDir)).catch(() => false);
+            if (await confirmedOwnerRoot) {
+              throwIfScanAborted(opts.signal);
+              const [reclaimed] = await putAssetIndexes([{ ...indexed, source: 'project', projectId: nativeOwner,
+                rootPath: stripVerbatimPrefix(rootDir).replace(/\\/g, '/'), relativePath }], { expectedFolderProjection: indexed });
+              indexed = reclaimed;
+              existingIdentity = reclaimed;
+            }
+          }
           if (indexed && (indexed.source !== 'project' || !indexed.projectId || !opts.projectIdentityScope.includes(indexed.projectId))) {
             throw new Error('项目文件包含其他来源的资产身份，请先复制为独立项目资产');
           }
@@ -330,6 +369,7 @@ export async function scanDirectoryFiles(
           mtimeMs: r.mtimeMs,
         });
         throwIfScanAborted(opts.signal);
+        if (!projectScan && identity.source === 'project') continue;
         const file: AssetFileEntry = {
           assetId: identity.assetId,
           name: r.name,
@@ -377,7 +417,7 @@ export async function scanDirectoryFiles(
   }
   throwIfScanAborted(opts.signal);
   truncated ||= stack.length > 0;
-  return { files: out, folders, truncated, complete: !truncated && failedDirectories === 0 && failedFiles === 0,
+  return { files: out, folders: folders.filter((folder) => !projectFolders.has(folder)), truncated, complete: !truncated && failedDirectories === 0 && failedFiles === 0,
     failedDirectories, failedFiles };
 }
 
@@ -427,7 +467,7 @@ export async function listExternalFolderFiles(
   const results = await Promise.all(
     folders.map(async (folder) => {
       if (!(await exists(folder).catch(() => false))) return [];
-      const files = await walkDirectoryFiles(folder, { maxFiles: perFolder });
+      const files = await walkDirectoryFiles(folder, { maxFiles: perFolder, source: 'folder' });
       return files.map((f) => ({ ...f, source: 'folder' as const, folderRoot: folder }));
     }),
   );
@@ -463,7 +503,10 @@ export async function addAssetFilesToGlobal(
 export async function pickAssetFolder(): Promise<string | null> {
   if (!isTauriEnv()) return null;
   const selected = await open({ directory: true, title: '添加本地文件夹' });
-  if (!selected || Array.isArray(selected)) return typeof selected === 'string' ? selected : null;
+  if (typeof selected !== 'string') return null;
+  if (await hasNativeAssetRootAncestor(selected) || await exists(joinPath(selected, NATIVE_PROJECT_BINDING_FILE))) {
+    throw new Error('请在项目资源库中管理此文件夹');
+  }
   return selected;
 }
 

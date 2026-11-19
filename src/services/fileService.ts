@@ -8,6 +8,7 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { isLocalMediaUrl, isRemoteMediaUrl, localMediaUrlToPath } from '../utils/mediaUrl';
+import { isNativeProjectBindingFile } from '../utils/nativeProjectBindingFile';
 import { shouldLoadNativeComfyImage } from './comfyImageSource';
 import { corsSafeFetch } from './ai/httpTransport';
 import type { MediaDownloadRequest } from './ai/mediaDownloadAccess';
@@ -1277,7 +1278,7 @@ export async function renameProjectFileToLabel(
   newLabel: string,
   projectId: string,
 ): Promise<{ filePath: string; assetUrl: string; fileName: string } | null> {
-  if (!isTauriEnv() || !filePath) return null;
+  if (!isTauriEnv() || !filePath || isNativeProjectBindingFile(filePath)) return null;
   const projectDir = await getProjectDataDir(projectId);
   if (!projectDir) return null;
 
@@ -1295,7 +1296,7 @@ export async function renameProjectFileToLabel(
     baseLabel = baseLabel.slice(0, -ext.length);
   }
   const newName = buildNodeFileName(baseLabel, ext, 'file');
-  if (newName === oldName) return null; // 名称未变化
+  if (newName === oldName || isNativeProjectBindingFile(newName)) return null;
 
   try {
     // 就地改名：分组内的文件留在自己的子文件夹，否则会被搬回项目根目录
@@ -1338,6 +1339,7 @@ export async function renameAssetFile(
     throw new Error('文件名无效，请勿使用路径、特殊字符、保留名称或过长名称');
   }
   const name = `${base}${extension}`;
+  if (isNativeProjectBindingFile(path) || isNativeProjectBindingFile(name)) throw new Error('项目归属标记由应用管理，不能改名');
   if (name === oldName) return { file };
   const newPath = `${path.slice(0, path.lastIndexOf('/') + 1)}${name}`;
   const lockKey = /^[a-z]:\//i.test(path) ? path.toLowerCase() : path;

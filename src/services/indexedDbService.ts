@@ -1629,10 +1629,15 @@ async function legacy_getAssetIndexesByPaths(paths: readonly string[]): Promise<
 /** 扫描刷新合并小批事务；同值免写仍在墓碑与迁移日志校验之后执行。 */
 export async function putAssetIndexes(
   records: readonly AssetIndexRecord[],
-  options: { skipUnchanged?: boolean; migrateLegacyTags?: boolean; requireExistingPath?: boolean } = {},
+  options: { skipUnchanged?: boolean; migrateLegacyTags?: boolean; requireExistingPath?: boolean;
+    preserveProjectOwnership?: boolean; expectedFolderProjection?: AssetIndexRecord } = {},
 ): Promise<AssetIndexRecord[]> {
   if (!records.length) return [];
   if (records.length > 128) throw new Error('资产索引保存批次过大');
+  if (options.expectedFolderProjection && (records.length !== 1 || records[0].source !== 'project' || !records[0].projectId
+    || records[0].assetId.startsWith('na2-') || records[0].assetId !== options.expectedFolderProjection.assetId)) {
+    throw new Error('资产归属修复范围无效');
+  }
   if (records.some((record) => record.assetId.startsWith('na2-'))) {
     const verified = new Map<string, AssetIndexRecord>();
     const normalize = (value: string) => { const path = value.replace(/\\/g, '/').replace(/\/+$/, ''); return /^[a-z]:\//i.test(path) ? path.toLowerCase() : path; };
@@ -1668,9 +1673,20 @@ export async function putAssetIndexes(
             const request = store.get(next.assetId);
             request.onsuccess = () => {
               const current = request.result as AssetIndexRecord | undefined;
-              if (options.requireExistingPath && current?.path !== next.path) {
+              const expectedFolder = options.expectedFolderProjection;
+              if ((options.requireExistingPath && current?.path !== next.path)
+                || (expectedFolder && (!current || current.source !== 'folder' || current.projectId !== undefined
+                  || current.path !== expectedFolder.path || current.path !== next.path || current.rootPath !== expectedFolder.rootPath
+                  || current.relativePath !== expectedFolder.relativePath))) {
                 identityChanged = true;
                 tx.abort();
+                return;
+              }
+              if (options.preserveProjectOwnership && current?.source === 'project' && next.source !== 'project') {
+                if (current.path !== next.path) {
+                  identityChanged = true;
+                  tx.abort();
+                } else saved[position] = current;
                 return;
               }
               const lastUsedAt = latestAssetUsageTime(next.lastUsedAt, current?.lastUsedAt);

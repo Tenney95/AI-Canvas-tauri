@@ -47,6 +47,10 @@ async function pathExists(path: string): Promise<boolean> {
 
 function assetRecord(path: string, options: IdentifyAssetOptions, size: number, mtimeMs: number,
   existing?: AssetIndexRecord): AssetIndexRecord {
+  if (existing?.source === 'project' && options.source !== 'project') {
+    if (normalizePath(existing.path) !== path) throw new Error('项目素材位置已变化，请重新扫描');
+    return existing;
+  }
   const rootPath = options.rootPath ? normalizePath(options.rootPath) : undefined;
   return {
     assetId: existing?.assetId ?? options.assetId ?? createAssetId(), path,
@@ -73,7 +77,7 @@ export async function identifyAssetBatch(
   const flushKnown = async () => {
     signal?.throwIfAborted();
     const saved = await putAssetIndexes(refresh, {
-      skipUnchanged: true, migrateLegacyTags: true, requireExistingPath: true,
+      skipUnchanged: true, migrateLegacyTags: true, requireExistingPath: true, preserveProjectOwnership: true,
     });
     signal?.throwIfAborted();
     saved.forEach((record, index) => { records[positions[index]] = record; });
@@ -114,6 +118,7 @@ export async function identifyAsset(path: string, options: IdentifyAssetOptions)
     const candidates = await getAssetIndexesByFingerprint(fingerprint);
     const missingCandidates: AssetIndexRecord[] = [];
     for (const candidate of candidates) {
+      if (candidate.source === 'project' && options.source !== 'project') continue;
       try { await stat(candidate.path); }
       catch (error) {
         if (/no such file|path not found|not found|找不到指定|ENOENT|os error [23]\b/i.test(String(error))) missingCandidates.push(candidate);
@@ -128,7 +133,7 @@ export async function identifyAsset(path: string, options: IdentifyAssetOptions)
   }
 
   const [record] = await putAssetIndexes([assetRecord(normalizedPath, options, size, mtimeMs, existing)], {
-    skipUnchanged: true, migrateLegacyTags: true,
+    skipUnchanged: true, migrateLegacyTags: true, preserveProjectOwnership: true,
   });
   return record;
 }

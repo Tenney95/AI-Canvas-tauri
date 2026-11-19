@@ -9,7 +9,7 @@ import { createStore } from 'zustand/vanilla';
 
 const driver = vi.hoisted(() => ({ native: true, stat: vi.fn() }));
 vi.mock('@tauri-apps/plugin-fs', () => ({ stat: driver.stat }));
-vi.mock('../../src/services/fs/assetLibrary', () => ({ getGlobalFilesDir: async () => '/global/file' }));
+vi.mock('../../src/services/fs/assetLibrary', () => ({ getGlobalFilesDir: async () => '/global/file', hasNativeAssetRootAncestor: async () => false }));
 vi.mock('../../src/services/fs/core', () => ({
   isTauriEnv: () => driver.native, getProjectDataDir: async (id: string) => `/projects/${id}`,
   getConvertFileSrc: async () => (path: string) => `asset:${path}`,

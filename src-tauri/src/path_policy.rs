@@ -511,6 +511,13 @@ pub(crate) fn authorize_model_scan_directory_with_roots<R: Runtime>(
     Ok(resolved)
 }
 
+pub(crate) const NATIVE_PROJECT_BINDING_FILE: &str = ".ai-canvas-native-project.json";
+
+fn is_native_project_binding_file(path: &Path) -> bool {
+    path.file_name().and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|name| name.eq_ignore_ascii_case(NATIVE_PROJECT_BINDING_FILE))
+}
+
 /// 只接受由文件对话框或 fs scope 明确授权的普通现有文件，不回显路径。
 pub fn authorize_existing_plain_file<R: Runtime>(
     app: &tauri::AppHandle<R>,
@@ -537,7 +544,7 @@ pub fn authorize_existing_plain_file_with_roots<R: Runtime>(
         return Err(INVALID_FILE.to_string());
     }
     let path = PathBuf::from(trimmed);
-    if !path.is_absolute() {
+    if !path.is_absolute() || is_native_project_binding_file(&path) {
         return Err(INVALID_FILE.to_string());
     }
     let metadata = std::fs::symlink_metadata(&path).map_err(|_| INVALID_FILE.to_string())?;
@@ -549,6 +556,7 @@ pub fn authorize_existing_plain_file_with_roots<R: Runtime>(
         std::fs::symlink_metadata(&resolved).map_err(|_| INVALID_FILE.to_string())?;
     if !resolved_metadata.is_file()
         || is_link_or_reparse(&resolved_metadata)
+        || is_native_project_binding_file(&resolved)
         || is_private_app_path(app, &resolved)
         || (!extra_roots.is_empty() && overlaps_private_app_path(app, &resolved))
         || !is_authorized(app, &resolved, PathAccess::Read, extra_roots)
@@ -574,7 +582,13 @@ pub fn authorize_path_with_roots<R: Runtime>(
     access: PathAccess,
     extra_roots: &[PathBuf],
 ) -> Result<PathBuf, String> {
+    if is_native_project_binding_file(Path::new(raw)) {
+        return Err("项目归属标记由原生仓储管理".into());
+    }
     let resolved = resolve_path(raw, access)?;
+    if is_native_project_binding_file(&resolved) {
+        return Err("项目归属标记由原生仓储管理".into());
+    }
     // 递归读取、归档、解包和删除类命令只在这里校验一次根路径。除了私有子树本身，
     // 也必须拒绝它们的祖先；否则 appLocalData 根会把 secrets/plugin-private 一并暴露。
     // 普通同级文件不会与私有目录形成 Path 组件级祖先关系，因此不会被误判。

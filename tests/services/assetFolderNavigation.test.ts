@@ -45,6 +45,7 @@ vi.mock('../../src/services/indexedDb/mediaRelocations', async (importOriginal) 
 import { listExternalFolderContents, listExternalFolderFiles, selectAssetFolderFiles, listGlobalFolderContents, createAssetSubfolder, resolveAssetFolderDirectory, addAssetFilesToGlobal, saveToPermanent, saveAssetToPermanent, walkDirectoryFiles } from '../../src/services/fs/assetLibrary';
 import type { AssetFileEntry } from '../../src/services/fs/core';
 import { isNativeMediaPendingFile } from '../../src/utils/nativeMediaPendingFile';
+import { NATIVE_PROJECT_BINDING_FILE } from '../../src/utils/nativeProjectBindingFile';
 
 function directory(path: string, names: string[]) {
   mocks.directories.set(path, names.map((name) => ({
@@ -53,7 +54,8 @@ function directory(path: string, names: string[]) {
 }
 beforeEach(() => {
   mocks.tauri = true;
-  mocks.exists.mockReset().mockResolvedValue(true);
+  mocks.exists.mockReset().mockImplementation(async (path: string) => !path.endsWith(`/${NATIVE_PROJECT_BINDING_FILE}`)
+    || !!mocks.directories.get(path.slice(0, path.lastIndexOf('/')))?.some((entry) => entry.name === NATIVE_PROJECT_BINDING_FILE));
   mocks.mkdir.mockReset().mockResolvedValue(undefined);
   mocks.open.mockReset().mockResolvedValue(['/source/角色.png']);
   mocks.readFile.mockReset().mockResolvedValue(new Uint8Array([1, 2, 3]));
@@ -74,6 +76,19 @@ beforeEach(() => {
 });
 
 describe('global asset folder browsing', () => {
+  it('注册项目上级或子目录时跳过整个项目子树，其他外部素材正常展示', async () => {
+    directory('/global', ['hero.png', '作品/']);
+    directory('/global/作品', [NATIVE_PROJECT_BINDING_FILE, '专用图.png', '分组/']);
+    directory('/global/作品/分组', ['分组图.png']);
+    const result = await listExternalFolderContents(['/global', '/global/作品/分组']);
+    expect(result.files.map((file) => file.path)).toEqual(['/global/hero.png']);
+    expect(result.folders.map((folder) => folder.relativePath)).toEqual(['']);
+    expect(mocks.stat).not.toHaveBeenCalledWith(`/global/作品/${NATIVE_PROJECT_BINDING_FILE}`);
+    expect(mocks.readDir).not.toHaveBeenCalledWith('/global/作品/分组');
+    expect(selectAssetFolderFiles([{ name: NATIVE_PROJECT_BINDING_FILE, path: `/global/作品/${NATIVE_PROJECT_BINDING_FILE}`,
+      size: 1, category: 'text' }], { kind: 'all' })).toEqual([]);
+  });
+
   it('只识别原生媒体的完整暂存命名，保留普通 pending、点文件和最终素材', () => {
     const hash = 'a'.repeat(64);
     for (const extension of ['', ...['png', 'jpg', 'webp', 'gif', 'mp4', 'webm', 'mov', 'mp3', 'wav', 'ogg', 'opus', 'aac', 'flac', 'pcm', 'json'].map((value) => `.${value}`)]) {

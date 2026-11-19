@@ -53,6 +53,35 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('project asset scans with committed group relocations', () => {
+  it('外部精确路径和后台索引刷新均保留已经核验的项目归属', async () => {
+    const db = await import('../../src/services/indexedDbService');
+    const { identifyAsset, identifyAssetBatch } = await import('../../src/services/fs/assetIndex');
+    const existing = record('project-media');
+    const external = { source: 'folder' as const, rootPath: 'D:', size: 1, mtimeMs: 1 };
+    await db.putAssetIndex(existing);
+    expect(await identifyAsset(existing.path, external)).toEqual(existing);
+    expect(await identifyAssetBatch([{ path: existing.path, options: external }])).toEqual([existing]);
+    // 已进入落盘队列的旧外部快照，也不能覆盖同路径的更新归属。
+    expect(await db.putAssetIndexes([{ ...existing, ...external, projectId: undefined }], { preserveProjectOwnership: true }))
+      .toEqual([existing]);
+  });
+
+  it('按原生绑定精确修复路径已被外部扫描重新登记的记录', async () => {
+    const core = await import('../../src/services/fs/core');
+    vi.spyOn(core, 'getNativeProjectOwner').mockReturnValue('project');
+    vi.spyOn(core, 'getProjectDataDir').mockResolvedValue(root);
+    const db = await import('../../src/services/indexedDbService');
+    const external: AssetIndexRecord = { ...record('project-media'), source: 'folder', projectId: undefined,
+      rootPath: 'D:/', relativePath: 'project/current.png', lastUsedAt: 123 };
+    await db.putAssetIndex(external);
+    files(['current.png']);
+    const { scanDirectoryFiles } = await import('../../src/services/fs/assetLibrary');
+    const result = await scanDirectoryFiles(root, { source: 'project', projectId: 'project', projectIdentityScope: ['project'] });
+    expect(result.files.map(({ assetId }) => assetId)).toEqual([external.assetId]);
+    expect(await db.getAssetIndexById(external.assetId)).toMatchObject({ source: 'project', projectId: 'project', rootPath: root,
+      relativePath: 'current.png', lastUsedAt: 123 });
+  });
+
   it('在扫描和索引前跳过项目根的 Agent 内部文件，保留其他脚本和同名素材目录', async () => {
     const db = await import('../../src/services/indexedDbService');
     const file = (name: string) => ({ name, isFile: true, isDirectory: false, isSymlink: false });

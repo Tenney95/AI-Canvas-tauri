@@ -2,6 +2,7 @@
  * assetTextFiles — 读取资产文本快照并保存文本修改。
  */
 import { exists, lstat, mkdir, open, writeFile } from '@tauri-apps/plugin-fs';
+import { isNativeProjectBindingFile } from '../../utils/nativeProjectBindingFile';
 import { mediaFileAllocationKey, retiredMediaPaths } from '../indexedDb/mediaRelocations';
 import { ensureProjectDataDir, getFileCategory, invalidateTextPreview, isTauriEnv, joinPath, notifyProjectDiskChanged, resolveUniqueDestPath, sanitizeFileName, stripVerbatimPrefix } from './core';
 
@@ -29,6 +30,7 @@ export async function createAssetTextFile(projectId: string, content: string, su
     && options.projectSubdirectory !== 'outline-documents') throw new Error('稿件目录无效');
   const fileName = sanitizeFileName(suggestedName) || '原文.txt';
   if (/[\\/]/.test(fileName)) throw new Error('文本文件名不能包含目录');
+  if (isNativeProjectBindingFile(fileName)) throw new Error('项目归属标记由应用管理');
   if (getFileCategory(fileName) !== 'text') throw new Error('此文件不是受支持的文本文件');
   const normalized = content.replace(/\r\n/g, '\n');
   if (normalized.includes('\0')) throw new Error('文本不能包含二进制空字符');
@@ -88,6 +90,7 @@ export async function createAssetTextFile(projectId: string, content: string, su
 /** 只接受已授权的普通文本文件；不把完整正文写入数据库、日志或元数据。 */
 export async function readAssetTextFile(path: string, signal?: AbortSignal): Promise<AssetTextSnapshot> {
   if (!isTauriEnv()) throw new Error('请在桌面应用中打开本地文本文件');
+  if (isNativeProjectBindingFile(path)) throw new Error('项目归属标记由应用管理');
   if (getFileCategory(path.split(/[\\/]/).pop() ?? '') !== 'text') throw new Error('此文件不是受支持的文本文件');
   checkAbort(signal);
   const info = await lstat(path);
