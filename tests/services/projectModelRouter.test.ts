@@ -4,12 +4,13 @@ import type { NativeProjectAggregate } from '../../src/services/indexedDb/native
 
 const mocks = vi.hoisted(() => ({
   openDB: vi.fn(), getAllProjects: vi.fn(), getProjectById: vi.fn(),
-  listNativeProjectIdentities: vi.fn(), readNativeProject: vi.fn(),
+  listNativeProjectIdentities: vi.fn(), readNativeProjectIdentityCatalog: vi.fn(), readNativeProject: vi.fn(),
 }));
 vi.mock('../../src/services/indexedDb/schema', () => ({ openDB: mocks.openDB, STORE_PROJECTS: 'projects', STORE_METADATA: 'metadata' }));
 vi.mock('../../src/services/indexedDbService', () => ({ getAllProjects: mocks.getAllProjects, getProjectById: mocks.getProjectById }));
 vi.mock('../../src/services/indexedDb/nativeProjectRepository', () => ({
-  listNativeProjectIdentities: mocks.listNativeProjectIdentities, readNativeProject: mocks.readNativeProject,
+  listNativeProjectIdentities: mocks.listNativeProjectIdentities,
+  readNativeProjectIdentityCatalog: mocks.readNativeProjectIdentityCatalog, readNativeProject: mocks.readNativeProject,
 }));
 
 import { listProjectCatalog, resolveProjectModel } from '../../src/services/projectModelRouter';
@@ -34,6 +35,7 @@ beforeEach(async () => {
   mocks.getAllProjects.mockResolvedValue([{ id: 'old-project', name: '旧项目', createdAt: 1, updatedAt: 1 }]);
   mocks.getProjectById.mockResolvedValue(undefined);
   mocks.listNativeProjectIdentities.mockResolvedValue([directory]);
+  mocks.readNativeProjectIdentityCatalog.mockResolvedValue({ entries: [directory], unavailableIds: new Set<string>() });
   mocks.readNativeProject.mockResolvedValue(native);
 });
 afterEach(() => database.close());
@@ -63,6 +65,29 @@ describe('新旧项目只读路由', () => {
     await expect(resolveProjectModel('native-root')).rejects.toThrow('身份冲突');
   });
 
+  it('启动列表和按目标解析隔离损坏作品，禁止同名旧项目回退，完整目录仍报告错误', async () => {
+    const unavailable = { id: 'unavailable-project', name: '旧库同名记录', createdAt: 1, updatedAt: 1 };
+    const available = { id: 'old-project', name: '其他旧项目', createdAt: 1, updatedAt: 1 };
+    mocks.getAllProjects.mockResolvedValue([unavailable, available]);
+    mocks.listNativeProjectIdentities.mockRejectedValueOnce(new Error('invalid-membership'));
+    mocks.readNativeProjectIdentityCatalog.mockResolvedValue({ entries: [directory], unavailableIds: new Set([unavailable.id]) });
+    await expect(listProjectCatalog({ isolateInvalidNativeProjects: true })).resolves.toEqual([
+      { dataModel: 'legacy', project: available }, { dataModel: 'native', ...directory },
+    ]);
+    await expect(listProjectCatalog()).rejects.toThrow('invalid-membership');
+    mocks.getProjectById.mockResolvedValueOnce(unavailable);
+    await expect(resolveProjectModel(unavailable.id)).rejects.toThrow('身份不可用');
+    await expect(resolveProjectModel('native-canvas')).resolves.toMatchObject({ dataModel: 'native', target: 'canvas' });
+  });
+
+  it('浏览时只隐藏新旧身份冲突的作品，按目标解析仍拒绝冲突', async () => {
+    await occupy('native-episode');
+    await expect(listProjectCatalog({ isolateInvalidNativeProjects: true })).resolves.toEqual([
+      expect.objectContaining({ dataModel: 'legacy', project: expect.objectContaining({ id: 'old-project' }) }),
+    ]);
+    await expect(resolveProjectModel('native-root')).rejects.toThrow('身份冲突');
+  });
+
   it('旧目标已删除但保留墓碑时仍不能重用该身份', async () => {
     await new Promise<void>((resolve, reject) => {
       const transaction = database.transaction('metadata', 'readwrite');
@@ -76,7 +101,7 @@ describe('新旧项目只读路由', () => {
   it('旧项目即使使用类似新项目的 ID 也按旧仓储真实存在性判断', async () => {
     const old = { id: 'p2-like-old', name: '旧项目' };
     mocks.getProjectById.mockResolvedValue(old);
-    mocks.listNativeProjectIdentities.mockResolvedValue([]);
+    mocks.readNativeProjectIdentityCatalog.mockResolvedValue({ entries: [], unavailableIds: new Set<string>() });
     expect(await resolveProjectModel(old.id)).toEqual({ dataModel: 'legacy', project: old });
     expect(mocks.readNativeProject).not.toHaveBeenCalled();
   });
@@ -91,14 +116,14 @@ describe('新旧项目只读路由', () => {
     await expect(resolveProjectModel('native-root')).rejects.toThrow('读取期间变化');
     mocks.readNativeProject.mockResolvedValueOnce({ ...native, episodes: [{ ...native.episodes[0], name: '更新后的分集' }] });
     await expect(resolveProjectModel('native-root')).rejects.toThrow('读取期间变化');
-    mocks.listNativeProjectIdentities.mockRejectedValueOnce(new Error('新库版本未知'));
+    mocks.readNativeProjectIdentityCatalog.mockRejectedValueOnce(new Error('新库版本未知'));
     await expect(resolveProjectModel('old-project')).rejects.toThrow('新库版本未知');
     mocks.getProjectById.mockResolvedValueOnce({ id: 'native-root' });
     await expect(resolveProjectModel('native-root')).rejects.toThrow('身份冲突');
   });
 
   it('两库均无记录时返回 missing，不创建或推断旧项目', async () => {
-    mocks.listNativeProjectIdentities.mockResolvedValue([]);
+    mocks.readNativeProjectIdentityCatalog.mockResolvedValue({ entries: [], unavailableIds: new Set<string>() });
     expect(await resolveProjectModel('missing')).toEqual({ dataModel: 'missing' });
     expect(mocks.readNativeProject).not.toHaveBeenCalled();
   });
@@ -107,6 +132,7 @@ describe('新旧项目只读路由', () => {
     const aggregate = { ...native, episodes: [], episodeContents: [], canvases: [], canvas: null };
     const empty = { project: aggregate.project, episodes: [], episodeIds: [], canvasIds: [] };
     mocks.listNativeProjectIdentities.mockResolvedValue([empty]);
+    mocks.readNativeProjectIdentityCatalog.mockResolvedValue({ entries: [empty], unavailableIds: new Set<string>() });
     mocks.readNativeProject.mockResolvedValue(aggregate);
     expect((await listProjectCatalog()).find((entry) => entry.dataModel === 'native')).toEqual({ dataModel: 'native', ...empty });
     expect(await resolveProjectModel('native-root')).toEqual({ dataModel: 'native', target: 'project', aggregate });

@@ -16,7 +16,7 @@ import { validateNativeMissingAssetProof, type NativeMissingAssetProof } from '.
 import { hasControlCharacters } from '../../utils/controlCharacters';
 import { validateNativeArchiveOutputRows } from '../projectOutputHistoryArchive';
 import { isProjectSnapshotDataUrl } from '../projectSnapshotValidation';
-import { withProjectTextModel } from '../projectModelSettings';
+import { assertProjectModelProjectSettings, assertProjectModelSettingsPolicy, withProjectTextModel } from '../projectModelSettings';
 import { nativeChatImagePaths } from '../../utils/chatImageReference';
 
 export const NATIVE_PROJECT_DATABASE_NAME = 'ai-canvas-native-projects-v2' as const;
@@ -273,16 +273,20 @@ export async function saveNativeCanvasPreview(input: { projectId: string; canvas
   } finally { database.close(); }
 }
 
-function assertNativeRoot(project: ProjectRecord): void {
-  if (!project || !isNativeProjectId(project.id) || !['standalone', 'series'].includes(project.kind)
-    || !Array.isArray(project.storageBindings) || !rootRefPattern.test(project.storageRootRef) || !project.storageBindings.length
-    || project.dataFolder !== `project-${project.id}`
-    || project.storageBindings.some((binding) => !binding || typeof binding.folderName !== 'string'
-      || !rootRefPattern.test(binding.rootRef) || binding.source !== 'project-managed'
-      || binding.folderName !== (binding.rootRef === project.storageRootRef
+function hasNativeRootBindings(project: ProjectRecord): boolean {
+  return !!project && isNativeProjectId(project.id) && ['standalone', 'series'].includes(project.kind)
+    && typeof project.storageRootRef === 'string' && rootRefPattern.test(project.storageRootRef)
+    && project.dataFolder === `project-${project.id}` && Array.isArray(project.storageBindings)
+    && project.storageBindings.every((binding) => binding && typeof binding.rootRef === 'string'
+      && rootRefPattern.test(binding.rootRef) && binding.source === 'project-managed'
+      && binding.folderName === (binding.rootRef === project.storageRootRef
         ? project.dataFolder : `${project.dataFolder}/roots/${binding.rootRef}`))
-    || new Set(project.storageBindings.map((binding) => binding.rootRef)).size !== project.storageBindings.length
-    || !project.storageBindings.some((binding) => binding.rootRef === project.storageRootRef)) fail('invalid-membership');
+    && new Set(project.storageBindings.map((binding) => binding.rootRef)).size === project.storageBindings.length
+    && project.storageBindings.some((binding) => binding.rootRef === project.storageRootRef);
+}
+
+function assertNativeRoot(project: ProjectRecord): void {
+  if (!hasNativeRootBindings(project)) fail('invalid-membership');
 }
 
 function validateAggregate(project: ProjectRecord, content: ProjectContent, episodes: EpisodeRecord[],
@@ -347,53 +351,127 @@ export async function createNativeProject(input: NativeProjectCreateInput, optio
 }
 
 export interface NativeProjectIdentities { project: ProjectRecord; episodeIds: string[]; canvasIds: string[]; episodes: EpisodeRecord[] }
-/** 只读取项目根及索引 key，不加载画布或正文。具体实体关系在打开时重新核验。 */
-export async function listNativeProjectIdentities(options: NativeProjectOptions = {}): Promise<NativeProjectIdentities[]> {
+interface NativeIdentityCatalog { entries: NativeProjectIdentities[]; unavailableIds: Set<string> }
+
+/** 只读取项目根、分集摘要及画布键，打开时重新核验具体实体关系。 */
+async function scanNativeProjectIdentities(options: NativeProjectOptions, isolateInvalidProjects: boolean): Promise<NativeIdentityCatalog> {
+  const unavailableIds = new Set<string>();
   const database = await openNativeProjectDatabase(false, options);
-  if (!database) return [];
+  if (!database) return { entries: [], unavailableIds };
   try {
     return await transact(database, 'readonly', options, async (tx) => {
-      const identities = (name: string) => new Promise<Array<{ projectId: IDBValidKey; id: IDBValidKey }>>((resolve, reject) => {
+      const memberLimit = 1_000_000;
+      const canvasStore = tx.objectStore(CANVASES);
+      const memberships = new Promise<Array<{ projectId: IDBValidKey; id: IDBValidKey }>>((resolve, reject) => {
         const items: Array<{ projectId: IDBValidKey; id: IDBValidKey }> = [];
-        const cursor = tx.objectStore(name).index('projectId').openKeyCursor();
-        cursor.onsuccess = () => { if (cursor.result) { items.push({ projectId: cursor.result.key, id: cursor.result.primaryKey }); cursor.result.continue(); }
-          else resolve(items); };
+        const cursor = canvasStore.index('projectId').openKeyCursor();
+        cursor.onsuccess = () => {
+          if (!cursor.result) { resolve(items); return; }
+          if (items.length >= memberLimit) { reject(new Error('新项目仓储不可用：catalog-limit')); return; }
+          items.push({ projectId: cursor.result.key, id: cursor.result.primaryKey });
+          cursor.result.continue();
+        };
         cursor.onerror = () => reject(cursor.error ?? new Error('indexeddb-index-failed'));
       });
-      const [projects, episodes, canvases] = await Promise.all([
-        request(tx.objectStore(ROOTS).getAll()) as Promise<ProjectRecord[]>,
-        request(tx.objectStore(EPISODES).getAll()) as Promise<EpisodeRecord[]>, identities(CANVASES),
+      const [projects, episodes, canvases, canvasCount] = await Promise.all([
+        request(tx.objectStore(ROOTS).getAll(undefined, 200_001)) as Promise<ProjectRecord[]>,
+        request(tx.objectStore(EPISODES).getAll(undefined, memberLimit + 1)) as Promise<EpisodeRecord[]>,
+        memberships, request(canvasStore.count()),
       ]);
-      if (projects.length > 200_000 || episodes.length > 1_000_000 || canvases.length > 1_000_000) return fail('catalog-limit');
+      if (projects.length > 200_000 || episodes.length > memberLimit || canvasCount > memberLimit) return fail('catalog-limit');
       const entries = new Map<string, NativeProjectIdentities>();
+      const invalidOwners = new Set<string>();
+      const invalidate = (code: string, owner: unknown, id?: unknown) => {
+        if (!isolateInvalidProjects) fail(code);
+        if (typeof owner === 'string') { invalidOwners.add(owner); unavailableIds.add(owner); }
+        if (typeof id === 'string') unavailableIds.add(id);
+      };
       for (const project of projects) {
         if (!project || !isNativeProjectId(project.id) || entries.has(project.id) || !['standalone', 'series'].includes(project.kind)
-          || project.lastOpenedCanvasId !== undefined && !isNativeCanvasId(project.lastOpenedCanvasId)) return fail('invalid-project-list');
-        assertNativeRoot(project);
+          || typeof project.name !== 'string' || !project.name.trim()
+          || ![project.createdAt, project.updatedAt, project.epoch].every((value) => Number.isSafeInteger(value) && value >= 0)
+          || project.lastOpenedCanvasId !== undefined && !isNativeCanvasId(project.lastOpenedCanvasId)) {
+          invalidate('invalid-project-list', project?.id);
+          continue;
+        }
+        if (!hasNativeRootBindings(project)) invalidate('invalid-membership', project.id);
+        try { if (project.defaultSettings !== undefined) assertProjectModelProjectSettings(project.defaultSettings); }
+        catch { invalidate('invalid-project-list', project.id); }
         entries.set(project.id, { project, episodeIds: [], canvasIds: [], episodes: [] });
       }
       for (const entry of episodes) {
-        if (!isNativeProjectId(entry.projectId) || !isNativeEpisodeId(entry.id) || !isNativeCanvasId(entry.canvasId)
-          || !entries.has(entry.projectId) || !Number.isSafeInteger(entry.orderRank) || entry.orderRank < 0) return fail('invalid-membership');
-        const target = entries.get(entry.projectId)!;
+        const target = entries.get(entry.projectId);
+        if (!target || !isNativeEpisodeId(entry.id) || !isNativeCanvasId(entry.canvasId)
+          || typeof entry.name !== 'string' || !entry.name.trim()
+          || ![entry.orderRank, entry.createdAt, entry.updatedAt, entry.epoch, entry.revision].every((value) => Number.isSafeInteger(value) && value >= 0)
+          || entry.displayNo !== undefined && (!Number.isSafeInteger(entry.displayNo) || entry.displayNo < 1)) {
+          invalidate('invalid-membership', entry.projectId, entry.id);
+          continue;
+        }
+        try { assertProjectModelSettingsPolicy(entry.settingsPolicy); }
+        catch { invalidate('invalid-membership', entry.projectId, entry.id); }
         target.episodeIds.push(entry.id); target.episodes.push(entry);
       }
+      if (canvasCount !== canvases.length) {
+        invalidate('invalid-membership', undefined);
+        const indexedKeys = new Set(canvases.map(({ id }) => id));
+        for (const id of await request(canvasStore.getAllKeys())) {
+          if (typeof id === 'string' && !indexedKeys.has(id)) unavailableIds.add(id);
+        }
+      }
       for (const entry of canvases) {
-        if (!isNativeProjectId(entry.projectId) || !isNativeCanvasId(entry.id) || !entries.has(entry.projectId)) return fail('invalid-membership');
-        entries.get(entry.projectId)!.canvasIds.push(entry.id);
+        const target = typeof entry.projectId === 'string' && entries.get(entry.projectId);
+        if (!target || !isNativeCanvasId(entry.id)) {
+          invalidate('invalid-membership', entry.projectId, entry.id);
+          continue;
+        }
+        target.canvasIds.push(entry.id);
       }
       for (const value of entries.values()) {
-        if (value.project.kind === 'standalone' ? value.episodeIds.length !== 0 || value.canvasIds.length !== 1
-          : value.canvasIds.length !== value.episodeIds.length) return fail('invalid-membership');
-        if (new Set(value.episodes.map((episode) => episode.orderRank)).size !== value.episodes.length
+        const canvasIds = new Set(value.canvasIds);
+        if ((value.project.kind === 'standalone' ? value.episodeIds.length !== 0 || value.canvasIds.length !== 1
+          : value.canvasIds.length !== value.episodeIds.length)
+          || new Set(value.episodes.map((episode) => episode.orderRank)).size !== value.episodes.length
           || new Set(value.episodes.map((episode) => episode.canvasId)).size !== value.episodes.length
-          || value.episodes.some((episode) => !value.canvasIds.includes(episode.canvasId))) return fail('invalid-membership');
-        if (value.project.lastOpenedCanvasId && !value.canvasIds.includes(value.project.lastOpenedCanvasId)) return fail('invalid-membership');
+          || value.episodes.some((episode) => !canvasIds.has(episode.canvasId))
+          || value.project.lastOpenedCanvasId && !canvasIds.has(value.project.lastOpenedCanvasId)) {
+          invalidate('invalid-membership', value.project.id);
+        }
         value.episodes.sort((a, b) => a.orderRank - b.orderRank);
       }
-      return [...entries.values()];
-    });
+      for (const owner of invalidOwners) {
+        const value = entries.get(owner);
+        if (value) [...value.episodeIds, ...value.canvasIds].forEach((id) => unavailableIds.add(id));
+        entries.delete(owner);
+      }
+      if (invalidOwners.size) {
+        // 缺失画布的导航别名仍属原作品，已存在的画布以自身主键和归属为准。
+        const existingCanvases = new Set(canvases.map(({ id }) => id));
+        for (const row of [...projects, ...episodes]) {
+          const [owner, canvas] = 'canvasId' in row ? [row.projectId, row.canvasId] : [row.id, row.lastOpenedCanvasId];
+          if (invalidOwners.has(owner) && isNativeCanvasId(canvas) && !existingCanvases.has(canvas)) unavailableIds.add(canvas);
+        }
+      }
+      // 损坏记录的实际主键可能占用别类对象的身份，关联作品也必须停用。
+      for (const [id, value] of entries) {
+        const ids = [id, ...value.episodeIds, ...value.canvasIds];
+        if (!ids.some((key) => unavailableIds.has(key))) continue;
+        ids.forEach((key) => unavailableIds.add(key));
+        entries.delete(id);
+      }
+      return { entries: [...entries.values()], unavailableIds };
+    }, [ROOTS, EPISODES, CANVASES]);
   } finally { database.close(); }
+}
+
+/** 全量核对与清理需要完整目录；任一成员损坏时停止。 */
+export async function listNativeProjectIdentities(options: NativeProjectOptions = {}): Promise<NativeProjectIdentities[]> {
+  return (await scanNativeProjectIdentities(options, false)).entries;
+}
+
+/** 浏览及打开单个作品时隔离损坏作品，并保留其身份用于拒绝旧库回退。 */
+export function readNativeProjectIdentityCatalog(options: NativeProjectOptions = {}): Promise<NativeIdentityCatalog> {
+  return scanNativeProjectIdentities(options, true);
 }
 
 /** 未找到返回 null；不创建缺失库，不查询或回退到旧库。 */

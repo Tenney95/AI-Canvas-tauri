@@ -2,7 +2,7 @@
 import { webcrypto } from 'node:crypto';
 import { IDBFactory, IDBIndex, IDBKeyRange } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createNativeProject, readNativeProject, readNativeProjectByCanvasId, listNativeProjectIdentities,
+import { createNativeProject, readNativeProject, readNativeProjectByCanvasId, listNativeProjectIdentities, readNativeProjectIdentityCatalog,
   listNativeEpisodes, convertNativeProjectToSeries, createNativeEpisode, saveNativeCanvas, saveNativeEpisodeContent,
   reorderNativeEpisodes, deleteNativeEpisode, readNativeProjectCapture, readNativeProjectSelection, readNativeProjectContent,
   readNativeEpisodeContent, saveNativeProjectContent, saveNativeProjectView, deleteNativeProject, transitionNativeProjectRecycle,
@@ -294,6 +294,27 @@ describe('独立新项目仓储', () => {
         await expect(readNativeProject(initial.project.id, { factory })).rejects.toThrow('invalid-membership');
         await expect(listNativeProjectIdentities({ factory })).rejects.toThrow('invalid-membership');
       }
+    } finally { db.close(); }
+  });
+
+  it('目录隔离损坏作品及其身份，健康作品保持可见，完整盘点仍拒绝损坏', async () => {
+    const project = await createNativeProject({ name: '待核对剧集', kind: 'series' }, { factory });
+    const added = await createNativeEpisode({ projectId: project.project.id, expectedProjectEpoch: project.project.epoch, name: '第 1 集' }, { factory });
+    const healthy = await createNativeProject({ name: '可打开的项目' }, { factory });
+    const episode = added.episodes[0], canvas = added.canvases[0];
+    const db = (await openNativeProjectDatabase(false, { factory }))!;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(['episodes', 'canvasDocuments'], 'readwrite');
+        tx.objectStore('episodes').put({ ...episode, canvasId: healthy.canvas!.id });
+        tx.objectStore('canvasDocuments').put({ ...canvas, projectId: undefined });
+        tx.oncomplete = () => resolve(); tx.onabort = () => reject(tx.error);
+      });
+      const catalog = await readNativeProjectIdentityCatalog({ factory });
+      expect(catalog.entries.map((entry) => entry.project.id)).toEqual([healthy.project.id]);
+      expect(catalog.unavailableIds).toEqual(new Set([project.project.id, episode.id, canvas.id]));
+      await expect(listNativeProjectIdentities({ factory })).rejects.toThrow('invalid-membership');
+      await expect(readNativeProject(healthy.project.id, { factory })).resolves.toMatchObject({ project: healthy.project });
     } finally { db.close(); }
   });
 

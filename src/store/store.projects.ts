@@ -137,7 +137,7 @@ function nativeBinding(project: CanvasProject | undefined): NativeProjectViewIte
 async function loadProjectCatalog(): Promise<{ projects: CanvasProject[]; native: NativeCatalog[] }> {
   const sequence = ++catalogRequests.latest;
   let catalog: ProjectCatalogEntry[];
-  try { catalog = await listProjectCatalog(); }
+  try { catalog = await listProjectCatalog({ isolateInvalidNativeProjects: true }); }
   catch (error) {
     if (sequence === catalogRequests.latest) await fileService.syncNativeAssetSearchRoots([]).catch(() => undefined);
     throw error;
