@@ -1170,4 +1170,21 @@ describe('手动项目资产同步协调', () => {
     mocks.roots.delete('owner');
     expect(await projectSharedFileView('owner', supplied)).toEqual([user]);
   });
+
+  it('项目旧节点补充和共享索引投影都跳过 Agent 内部文件', async () => {
+    const relativePath = '.agent-workspace/current.png';
+    const path = `/project/owner/${relativePath}`;
+    const index: AssetIndexRecord = { assetId: 'internal', path, source: 'project', projectId: 'owner', relativePath,
+      status: 'online', size: 10, mtimeMs: 10, fingerprint: '10:10', updatedAt: 1 };
+    mocks.indexes.set(index.assetId, index);
+    const session = await buildSharedAssetSyncPreview(context());
+    mocks.repo.mappings = [{ ...session.mappings[0], kind: 'file', currentFileAssetId: index.assetId }];
+    const user = { name: 'display.png', path: '/project/owner/assets/agent-results/display.png', size: 1, category: 'image' as const };
+    const { lstat } = await import('@tauri-apps/plugin-fs');
+    vi.mocked(lstat).mockClear();
+
+    expect(await projectSharedFileView('owner', [{ name: 'current.png', path, size: 10, category: 'image' }, user])).toEqual([user]);
+    expect(lstat).not.toHaveBeenCalledWith(path);
+    expect(mocks.indexes.get(index.assetId)).toEqual(index);
+  });
 });

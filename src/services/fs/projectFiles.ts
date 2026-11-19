@@ -1,6 +1,7 @@
 /**
  * projectFiles — 校验项目相对引用并读写不可变项目文件。
  */
+import { invoke } from '@tauri-apps/api/core';
 import {
   exists,
   lstat,
@@ -8,9 +9,11 @@ import {
   readFile,
   writeFile,
 } from '@tauri-apps/plugin-fs';
+import { AGENT_PROJECT_WORKSPACE_DIRECTORY } from '../../utils/agentProjectWorkspace';
 import { normalizeDirectorProjectRelativePath } from '../directorSceneSchema';
 import {
   ensureProjectDataDir,
+  getNativeProjectOwner,
   getProjectDataDir,
   isTauriEnv,
   joinPath,
@@ -19,6 +22,7 @@ import {
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const PROJECT_FILE_REFERENCE_KEYS = new Set(['relativePath', 'sha256', 'bytes']);
+const IS_WINDOWS = typeof navigator !== 'undefined' && /^win/i.test(navigator.platform || '');
 
 export interface ProjectFileReference {
   relativePath: string;
@@ -235,6 +239,10 @@ export async function writeImmutableProjectFile(input: {
     input.assertCurrent?.();
     const root = await ensureCheckedProjectRoot(input.projectId);
     input.assertCurrent?.();
+    if (IS_WINDOWS && reference.relativePath.split('/')[0].toLowerCase() === AGENT_PROJECT_WORKSPACE_DIRECTORY) {
+      await invoke('prepare_project_agent_workspace', { projectDir: root, nativeProjectId: getNativeProjectOwner(input.projectId) });
+      input.assertCurrent?.();
+    }
     await ensureCheckedParents(root, reference.relativePath);
     input.assertCurrent?.();
     const target = joinPath(root, reference.relativePath);

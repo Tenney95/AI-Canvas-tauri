@@ -20,6 +20,7 @@ import { sha256BytesHex } from '../mediaDataUrl';
 import { localMediaUrlToPath } from '../../utils/mediaUrl';
 import { preferDramaLibraryReferences } from '../dramaAssetPrompt';
 import { copyAssetFileToFolder, listProjectFiles } from '../fileService';
+import { isProjectAgentInternalFile } from '../../utils/agentProjectWorkspace';
 import { isNativeMediaPendingFile } from '../../utils/nativeMediaPendingFile';
 import { getAssetUrlFromPath, getFileCategory, getNativeProjectOwner, getProjectDataDir, joinPath, stripVerbatimPrefix,
   type AssetFileEntry } from './core';
@@ -232,10 +233,13 @@ export async function sharedAssetSyncExcludedPaths(projectId: string): Promise<s
 /** 原生下载目录不参加扫描；只有已原子接受的当前文件版本进入资源列表。 */
 export async function projectSharedFileView(projectId: string, files: AssetFileEntry[], options: AssetScanOptions = {}): Promise<AssetFileEntry[]> {
   options.signal?.throwIfAborted();
-  const userFiles = files.filter((file) => !isNativeMediaPendingFile(file.path));
   const { state, projectIds } = await ownerState(projectId);
   const root = await getProjectDataDir(projectId);
   options.signal?.throwIfAborted();
+  const userFiles = files.filter((file) => {
+    const relativePath = root ? getRelativeAssetPath(file.path, root) : file.relativePath;
+    return !isNativeMediaPendingFile(file.path) && (!relativePath || !isProjectAgentInternalFile(relativePath));
+  });
   if (!root) return userFiles;
   const history = new Set(state.mappings.flatMap((mapping) => mapping.previousFileAssetIds ?? []));
   const historyPaths = new Set((await sharedAssetSyncExcludedPaths(projectId)).map(pathKey));
@@ -245,9 +249,10 @@ export async function projectSharedFileView(projectId: string, files: AssetFileE
   for (const mapping of current) {
     options.signal?.throwIfAborted();
     const index = await getAssetIndexById(mapping.currentFileAssetId!);
+    const projectRelativePath = index ? getRelativeAssetPath(index.path, root) : undefined;
     if (!index || isNativeMediaPendingFile(index.path) || index.source !== 'project' || (getNativeProjectOwner(projectId)
       ? !index.projectId || !projectIds.includes(index.projectId) : index.projectId !== projectId) || index.status !== 'online'
-      || !getRelativeAssetPath(index.path, root)) continue;
+      || !projectRelativePath || isProjectAgentInternalFile(projectRelativePath)) continue;
     try {
       const info = await lstat(index.path);
       if (!info.isFile || info.isSymlink || info.size !== index.size) continue;

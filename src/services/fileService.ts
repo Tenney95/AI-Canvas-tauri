@@ -1425,7 +1425,7 @@ export interface AgentTextFileSelection {
 
 const AGENT_TEXT_EXTENSIONS = [
   'txt', 'md', 'markdown', 'json', 'csv', 'tsv', 'yaml', 'yml',
-  'xml', 'html', 'htm', 'css', 'js', 'jsx', 'ts', 'tsx', 'log',
+  'xml', 'html', 'htm', 'css', 'js', 'jsx', 'ts', 'tsx', 'py', 'log',
 ];
 
 /** 通过原生选择器选择 Agent 可读取的文本文件；路径只返回给授权服务，不进入模型。 */

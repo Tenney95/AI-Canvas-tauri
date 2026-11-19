@@ -1,6 +1,7 @@
 import type { TeamArtifactKind, TeamArtifactReference, TeamRoleId } from '../../../types/agentTeam';
 import { readVerifiedProjectFile, sha256Hex, writeImmutableProjectFile } from '../../fs/projectFiles';
 import { sanitizeDomainText } from '../subAgentMaterials';
+import { AGENT_PROJECT_WORKSPACE_DIRECTORY, AGENT_TEAM_DIRECTORY, agentWorkspaceArtifactRelativePath } from '../../../utils/agentProjectWorkspace';
 
 const MAX_ARTIFACT_BYTES = 1024 * 1024;
 const ARTIFACT_PATH = /^agent-teams\/[A-Za-z0-9_-]{1,160}\/(?:input|outline|draft|review|decision|revision|original)-[a-f0-9]{64}\.json$/;
@@ -48,7 +49,7 @@ export async function saveTeamArtifact(input: {
   const sha256 = await sha256Hex(data);
   input.assertCurrent?.();
   const reference = {
-    relativePath: `agent-teams/${input.runId}/${input.kind}-${sha256}.json`,
+    relativePath: `${AGENT_PROJECT_WORKSPACE_DIRECTORY}/${AGENT_TEAM_DIRECTORY}/${input.runId}/${input.kind}-${sha256}.json`,
     sha256, bytes: data.byteLength,
   };
   try { await writeImmutableProjectFile({ projectId: input.projectId, reference, data, maxBytes: MAX_ARTIFACT_BYTES, assertCurrent: input.assertCurrent }); }
@@ -62,7 +63,8 @@ export async function saveTeamArtifact(input: {
 
 /** 仅主窗口读取任务中已绑定的引用；独立窗口通过 taskId/artifactId 请求主窗口。 */
 export async function readTeamArtifactText(projectId: string, reference: TeamArtifactReference): Promise<string> {
-  if (!reference || !ARTIFACT_PATH.test(reference.relativePath)
+  const artifactPath = typeof reference?.relativePath === 'string' ? agentWorkspaceArtifactRelativePath(reference.relativePath) : '';
+  if (!reference || !ARTIFACT_PATH.test(artifactPath)
     || !ARTIFACT_KINDS.includes(reference.kind)
     || reference.id !== `${reference.kind}-${reference.sha256}`
     || !reference.relativePath.endsWith(`/${reference.kind}-${reference.sha256}.json`)) {
@@ -78,7 +80,7 @@ export async function readTeamArtifactText(projectId: string, reference: TeamArt
   catch { throw new Error('团队产物不是有效的 UTF-8 文档'); }
   if (!document || typeof document !== 'object' || Array.isArray(document)) throw new Error('团队产物文档无效');
   const raw = document as Record<string, unknown>;
-  const runId = reference.relativePath.split('/')[1];
+  const runId = artifactPath.split('/')[1];
   if (raw.version !== 1 || raw.runId !== runId || raw.kind !== reference.kind || typeof raw.text !== 'string'
     || raw.stageId !== reference.stageId || raw.roleId !== reference.roleId
     || JSON.stringify(raw.parentArtifactIds) !== JSON.stringify(reference.parentArtifactIds)) {

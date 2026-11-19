@@ -2169,6 +2169,7 @@ pub fn run() {
             skill_storage::remove_skill_source_files,
             thumbnail_cache::prepare_project_thumbnail,
             thumbnail_cache::write_project_thumbnail,
+            thumbnail_cache::prepare_project_agent_workspace,
             file_transfer::copy_file_streamed,
             file_transfer::copy_asset_folder,
             file_transfer::copy_asset_file_to_folder,

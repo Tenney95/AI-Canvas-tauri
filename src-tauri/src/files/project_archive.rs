@@ -10,6 +10,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
@@ -25,6 +26,7 @@ use crate::path_policy::{authorize_path, canonicalize_simplified, ensure_trusted
 const ASSETS_PREFIX: &str = "assets";
 /// 项目回收站是本地撤销缓存，不随项目导出。
 const EXCLUDED_DIR_NAMES: [&str; 1] = [".trash"];
+const AGENT_WORKSPACE_DIRECTORY: &str = ".agent-workspace";
 const MAX_ARCHIVE_ENTRIES: usize = 200_000;
 const MAX_EXPANDED_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 /// 文本条目（项目 JSON、对话 JSON）解包时的总量上限，避免异常归档撑爆内存。
@@ -278,11 +280,11 @@ fn verify_export_aliases(checks: &[ProjectArchiveAliasCheck], roots: &HashMap<St
         if count > MAX_ARCHIVE_ENTRIES || check.aliases.is_empty() { return Err("项目素材清单无效".into()); }
         let root = roots.get(&check.root_ref).ok_or("素材来源根缺失")?;
         let path = normalize_archive_path(Path::new(&check.path))?;
-        let source = selected_asset_file(root, &path)?.ok_or("源素材已缺失")?;
+        let source = packable_asset_file(root, &path)?.ok_or("源素材已缺失")?;
         for value in &check.aliases {
             let alias = normalize_archive_path(Path::new(value))?;
             if (!cfg!(target_os = "macos") && to_archive_text(&path).to_lowercase() != to_archive_text(&alias).to_lowercase())
-                || !same_verified_asset_file(&selected_asset_file(root, &alias)?.ok_or("素材别名已缺失")?, &source)? {
+                || !same_verified_asset_file(&packable_asset_file(root, &alias)?.ok_or("素材别名已缺失")?, &source)? {
                 return Err("素材别名已变化，请重新捕获导出内容".into());
             }
         }
@@ -360,6 +362,21 @@ fn excluded_asset_directory(name: &str, project_root: bool) -> bool {
     EXCLUDED_DIR_NAMES.iter().any(|expected| matches(expected)) || project_root && matches(".thumbnail")
 }
 
+fn is_agent_workspace_name(name: &OsStr) -> bool {
+    name.to_str().is_some_and(|name| name.eq_ignore_ascii_case(AGENT_WORKSPACE_DIRECTORY))
+}
+
+fn is_agent_workspace_path(path: &Path) -> bool {
+    path.components().any(|component| matches!(component, Component::Normal(name) if is_agent_workspace_name(name)))
+}
+
+fn require_packable_asset_path(path: &Path) -> Result<(), String> {
+    if is_agent_workspace_path(path) {
+        return Err("Agent 工作目录中的文件不能作为项目素材归档".into());
+    }
+    Ok(())
+}
+
 /// 原生发布器的恢复材料不是附件；仅识别 media 直接子项的旧随机名与新内容摘要暂存名。
 fn native_media_staging_path(relative: &Path) -> bool {
     let mut parts = relative.components();
@@ -408,6 +425,14 @@ fn selected_asset_file(root: &Path, relative: &Path) -> Result<Option<PathBuf>, 
     Ok(Some(resolved))
 }
 
+fn packable_asset_file(root: &Path, relative: &Path) -> Result<Option<PathBuf>, String> {
+    require_packable_asset_path(root)?;
+    require_packable_asset_path(relative)?;
+    let file = selected_asset_file(root, relative)?;
+    if let Some(path) = &file { require_packable_asset_path(path)?; }
+    Ok(file)
+}
+
 fn selected_asset_paths(paths: &[String], imports_only: bool) -> Result<Vec<PathBuf>, String> {
     if paths.len() > MAX_ARCHIVE_ENTRIES { return Err("项目素材清单超过上限".into()); }
     let mut seen = HashSet::new();
@@ -432,8 +457,10 @@ struct AssetScan {
     buffer: Vec<u8>,
 }
 impl AssetScan {
-    fn add_file(&mut self, relative: &Path) -> Result<(), String> {
-        let Some(file) = selected_asset_file(&self.root, relative)? else { return Ok(()); };
+    fn add_file(&mut self, relative: &Path, include_agent_workspace: bool) -> Result<(), String> {
+        let file = if include_agent_workspace { selected_asset_file(&self.root, relative)? }
+            else { packable_asset_file(&self.root, relative)? };
+        let Some(file) = file else { return Ok(()); };
         // canonicalize 也展开 Windows 短文件名；同一真实路径不能以多个别名进入清单。
         if !self.real_files.insert(PathBuf::from(file.to_string_lossy().to_lowercase())) { return Err("项目素材清单存在重复路径".into()); }
         if self.rows.len() >= self.max_files { return Err("项目素材数量超过上限".into()); }
@@ -451,6 +478,7 @@ impl AssetScan {
         for item in fs::read_dir(self.root.join(relative)).map_err(|_| "无法读取项目目录")? {
             let entry = item.map_err(|_| "无法读取素材目录项")?;
             let name = entry.file_name();
+            if is_agent_workspace_name(&name) { continue; }
             if exclude_shared_sync && name.to_string_lossy().eq_ignore_ascii_case(".shared-sync") { continue; }
             let imports_directory = name.to_string_lossy().eq_ignore_ascii_case("imports");
             if relative.as_os_str().is_empty() && exclude_imports && imports_directory { continue; }
@@ -462,7 +490,7 @@ impl AssetScan {
             } else if metadata.is_file() {
                 if native_media_staging_path(&child) { continue; }
                 let portable = child.to_str().ok_or("项目素材文件名不是有效 UTF-8")?.replace(std::path::MAIN_SEPARATOR, "/");
-                self.add_file(&normalize_archive_path(Path::new(&portable))?)?;
+                self.add_file(&normalize_archive_path(Path::new(&portable))?, false)?;
             } else { return Err("不支持的素材类型".into()); }
         }
         Ok(())
@@ -499,10 +527,14 @@ fn inspect_assets_with_shared_scope(root: &Path, include_import_paths: Option<&[
     let mut scan = AssetScan { root: root.canonicalize().map_err(|_| "无法解析项目素材目录")?, rows: Vec::new(),
         real_files: HashSet::new(), bytes: 0, max_files, max_bytes, buffer: Vec::new() };
     if let Some(paths) = selected {
-        for path in paths { scan.add_file(&path)?; }
+        // 精确素材快照继续读取冻结清单中的原始文件，不能套用新打包的目录排除规则。
+        for path in paths { scan.add_file(&path, true)?; }
     } else {
+        require_packable_asset_path(&scan.root)?;
         scan.walk(Path::new(""), imports.is_some(), shared.is_some())?;
-        for path in imports.unwrap_or_default().into_iter().chain(shared.unwrap_or_default()) { scan.add_file(&path)?; }
+        for path in imports.unwrap_or_default().into_iter().chain(shared.unwrap_or_default()) {
+            scan.add_file(&path, false)?;
+        }
     }
     scan.rows.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(scan.rows)
@@ -566,6 +598,7 @@ fn resolve_reference_path_aliases(root: &Path, rows: &[ArchiveAssetDigest], refe
     for value in references {
         let path = normalize_archive_path(Path::new(value))?; let name = to_archive_text(&path);
         if name.is_empty() { return Err("项目素材路径无效".into()); }
+        if is_agent_workspace_path(&path) { continue; }
         let first = if let Some(first) = by_name.get(&name.to_lowercase()) { Some(*first) } else {
             #[cfg(target_os = "macos")]
             {
@@ -816,7 +849,7 @@ fn append_selected_assets<W: Write>(builder: &mut Builder<W>, root: &Path, paths
     stats: &mut AssetStats) -> Result<(), String> {
     let root = root.canonicalize().map_err(|_| "无法解析项目素材目录")?;
     for relative in paths {
-        let file = selected_asset_file(&root, relative)?.ok_or("导出素材已缺失，请重新导出")?;
+        let file = packable_asset_file(&root, relative)?.ok_or("导出素材已缺失，请重新导出")?;
         append_asset_file(builder, &file, &Path::new(ASSETS_PREFIX).join(relative), stats)?;
     }
     Ok(())
@@ -835,7 +868,7 @@ fn multi_root_asset_sources(assets: &[ArchiveAssetDigest], roots: &HashMap<Strin
             _ => return Err("素材来源根与源相对路径必须同时提供".into()),
         };
         if relative.as_os_str().is_empty() { return Err("源素材路径为空".into()); }
-        let source = selected_asset_file(root, &relative)?.ok_or("源素材已缺失")?;
+        let source = packable_asset_file(root, &relative)?.ok_or("源素材已缺失")?;
         let (bytes, digest) = hash_file(&source, &mut Vec::new())?;
         if bytes != asset.bytes || digest != asset.sha256 { return Err("素材已变化，请重新捕获导出内容".into()); }
         result.push((root.to_path_buf(), relative, archive));
@@ -857,10 +890,11 @@ fn append_assets_dir<W: Write>(
         fs::read_dir(source).map_err(|error| format!("读取项目素材目录失败: {error}"))?;
     for item in read_dir {
         let entry = item.map_err(|error| format!("读取项目素材目录项失败: {error}"))?;
+        let name = entry.file_name();
+        if is_agent_workspace_name(&name) { continue; }
         let file_type = entry
             .file_type()
             .map_err(|error| format!("读取项目素材类型失败: {error}"))?;
-        let name = entry.file_name();
         let archive_path = archive_dir.join(&name);
 
         if file_type.is_dir() {
@@ -952,6 +986,8 @@ fn pack_archive_with_publication(entries: Vec<ProjectArchiveTextEntry>, assets_r
     validate_v4_entry_names(entries.iter().map(|entry| (entry.path.as_str(), entry.content.as_str())))?;
     let selected_names = expected_assets.as_ref().map(|assets| assets.iter().map(|asset| asset.path.clone()).collect::<Vec<_>>());
     let selected = selected_names.as_deref().map(|paths| selected_asset_paths(paths, false)).transpose()?;
+    if let Some(root) = &assets_root { require_packable_asset_path(root)?; }
+    for relative in selected.iter().flatten() { require_packable_asset_path(relative)?; }
     let multiple_roots = expected_assets.as_ref().is_some_and(|assets| assets.iter().any(|asset| asset.source_root_ref.is_some() || asset.source_relative_path.is_some()));
     let multi_sources = if multiple_roots { Some(multi_root_asset_sources(expected_assets.as_ref().unwrap(), source_roots, assets_root.as_deref())?) } else { None };
     if !multiple_roots { if let (Some(root), Some(expected)) = (&assets_root, &expected_assets) {
@@ -988,7 +1024,7 @@ fn pack_archive_with_publication(entries: Vec<ProjectArchiveTextEntry>, assets_r
     let mut stats = AssetStats { count: 0, bytes: 0 };
     if let Some(sources) = &multi_sources {
         for (root, source_path, relative) in sources {
-            let source = selected_asset_file(root, source_path)?.ok_or("导出素材已缺失")?;
+            let source = packable_asset_file(root, source_path)?.ok_or("导出素材已缺失")?;
             append_asset_file(&mut builder, &source, &Path::new(ASSETS_PREFIX).join(relative), &mut stats)?;
         }
     } else if let Some(root) = &assets_root {
@@ -2171,6 +2207,71 @@ mod tests {
         fs::remove_dir_all(&resolved).unwrap();
         assert_eq!(packed, files.map(|(path, content)| (format!("assets/{path}"), content.to_string())));
         assert_eq!(stats.count, files.len());
+    }
+
+    #[test]
+    fn project_archives_omit_agent_workspace_but_preserve_legacy_assets() {
+        let fixture = Fixture::new();
+        fixture.write("project/.agent-workspace/results/private.json", b"private");
+        fixture.write("project/group/.AGENT-WORKSPACE/scripts/private.py", b"private");
+        fixture.write("project/agent-results/task/result.json", b"old result");
+        fixture.write("project/agent-teams/team/state.json", b"old state");
+        fixture.write("project/_patch_docs_v213.py", b"user file");
+        let root = fixture.0.join("project");
+        let expected = [
+            "_patch_docs_v213.py",
+            "agent-results/task/result.json",
+            "agent-teams/team/state.json",
+        ];
+
+        let scanned = inspect_assets_scoped(&root, None, None, MAX_ARCHIVE_ENTRIES, MAX_EXPANDED_BYTES).unwrap();
+        assert_eq!(scanned.iter().map(|asset| asset.path.as_str()).collect::<Vec<_>>(), expected);
+
+        let output = fixture.0.join("project.aicanvas");
+        pack_archive(
+            vec![ProjectArchiveTextEntry { path: "manifest.json".into(), content: "{\"formatVersion\":3}".into() }],
+            Some(root), output.clone(), None, MAX_ARCHIVE_ENTRIES,
+        ).unwrap();
+        let target = fixture.0.join("unpacked");
+        fs::create_dir(&target).unwrap();
+        let mut unpacked = unpack_archive(&output, &target).unwrap();
+        unpacked.asset_paths.sort();
+        assert_eq!(unpacked.asset_paths, expected);
+    }
+
+    #[test]
+    fn agent_workspace_cannot_be_repacked_as_a_direct_or_remapped_asset() {
+        let fixture = Fixture::new();
+        let relative = ".agent-workspace/scripts/internal.py";
+        fixture.write(&format!("project/{relative}"), b"internal");
+        let root = fixture.0.join("project");
+        let output = fixture.0.join("project.aicanvas");
+        let entries = || [
+            ("manifest.json", "{\"formatVersion\":4}"),
+            ("project.json", "{}"),
+            ("episodes.json", "[]"),
+            ("canvases.json", "[]"),
+            ("contents.json", "{}"),
+            ("exchange.json", "{}"),
+        ].into_iter().map(|(path, content)| ProjectArchiveTextEntry { path: path.into(), content: content.into() }).collect();
+
+        // Previously frozen incoming or recovery files remain subject to exact validation.
+        let exact = inspect_assets_scoped(&root, None, Some(&[relative.into()]), MAX_ARCHIVE_ENTRIES, MAX_EXPANDED_BYTES).unwrap();
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].path, relative);
+        let direct = pack_archive(entries(), Some(root.clone()), output.clone(), Some(exact.clone()), MAX_ARCHIVE_ENTRIES);
+        assert!(direct.err().unwrap().contains("Agent 工作目录"));
+
+        let roots = HashMap::from([("primary".into(), root)]);
+        let remapped = ArchiveAssetDigest {
+            path: "attachments/renamed.py".into(), source_root_ref: Some("primary".into()),
+            source_relative_path: Some(relative.into()), ..exact.into_iter().next().unwrap()
+        };
+        let routed = pack_archive_with_publication(
+            entries(), None, output.clone(), Some(vec![remapped]), MAX_ARCHIVE_ENTRIES, None, &roots,
+        );
+        assert!(routed.err().unwrap().contains("Agent 工作目录"));
+        assert!(!output.exists());
     }
 
     #[test]

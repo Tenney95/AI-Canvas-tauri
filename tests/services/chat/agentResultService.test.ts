@@ -63,14 +63,19 @@ describe('有界工具结果', () => {
     expect(captured.modelContent).toContain('保存失败');
   });
 
-  it('项目结果只用任务绑定的不可变引用恢复，内存引用不能伪造恢复', async () => {
+  it.each([false, true])('项目结果恢复兼容旧位置（旧位置=%s）', async (legacy) => {
     const captured = await captureAgentResult({ scope, toolId: 'series_get_state', text: '甲'.repeat(9000),
       policy: { storage: 'project', source: 'project-derived' } });
     const { data } = fixture.write.mock.calls[0][0] as { data: Uint8Array };
+    const projectFile = captured.reference!.projectFile!;
+    const workspacePrefix = '.agent-workspace/';
+    expect(projectFile.relativePath).toMatch(/^\.agent-workspace\/agent-results\/task\//);
+    const reference = { ...captured.reference!, projectFile: legacy
+      ? { ...projectFile, relativePath: projectFile.relativePath.slice(workspacePrefix.length) } : projectFile };
     fixture.tasks[0].steps = [{ id: 'step', taskId: 'task', index: 0, kind: 'tool', title: '读取', status: 'succeeded',
-      createdAt: 1, updatedAt: 1, toolCall: { callId: 'read', toolId: 'series_get_state', retryCount: 0, resultReference: captured.reference } }];
+      createdAt: 1, updatedAt: 1, toolCall: { callId: 'read', toolId: 'series_get_state', retryCount: 0, resultReference: reference } }];
     clearAgentResults({ taskId: scope.taskId }); fixture.read.mockResolvedValue(data);
-    expect((await readAgentResult(scope, captured.reference!.id, 100, 3)).text).toBe('甲甲甲');
-    expect(fixture.read).toHaveBeenCalledWith(expect.objectContaining({ reference: captured.reference!.projectFile }));
+    expect((await readAgentResult(scope, reference.id, 100, 3)).text).toBe('甲甲甲');
+    expect(fixture.read).toHaveBeenCalledWith(expect.objectContaining({ reference: reference.projectFile }));
   });
 });

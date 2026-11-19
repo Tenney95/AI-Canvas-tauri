@@ -21,6 +21,7 @@ import { getRelativeAssetPath, identifyAsset, identifyAssetBatch } from './asset
 import { getAllAssetIndexes, getAssetIndexByPath, putAssetIndex, type AssetIndexRecord } from '../indexedDbService';
 import { mediaFileAllocationKey, retiredMediaPaths } from '../indexedDb/mediaRelocations';
 import { decodeDataUrlBytesAsync } from '../mediaDataUrl';
+import { isProjectAgentInternalFile, isProjectAgentWorkspaceDirectory } from '../../utils/agentProjectWorkspace';
 import { isNativeMediaPendingFile } from '../../utils/nativeMediaPendingFile';
 
 /** 仅用于目录浏览的运行时条目，不写入资产索引或持久化配置。 */
@@ -224,6 +225,7 @@ export async function scanDirectoryFiles(
     const fileEntries: typeof entries = [];
     for (const entry of entries) {
       if (!entry.isFile || entry.isSymlink || isNativeMediaPendingFile(entry.name)) continue;
+      if (opts.source === 'project' && isProjectAgentInternalFile(folder.relativePath ? `${folder.relativePath}/${entry.name}` : entry.name)) continue;
       // 原生归属标记不是用户素材；删除它会让整个作品根无法验证。
       if (depth === 0 && entry.name === '.ai-canvas-native-project.json'
         && opts.projectId && getNativeProjectOwner(opts.projectId)) continue;
@@ -249,6 +251,7 @@ export async function scanDirectoryFiles(
     }
     const subDirs = entries.filter((e) => e.isDirectory && !e.isSymlink
       && !opts.excludedDirectories?.includes(e.name)
+      && !(opts.source === 'project' && isProjectAgentWorkspaceDirectory(folder.relativePath ? `${folder.relativePath}/${e.name}` : e.name))
       && !(depth === 0 && opts.excludedRootDirectories?.includes(e.name)));
 
     const initialFileCount = out.length;

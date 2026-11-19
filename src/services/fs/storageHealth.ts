@@ -11,6 +11,7 @@ import {
   getProjectConversations, getConversationMessages, type HistoryPageCursor,
 } from '../indexedDbService';
 import { localMediaUrlToPath } from '../../utils/mediaUrl';
+import { isProjectAgentInternalFile, isProjectAgentWorkspaceDirectory } from '../../utils/agentProjectWorkspace';
 import { fingerprintAssetImage } from './assetImageMetadata';
 import { listProjectImportRecoveries } from '../indexedDb/projectImportRepository';
 import { openDB } from '../indexedDb/schema';
@@ -68,7 +69,7 @@ function nativeCleanupProtectedPath(filePath: string, root: string): boolean {
   const relative = pathKey(filePath).slice(pathKey(root).replace(/\/+$/, '').length).replace(/^\/+/, '');
   const parts = relative.split('/');
   return !relative || parts.some((part) => part.startsWith('.'))
-    || ['media', 'imports'].includes(parts[0]);
+    || ['media', 'imports'].includes(parts[0]) || isProjectAgentInternalFile(relative);
 }
 
 /** 服务层自行复核原生引用，不相信旧报告或调用方传入的可删标记。 */
@@ -88,8 +89,9 @@ async function assertStorageCleanupPath(filePath: string, trashDirectory?: strin
       if (!record) throw new Error('回收前无法核对旧项目引用');
       collectReferences(record, legacyReferences, root);
     }
-    if (entry.project.parentId) continue;
     const relative = root && getRelativeAssetPath(filePath, root);
+    if (relative && isProjectAgentInternalFile(relative)) throw new Error('文件由项目 Agent 管理');
+    if (entry.project.parentId) continue;
     if (root && relative && (isLegacyCharacterVisualCandidatePath(relative)
       || isReferenced(filePath, new Set((await collectLegacyCharacterVisualPaths(entry.project.id, root)).map(pathKey))))) {
       throw new Error('文件仍被角色生成历史引用');
@@ -425,6 +427,7 @@ async function scanDirRecursive(
   signal?: AbortSignal,
   excludedDirectories: ReadonlySet<string> = new Set(),
   skipHidden = false,
+  projectRoot?: string,
 ): Promise<{ files: ScanFileEntry[]; entries: Awaited<ReturnType<typeof readDir>> }> {
   checkAbort(signal);
   const result: { files: ScanFileEntry[]; entries: Awaited<ReturnType<typeof readDir>> } = { files: [], entries: [] };
@@ -447,13 +450,15 @@ async function scanDirRecursive(
     if (entry.isDirectory && (excludedRootDirectories.includes(entry.name)
       || skipProjectDirectories && (entry.name === '.trash' || entry.name === 'AppData'))) continue;
     const entryPath = joinPath(dirPath, entry.name);
+    const relative = projectRoot && getRelativeAssetPath(entryPath, projectRoot);
+    if (relative && (entry.isDirectory ? isProjectAgentWorkspaceDirectory(relative) : isProjectAgentInternalFile(relative))) continue;
     if (entry.isDirectory && excludedDirectories.has(pathKey(entryPath).replace(/\/+$/, ''))) continue;
     try {
       const info = await lstat(entryPath);
       checkAbort(signal);
       if (info.isSymlink) { onIssue(entry.name, 'symlink'); continue; }
       if (info.isDirectory) {
-        const nested = await scanDirRecursive(entryPath, onIssue, [], skipProjectDirectories, signal, excludedDirectories, skipHidden);
+        const nested = await scanDirRecursive(entryPath, onIssue, [], skipProjectDirectories, signal, excludedDirectories, skipHidden, projectRoot);
         result.files.push(...nested.files);
       } else if (info.isFile) {
         result.files.push({ name: entry.name, path: entryPath, size: info.size });
@@ -750,7 +755,7 @@ export async function scanStorageHealth(
         if (!await exists(directory)) continue;
         inventory = await scanDirRecursive(directory,
           (name, reason) => addIssue('project', project.name, name, reason), ['.thumbnail'], true, signal,
-          new Set(dataDirs.map((root) => pathKey(root).replace(/\/+$/, '')).filter((other) => other !== rootKey)), nativeDirectory);
+          new Set(dataDirs.map((root) => pathKey(root).replace(/\/+$/, '')).filter((other) => other !== rootKey)), nativeDirectory, directory);
       } catch (error) {
         checkAbort(signal);
         addIssue('project', project.name, directory, issueReason(error));
@@ -881,7 +886,8 @@ export async function verifyStorageCleanupFile(
         }
       } else {
         const native = nativeRoots.has(pathKey(owner.root));
-        if (parts.some(isSystemMetadata) || parts.slice(0, -1).some((part, index) => part === '.trash' || part === 'AppData'
+        if (isProjectAgentInternalFile(owner.relative) || parts.some(isSystemMetadata)
+          || parts.slice(0, -1).some((part, index) => part === '.trash' || part === 'AppData'
           || index === 0 && part === '.thumbnail') || native && nativeCleanupProtectedPath(file.path, owner.root)) {
           throw new Error('文件不在可清理范围');
         }

@@ -24,6 +24,12 @@ const MAX_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
 const WRITE_METADATA_HEADER: &str = "x-aic-thumbnail-meta";
 const MAX_WRITE_METADATA_BYTES: usize = 1024 * 1024;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+#[cfg(windows)]
+const HIDE_CACHE_ERROR: &str = "无法隐藏缩略图缓存目录";
+#[cfg(windows)]
+const AGENT_WORKSPACE_DIRECTORY: &str = ".agent-workspace";
+#[cfg(windows)]
+const AGENT_WORKSPACE_ERROR: &str = "无法创建或隐藏项目 Agent 工作目录";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -206,7 +212,7 @@ fn read_cache(
     validate_descendant(root, &path, false).ok()?;
     // 从 macOS/Linux 移来的点目录，在 Windows 上首次命中时也补齐隐藏属性。
     #[cfg(windows)]
-    windows_files::hide(&root.join(CACHE_DIRECTORY)).ok()?;
+    windows_files::hide_directory(&root.join(CACHE_DIRECTORY), HIDE_CACHE_ERROR).ok()?;
     let mut file = File::open(&path).ok()?;
     let size = file.metadata().ok()?.len();
     if size <= CACHE_HEADER_BYTES as u64 || size > (CACHE_HEADER_BYTES + MAX_PREVIEW_BYTES) as u64 {
@@ -238,13 +244,27 @@ fn read_cache(
 
 #[cfg(windows)]
 mod windows_files {
-    use std::os::windows::ffi::OsStrExt;
+    use std::fs::{File, OpenOptions};
+    use std::mem::size_of;
+    use std::os::windows::{
+        ffi::OsStrExt,
+        fs::{MetadataExt, OpenOptionsExt},
+        io::AsRawHandle,
+    };
     use std::path::Path;
+    use windows::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{
+            FileBasicInfo, SetFileInformationByHandle, FILE_ATTRIBUTE_HIDDEN, FILE_BASIC_INFO,
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES,
+        },
+    };
+
+    use super::is_link;
 
     #[link(name = "kernel32")]
     extern "system" {
-        fn GetFileAttributesW(path: *const u16) -> u32;
-        fn SetFileAttributesW(path: *const u16, attributes: u32) -> i32;
         fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
     }
 
@@ -252,17 +272,61 @@ mod windows_files {
         path.as_os_str().encode_wide().chain(Some(0)).collect()
     }
 
-    pub fn hide(path: &Path) -> Result<(), String> {
-        let path = wide(path);
-        // SAFETY: 两个调用只使用存活且以 NUL 终止的 UTF-16 路径，不持有指针。
-        let attributes = unsafe { GetFileAttributesW(path.as_ptr()) };
-        if attributes == u32::MAX {
-            return Err("无法隐藏缩略图缓存目录".into());
+    fn directory_attributes(file: &File, error: &'static str) -> Result<u32, String> {
+        let info = file.metadata().map_err(|_| error)?;
+        if !info.is_dir() || is_link(&info) {
+            return Err(error.into());
         }
-        if attributes & 0x2 == 0
-            && unsafe { SetFileAttributesW(path.as_ptr(), attributes | 0x2) } == 0
-        {
-            return Err("无法隐藏缩略图缓存目录".into());
+        Ok(info.file_attributes())
+    }
+
+    fn pin_directory(path: &Path, access: u32, error: &'static str) -> Result<File, String> {
+        // 句柄不跟随重解析点，也不共享 DELETE，避免已核对路径在修改期间换位。
+        let file = OpenOptions::new()
+            .access_mode(access)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0)
+            .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0)
+            .open(path)
+            .map_err(|_| error)?;
+        directory_attributes(&file, error)?;
+        Ok(file)
+    }
+
+    pub fn pin_directory_chain(path: &Path, error: &'static str) -> Result<Vec<File>, String> {
+        let mut ancestors: Vec<_> = path
+            .ancestors()
+            .filter(|path| !path.as_os_str().is_empty())
+            .collect();
+        ancestors.reverse();
+        ancestors
+            .into_iter()
+            .map(|path| pin_directory(path, FILE_READ_ATTRIBUTES.0, error))
+            .collect()
+    }
+
+    pub fn hide_directory(path: &Path, error: &'static str) -> Result<(), String> {
+        let reader = pin_directory(path, FILE_READ_ATTRIBUTES.0, error)?;
+        if directory_attributes(&reader, error)? & FILE_ATTRIBUTE_HIDDEN.0 != 0 {
+            return Ok(());
+        }
+        let writer = pin_directory(path, FILE_READ_ATTRIBUTES.0 | FILE_WRITE_ATTRIBUTES.0, error)?;
+        let info = FILE_BASIC_INFO {
+            FileAttributes: directory_attributes(&writer, error)? | FILE_ATTRIBUTE_HIDDEN.0,
+            // FILE_BASIC_INFO 中的零时间字段保持原值。
+            ..Default::default()
+        };
+        // SAFETY: FILE_BASIC_INFO 的布局与 FileBasicInfo 一致，句柄和缓冲区在调用期间有效。
+        unsafe {
+            SetFileInformationByHandle(
+                HANDLE(writer.as_raw_handle()),
+                FileBasicInfo,
+                std::ptr::addr_of!(info).cast(),
+                size_of::<FILE_BASIC_INFO>() as u32,
+            )
+        }
+        .map_err(|_| error)?;
+        if directory_attributes(&writer, error)? & FILE_ATTRIBUTE_HIDDEN.0 == 0 {
+            return Err(error.into());
         }
         Ok(())
     }
@@ -287,7 +351,7 @@ fn ensure_cache_directory(root: &Path) -> Result<PathBuf, String> {
     }
     validate_descendant(root, &directory, true)?;
     #[cfg(windows)]
-    windows_files::hide(&directory)?;
+    windows_files::hide_directory(&directory, HIDE_CACHE_ERROR)?;
     Ok(directory)
 }
 
@@ -309,7 +373,7 @@ pub(crate) fn read_cache_file(root: &Path, name: &str, max_bytes: usize) -> Opti
     let path = root.join(CACHE_DIRECTORY).join(name);
     validate_descendant(root, &path, false).ok()?;
     #[cfg(windows)]
-    windows_files::hide(&root.join(CACHE_DIRECTORY)).ok()?;
+    windows_files::hide_directory(&root.join(CACHE_DIRECTORY), HIDE_CACHE_ERROR).ok()?;
     let file = File::open(path).ok()?;
     let size = file.metadata().ok()?.len();
     if size == 0 || size > max_bytes as u64 {
@@ -422,6 +486,98 @@ fn ensure_main<R: Runtime>(webview: &Webview<R>) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn agent_workspace_project_root<R: Runtime>(
+    webview: &Webview<R>,
+    project_dir: &str,
+    native_project_id: Option<String>,
+) -> Result<PathBuf, String> {
+    use crate::path_policy::{canonicalize_simplified, verified_user_storage_root};
+    use tauri::Manager;
+
+    let app = webview.app_handle();
+    let requested = Path::new(project_dir);
+    if requested
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(AGENT_WORKSPACE_ERROR.into());
+    }
+    let root = authorize_existing_plain_directory(app, project_dir).map_err(|_| AGENT_WORKSPACE_ERROR)?;
+    for ancestor in requested.ancestors().filter(|path| !path.as_os_str().is_empty()) {
+        let info = fs::symlink_metadata(ancestor).map_err(|_| AGENT_WORKSPACE_ERROR)?;
+        if !info.is_dir() || is_link(&info) {
+            return Err(AGENT_WORKSPACE_ERROR.into());
+        }
+    }
+    if let Some(id) = native_project_id {
+        let bound_root =
+            crate::native_project_media::resolve_native_project_media_root(webview.clone(), id)
+                .map_err(|_| AGENT_WORKSPACE_ERROR)?;
+        if root != PathBuf::from(bound_root) {
+            return Err(AGENT_WORKSPACE_ERROR.into());
+        }
+    } else {
+        // 旧项目的素材根没有原生登记，必须处于当前设置的保存根下，且不能经过新项目目录。
+        let base = match verified_user_storage_root(app).map_err(|_| AGENT_WORKSPACE_ERROR)? {
+            Some(base) => base,
+            None => app
+                .path()
+                .app_data_dir()
+                .map_err(|_| AGENT_WORKSPACE_ERROR)?
+                .join("data"),
+        };
+        let base = canonicalize_simplified(&base).map_err(|_| AGENT_WORKSPACE_ERROR)?;
+        if !root.starts_with(&base) || root == base {
+            return Err(AGENT_WORKSPACE_ERROR.into());
+        }
+        for ancestor in root.ancestors().take_while(|path| *path != base.as_path()) {
+            if !matches!(
+                fs::symlink_metadata(ancestor.join(".ai-canvas-native-project.json")),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+            {
+                return Err(AGENT_WORKSPACE_ERROR.into());
+            }
+        }
+    }
+    Ok(root)
+}
+
+#[cfg(windows)]
+fn ensure_agent_workspace_directory(root: &Path) -> Result<(), String> {
+    let _root_guards = windows_files::pin_directory_chain(root, AGENT_WORKSPACE_ERROR)?;
+    let directory = root.join(AGENT_WORKSPACE_DIRECTORY);
+    match fs::create_dir(&directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(_) => return Err(AGENT_WORKSPACE_ERROR.into()),
+    }
+    validate_descendant(root, &directory, true).map_err(|_| AGENT_WORKSPACE_ERROR)?;
+    windows_files::hide_directory(&directory, AGENT_WORKSPACE_ERROR)
+}
+
+#[tauri::command]
+pub fn prepare_project_agent_workspace<R: Runtime>(
+    webview: Webview<R>,
+    project_dir: String,
+    native_project_id: Option<String>,
+) -> Result<(), String> {
+    ensure_trusted_caller(&webview)?;
+    if webview.label() != "main" {
+        return Err("项目 Agent 工作目录仅允许主窗口准备".into());
+    }
+    #[cfg(windows)]
+    {
+        let root = agent_workspace_project_root(&webview, &project_dir, native_project_id)?;
+        ensure_agent_workspace_directory(&root)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (project_dir, native_project_id);
+        Ok(())
+    }
+}
+
 #[tauri::command]
 pub async fn prepare_project_thumbnail<R: Runtime>(
     webview: Webview<R>,
@@ -501,6 +657,30 @@ mod tests {
             let _ = fs::remove_dir_all(resolved);
         }
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn agent_workspace_sets_the_windows_hidden_attribute_and_keeps_existing_content() {
+        use std::os::windows::fs::MetadataExt;
+        use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN;
+
+        let fixture = Fixture::new();
+        let workspace = fixture.0.join(AGENT_WORKSPACE_DIRECTORY);
+        fs::write(&workspace, b"occupied").unwrap();
+        assert!(ensure_agent_workspace_directory(&fixture.0).is_err());
+        assert_eq!(fs::read(&workspace).unwrap(), b"occupied");
+        fs::remove_file(&workspace).unwrap();
+
+        ensure_agent_workspace_directory(&fixture.0).unwrap();
+        assert_ne!(
+            fs::symlink_metadata(&workspace).unwrap().file_attributes() & FILE_ATTRIBUTE_HIDDEN.0,
+            0
+        );
+        fs::write(workspace.join("artifact.json"), b"{}").unwrap();
+        ensure_agent_workspace_directory(&fixture.0).unwrap();
+        assert_eq!(fs::read(workspace.join("artifact.json")).unwrap(), b"{}");
+    }
+
     fn png(width: u32, height: u32) -> Vec<u8> {
         let image = image::DynamicImage::new_rgba8(width, height);
         let mut output = Cursor::new(Vec::new());

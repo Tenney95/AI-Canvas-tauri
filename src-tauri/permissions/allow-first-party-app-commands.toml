@@ -48,6 +48,7 @@ commands.allow = [
   "remove_skill_source_files",
   "prepare_project_thumbnail",
   "write_project_thumbnail",
+  "prepare_project_agent_workspace",
   "copy_file_streamed",
   "copy_asset_folder",
   "copy_asset_file_to_folder",

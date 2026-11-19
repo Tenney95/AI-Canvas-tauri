@@ -193,6 +193,24 @@ describe('storage health accounting and cleanup', () => {
     expect(mocks.remove).not.toHaveBeenCalled();
   });
 
+  it('Agent 工作区与旧脚本不进入清理，旧报告也不能删除', async () => {
+    const owner = project('p');
+    mocks.getAllProjects.mockResolvedValue([owner]);
+    addFiles('/p', { '_verify_v215.py': 4, 'user.py': 7 });
+    mocks.directories.get('/p')!.push('.agent-workspace', 'agent-results');
+    addFiles('/p/.agent-workspace', { 'draft.json': 8 });
+    addFiles('/p/agent-results', { 'result.json': 9 });
+
+    const report = await scanStorageHealth([owner], new Set(), [], { includeDuplicates: false });
+    expect(report.orphans.map((file) => file.path)).toEqual(['/p/user.py']);
+    expect(mocks.readDir).not.toHaveBeenCalledWith('/p/.agent-workspace');
+    expect(mocks.readDir).not.toHaveBeenCalledWith('/p/agent-results');
+    const file = { path: '/p/_verify_v215.py', name: '_verify_v215.py', size: 4 };
+    expect(await verifyStorageCleanupFile([owner], new Set(), file)).toBe(false);
+    expect(await deleteOrphanFile(file.path, async () => true)).toBe(false);
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
+
   it('重复清理只读取目标和保留副本，副本消失或内容变化则拒绝', async () => {
     addFiles('/a', { 'image.png': 10 }); addFiles('/b', { 'image.png': 10 });
     addFiles('/other', { 'large.mp4': 100 });

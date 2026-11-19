@@ -53,6 +53,51 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('project asset scans with committed group relocations', () => {
+  it('在扫描和索引前跳过项目根的 Agent 内部文件，保留其他脚本和同名素材目录', async () => {
+    const db = await import('../../src/services/indexedDbService');
+    const file = (name: string) => ({ name, isFile: true, isDirectory: false, isSymlink: false });
+    const folder = (name: string) => ({ name, isFile: false, isDirectory: true, isSymlink: false });
+    fs.readDir.mockImplementation(async (directory: string) => {
+      if (directory === root) return [folder('.agent-workspace'), folder('agent-results'), folder('agent-teams'),
+        folder('assets'), file('_verify_v215.py'), file('user.py')];
+      if (directory === `${root}/assets`) return [folder('.agent-workspace'), folder('agent-results'), file('_verify_v215.py')];
+      if (directory === `${root}/assets/agent-results`) return [file('story.md')];
+      throw new Error('unexpected directory');
+    });
+    const { scanDirectoryFiles } = await import('../../src/services/fs/assetLibrary');
+    const streamed: string[] = [];
+
+    const result = await scanDirectoryFiles(root, { source: 'project', projectId: 'project',
+      onFiles: (batch) => streamed.push(...batch.map((entry) => entry.relativePath!)) });
+
+    const visible = ['user.py', 'assets/_verify_v215.py', 'assets/agent-results/story.md'];
+    expect(result.complete).toBe(true);
+    expect(result.files.map((entry) => entry.relativePath)).toEqual(visible);
+    expect(streamed).toEqual(visible);
+    expect(result.folders.map((entry) => entry.relativePath)).toEqual(['', 'assets', 'assets/agent-results']);
+    expect(fs.stat).not.toHaveBeenCalledWith(`${root}/_verify_v215.py`);
+    expect(await db.getAssetIndexByPath(`${root}/_verify_v215.py`)).toBeUndefined();
+  });
+
+  it('v4 导入路径保留旧 Agent 文件的隐藏规则', async () => {
+    const prefix = `${root}/roots/r2-11111111-1111-4111-8111-111111111111/imports/copy-root-1`;
+    const dir = (name: string) => ({ name, isFile: false, isDirectory: true, isSymlink: false });
+    const file = (name: string) => ({ name, isFile: true, isDirectory: false, isSymlink: false });
+    fs.readDir.mockImplementation(async (directory: string) => {
+      if (directory === root) return [dir('roots')];
+      if (directory === `${root}/roots`) return [dir('r2-11111111-1111-4111-8111-111111111111')];
+      if (directory === `${root}/roots/r2-11111111-1111-4111-8111-111111111111`) return [dir('imports')];
+      if (directory === prefix.slice(0, prefix.lastIndexOf('/'))) return [dir('copy-root-1')];
+      if (directory === prefix) return [dir('agent-teams'), file('_sync_docs_v215.py'), file('notes.md')];
+      throw new Error('unexpected directory');
+    });
+    const { scanDirectoryFiles } = await import('../../src/services/fs/assetLibrary');
+    const result = await scanDirectoryFiles(root, { source: 'project', projectId: 'project' });
+    expect(result.complete).toBe(true);
+    expect(result.files.map((entry) => entry.name)).toEqual(['notes.md']);
+    expect(fs.readDir).not.toHaveBeenCalledWith(`${prefix}/agent-teams`);
+  });
+
   it('扫描嵌套素材根时保留已有分集与素材根身份', async () => {
     const db = await import('../../src/services/indexedDbService');
     const nestedRoot = `${root}/roots/r2-extra`;

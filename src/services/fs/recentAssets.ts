@@ -6,6 +6,7 @@ import { getAssetIndexById, getAssetIndexByPath, getRecentAssetUsage, recordRece
 import { getConvertFileSrc, getFileCategory, getProjectDataDir, isTauriEnv, type AssetFileEntry } from './core';
 import { getGlobalFilesDir } from './assetLibrary';
 import { getRelativeAssetPath } from './assetIndex';
+import { isProjectAgentInternalFile } from '../../utils/agentProjectWorkspace';
 import { isNativeMediaPendingFile } from '../../utils/nativeMediaPendingFile';
 
 export interface RecentAssetEntry {
@@ -47,7 +48,9 @@ export async function loadRecentAssets(scope: RecentAssetsScope, signal?: AbortS
       } else if (index.projectId && scope.projectIds.includes(index.projectId)) {
         root = await getProjectDataDir(index.projectId);
       }
-      if (!root || getRelativeAssetPath(index.path, root) === undefined
+      const relativePath = root ? getRelativeAssetPath(index.path, root) : undefined;
+      if (!root || relativePath === undefined
+        || (index.source === 'project' && isProjectAgentInternalFile(relativePath))
         || index.path.replace(/\\/g, '/').split('/').some((part) => part === '.' || part === '..' || part === '.trash')) continue;
       const info = await stat(index.path);
       if (!info.isFile || info.isSymlink || signal?.aborted) continue;
@@ -55,7 +58,7 @@ export async function loadRecentAssets(scope: RecentAssetsScope, signal?: AbortS
       entries.push({
         usedAt: record.usedAt,
         projectId: index.projectId,
-        file: { assetId: index.assetId, name, path: index.path, relativePath: getRelativeAssetPath(index.path, root),
+        file: { assetId: index.assetId, name, path: index.path, relativePath,
           assetUrl: convert?.(index.path), size: info.size, category: getFileCategory(name),
           availability: 'online', source: index.source, folderRoot: index.source === 'folder' ? root : undefined },
       });

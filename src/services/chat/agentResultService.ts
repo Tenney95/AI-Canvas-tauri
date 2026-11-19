@@ -12,6 +12,7 @@ import { getAgentTool, prepareAgentToolCall, type AgentToolContext } from './too
 import { evaluateAgentToolPolicy } from './policyEngine';
 import { configValuesEqual } from '../configPatch';
 import { nativeAgentResumeContext } from './agentResumeContext';
+import { AGENT_PROJECT_WORKSPACE_DIRECTORY, AGENT_RESULT_DIRECTORY, agentWorkspaceArtifactRelativePath } from '../../utils/agentProjectWorkspace';
 
 export const AGENT_RESULT_PREVIEW_CHARS = 6000;
 export const AGENT_RESULT_PAGE_CHARS = 12000;
@@ -189,7 +190,10 @@ export async function captureAgentResult(input: {
     if (data.byteLength > MAX_PROJECT_RESULT_BYTES) return { modelContent: `${preview}\n结果超过项目保存上限，请缩小原查询。`, truncated: true };
     const hash = await sha256Hex(data);
     lease.assert();
-    const projectFile = { relativePath: `agent-results/${input.scope.taskId}/${id}-${hash}.json`, sha256: hash, bytes: data.byteLength };
+    const projectFile = {
+      relativePath: `${AGENT_PROJECT_WORKSPACE_DIRECTORY}/${AGENT_RESULT_DIRECTORY}/${input.scope.taskId}/${id}-${hash}.json`,
+      sha256: hash, bytes: data.byteLength,
+    };
     const assertCurrent = () => { assertCapturedScope(); if (input.policy?.authorize?.() === false) throw new DOMException('原始授权已撤销', 'AbortError'); };
     try {
       assertCurrent();
@@ -242,8 +246,11 @@ export async function readAgentResult(
     const reference = matches.length === 1 ? matches[0].toolCall?.resultReference : undefined;
     const originToolId = matches.length === 1 ? matches[0].toolCall?.toolId : undefined;
     const file = reference?.storage === 'project' ? reference.projectFile : undefined;
-    if (!reference || !file || !RESULT_PATH.test(file.relativePath) || !file.relativePath.startsWith(`agent-results/${scope.taskId}/`)
-      || !file.relativePath.endsWith(`/${resultId}-${file.sha256}.json`)) throw new Error('结果已过期或不可恢复，请用原工具重新读取或重新授权');
+    const artifactPath = typeof file?.relativePath === 'string' ? agentWorkspaceArtifactRelativePath(file.relativePath) : '';
+    if (!reference || !file || !RESULT_PATH.test(artifactPath)
+      || artifactPath !== `${AGENT_RESULT_DIRECTORY}/${scope.taskId}/${resultId}-${file.sha256}.json`) {
+      throw new Error('结果已过期或不可恢复，请用原工具重新读取或重新授权');
+    }
     originAuthorization = projectResultAuthorization(scope, reference, originToolId ?? '');
     if (!originAuthorization()) throw new Error('原始工具授权或上下文已变化，无法验证');
     const referenceBinding = { ...(reference.executionContext ? { executionContext: reference.executionContext } : {}),

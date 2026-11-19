@@ -52,6 +52,15 @@ describe('团队产物文件与恢复原稿', () => {
     expect(reference).not.toHaveProperty('text');
   });
 
+  it('新团队稿件写入工作目录，旧任务仍从原位置读取', async () => {
+    const reference = await saveTeamArtifact({ projectId: 'p', runId: 'team-run', kind: 'draft', text: '候选正文', label: '稿件' });
+    expect(reference.relativePath).toMatch(/^\.agent-workspace\/agent-teams\/team-run\//);
+    const legacy = { ...reference, relativePath: reference.relativePath.slice('.agent-workspace/'.length) };
+    files.data.set(`p/${legacy.relativePath}`, files.data.get(`p/${reference.relativePath}`)!);
+    expect(await readTeamArtifactText('p', reference)).toBe('候选正文');
+    expect(await readTeamArtifactText('p', legacy)).toBe('候选正文');
+  });
+
   it('结构化内容按字段脱敏，凭据样式文字不会破坏JSON括号或其他字段', async () => {
     const reference = await saveTeamArtifact({ projectId: 'p', runId: 'review-run', kind: 'review',
       text: JSON.stringify({ evidence: 'authorization: TEST_ONLY', suggestion: '保留这条建议' }), label: '评审' });
