@@ -14,7 +14,8 @@ import { isExternalDropCaptured } from '../utils/dropCapture';
 import { nativeDropClientPosition } from '../utils/nativeDropPosition';
 import { textNodeHeight } from '../utils/num';
 import { COMFY_REFMOD_MIME } from '../utils/comfyRefmod';
-import { registerCanvasImport, registerCanvasDerivation, isCanvasDerivationFresh, completeCanvasDerivation } from '../services/canvasDerivationGuard';
+import { registerCanvasImport, registerCanvasDerivation, isCanvasDerivationFresh, completeCanvasDerivation,
+  canvasMediaImportsPaused, trackCanvasMediaImport } from '../services/canvasDerivationGuard';
 import { getPreferredNodeModel } from '../services/modelPreferenceService';
 import { createUiNodeData } from '../services/uiNodeCreationData';
 
@@ -150,6 +151,7 @@ export function useNodeCreation() {
 
       const handleDrag = async (payload: DragPayload) => {
         if (cancelled || cancelForScriptPage()) return;
+        if (canvasMediaImportsPaused()) { setIsDragOver(false); return; }
         if (payload.type === 'drop') {
           if (Date.now() - lastDropTs < 400) return;
           lastDropTs = Date.now();
@@ -197,7 +199,7 @@ export function useNodeCreation() {
           const offX = count * 30;
           const offY = count * 30;
 
-          if (!canAdd()) break;
+          if (canvasMediaImportsPaused() || !canAdd()) break;
           const importGuard = registerCanvasImport(useAppStore.getState());
           if (!importGuard) break;
           const isFresh = () => canAdd() && isCanvasDerivationFresh(importGuard, useAppStore.getState());
@@ -217,7 +219,7 @@ export function useNodeCreation() {
               count++;
               const guard = registerCanvasDerivation(useAppStore.getState(), nodeId);
               if (!guard) continue;
-              void (async () => {
+              void trackCanvasMediaImport(projectId, (async () => {
                 const canWrite = () => isCanvasDerivationFresh(guard, useAppStore.getState());
                 try {
                   const result = await copyFileToProjectData(fp, projectId);
@@ -240,7 +242,7 @@ export function useNodeCreation() {
                     status: 'error', error: err instanceof Error ? err.message : '拷贝失败',
                   });
                 } finally { completeCanvasDerivation(guard); }
-              })();
+              })(), nodeId);
               continue;
             }
 

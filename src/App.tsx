@@ -44,6 +44,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { prepareSettingsClose, resumeSettingsPersistence } from './services/configPersistenceQueue';
 import { applyNativePerformanceMode, registerPerformanceRestartHost } from './services/nativePerformanceModeService';
 import { prepareScriptWorkbenchAppClose } from './services/scriptWorkbenchAppClose';
+import { hasPendingCanvasMediaImport, pauseCanvasMediaImports } from './services/canvasDerivationGuard';
 import { t, useT } from './i18n';
 import { applyAppearanceTheme, installSystemAppearanceListener, resolveAppearanceMode } from './services/appearance/appearanceRuntime';
 import { getBuiltinAppearanceTheme, normalizeAppearanceTheme } from './services/appearance/appearanceDefaults';
@@ -329,7 +330,14 @@ export default function App() {
           event.preventDefault();
           if (closeInProgress.current) return;
           closeInProgress.current = true;
+          const resumeMediaImports = pauseCanvasMediaImports();
+          const importStillPending = (state: AppState) => {
+            if (!hasPendingCanvasMediaImport(state)) return false;
+            state.showToast(t('素材正在导入，请等导入完成后再关闭窗口'), 'info');
+            return true;
+          };
           try {
+            if (importStillPending(useAppStore.getState())) return;
             // 草稿确认可能需要主窗口或独立工作台交互，完成后再遮挡输入。
             if (!await prepareScriptWorkbenchAppClose()) return;
             getCanvasViewportController()?.rememberViewport?.();
@@ -345,7 +353,6 @@ export default function App() {
                 window.setTimeout(resolve, 0);
               });
             });
-            const store = useAppStore.getState();
             let settingsSaved = await prepareSettingsClose();
             while (!settingsSaved) {
               const { ask } = await import('@tauri-apps/plugin-dialog');
@@ -359,25 +366,39 @@ export default function App() {
               if (!discard) return;
               break;
             }
+            let savingState = useAppStore.getState();
+            if (importStillPending(savingState)) return;
+            let savedId: string | undefined;
             try {
-              if (useAppStore.getState().projectLoadStatus !== 'readonly') {
+              if (savingState.projectLoadStatus !== 'readonly') {
                 // 正文先入队，避免已有/空预览的补丁抢在必要保存之前。
-                const savingProject = store.saveCurrentProjectSilent();
+                const savingProject = savingState.saveCurrentProjectSilent();
                 // 缩略图是可选预览，不能挡住必要保存或窗口退出。
-                void store.captureCurrentProjectSnapshot({ persistSnapshot: true }).catch((error) => {
+                void savingState.captureCurrentProjectSnapshot({ persistSnapshot: true }).catch((error) => {
                   console.warn('[退出] 生成画布快照失败:', error);
                 });
-                await savingProject;
+                savedId = await savingProject;
               }
             } catch (error) {
               console.warn('[退出] 保存失败:', error);
             }
 
             // 保存一直失败时不能默默销毁窗口，否则这次会话的工作全丢
-            const latest = useAppStore.getState();
+            const matchesSavedCanvas = (current: AppState) => current.currentProjectId === savingState.currentProjectId
+              && current.nodes === savingState.nodes && current.edges === savingState.edges
+              && current.groups === savingState.groups && current.dramaAssets === savingState.dramaAssets;
+            const checkCanvas = () => {
+              const latest = useAppStore.getState();
+              if (importStillPending(latest)) return;
+              if (matchesSavedCanvas(latest)) return latest;
+              latest.showToast(t('关闭前画布有新变化，已保留当前项目，请稍后再关闭'), 'info');
+            };
+            const latest = checkCanvas();
+            if (!latest) return;
             const failure = latest.projectLoadStatus === 'readonly'
               ? (latest.hasUnsavedNativeProjectWriteBlock() ? { count: 1, reason: t('项目更新尚未结算，当前编辑未保存。') } : null)
-              : latest.autoSaveFailure;
+              : latest.autoSaveFailure ?? (savingState.currentProjectId && savingState.projectLoadStatus === 'ready'
+                && savedId !== savingState.currentProjectId ? { count: 1, reason: t('项目保存尚未完成') } : null);
             if (failure) {
               const { ask } = await import('@tauri-apps/plugin-dialog');
               const detail = failure.count > 1 ? t('已连续失败 {count} 次。', { count: failure.count }) : '';
@@ -387,10 +408,11 @@ export default function App() {
               const quitAnyway = await ask(
                 message,
                 { title: t('保存失败，仍要退出吗？'), kind: 'warning', okLabel: t('仍然退出'), cancelLabel: t('取消退出') },
-              ).catch(() => latest.projectLoadStatus !== 'readonly');
+              ).catch(() => false);
               if (!quitAnyway) return;
             }
 
+            if (!checkCanvas()) return;
             setClosePhase('closing');
             try {
               const { stopMcpBridge } = await import('./services/mcp/mcpBridgeService');
@@ -398,11 +420,22 @@ export default function App() {
             } catch (error) {
               console.warn('[退出] 清理失败:', error);
             }
-            await win.destroy();
+            const afterCleanup = useAppStore.getState();
+            if (importStillPending(afterCleanup)) return;
+            if (!matchesSavedCanvas(afterCleanup) && afterCleanup.currentProjectId
+              && afterCleanup.currentProjectId === savingState.currentProjectId && afterCleanup.projectLoadStatus === 'ready') {
+              savingState = afterCleanup;
+              if (await savingState.saveCurrentProjectSilent() !== savingState.currentProjectId) {
+                useAppStore.getState().showToast(t('退出前的新改动尚未保存，已保留当前项目'), 'error');
+                return;
+              }
+            }
+            if (checkCanvas()) await win.destroy();
           } catch (error) {
             console.warn('[退出] 关闭窗口失败:', error);
             useAppStore.getState().showToast('关闭未完成，请重试', 'error');
           } finally {
+            resumeMediaImports();
             resumeSettingsPersistence();
             closeInProgress.current = false;
             setClosePhase(null);

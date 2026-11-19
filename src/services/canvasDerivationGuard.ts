@@ -46,16 +46,44 @@ interface PendingCanvasDerivation {
 interface CanvasDerivationRuntime {
   pendingDerivations: Map<string, PendingCanvasDerivation>;
   operationSequence: number;
+  mediaImports?: Map<Promise<unknown>, { projectId: string; nodeId?: string }>;
+  mediaImportPauses?: number;
 }
 
 /** 热更新只保留运行中的登记；完整重载和独立窗口仍从空运行时开始。 */
 export function createOrReuseCanvasDerivationRuntime(
   hotData?: { canvasDerivations?: CanvasDerivationRuntime },
 ) {
-  const runtime = hotData?.canvasDerivations ?? {
+  const runtime: CanvasDerivationRuntime = hotData?.canvasDerivations ?? {
     pendingDerivations: new Map<string, PendingCanvasDerivation>(), operationSequence: 0,
   };
   if (hotData) hotData.canvasDerivations = runtime;
+  const mediaImports = runtime.mediaImports ??= new Map<Promise<unknown>, { projectId: string; nodeId?: string }>();
+
+  /** 素材开始读取后一直登记到节点回填完毕，已删除的占位可忽略。 */
+  function trackCanvasMediaImport<T>(projectId: string | null, work: Promise<T>, nodeId?: string): Promise<T> {
+    if (!projectId) return work;
+    mediaImports.set(work, { projectId, nodeId });
+    const finish = () => { mediaImports.delete(work); };
+    void work.then(finish, finish);
+    return work;
+  }
+
+  function hasPendingCanvasMediaImport(state: Pick<CanvasDerivationState, 'currentProjectId' | 'nodes'>): boolean {
+    for (const { projectId, nodeId } of mediaImports.values()) {
+      if (projectId === state.currentProjectId && (nodeId === undefined || state.nodes.some(({ id }) => id === nodeId))) return true;
+    }
+    return false;
+  }
+
+  function pauseCanvasMediaImports(): () => void {
+    runtime.mediaImportPauses = (runtime.mediaImportPauses ?? 0) + 1;
+    return () => { runtime.mediaImportPauses = (runtime.mediaImportPauses ?? 1) - 1; };
+  }
+
+  function canvasMediaImportsPaused(): boolean {
+    return (runtime.mediaImportPauses ?? 0) > 0;
+  }
 
   function registerCanvasDerivation(
     state: CanvasDerivationState,
@@ -119,10 +147,12 @@ export function createOrReuseCanvasDerivationRuntime(
   }
 
   return { registerCanvasDerivation, registerCanvasImport, isCanvasDerivationFresh,
-    completeCanvasDerivation, cancelCanvasDerivation, cancelProjectCanvasDerivations };
+    completeCanvasDerivation, cancelCanvasDerivation, cancelProjectCanvasDerivations,
+    trackCanvasMediaImport, hasPendingCanvasMediaImport, pauseCanvasMediaImports, canvasMediaImportsPaused };
 }
 
 export const {
   registerCanvasDerivation, registerCanvasImport, isCanvasDerivationFresh,
   completeCanvasDerivation, cancelCanvasDerivation, cancelProjectCanvasDerivations,
+  trackCanvasMediaImport, hasPendingCanvasMediaImport, pauseCanvasMediaImports, canvasMediaImportsPaused,
 } = createOrReuseCanvasDerivationRuntime(import.meta.hot?.data);

@@ -11,7 +11,8 @@ import { generateId, computeImageNodeDimensions, blobToDataUrl } from './store.u
 import { textNodeHeight } from '../utils/num';
 import * as fileService from '../services/fileService';
 import { copyNodeMedia, needsNodeMediaCopy, discardCopiedNodeMedia } from '../services/nodeMediaCopy';
-import { registerCanvasImport, isCanvasDerivationFresh, completeCanvasDerivation } from '../services/canvasDerivationGuard';
+import { registerCanvasImport, isCanvasDerivationFresh, completeCanvasDerivation, canvasMediaImportsPaused,
+  trackCanvasMediaImport } from '../services/canvasDerivationGuard';
 import { AI_APP_COPY_MESSAGE, isAiAppNode } from '../services/aiApps/aiAppCreation';
 import { collectCanvasDescendantIds } from '../utils/canvasHierarchy';
 import { clearGroupLayoutData } from '../utils/groupCollapseLayout';
@@ -440,7 +441,7 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
   },
 
   pasteExternalFromDataTransfer: async (dt, position, maxItems = 10, actionName = '粘贴') => {
-    if (!dt || get().projectWorkspaceView === 'script') return;
+    if (!dt || canvasMediaImportsPaused() || get().projectWorkspaceView === 'script') return;
     const currentProjectId = get().currentProjectId;
     const projectId = currentProjectId && currentProjectId !== 'default' ? currentProjectId : null;
     const isSameProject = () => get().currentProjectId === currentProjectId;
@@ -527,7 +528,7 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
     if (hasMarkdownFile && !parseGuard) return;
     let parsedItems: ParsedDTItem[];
     try {
-      parsedItems = await parseDataTransferItems(dt);
+      parsedItems = await trackCanvasMediaImport(currentProjectId, parseDataTransferItems(dt));
       if (parseGuard && !isCanvasDerivationFresh(parseGuard, get())) return;
     } finally {
       if (parseGuard) completeCanvasDerivation(parseGuard);
@@ -535,7 +536,7 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
     if (!canAdd() || parsedItems.length === 0) return;
 
     for (const p of parsedItems) {
-      if (!canAdd() || pastedCount >= maxItems) break;
+      if (canvasMediaImportsPaused() || !canAdd() || pastedCount >= maxItems) break;
       const off = offsets[pastedCount] || { x: pastedCount * 40, y: pastedCount * 40 };
 
       if (p.kind === 'file' && p.filePath && projectId) {
@@ -556,7 +557,7 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
           pastedCount++;
 
           // Copy file to project data dir asynchronously
-          fileService.copyFileToProjectData(filePath, projectId).then(async (result) => {
+          void trackCanvasMediaImport(projectId, fileService.copyFileToProjectData(filePath, projectId).then(async (result) => {
             if (result?.assetUrl) {
               const dims = await computeImageNodeDimensions(result.assetUrl);
               get().updateNodeDataTransient(nodeId, {
@@ -578,7 +579,7 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
             }
           }).catch((err) => {
             get().updateNodeDataTransient(nodeId, { status: 'error', error: err instanceof Error ? err.message : '复制失败' });
-          });
+          }), nodeId);
         } else if (videoExts.includes(extLower)) {
           const nodeId = `node-${generateId()}`;
           const newNode: Node<BaseNodeData> = {
@@ -589,16 +590,18 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
           addPastedNode(newNode);
           pastedCount++;
 
-          fileService.copyFileToProjectData(filePath, projectId).then((result) => {
+          void trackCanvasMediaImport(projectId, fileService.copyFileToProjectData(filePath, projectId).then((result) => {
             if (result?.assetUrl) {
               get().updateNodeDataTransient(nodeId, {
                 label: result.fileName, videoUrl: result.assetUrl, filePath: result.filePath,
                 fileName: result.fileName, status: 'success',
               });
+            } else {
+              get().updateNodeDataTransient(nodeId, { status: 'error', error: '无法读取文件' });
             }
           }).catch((err) => {
             get().updateNodeDataTransient(nodeId, { status: 'error', error: err instanceof Error ? err.message : '复制失败' });
-          });
+          }), nodeId);
         } else if (audioExts.includes(extLower)) {
           const nodeId = `node-${generateId()}`;
           const newNode: Node<BaseNodeData> = {
@@ -609,30 +612,32 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
           addPastedNode(newNode);
           pastedCount++;
 
-          fileService.copyFileToProjectData(filePath, projectId).then((result) => {
+          void trackCanvasMediaImport(projectId, fileService.copyFileToProjectData(filePath, projectId).then((result) => {
             if (result?.assetUrl) {
               get().updateNodeDataTransient(nodeId, {
                 label: result.fileName, audioUrl: result.assetUrl, filePath: result.filePath,
                 fileName: result.fileName, status: 'success',
               });
+            } else {
+              get().updateNodeDataTransient(nodeId, { status: 'error', error: '无法读取文件' });
             }
           }).catch((err) => {
             get().updateNodeDataTransient(nodeId, { status: 'error', error: err instanceof Error ? err.message : '复制失败' });
-          });
+          }), nodeId);
         }
       } else if (p.kind === 'file' && p.filePath) {
         // No projectId available — read into memory
-        const dataUrl = await fileService.readFileToDataUrl(p.filePath);
+        const dataUrl = await trackCanvasMediaImport(currentProjectId, fileService.readFileToDataUrl(p.filePath));
         if (dataUrl) {
           const ext = (p.filePath || '').split('.').pop()?.toLowerCase() || '';
           if (imageExts.includes(ext)) {
-            await addImageNode(dataUrl, pastedCount);
+            await trackCanvasMediaImport(currentProjectId, addImageNode(dataUrl, pastedCount));
             pastedCount++;
           } else if (videoExts.includes(ext)) {
-            await addVideoNode(dataUrl, pastedCount);
+            await trackCanvasMediaImport(currentProjectId, addVideoNode(dataUrl, pastedCount));
             pastedCount++;
           } else if (audioExts.includes(ext)) {
-            await addAudioNode(dataUrl, pastedCount);
+            await trackCanvasMediaImport(currentProjectId, addAudioNode(dataUrl, pastedCount));
             pastedCount++;
           }
         }
@@ -654,7 +659,7 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
         pastedCount++;
       } else if (p.kind === 'image') {
         // 浏览器复制的图像走此分支：先落盘再建节点，避免 base64 常驻节点数据
-        await addImageNode(p.dataUrl!, pastedCount);
+        await trackCanvasMediaImport(currentProjectId, addImageNode(p.dataUrl!, pastedCount));
         pastedCount++;
       } else if (p.kind === 'text') {
         addTextNode(p.text!, pastedCount);

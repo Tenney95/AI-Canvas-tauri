@@ -27,6 +27,7 @@ vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({
   onDragDropEvent: async (handler: (event: DropEvent) => void) => { driver.onDrag = handler; return vi.fn(); },
 }) }));
 import { useNodeCreation } from '../../src/hooks/useNodeCreation';
+import { hasPendingCanvasMediaImport, pauseCanvasMediaImports } from '../../src/services/canvasDerivationGuard';
 import { COMFY_REFMOD_MIME } from '../../src/utils/comfyRefmod';
 let cleanups: Array<void | (() => void)>;
 beforeEach(async () => {
@@ -74,6 +75,26 @@ describe('成功导入后的最近使用记录', () => {
     finish({ assetUrl: 'asset://copied', fileName: 'copied', filePath: '/project/copied' });
     await vi.waitFor(() => expect(driver.state.nodes[0].data.status).toBe('success'));
     expect(driver.state.addNode).toHaveBeenCalledOnce();
+  });
+
+  it('退出核对能看到等待回填的媒体，暂停期间的原生拖入不建占位', async () => {
+    let finish!: (result: unknown) => void;
+    driver.copy.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const resume = pauseCanvasMediaImports();
+    try {
+      drag('drop');
+      expect(driver.state.nodes).toEqual([]);
+      expect(driver.copy).not.toHaveBeenCalled();
+    } finally { resume(); }
+
+    drag('drop');
+    expect(driver.state.nodes[0].data.status).toBe('loading');
+    expect(hasPendingCanvasMediaImport(driver.state)).toBe(true);
+    expect(hasPendingCanvasMediaImport({ ...driver.state, currentProjectId: 'other' })).toBe(false);
+    expect(hasPendingCanvasMediaImport({ ...driver.state, nodes: [] })).toBe(false);
+    finish({ assetUrl: 'asset://copied', fileName: 'copied', filePath: '/project/copied' });
+    await vi.waitFor(() => expect(hasPendingCanvasMediaImport(driver.state)).toBe(false));
+    expect(driver.state.nodes[0].data).toMatchObject({ status: 'success', filePath: '/project/copied' });
   });
 
   it('读取文本时切换剧本整页，迟到正文不再创建画布节点', async () => {
