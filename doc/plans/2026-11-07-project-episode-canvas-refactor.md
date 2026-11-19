@@ -1364,3 +1364,22 @@ v4 导出与独立副本只收录已接受、仍被引用的共享同步文件�
 5. 在隔离样本连续接受两个共享素材版本，并保留一个未接受的文件。导出 v4 和创建独立副本，核对当前引用及显式历史引用完整，未引用的旧发布和未接受文件未入包。通过导入再次验证当前素材可用。
 
 定向回归可在仓库根目录执行 `npm test -- tests/store/groupFolders.test.ts tests/services/seriesSourceService.test.ts tests/store/chat.test.ts tests/services/nativeMediaMessageBatch.test.ts tests/services/nativeProjectRepository.test.ts tests/services/nativeProjectUpdateJournal.test.ts tests/services/projectModelArchiveNativePort.test.ts tests/services/nativeProjectUpdateVerification.test.ts`。原生归档筛选可在 `src-tauri/` 执行 `cargo test --lib scoped_scan_only_hashes_selected_shared_media`。
+
+### 22.20 音频归档、导入暂存、分集正文和项目封面
+
+已实现，待用户验收。v4 将有内容的 AAC、Opus、PCM 归为音频。旧协作修订保留原描述，纠正后的媒体描述另用身份并复用原文件路径、大小和摘要。读回已登记的旧备份时按原已验证描述核对。
+
+新建导入和独立副本完成后，后台复核原操作、历史回执、发布素材和冻结的暂存清单，只清理该操作的 `native-import-*` 暂存文件。下次启动可补清理当前数据目录中仍可核验的残留。清单不符、未完成操作和原恢复材料继续保留。
+
+打开新项目画布时只读当前分集的正文。剧本工作台和明确针对其他分集的操作按需取对应正文。无关分集的读取错误由其入口处理，当前分集可继续使用。
+
+新项目封面按画布身份单独持久化。项目库只读可见卡片对应的预览记录。清空画布并保存预览会删除原封面，删除分集或项目会移除所属预览。封面是本机派生数据，归档和交换修订不收录。
+
+本次未运行测试，待用户验收。使用 Tauri 桌面端及可丢弃的项目数据副本，按下列顺序查看结果。
+
+1. 准备带 AAC、Opus、PCM 输出历史的作品，分别导出 v4、创建独立副本、执行同源更新并读取更新前恢复点。三种格式的历史和文件引用均应保留，重新导入后能定位原音频。再对包含旧分类祖先的归档做同源更新，核对祖先修订和恢复备份仍可读。
+2. 通过项目库导入带图片的归档并连续创建两个独立副本。确认三个项目均可打开图片，收尾后的 `native-import-*` 暂存不再保留。用未完成 journal 和内容改变的隔离暂存复查启动补清理，两份材料均应保留。
+3. 打开含多集正文的剧集，提前为副本中的一集模拟正文记录读取失败。其他分集应照常打开。剧本工作台选中故障集时给出重试入口，原草稿与其他集正文仍可查看。
+4. 在普通项目和剧集第一集放置可见节点，再打开项目库确认卡片封面。退出并重开应用，封面应能读回。清空对应画布、保存并返回项目库，重启后应回到默认占位。普通项目转剧集时第一集继续显示原封面。
+
+定向回归可在仓库根目录执行 `npm test -- tests/services/projectModelArchiveService.test.ts tests/services/nativeProjectUpdateVerification.test.ts tests/services/nativeProjectImportService.test.ts tests/services/nativeProjectRepository.test.ts tests/services/nativeCanvasPreview.test.ts tests/store/projects.test.ts`。

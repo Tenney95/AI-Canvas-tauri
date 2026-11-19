@@ -83,7 +83,7 @@ import { nativeMediaInputMaterial } from '../services/nativeMediaInput';
 import { createNativeProject, saveNativeProjectView, saveNativeProjectContent, convertNativeProjectToSeries,
   createNativeEpisode, saveNativeEpisodeContent, readNativeProjectCapture, reorderNativeEpisodes,
   deleteNativeEpisode, deleteNativeProject, updateNativeProjectMetadata, updateNativeEpisodeMetadata,
-  updateNativeEpisodeComposite, readNativeEpisodeContent, readNativeProjectContent } from '../services/indexedDb/nativeProjectRepository';
+  updateNativeEpisodeComposite, readNativeEpisodeContent, readNativeProjectContent, saveNativeCanvasPreview } from '../services/indexedDb/nativeProjectRepository';
 import { listProjectCatalog, resolveProjectModel, type ProjectCatalogEntry } from '../services/projectModelRouter';
 import { readNativeProjectView } from '../services/nativeProjectNavigation';
 import { applyNativeEpisodeContent, hydrateNativeProjectView, nativeEpisodeDisplayNumbers, needsNativeEpisodeContent,
@@ -633,13 +633,15 @@ interface PendingProjectSave {
   projection?: { signal: AbortSignal; commit: (queue: ProjectSaveQueue) => void };
 }
 
+type NativePreviewTarget = Omit<Parameters<typeof saveNativeCanvasPreview>[0], 'snapshot'>;
+
 interface ProjectSaveQueue {
   running: boolean;
   active: PendingProjectSave | null;
   pending: PendingProjectSave | null;
   /** 条件元数据写独立保序，不能被后来的普通自动保存合并成另一份成功记录。 */
   pendingBatches?: PendingProjectSave[];
-  pendingSnapshot: { snapshot: string | undefined; waiters: ProjectSaveWaiter[] } | null;
+  pendingSnapshot: { snapshot: string | undefined; nativeTarget?: NativePreviewTarget; waiters: ProjectSaveWaiter[] } | null;
   idleWaiters: Array<() => void>;
 }
 
@@ -740,7 +742,8 @@ async function drainProjectSaveQueue(projectId: string, queue: ProjectSaveQueue)
         queue.pendingSnapshot = null;
         try {
           if (confirmedSeriesLibrary?.record.id === projectId) confirmedSeriesLibrary = undefined;
-          await updateProjectSnapshot(projectId, patch.snapshot);
+          if (patch.nativeTarget) await saveNativeCanvasPreview({ ...patch.nativeTarget, snapshot: patch.snapshot });
+          else await updateProjectSnapshot(projectId, patch.snapshot);
           patch.waiters.forEach((waiter) => waiter.resolve(projectId));
         } catch (error) {
           patch.waiters.forEach((waiter) => waiter.reject(error));
@@ -796,15 +799,16 @@ function hasSameProjectSaveContent(left: ProjectSaveData, right: ProjectSaveData
     && keys.every((key) => key === 'updatedAt' || left[key] === right[key]);
 }
 
-function enqueueProjectSnapshot(projectId: string, snapshot: string | undefined): Promise<string> {
-  if (nativeKnownIds.has(projectId)) return Promise.resolve(projectId);
+function enqueueProjectSnapshot(projectId: string, snapshot: string | undefined, nativeTarget?: NativePreviewTarget): Promise<string> {
+  if (nativeKnownIds.has(projectId) && !nativeTarget) return Promise.reject(new Error('新项目画布预览身份不可用'));
   const queue = getProjectSaveQueue(projectId);
   return new Promise((resolve, reject) => {
     if (queue.pendingSnapshot) {
       queue.pendingSnapshot.snapshot = snapshot;
+      queue.pendingSnapshot.nativeTarget = nativeTarget;
       queue.pendingSnapshot.waiters.push({ resolve, reject });
     } else {
-      queue.pendingSnapshot = { snapshot, waiters: [{ resolve, reject }] };
+      queue.pendingSnapshot = { snapshot, nativeTarget, waiters: [{ resolve, reject }] };
     }
     void drainProjectSaveQueue(projectId, queue);
   });
@@ -1842,72 +1846,65 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     const projectId = state.currentProjectId;
     const project = state.projects.find((item) => item.id === projectId);
     if (!projectId || !project || state.projectLoadStatus !== 'ready') return undefined;
-
+    const binding = nativeBinding(project);
+    const runtime = nativeRuntime.get(get);
+    const canvas = runtime?.loaded.selection.canvas;
+    if (binding && (!canvas || runtime?.activeId !== projectId || binding.canvasId !== canvas.id
+      || canvas.id !== projectId || canvas.projectId !== binding.projectId)) return undefined;
+    const nativeTarget = binding && canvas ? { projectId: binding.projectId, canvasId: canvas.id, expectedCanvasEpoch: canvas.epoch } : undefined;
     const captureId = nextSnapshotCaptureId++;
     latestSnapshotCaptures.set(projectId, captureId);
-    if (state.nodes.length === 0) {
-      latestSnapshotCaptures.delete(projectId);
-      lastCapturedCanvasState = null;
-      if (project.snapshot) {
-        set((current) => ({
-          projects: current.projects.map((item) => (
-            item.id === projectId ? { ...item, snapshot: undefined } : item
-          )),
-        }));
-      }
-      if (options.persistSnapshot) {
-        try {
-          await enqueueProjectSnapshot(projectId, undefined);
-        } catch (error) {
-          console.warn('[项目快照] 清理预览失败:', error);
+    const isLatestCapture = () => latestSnapshotCaptures.get(projectId) === captureId;
+    const persist = async (snapshot: string | undefined) => {
+      try { await enqueueProjectSnapshot(projectId, snapshot, nativeTarget); return true; }
+      catch (error) { console.warn('[项目快照] 持久化失败:', error); return false; }
+    };
+    try {
+      if (state.nodes.length === 0) {
+        if (nativeTarget && !await persist(undefined)) return undefined;
+        if (!isLatestCapture()) return undefined;
+        lastCapturedCanvasState = null;
+        if (project.snapshot || nativeTarget) {
+          set((current) => ({
+            projects: current.projects.map((item) => (
+              item.id === projectId ? { ...item, snapshot: undefined } : item
+            )),
+          }));
         }
+        if (!nativeTarget && options.persistSnapshot) await persist(undefined);
+        return projectId;
       }
-      return projectId;
-    }
 
-    // 离开项目时重新取图，图片解码或视频首帧就绪并不一定会更新 Store。
-    if (!options.allowProjectChange && project.snapshot && isCanvasSnapshotFresh(state, projectId)) {
-      latestSnapshotCaptures.delete(projectId);
-      if (options.persistSnapshot) {
-        try {
-          await enqueueProjectSnapshot(projectId, project.snapshot);
-        } catch (error) {
-          console.warn('[项目快照] 持久化失败:', error);
-        }
+      // 离开项目时重新取图，图片解码或视频首帧就绪并不一定会更新 Store。
+      if (!options.allowProjectChange && project.snapshot && isCanvasSnapshotFresh(state, projectId)) {
+        if (!nativeTarget && options.persistSnapshot) await persist(project.snapshot);
+        return projectId;
       }
-      return projectId;
-    }
 
-    const viewportKey = getCanvasViewportKey();
-    const snapshot = await captureCurrentCanvasSnapshot(
-      projectId,
-      { nodes: state.nodes, edges: state.edges },
-      { fresh: options.allowProjectChange },
-    );
-    if (latestSnapshotCaptures.get(projectId) !== captureId) return undefined;
-    latestSnapshotCaptures.delete(projectId);
-    const latest = get();
-    const projectStillExists = latest.projects.some((item) => item.id === projectId);
-    if (!projectStillExists) return undefined;
+      const viewportKey = getCanvasViewportKey();
+      const snapshot = await captureCurrentCanvasSnapshot(
+        projectId,
+        { nodes: state.nodes, edges: state.edges },
+        { fresh: options.allowProjectChange },
+      );
+      if (!isLatestCapture()) return undefined;
+      const latest = get();
+      if (!latest.projects.some((item) => item.id === projectId)) return undefined;
+      const isStillCurrent = latest.currentProjectId === projectId;
+      const currentCanvasChanged = isStillCurrent && (
+        latest.nodes !== state.nodes || latest.edges !== state.edges || latest.groups !== state.groups
+        || getCanvasViewportKey() !== viewportKey || nativeTarget && nativeRuntime.get(get) !== runtime
+      );
+      if (currentCanvasChanged || (!isStillCurrent && !options.allowProjectChange)) return undefined;
+      if (!snapshot) return projectId;
 
-    const isStillCurrent = latest.currentProjectId === projectId;
-    const currentCanvasChanged = isStillCurrent && (
-      latest.nodes !== state.nodes
-      || latest.edges !== state.edges
-      || latest.groups !== state.groups
-      || getCanvasViewportKey() !== viewportKey
-    );
-    if (currentCanvasChanged || (!isStillCurrent && !options.allowProjectChange)) return undefined;
-
-    if (snapshot) {
-      if (isStillCurrent) {
-        lastCapturedCanvasState = {
-          projectId,
-          nodes: state.nodes,
-          edges: state.edges,
-          groups: state.groups,
-          viewportKey,
-        };
+      // 只有落盘成功的原生预览才进入项目库。慢截图不能覆盖同一画布的后续预览。
+      if (nativeTarget && !await persist(snapshot)) return undefined;
+      if (!isLatestCapture()) return undefined;
+      const afterSave = get();
+      if (afterSave.currentProjectId === projectId && afterSave.nodes === state.nodes
+        && afterSave.edges === state.edges && afterSave.groups === state.groups && getCanvasViewportKey() === viewportKey) {
+        lastCapturedCanvasState = { projectId, nodes: state.nodes, edges: state.edges, groups: state.groups, viewportKey };
       } else if (lastCapturedCanvasState?.projectId === projectId) {
         lastCapturedCanvasState = null;
       }
@@ -1916,17 +1913,12 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           item.id === projectId ? { ...item, snapshot } : item
         )),
       }));
-
-      if (options.persistSnapshot) {
-        try {
-          // 只在最新记录上补缩略图，不能用捕获前的正文覆盖后续自动保存。
-          await enqueueProjectSnapshot(projectId, snapshot);
-        } catch (error) {
-          console.warn('[项目快照] 持久化失败:', error);
-        }
-      }
+      // 旧项目的预览补丁也不能用捕获前的正文覆盖后续自动保存。
+      if (!nativeTarget && options.persistSnapshot) await persist(snapshot);
+      return projectId;
+    } finally {
+      if (isLatestCapture()) latestSnapshotCaptures.delete(projectId);
     }
-    return projectId;
   },
 
   createProject: async (name, options) => {

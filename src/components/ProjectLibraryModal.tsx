@@ -90,6 +90,7 @@ function ProjectSnapshotPreview({ snapshot }: { snapshot?: string }) {
         <img
           src={snapshot}
           alt=""
+          loading="lazy"
           className="h-full w-full object-cover"
           draggable={false}
         />
@@ -172,6 +173,29 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
         return right.updatedAt - left.updatedAt;
       });
   }, [activeProjectId, topLevelProjects, query, sort]);
+
+  const coverTargets = useMemo(() => {
+    const byId = new Map(projects.map((project) => [project.id, project]));
+    return new Map(visibleProjects.map((project) => [project.id, byId.get(resolveOpenTargetId(projects, project.id))]));
+  }, [projects, visibleProjects]);
+  const [nativeCovers, setNativeCovers] = useState<{ targets: typeof coverTargets; snapshots: Map<string, string> }>();
+  useEffect(() => {
+    if (!isOpen || resourcePageOpen) return;
+    const targets = [...coverTargets.values()].flatMap((project) => {
+      const binding = (project as NativeProjectViewItem | undefined)?.nativeView;
+      return !project?.snapshot && binding?.canvasId ? [{ projectId: binding.projectId, canvasId: binding.canvasId }] : [];
+    });
+    if (!targets.length) return;
+    const controller = new AbortController();
+    void import('../services/indexedDb/nativeProjectRepository')
+      .then(({ readNativeCanvasPreviews }) => readNativeCanvasPreviews(targets, { signal: controller.signal }))
+      .then((previews) => {
+        if (!controller.signal.aborted) {
+          setNativeCovers({ targets: coverTargets, snapshots: new Map([...previews].map(([id, preview]) => [id, preview.snapshot])) });
+        }
+      }).catch(() => { /* 封面不可读时仍允许打开项目。 */ });
+    return () => controller.abort();
+  }, [coverTargets, isOpen, resourcePageOpen]);
 
   useLayoutEffect(() => {
     const grid = projectGridRef.current;
@@ -553,6 +577,9 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
             {visibleProjects.map((project) => {
               const isCurrent = project.id === activeProjectId;
               const isEditingName = renameTargetId === project.id;
+              const coverTarget = coverTargets.get(project.id);
+              const snapshot = project.snapshot ?? coverTarget?.snapshot ?? (coverTarget && nativeCovers?.targets === coverTargets
+                ? nativeCovers.snapshots.get(coverTarget.id) : undefined);
               return (
                 <div
                   key={project.id}
@@ -575,10 +602,7 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
                     className="block w-full border-b border-canvas-border text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-400/60"
                   >
                     {/* 剧集自己没有画布，缩略图取点开后会看到的那一集 */}
-                    <ProjectSnapshotPreview
-                      snapshot={project.snapshot
-                        ?? projects.find((item) => item.id === resolveOpenTargetId(projects, project.id))?.snapshot}
-                    />
+                    <ProjectSnapshotPreview snapshot={snapshot} />
                   </button>
 
                   {isEditingName ? (

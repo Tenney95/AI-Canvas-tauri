@@ -1,5 +1,5 @@
 /** 新项目独立库。仅在显式调用时打开，不升级、读取或写入旧项目库。 */
-import type { CanvasDocument, EpisodeContent, EpisodeRecord, EpisodeSettingsPolicy, ProjectContent, ProjectRecord, StandaloneCreativeContent } from '../../types/project';
+import type { CanvasDocument, CanvasPreview, EpisodeContent, EpisodeRecord, EpisodeSettingsPolicy, ProjectContent, ProjectRecord, StandaloneCreativeContent } from '../../types/project';
 import type { ProjectSettings } from '../../types';
 import type { CreationProfileSelection } from '../../types/creationProfile';
 import type { AgentTeamProfile } from '../../types/agentTeam';
@@ -15,6 +15,7 @@ import type { NativeGlobalRecoveryFile } from '../nativeProjectArchiveService';
 import { validateNativeMissingAssetProof, type NativeMissingAssetProof } from '../nativeMissingAssetBackup';
 import { hasControlCharacters } from '../../utils/controlCharacters';
 import { validateNativeArchiveOutputRows } from '../projectOutputHistoryArchive';
+import { isProjectSnapshotDataUrl } from '../projectSnapshotValidation';
 
 export const NATIVE_PROJECT_DATABASE_NAME = 'ai-canvas-native-projects-v2' as const;
 export const NATIVE_PROJECT_DATABASE_VERSION = 1 as const;
@@ -23,6 +24,7 @@ export const EPISODES = 'episodes', EPISODE_CONTENTS = 'episodeContents';
 export const RETIRED = 'retiredIds';
 export const REVISIONS = 'projectRevisions';
 export const EXCHANGE = 'nativeProjectExchange', TRANSFER = 'nativeTransferJournal';
+const canvasPreviewKey = (canvasId: string) => `canvas-preview:${canvasId}`;
 const STORES = [ROOTS, CONTENTS, CANVASES, EPISODES, EPISODE_CONTENTS, RETIRED, REVISIONS, EXCHANGE, TRANSFER] as const;
 const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 const projectIdPattern = new RegExp(`^p2-${uuid}$`);
@@ -41,6 +43,25 @@ export interface NativeProjectAggregate {
 }
 export interface NativeProjectOptions { factory?: IDBFactory; signal?: AbortSignal }
 export interface NativeProjectCreateInput { name: string; kind?: 'standalone' | 'series'; projectId?: string; canvasId?: string; now?: number }
+
+interface NativeCanvasPreviewRow extends CanvasPreview {
+  projectId: string;
+  ownerProjectId: string;
+  kind: 'native-canvas-preview-v1';
+}
+
+function isNativePreviewSnapshot(value: unknown): value is string {
+  return isProjectSnapshotDataUrl(value) && /^data:image\/(?:webp|png|jpeg);base64,/.test(value);
+}
+
+function obsoleteCanvasPreviewKeys(previous: CanvasDocument[], next: CanvasDocument[]): string[] {
+  const remaining = new Map(next.map((canvas) => [canvas.id, canvas]));
+  return previous.filter((canvas) => {
+    const replacement = remaining.get(canvas.id);
+    return !replacement || !configValuesEqual(canvas.nodes, replacement.nodes)
+      || !configValuesEqual(canvas.edges, replacement.edges) || !configValuesEqual(canvas.groups, replacement.groups);
+  }).map((canvas) => canvasPreviewKey(canvas.id));
+}
 
 const fail = (code: string): never => { throw new Error(`新项目仓储不可用：${code}`); };
 const request = <T>(value: IDBRequest<T>): Promise<T> => new Promise((resolve, reject) => {
@@ -162,6 +183,57 @@ export function transact<T>(database: IDBDatabase, mode: IDBTransactionMode, opt
       });
     } catch (error) { failure = error; try { tx.abort(); } catch { reject(error); } }
   });
+}
+
+/** 项目卡片只读派生预览与活动身份键，避免读取任何画布正文。 */
+export async function readNativeCanvasPreviews(targets: readonly { projectId: string; canvasId: string }[],
+  options: NativeProjectOptions = {}): Promise<Map<string, CanvasPreview>> {
+  const previews = new Map<string, CanvasPreview>();
+  if (!targets.length) return previews;
+  const database = await openNativeProjectDatabase(false, options);
+  if (!database) return previews;
+  try {
+    return await transact(database, 'readonly', options, async (tx) => {
+      await Promise.all(targets.map(async ({ projectId, canvasId }) => {
+        if (!isNativeProjectId(projectId) || !isNativeCanvasId(canvasId)) return;
+        const key = canvasPreviewKey(canvasId);
+        const [project, canvas, row] = await Promise.all([
+          request(tx.objectStore(ROOTS).getKey(projectId)), request(tx.objectStore(CANVASES).getKey(canvasId)),
+          request(tx.objectStore(EXCHANGE).get(key)) as Promise<NativeCanvasPreviewRow | undefined>,
+        ]);
+        if (project === projectId && canvas === canvasId && row?.kind === 'native-canvas-preview-v1'
+          && row.projectId === key && row.ownerProjectId === projectId && row.canvasId === canvasId
+          && isNativePreviewSnapshot(row.snapshot) && Number.isSafeInteger(row.updatedAt) && row.updatedAt >= 0) {
+          previews.set(canvasId, { canvasId, snapshot: row.snapshot, updatedAt: row.updatedAt });
+        }
+      }));
+      return previews;
+    }, [ROOTS, CANVASES, EXCHANGE]);
+  } finally { database.close(); }
+}
+
+/** 预览独立持久化，事务复核画布归属和代际，正文、交换版本与排序时间保持原值。 */
+export async function saveNativeCanvasPreview(input: { projectId: string; canvasId: string; expectedCanvasEpoch: number; snapshot?: string },
+  options: NativeProjectOptions = {}): Promise<void> {
+  const { projectId, canvasId, expectedCanvasEpoch, snapshot } = input;
+  if (!isNativeProjectId(projectId) || !isNativeCanvasId(canvasId) || !Number.isSafeInteger(expectedCanvasEpoch) || expectedCanvasEpoch < 0
+    || snapshot !== undefined && !isNativePreviewSnapshot(snapshot)) return fail('invalid-canvas-preview');
+  const database = await openNativeProjectDatabase(false, options);
+  if (!database) return fail('project-not-found');
+  try {
+    await transact(database, 'readwrite', options, async (tx) => {
+      const [project, canvas] = await Promise.all([
+        request(tx.objectStore(ROOTS).getKey(projectId)),
+        request(tx.objectStore(CANVASES).get(canvasId)) as Promise<CanvasDocument | undefined>,
+      ]);
+      if (project !== projectId || !canvas || canvas.id !== canvasId || canvas.projectId !== projectId
+        || canvas.epoch !== expectedCanvasEpoch) return fail('canvas-version-conflict');
+      const store = tx.objectStore(EXCHANGE), key = canvasPreviewKey(canvasId);
+      if (snapshot === undefined) await request(store.delete(key));
+      else await request(store.put({ projectId: key, kind: 'native-canvas-preview-v1', ownerProjectId: projectId,
+        canvasId, snapshot, updatedAt: Date.now() } satisfies NativeCanvasPreviewRow));
+    }, [ROOTS, CANVASES, EXCHANGE]);
+  } finally { database.close(); }
 }
 
 function assertNativeRoot(project: ProjectRecord): void {
@@ -1047,6 +1119,7 @@ options: NativeProjectOptions = {}): Promise<NativeProjectAggregate> {
     const next = validateAggregate(project, current.content, episodes, episodeContents, canvases);
     await Promise.all([request(tx.objectStore(ROOTS).put(next.project)), request(tx.objectStore(EPISODES).delete(episode.id)),
       request(tx.objectStore(EPISODE_CONTENTS).delete(episode.id)), request(tx.objectStore(CANVASES).delete(canvas.id)),
+      request(tx.objectStore(EXCHANGE).delete(canvasPreviewKey(canvas.id))),
       request(tx.objectStore(RETIRED).add({ id: episode.id, projectId: fixed.projectId, kind: 'episode', deletedAt: now })),
       request(tx.objectStore(RETIRED).add({ id: canvas.id, projectId: fixed.projectId, kind: 'canvas', deletedAt: now }))]);
     return next;
@@ -1103,6 +1176,7 @@ export async function deleteNativeProject(input: { projectId: string; expectedPr
           request(tx.objectStore(EPISODE_CONTENTS).delete(episode.id)),
           request(tx.objectStore(RETIRED).add({ id: episode.id, projectId: fixed.projectId, kind: 'episode', deletedAt: now }))]),
         ...current.canvases.flatMap((canvas) => [request(tx.objectStore(CANVASES).delete(canvas.id)),
+          request(tx.objectStore(EXCHANGE).delete(canvasPreviewKey(canvas.id))),
           request(tx.objectStore(RETIRED).add({ id: canvas.id, projectId: fixed.projectId, kind: 'canvas', deletedAt: now }))]),
       ]);
     }, STORES, recycleRequestId !== undefined);
@@ -1451,6 +1525,7 @@ export async function replaceNativeContentWithRecovery(input: { operationId: str
         request(tx.objectStore(CONTENTS).put(checked.content)), ...checked.episodes.map((item) => request(tx.objectStore(EPISODES).put(item))),
         ...checked.episodeContents.map((item) => request(tx.objectStore(EPISODE_CONTENTS).put(item))),
         ...checked.canvases.map((item) => request(tx.objectStore(CANVASES).put(item))),
+        ...obsoleteCanvasPreviewKeys(current.canvases, checked.canvases).map((key) => request(tx.objectStore(EXCHANGE).delete(key))),
         request(tx.objectStore(REVISIONS).put({ projectId, changeRevision: increment(revision.changeRevision) })),
         ...(fixed.exchange ? [request(tx.objectStore(EXCHANGE).put({ projectId, exchange: fixed.exchange }))] : [request(tx.objectStore(EXCHANGE).delete(projectId))])]);
       return recovery;
@@ -1840,6 +1915,7 @@ export async function commitNativeProjectUpdate(operationId: string, sequence: n
       ...checked.episodes.map((item) => request(tx.objectStore(EPISODES).put(item))),
       ...checked.episodeContents.map((item) => request(tx.objectStore(EPISODE_CONTENTS).put(item))),
       ...checked.canvases.map((item) => request(tx.objectStore(CANVASES).put(item))),
+      ...obsoleteCanvasPreviewKeys(current.canvases, checked.canvases).map((key) => request(tx.objectStore(EXCHANGE).delete(key))),
       request(tx.objectStore(EXCHANGE).put({ projectId: row.projectId, exchange: row.exchange })),
       request(tx.objectStore(REVISIONS).put({ projectId: row.projectId, changeRevision: increment(revision.changeRevision) })),
       request(transfer.put(result)),
