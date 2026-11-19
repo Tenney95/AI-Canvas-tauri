@@ -971,3 +971,31 @@ Canvas 组四轮缩放长帧依次为 0、0、0、1，采样期间位图均复�
 桌面实测在零节点 DOM 时点选已有连线，从已连线的图片右口拖到另一已连线图片左口，正确加入一条线并将副本恢复为 1,353 条。在远景点选已连线图片后可打开标注，已连线视频取消选择后继续播放。拖线期间会回挂全部可见节点。自动化用例已补充，未执行。
 
 继续保留开发版原型。下一步可单独比较连线描边在相机手势期间复用世界坐标缓存的收益，沿用独立命中几何。[gpucanvas 的实现说明](https://berkant.me/blog/gpucanvas-webgpu-infinite-canvas)也采用低清快照与相机解耦；其 GPU 绘制路径依赖 Chrome 的 HTML-in-Canvas，macOS Tauri 使用 WKWebView。
+
+### Windows WebGPU 远景对照分支
+
+在 `codex/windows-gpu-canvas-test` 的 Tauri 开发版中，Canvas 2D 是双平台默认后端。Windows 可按会话显式选择透明 WebGPU 后端。它复用现有位图窗口、卡片绘制、媒体预览缓存和命中逻辑，将卡片按纹理复用并在一次实例绘制中合成。纹理图集上限 32 MiB，不含输出位图和现有预览。GPU 初始化超时、适配器或设备不可用、设备丢失与图集超限时切回 Canvas 2D。macOS 走 Canvas 2D，现有触屏设备继续走 DOM 回退。项目数据、桌面媒体路径和连线绘制沿用原行为。
+
+透明合成器使用预览纹理。它借鉴 gpucanvas 的图集思路，运行时不依赖该库或 HTML-in-Canvas。开发窗口提供独立的 HTML-in-Canvas 探针，在当前 WebView 中将一个 DOM 元素画到 WebGPU 纹理并回读像素。探针结果用于评估上游路径的基础能力。
+
+验收在 Windows 的独立 Git 工作树中执行。已有 Tauri 开发环境时，从仓库根目录运行以下 PowerShell 命令。
+
+```powershell
+git fetch origin
+git worktree add --detach ..\AI-Canvas-GPU-Test origin/codex/windows-gpu-canvas-test
+Set-Location ..\AI-Canvas-GPU-Test
+npm ci
+npm run tauri dev
+```
+
+在桌面开发窗口导入并打开先前的 `NASA-600-dense-1353-desktop.aicanvas` 测试副本。取消选区和缩放锁定，保持测试窗口可见与尺寸一致。按 F12 打开开发者工具，在 Console 执行。
+
+```js
+await canvasFarNodeBenchmark.probeHtmlInCanvas()
+await canvasFarNodeBenchmark.run('canvas')
+await canvasFarNodeBenchmark.run('webgpu')
+```
+
+两个 `run` 调用都先预热缩略图，再按原四段各 650 ms 的轨迹采样，结束后恢复原视口。交替重复四轮并对比 `zoom.p95`、`zoom.over50`、`over50`、实际 `backend` 和窗口 DPR。WebGPU 请求回退时会报出原因。手动检查当前后端时，先缩远到约 12%，再调用 `canvasFarNodeBenchmark.status()`。用 `setMode('canvas')` 恢复 Canvas 2D。可加跑 `run('dom')` 作为原节点对照。触屏设备的原型保护会禁用远景位图对照，先用非触屏 Windows 环境采样。
+
+Windows 和 macOS 均核对深浅主题、连线坐标和点击命中。点选远景图片应恢复原编辑节点，视频播放后取消选择应继续播放，拖线应恢复原端口。macOS 尝试请求 `webgpu` 时应保持 `canvas2d`。本分支已实现，未运行自动化、构建或实机测试。

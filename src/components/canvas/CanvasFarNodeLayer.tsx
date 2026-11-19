@@ -25,14 +25,14 @@ const BENCHMARK_EVENT = 'ai-canvas:far-layer-benchmark';
 const BENCHMARK_KEY = 'canvas-far-layer-benchmark';
 const MEDIA_TYPES = new Set(['ai-image', 'source-image', 'ai-video', 'source-video']);
 const EMPTY_NODE_IDS: ReadonlySet<string> = new Set();
-type PrototypeMode = 'dom' | 'unlinked' | 'canvas';
+type PrototypeMode = 'dom' | 'unlinked' | 'canvas' | 'webgpu';
 type HitCard = CanvasFarNodeCard & { handles: readonly Rect[] };
 
 function readPrototypeMode(): PrototypeMode {
   if (!import.meta.env.DEV || !isTauri() || navigator.maxTouchPoints > 0) return 'dom';
   try {
     const mode = sessionStorage.getItem(BENCHMARK_KEY);
-    if (mode === 'dom' || mode === 'unlinked') return mode;
+    if (mode === 'dom' || mode === 'unlinked' || mode === 'webgpu') return mode;
   } catch { /* The development prototype still works without session storage. */ }
   return 'canvas';
 }
@@ -211,7 +211,7 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
   useLayoutEffect(() => () => runtime.setVisibleFarNodeIds(EMPTY_NODE_IDS), [runtime]);
   return <>
     {staticCards.length > 0 && projectId && <CanvasFarNodeBitmap cards={staticCards} store={store} projectId={projectId}
-      runtime={runtime} onUnavailable={onUnavailable} onPreviewError={onPreviewError} />}
+      runtime={runtime} webGpuRequested={mode === 'webgpu'} onUnavailable={onUnavailable} onPreviewError={onPreviewError} />}
     {nodeIds.map((id) => staticIds.has(id) ? null : renderNode(id))}
   </>;
 }

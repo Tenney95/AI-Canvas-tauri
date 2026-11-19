@@ -6,6 +6,7 @@ import { createFrameCoalescer } from '../../utils/frameCoalescer';
 import { CANVAS_NODE_Z_INDEX } from '../../utils/canvasElementLayering';
 import { acquireCachedCanvasImagePreview, acquireCanvasImagePreview } from '../nodes/shared/image/canvasImagePreviewCache';
 import { acquireCanvasVideoPoster } from '../nodes/shared/video/canvasVideoPreviewCache';
+import { createFarNodeWebGpu, type FarNodeGpuCard, type FarNodeWebGpu } from './canvasFarNodeWebGpu';
 
 export interface CanvasFarNodeCard {
   id: string;
@@ -22,6 +23,7 @@ interface Props {
   store: ReturnType<typeof useStoreApi>;
   projectId: string | null;
   runtime: CanvasNodeLodRuntime;
+  webGpuRequested: boolean;
   onUnavailable(): void;
   onPreviewError(source: string, image: boolean): void;
 }
@@ -51,8 +53,21 @@ interface BitmapWindow {
 const BITMAP_GUTTER = 288;
 const BITMAP_REDRAW_MARGIN = 44;
 const BITMAP_MAX_EDGE = 4096;
+const GPU_INIT_TIMEOUT_MS = 8000;
+const BITMAP_CLASS = 'pointer-events-none absolute left-0 top-0 origin-top-left';
 
-function drawCard(ctx: CanvasRenderingContext2D, card: CanvasFarNodeCard, style: CardStyle, image?: HTMLImageElement) {
+function setCardStyle(ctx: CanvasRenderingContext2D, style: CardStyle) {
+  ctx.fillStyle = style.background;
+  ctx.strokeStyle = style.stroke;
+  ctx.lineWidth = 1;
+}
+
+function drawCard(
+  ctx: CanvasRenderingContext2D,
+  card: Pick<CanvasFarNodeCard, 'x' | 'y' | 'width' | 'height'>,
+  style: CardStyle,
+  image?: HTMLImageElement,
+) {
   const { x, y, width, height } = card;
   const radius = Math.min(style.radius, width / 2, height / 2);
   ctx.beginPath();
@@ -77,14 +92,18 @@ function drawCard(ctx: CanvasRenderingContext2D, card: CanvasFarNodeCard, style:
 }
 
 /** The viewport moves and scales one reusable world-space bitmap between rasterizations. */
-export default memo(function CanvasFarNodeBitmap({ cards, store, projectId, runtime, onUnavailable, onPreviewError }: Props) {
+export default memo(function CanvasFarNodeBitmap({
+  cards, store, projectId, runtime, webGpuRequested, onUnavailable, onPreviewError,
+}: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const gpuCanvasRef = useRef<HTMLCanvasElement>(null);
   const probeRef = useRef<HTMLDivElement>(null);
   const cardsRef = useRef(cards);
   const redrawRef = useRef<(() => void) | null>(null);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
+    const gpuCanvas = gpuCanvasRef.current;
     const probe = probeRef.current;
     const viewport = canvas?.closest<HTMLElement>('.react-flow__viewport');
     const view = canvas?.ownerDocument.defaultView;
@@ -107,6 +126,47 @@ export default memo(function CanvasFarNodeBitmap({ cards, store, projectId, runt
     let rasterCount = 0;
     let projectedCards: typeof cards | undefined;
     let keyedCards: Array<{ card: CanvasFarNodeCard; key: string }> = [];
+    const gpuAbort = new AbortController();
+    let gpu: FarNodeWebGpu | undefined;
+    let gpuTimeout: number | undefined;
+    let gpuStatus = 'off';
+    let gpuReason = '';
+    let presentedCanvas = canvas;
+
+    const reportGpuStatus = () => {
+      if (presentedCanvas.dataset.webgpuStatus !== gpuStatus) presentedCanvas.dataset.webgpuStatus = gpuStatus;
+      if (gpuReason) {
+        if (presentedCanvas.dataset.webgpuReason !== gpuReason) presentedCanvas.dataset.webgpuReason = gpuReason;
+      } else if (presentedCanvas.dataset.webgpuReason !== undefined) {
+        delete presentedCanvas.dataset.webgpuReason;
+      }
+    };
+
+    const present = (target: HTMLCanvasElement) => {
+      if (target !== presentedCanvas) {
+        presentedCanvas.hidden = true;
+        delete presentedCanvas.dataset.canvasFarLayer;
+        presentedCanvas = target;
+        target.hidden = false;
+        target.dataset.canvasFarLayer = 'viewport';
+      }
+      const backend = target === canvas ? 'canvas2d' : 'webgpu';
+      if (target.dataset.canvasFarBackend !== backend) target.dataset.canvasFarBackend = backend;
+      reportGpuStatus();
+    };
+
+    const useCanvas2d = (reason: string) => {
+      if (stopped || gpuAbort.signal.aborted) return;
+      gpuAbort.abort();
+      view.clearTimeout(gpuTimeout);
+      gpu?.destroy();
+      gpu = undefined;
+      gpuStatus = 'failed';
+      gpuReason = reason;
+      reportGpuStatus();
+      dirty = true;
+      schedule();
+    };
 
     const disposePreview = (key: string, entry: Preview) => {
       previews.delete(key);
@@ -216,16 +276,17 @@ export default memo(function CanvasFarNodeBitmap({ cards, store, projectId, runt
             cssWidth: width + 2 * BITMAP_GUTTER, cssHeight: height + 2 * BITMAP_GUTTER,
             zoom, ratio,
           };
-          canvas.style.width = `${bitmap.cssWidth}px`;
-          canvas.style.height = `${bitmap.cssHeight}px`;
-          canvas.style.transform = `translate(${bitmap.left}px,${bitmap.top}px) scale(${1 / bitmap.zoom})`;
+          for (const target of [canvas, gpuCanvas]) {
+            if (!target) continue;
+            target.style.width = `${bitmap.cssWidth}px`;
+            target.style.height = `${bitmap.cssHeight}px`;
+            target.style.transform = `translate(${bitmap.left}px,${bitmap.top}px) scale(${1 / bitmap.zoom})`;
+          }
         }
         const raster = bitmap;
         const renderRatio = Math.min(ratio, BITMAP_MAX_EDGE / Math.max(raster.cssWidth, raster.cssHeight));
         const pixelWidth = Math.min(BITMAP_MAX_EDGE, Math.ceil(raster.cssWidth * renderRatio));
         const pixelHeight = Math.min(BITMAP_MAX_EDGE, Math.ceil(raster.cssHeight * renderRatio));
-        if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
-        if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
         if (!style) {
           const computed = view.getComputedStyle(probe);
           style = {
@@ -234,14 +295,18 @@ export default memo(function CanvasFarNodeBitmap({ cards, store, projectId, runt
             radius: Math.max(0, Number.parseFloat(computed.borderTopLeftRadius) || 0),
           };
         }
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.clearRect(0, 0, pixelWidth, pixelHeight);
+        const cardStyle = style;
         const scaleX = raster.zoom * pixelWidth / raster.cssWidth;
         const scaleY = raster.zoom * pixelHeight / raster.cssHeight;
-        ctx.setTransform(scaleX, 0, 0, scaleY, -raster.left * scaleX, -raster.top * scaleY);
-        ctx.fillStyle = style.background;
-        ctx.strokeStyle = style.stroke;
-        ctx.lineWidth = 1;
+        const gpuCards: FarNodeGpuCard[] | null = gpu && gpuCanvas ? [] : null;
+        if (!gpuCards) {
+          if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
+          if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.clearRect(0, 0, pixelWidth, pixelHeight);
+          ctx.setTransform(scaleX, 0, 0, scaleY, -raster.left * scaleX, -raster.top * scaleY);
+          setCardStyle(ctx, cardStyle);
+        }
 
         if (projectedCards !== cardsRef.current) {
           projectedCards = cardsRef.current;
@@ -256,19 +321,42 @@ export default memo(function CanvasFarNodeBitmap({ cards, store, projectId, runt
             || cardBottom <= raster.top || card.y >= raster.bottom) continue;
           wanted.add(key);
           const entry = requestPreview(key, card, now);
-          drawCard(ctx, card, style, entry.ready ? entry.image : undefined);
+          const image = entry.ready ? entry.image : undefined;
+          if (gpuCards) gpuCards.push({ ...card, textureKey: key, image });
+          else drawCard(ctx, card, cardStyle, image);
           rendered++;
           if (entry.ready) ready++;
         }
         pruneIdle(now);
+        if (gpuCards && gpu && gpuCanvas) {
+          const candidate = gpu;
+          try {
+            candidate.draw({
+              width: pixelWidth, height: pixelHeight, left: raster.left, top: raster.top,
+              scaleX, scaleY, styleToken: cardStyle, cards: gpuCards,
+            }, (tile, item) => {
+              setCardStyle(tile, cardStyle);
+              drawCard(tile, { ...item, x: 0, y: 0 }, cardStyle, item.image);
+            });
+          } catch {
+            useCanvas2d('gpu-render');
+            return;
+          }
+          if (gpu !== candidate) return;
+          gpuStatus = 'active';
+          present(gpuCanvas);
+          if (canvas.width || canvas.height) canvas.width = canvas.height = 0;
+        } else {
+          present(canvas);
+        }
         const renderedCount = String(rendered);
         const readyCount = String(ready);
-        if (canvas.dataset.renderedNodeCount !== renderedCount) {
-          canvas.dataset.renderedNodeCount = renderedCount;
-          canvas.dataset.previewTargetCount = renderedCount;
+        if (presentedCanvas.dataset.renderedNodeCount !== renderedCount) {
+          presentedCanvas.dataset.renderedNodeCount = renderedCount;
+          presentedCanvas.dataset.previewTargetCount = renderedCount;
         }
-        if (canvas.dataset.previewReadyCount !== readyCount) canvas.dataset.previewReadyCount = readyCount;
-        canvas.dataset.bitmapRasterCount = String(++rasterCount);
+        if (presentedCanvas.dataset.previewReadyCount !== readyCount) presentedCanvas.dataset.previewReadyCount = readyCount;
+        presentedCanvas.dataset.bitmapRasterCount = String(++rasterCount);
         dirty = false;
       } catch { fail(); }
     };
@@ -300,9 +388,35 @@ export default memo(function CanvasFarNodeBitmap({ cards, store, projectId, runt
     watchResolution();
     view.addEventListener('resize', schedule);
     canvas.addEventListener('contextlost', fail);
+    if (gpuCanvas && webGpuRequested) {
+      if (!/^win/i.test(view.navigator.platform || '')) {
+        gpuStatus = 'unsupported';
+        gpuReason = 'windows-only';
+      } else if (!('gpu' in view.navigator)) {
+        gpuStatus = 'unsupported';
+        gpuReason = 'webgpu-unavailable';
+      } else {
+        gpuStatus = 'initializing';
+        gpuTimeout = view.setTimeout(() => useCanvas2d('gpu-init-timeout'), GPU_INIT_TIMEOUT_MS);
+        void createFarNodeWebGpu(gpuCanvas, gpuAbort.signal, () => useCanvas2d('gpu-device-error')).then((backend) => {
+          view.clearTimeout(gpuTimeout);
+          if (stopped || gpuAbort.signal.aborted) { backend.destroy(); return; }
+          gpu = backend;
+          dirty = true;
+          schedule();
+        }, () => useCanvas2d('gpu-init'));
+      }
+    }
+    reportGpuStatus();
     draw();
     return () => {
       stopped = true;
+      gpuAbort.abort();
+      view.clearTimeout(gpuTimeout);
+      gpu?.destroy();
+      // The fallback element is reused after a backend switch.
+      canvas.hidden = false;
+      canvas.dataset.canvasFarLayer = 'viewport';
       redrawRef.current = null;
       frame.cancel();
       unsubscribe();
@@ -315,8 +429,13 @@ export default memo(function CanvasFarNodeBitmap({ cards, store, projectId, runt
       if (idleTimer !== undefined) clearTimeout(idleTimer);
       for (const [key, entry] of previews) disposePreview(key, entry);
       canvas.width = canvas.height = 0;
+      if (gpuCanvas) {
+        gpuCanvas.width = gpuCanvas.height = 0;
+        gpuCanvas.hidden = true;
+        delete gpuCanvas.dataset.canvasFarLayer;
+      }
     };
-  }, [onPreviewError, onUnavailable, projectId, runtime, store]);
+  }, [onPreviewError, onUnavailable, projectId, runtime, store, webGpuRequested]);
 
   useLayoutEffect(() => {
     cardsRef.current = cards;
@@ -324,8 +443,11 @@ export default memo(function CanvasFarNodeBitmap({ cards, store, projectId, runt
   }, [cards]);
 
   return <>
-    <canvas ref={canvasRef} className="pointer-events-none absolute left-0 top-0 origin-top-left"
-      style={{ zIndex: CANVAS_NODE_Z_INDEX }} width={0} height={0} data-canvas-far-layer="viewport" aria-hidden="true" />
+    <canvas ref={canvasRef} className={BITMAP_CLASS}
+      style={{ zIndex: CANVAS_NODE_Z_INDEX }} width={0} height={0} data-canvas-far-layer="viewport"
+      data-canvas-far-backend="canvas2d" aria-hidden="true" />
+    {webGpuRequested && <canvas ref={gpuCanvasRef} className={BITMAP_CLASS}
+      style={{ zIndex: CANVAS_NODE_Z_INDEX }} width={0} height={0} hidden aria-hidden="true" />}
     <div ref={probeRef} className="canvas-node-lod-preview hidden" aria-hidden="true" />
   </>;
 });
