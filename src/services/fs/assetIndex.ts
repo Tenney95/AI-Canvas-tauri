@@ -31,8 +31,10 @@ function normalizePath(path: string): string {
 export function getRelativeAssetPath(path: string, rootPath: string): string | undefined {
   const normalizedPath = normalizePath(path);
   const normalizedRoot = normalizePath(rootPath);
-  const pathForCompare = /^(?:[a-z]:\/|\/\/)/i.test(normalizedPath) ? normalizedPath.toLowerCase() : normalizedPath;
-  const rootForCompare = /^(?:[a-z]:\/|\/\/)/i.test(normalizedRoot) ? normalizedRoot.toLowerCase() : normalizedRoot;
+  // 盘符根去掉尾分隔符后仍按 Windows 路径比较，兼容索引中已保存的盘符根。
+  const windowsPath = /^(?:[a-z]:(?:\/|$)|\/\/)/i;
+  const pathForCompare = windowsPath.test(normalizedPath) ? normalizedPath.toLowerCase() : normalizedPath;
+  const rootForCompare = windowsPath.test(normalizedRoot) ? normalizedRoot.toLowerCase() : normalizedRoot;
   if (!pathForCompare.startsWith(`${rootForCompare}/`)) return undefined;
   return normalizedPath.slice(normalizedRoot.length + 1);
 }

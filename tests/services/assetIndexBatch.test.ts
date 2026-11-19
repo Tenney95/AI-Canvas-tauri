@@ -40,11 +40,28 @@ describe('项目素材的跨平台相对路径', () => {
     { root: '/project/data', path: '/project/DATA/image.png', relative: undefined },
     { root: '/project/data', path: '/project/database/image.png', relative: undefined },
     { root: 'C:/Project/Data', path: 'c:/project/data/Image.PNG', relative: 'Image.PNG' },
+    { root: 'D:/', path: 'd:/Project/Image.PNG', relative: 'Project/Image.PNG' },
+    { root: 'D:\\', path: 'd:\\Project\\Image.PNG', relative: 'Project/Image.PNG' },
+    { root: '\\\\?\\D:\\', path: 'd:/Project/Image.PNG', relative: 'Project/Image.PNG' },
+    { root: 'D:', path: 'd:/Project/Image.PNG', relative: 'Project/Image.PNG' },
+    { root: 'd:', path: 'D:/Project/Image.PNG', relative: 'Project/Image.PNG' },
+    { root: 'D:/', path: 'D:Project/Image.PNG', relative: undefined },
+    { root: 'D:/', path: 'E:/Project/Image.PNG', relative: undefined },
+    { root: 'D:/Project', path: 'd:/ProjectCopy/Image.PNG', relative: undefined },
     { root: '//Server/Share/Data', path: '//server/share/data/Image.PNG', relative: 'Image.PNG' },
     { root: '//Server/Share/Data', path: '//server/other/data/Image.PNG', relative: undefined },
   ])('$root ← $path', async ({ root, path, relative }) => {
     const { getRelativeAssetPath } = await import('../../src/services/fs/assetIndex');
     expect(getRelativeAssetPath(path, root)).toBe(relative);
+  });
+
+  it('按盘符根登记素材时，将相对路径与规范化盘符一并保存', async () => {
+    const { identifyAsset } = await import('../../src/services/fs/assetIndex');
+    const { getAssetIndexById } = await import('../../src/services/indexedDbService');
+    const indexed = await identifyAsset('d:/Project/Image.PNG', { rootPath: 'D:/', source: 'folder' });
+    expect(await getAssetIndexById(indexed.assetId)).toMatchObject({
+      rootPath: 'D:', relativePath: 'Project/Image.PNG',
+    });
   });
 });
 
