@@ -93,7 +93,7 @@ import { resolveProjectModelSettings } from '../services/projectModelSettings';
 import { configValuesEqual } from '../services/configPatch';
 import { remapStoryGraphBindings } from '../services/projectExchangeDomain';
 import { duplicateNativeProjectArchive, exportNativeProjectArchive } from '../services/nativeProjectArchiveService';
-import { importNativeProjectArchive, importNativeProjectArchiveFromSession } from '../services/nativeProjectImportService';
+import { cleanupFinalizedNativeProjectImportSources, importNativeProjectArchive, importNativeProjectArchiveFromSession } from '../services/nativeProjectImportService';
 import type { CharacterVisualReferencePlan } from '../services/characterVisualReferencePlan';
 
 type ProjectLoadStatus = 'loading' | 'ready' | 'error';
@@ -3994,7 +3994,10 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           get().repairInterruptedForProject(GENERAL_ASSISTANT_SCOPE_ID),
         ]);
         assertInitialization();
-        if (get().projectLoadStatus === 'ready') set({ projectInitialized: true });
+        if (get().projectLoadStatus === 'ready') {
+          set({ projectInitialized: true });
+          void cleanupFinalizedNativeProjectImportSources();
+        }
       } catch (error) {
         if (initializationSequence !== projectSwitchSequence) return;
         console.error('Init from IndexedDB failed:', error);
