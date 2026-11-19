@@ -56,10 +56,12 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   writeFile: mocks.writeFile,
 }));
 
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('../../src/services/fs/core', () => ({
   isTauriEnv: mocks.isTauriEnv,
   ensureProjectDataDir: mocks.ensureProjectDataDir,
   getProjectDataDir: mocks.getProjectDataDir,
+  getNativeProjectOwner: () => undefined,
   notifyProjectDiskChanged: mocks.notifyProjectDiskChanged,
   joinPath: (...parts: string[]) => normalizePath(parts.join('/')),
 }));
@@ -265,6 +267,17 @@ describe('directorSceneService', () => {
       maxBytes: 1024,
     })).rejects.toThrow(/SHA-256 不匹配/);
     expect(mocks.files.get(`/project/${reference.relativePath}`)).toEqual(new Uint8Array([1, 1, 1, 1]));
+  });
+
+  it('keeps Agent workspace writes out of the canvas save notification', async () => {
+    const data = new Uint8Array([7, 7, 7]);
+    const sha256 = await sha256Hex(data);
+    for (const relativePath of ['.agent-workspace/agent-results/result.json', 'director/result.json']) {
+      await writeImmutableProjectFile({ projectId: 'project-a', reference: { relativePath, sha256, bytes: data.byteLength },
+        data, maxBytes: 1024 });
+      expect(mocks.files.get(`/project/${relativePath}`)).toEqual(data);
+      expect(mocks.notifyProjectDiskChanged).toHaveBeenCalledTimes(relativePath.startsWith('director/') ? 1 : 0);
+    }
   });
 
   it('handles a cross-window createNew race without overwriting competing content', async () => {

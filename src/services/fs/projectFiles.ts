@@ -230,6 +230,7 @@ export async function writeImmutableProjectFile(input: {
   assertCurrent?: () => void;
 }): Promise<ImmutableWriteResult> {
   const reference = assertProjectFileReference(input.reference, input.maxBytes);
+  const agentWorkspace = reference.relativePath.toLowerCase().startsWith(`${AGENT_PROJECT_WORKSPACE_DIRECTORY}/`);
   const data = Uint8Array.from(input.data);
   if (data.byteLength !== reference.bytes || await sha256Hex(data) !== reference.sha256) {
     fail(`项目文件 ${reference.relativePath} 的待写入内容与引用不匹配`);
@@ -239,7 +240,7 @@ export async function writeImmutableProjectFile(input: {
     input.assertCurrent?.();
     const root = await ensureCheckedProjectRoot(input.projectId);
     input.assertCurrent?.();
-    if (IS_WINDOWS && reference.relativePath.split('/')[0].toLowerCase() === AGENT_PROJECT_WORKSPACE_DIRECTORY) {
+    if (IS_WINDOWS && agentWorkspace) {
       await invoke('prepare_project_agent_workspace', { projectDir: root, nativeProjectId: getNativeProjectOwner(input.projectId) });
       input.assertCurrent?.();
     }
@@ -270,7 +271,7 @@ export async function writeImmutableProjectFile(input: {
     const persisted = await readVerifiedFromRoot(root, reference);
     input.assertCurrent?.();
     if (!bytesEqual(persisted, data)) fail(`项目文件 ${reference.relativePath} 写后复核失败`);
-    notifyProjectDiskChanged();
+    if (!agentWorkspace) notifyProjectDiskChanged();
     return { ...reference, created: true };
   });
 }
