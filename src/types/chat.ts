@@ -293,6 +293,9 @@ export interface ChatMessage {
   mediaStatus?: MediaGenerationStatus;
   mediaError?: string;
   mediaResult?: MediaGenerationResult;
+  archiveMedia?: import('./media').NativeArchiveChatMedia;
+  /** 仅在当前窗口从已校验的本机文件读出。 */
+  archiveMediaUrl?: string | null;
   canvasStatus?: CanvasMaterializationStatus;
   canvasNodeId?: string;
   canvasError?: string;

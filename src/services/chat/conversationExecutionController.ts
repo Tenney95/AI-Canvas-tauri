@@ -789,7 +789,7 @@ export async function triggerMediaGeneration(
   const store = useAppStore.getState();
   const projectId = store.currentProjectId;
   const originMessage = store.messages.find((message) => message.id === messageId);
-  if (store.projectExecutionContext?.modelGeneration === 1 && originMessage?.mediaResult) {
+  if (store.projectExecutionContext?.modelGeneration === 1 && (originMessage?.mediaResult || originMessage?.archiveMedia)) {
     store.showToast('此消息已有媒体产物，请从新消息发起生成', 'info'); return;
   }
   const apiWorkflow = store.workflows.find((workflow) => workflow.adapterType === 'workflow-api' && `workflow-api/${workflow.id}` === intent.modelRef);

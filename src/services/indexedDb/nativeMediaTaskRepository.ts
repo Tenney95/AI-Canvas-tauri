@@ -466,7 +466,7 @@ interface NativeMediaTaskQuery extends NativeProjectOptions {
 
 /** 对话恢复只读已加载消息的原回执；不扫描作品或当前画布的全部生成历史。 */
 export async function readNativeMediaMessageTasks(projectId: string, canvasId: string | null, loaded: readonly {
-  conversationId: string; messageId: string; artifactId?: string;
+  conversationId: string; messageId: string; artifactId?: string; archiveOnly?: boolean;
 }[], options: NativeProjectOptions = {}): Promise<{
   records: NativeMediaTaskRecord[]; project?: Pick<ProjectRecord, 'id' | 'storageRootRef' | 'storageBindings'>;
 }> {
@@ -476,8 +476,8 @@ export async function readNativeMediaMessageTasks(projectId: string, canvasId: s
     return await transact(db, 'readonly', options, async (tx) => {
       const store = tx.objectStore(EXCHANGE), index = store.index(MEDIA_TASK_MESSAGE_INDEX);
       const operations = new Set<string>(), origins = new Map<string, Set<string>>();
-      for (const { conversationId, messageId, artifactId } of loaded) {
-        if (!id(conversationId) || !id(messageId)) continue;
+      for (const { conversationId, messageId, artifactId, archiveOnly } of loaded) {
+        if (archiveOnly || !id(conversationId) || !id(messageId)) continue;
         if (artifactId !== undefined) {
           const operationId = MESSAGE_ARTIFACT.exec(artifactId)?.[1];
           if (operationId && UUID.test(operationId)) operations.add(operationId);

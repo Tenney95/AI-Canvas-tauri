@@ -251,6 +251,68 @@ describe('P5 portable/本机双向编排', () => {
     expect(projection.exchange.identities).toEqual(material.identities);
   });
 
+  it('原助手媒体按分集根归档，新项目只绑定发布文件，副本仍可再次归档', async () => {
+    const source = await archive();
+    let nextId = 1;
+    const allocateId = (kind: 'episode' | 'canvas' | 'storage-root') => {
+      const prefix = kind === 'episode' ? 'e2' : kind === 'canvas' ? 'c2' : 'r2';
+      return `${prefix}-00000000-0000-4000-8000-${String(nextId++).padStart(12, '0')}`;
+    };
+    const localId = 'p2-00000000-0000-4000-8000-000000000001';
+    const native = { allocateId, folderName: `project-${localId}` };
+    const original = await materializeProjectModelArchiveBusiness(source.payload, source.snapshot, null, localId, 'first-import', undefined, native);
+    const child = original.aggregate.canvases[0];
+    const conversationId = 'original-chat', messageId = 'original-message', operationId = '11111111-1111-4111-8111-111111111111';
+    const sha256 = 'b'.repeat(64), relativePath = `media/${sha256}.mp4`;
+    const capture: ProjectModelTransferCapture = { schemaVersion: 1, generation: 1, sessionId: 'native-capture', sessionRevision: 0,
+      sourceToken: 'snapshot', aggregate: original.aggregate, exchange: null, historyBindings: [], includesHistory: true,
+      history: [
+        { kind: 'conversation', sourceNamespace: 'lineage', archiveOriginId: '', value: { id: conversationId, projectId: child.id,
+          title: '助手媒体', titleSource: 'user', pinned: false, archived: false, agentMode: 'plan', messageCount: 1, createdAt: 1, updatedAt: 1 } },
+        { kind: 'message', sourceNamespace: 'lineage', archiveOriginId: '', value: { id: messageId, projectId: child.id,
+          conversationId, sequence: 0, role: 'assistant', status: 'done', content: '已生成', createdAt: 1, updatedAt: 1,
+          agentTaskId: 'original-task', mediaStatus: 'succeeded', mediaResult: { id: `native-media-${operationId}`, sourceUrl: relativePath,
+            kind: 'video', persistence: 'saved', url: 'https://example.test/transient-source', taskReceipt: { taskId: 'private-receipt' } } } },
+      ], nativeMediaResults: [{ operationId, canvasId: child.id, storageRootRef: child.storageRootRef, delivered: true, relativePath,
+        category: 'video', providerConfigId: 'provider', createdAt: 1, bytes: 9, sha256,
+        origin: { conversationId, messageId, agentTaskId: 'original-task', deliveryMode: 'chat' } }] };
+    const assets = [...original.media.map((item) => ({ ...item, path: item.relativePath })),
+      { rootRef: original.aggregate.project.storageRootRef, path: relativePath, bytes: 8, sha256: 'c'.repeat(64) },
+      { rootRef: child.storageRootRef, path: relativePath, bytes: 9, sha256 }];
+    const asArchive = async (value: Awaited<ReturnType<typeof prepareProjectModelArchiveCapture>>) => {
+      const packed = value.payload.exchange.files.map((file) => {
+        const media = value.snapshot.media.find((item) => item.id === file.mediaId)!;
+        return { path: file.archivePath.slice(7), bytes: media.bytes, sha256: media.sha256 };
+      });
+      const texts = textsOf(await serializeProjectArchiveV4(value.payload, { packageId: value.payload.exchange.packageId, exportedAt: 1 }, packed));
+      return readProjectArchiveV4(texts, packed);
+    };
+    const prepared = await prepareProjectModelArchiveCapture(capture, assets);
+    const portable = await asArchive(prepared);
+    const card = portable.payload.history!.mediaCards![0];
+    expect(card).toEqual({ messageId, kind: 'video', fileId: portable.files.find((file) => file.relativePath === relativePath
+      && portable.snapshot.media.some((item) => item.id === file.mediaId && item.sha256 === sha256))!.id });
+    expect(JSON.stringify(portable.payload.history)).not.toMatch(/original-task|private-receipt|transient-source/);
+    await expect(asArchive({ ...prepared, payload: { ...prepared.payload, history: { ...prepared.payload.history!,
+      mediaCards: [{ ...card, kind: 'audio' }] } } })).rejects.toThrow('助手媒体卡片');
+
+    const copiedId = 'p2-00000000-0000-4000-8000-000000000002';
+    const copy = await materializeProjectModelArchiveBusiness(portable.payload, portable.snapshot, null, copiedId, 'copy-import', undefined,
+      { allocateId, folderName: `project-${copiedId}` });
+    const history = await importProjectModelArchiveHistory(portable, copiedId, portable.snapshot.lineageId, null,
+      { appendChat: true, appendMemories: true }, { identities: copy.identities, ...copy.aggregate, fileBindings: copy.fileBindings });
+    const copied = history.find((row) => row.kind === 'message')!.value;
+    expect(copied).toMatchObject({ content: '已生成', archiveMedia: { fileId: card.fileId, kind: 'video', bytes: 9, sha256,
+      storageRootRef: copy.aggregate.canvases[0].storageRootRef, relativePath: expect.stringMatching(/^imports\/copy-import-root-1\//) } });
+    expect(copied).not.toHaveProperty('mediaResult');
+    expect(copied).not.toHaveProperty('agentTaskId');
+    const exchange = { lineageId: portable.snapshot.lineageId, localHead: portable.payload.exchange.head, stateVersion: 1,
+      bundle: portable.payload.exchange, identities: copy.identities, fileBindings: copy.fileBindings, published: [] };
+    const exportedAgain = await asArchive(await prepareProjectModelArchiveCapture({ ...capture, aggregate: copy.aggregate,
+      exchange, history, nativeMediaResults: [] }, copy.media.map((item) => ({ ...item, path: item.relativePath }))));
+    expect(exportedAgain.payload.history!.mediaCards).toEqual([{ ...card, messageId: copied.id }]);
+  });
+
   it('新结构归档草案拒绝不受控目标、重复本机身份与非法操作名', async () => {
     const source = await archive(), projectId = 'p2-00000000-0000-4000-8000-000000000001';
     const allocateId = (kind: 'episode' | 'canvas' | 'storage-root') => `${kind === 'storage-root' ? 'r2' : kind === 'canvas' ? 'c2' : 'e2'}-00000000-0000-4000-8000-000000000002`;

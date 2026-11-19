@@ -21,12 +21,34 @@ export async function projectNativeMediaMessages(conversationId?: string): Promi
       || conversation.projectId === originalCanvasId || isRegisteredNativeConversationAlias(context.projectId, conversation.projectId)));
   const loaded = initial.messages.filter((message) => message.role === 'assistant'
     && (!conversationId || message.conversationId === conversationId)
-    && (message.mediaResult ? isNativeMediaResultArtifact(message.mediaResult.id) : !!canvas));
+    && (message.archiveMedia ? conversationId !== undefined || message.archiveMediaUrl === undefined
+      : message.mediaResult ? isNativeMediaResultArtifact(message.mediaResult.id) : !!canvas));
   const { records, project } = await readNativeMediaMessageTasks(context.projectId, canvas?.canvasId ?? null,
-    loaded.map((message) => ({ conversationId: message.conversationId, messageId: message.id, artifactId: message.mediaResult?.id })));
+    loaded.map((message) => ({ conversationId: message.conversationId, messageId: message.id, artifactId: message.mediaResult?.id,
+      ...(message.archiveMedia ? { archiveOnly: true } : {}) })));
   if (!isCurrent()) return;
   const loadedIds = new Set(loaded.map((message) => message.id));
   const display = project && createNativeMediaDisplayResolver(project);
+  const archived = loaded.filter((message) => message.archiveMedia && ownsConversation(message.conversationId, ''));
+  if (archived.length && display) {
+    for (let offset = 0; offset < archived.length && isCurrent(); offset += 4) {
+      const urls = new Map(await Promise.all(archived.slice(offset, offset + 4).map(async (message) => {
+        const binding = message.archiveMedia!;
+        const url = await display.archive(binding.storageRootRef, binding).then((file) => file.url, () => null);
+        return [message.id, { binding, url }] as const;
+      })));
+      if (!isCurrent()) return;
+      const state = useAppStore.getState();
+      if (state.messages.some((message) => {
+        const value = urls.get(message.id);
+        return value && message.archiveMedia === value.binding && message.archiveMediaUrl !== value.url && ownsConversation(message.conversationId, '');
+      })) state.setMessages(state.messages.map((message) => {
+        const value = urls.get(message.id);
+        return value && message.archiveMedia === value.binding && ownsConversation(message.conversationId, '')
+          ? { ...message, archiveMediaUrl: value.url } : message;
+      }));
+    }
+  }
   let primaryRoot: Promise<string | null> | undefined;
   const getRoot = (rootRef: string | undefined) => rootRef && rootRef !== project?.storageRootRef
     ? display?.directory(rootRef) : (primaryRoot ??= getProjectDataDir(context.projectId));

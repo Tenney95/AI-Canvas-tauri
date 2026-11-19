@@ -55,15 +55,15 @@ function AssistantMessageBubble(props: MessageBubbleProps) {
   const identity = JSON.stringify([projectId, message.conversationId, message.id]);
   const [legacyMediaIdentity, setLegacyMediaIdentity] = useState<string | null>(null);
   useEffect(() => {
-    if (hasMedia || !projectId) return;
+    if (hasMedia || message.archiveMedia || !projectId) return;
     let active = true;
     // 旧消息可能只有账本 mediaContext；同批挂载共享一次初始化，不长期订阅普通文本。
     void initializeMediaTaskSnapshot().then(() => {
       if (active) setLegacyMediaIdentity(hasPendingMessageMediaTask(projectId, message.conversationId, message.id) ? identity : null);
     });
     return () => { active = false; };
-  }, [hasMedia, identity, projectId, message.conversationId, message.id]);
-  return hasMedia || legacyMediaIdentity === identity
+  }, [hasMedia, identity, projectId, message.archiveMedia, message.conversationId, message.id]);
+  return !message.archiveMedia && (hasMedia || legacyMediaIdentity === identity)
     ? <MediaMessageBubble {...props} projectId={projectId} /> : <MessageBubbleContent {...props} />;
 }
 
@@ -109,9 +109,9 @@ function MessageBubbleContent({
 
   const mediaResult = message.mediaResult;
   const showMediaInChat = mediaResult?.deliveryMode !== 'canvas';
-  const hasImage = showMediaInChat && mediaResult?.kind === 'image';
-  const hasVideo = showMediaInChat && mediaResult?.kind === 'video';
-  const hasAudio = showMediaInChat && mediaResult?.kind === 'audio';
+  const displayMedia = message.archiveMedia && message.archiveMediaUrl ? {
+    kind: message.archiveMedia.kind, audioPurpose: message.archiveMedia.audioPurpose, url: message.archiveMediaUrl, prompt: '',
+  } : mediaResult;
   const isGenerating = (message.mediaStatus === 'queued' || message.mediaStatus === 'generating')
     && !recoveryTask?.mediaRecoveryState;
   const taskUnknown = !(recoveryTask && hasMuseQueryIdentity(recoveryTask)) && (message.mediaStatus === 'submit_unknown'
@@ -137,6 +137,7 @@ function MessageBubbleContent({
     && !isCompressing
     && isActive;
   const canRegenerate = !isUser
+    && !message.archiveMedia
     && !!message.content
     && !!regeneratePrompt
     && !!onRegenerate
@@ -224,55 +225,59 @@ function MessageBubbleContent({
           <AssistantActivity className="chat-message-media-generating mt-2" label={t('正在生成媒体内容...')} active={taskCanWork && !showTimeline} />
         )}
 
+        {message.archiveMedia && message.archiveMediaUrl === null && (
+          <p className="mt-1 text-[11px] text-canvas-text-muted">{t('素材文件不可用')}</p>
+        )}
+
         {/* ── 图片结果 ── */}
-        {hasImage && !isGenerating && (
+        {showMediaInChat && displayMedia?.kind === 'image' && !isGenerating && (
           <div className="chat-message-image mt-1 pt-2 rounded-lg overflow-hidden border border-canvas-border">
             <ViewportImage
-              src={mediaResult.url}
-              alt={mediaResult.prompt || t('生成的图片')}
+              src={displayMedia.url}
+              alt={displayMedia.prompt || t('生成的图片')}
               className="w-full h-auto max-h-[280px] object-contain bg-canvas-bg rounded-lg"
             />
-            {mediaResult.prompt && (
+            {displayMedia.prompt && (
               <p className="bg-canvas-bg/60 px-2 py-1.5 text-[11px] leading-[17px] text-canvas-text-muted">
-                {mediaResult.prompt}
+                {displayMedia.prompt}
               </p>
             )}
           </div>
         )}
 
         {/* ── 视频结果 ── */}
-        {hasVideo && !isGenerating && (
+        {showMediaInChat && displayMedia?.kind === 'video' && !isGenerating && (
           <div className="chat-message-video mt-2 rounded-lg overflow-hidden border border-canvas-border">
             <ViewportVideo
-              src={mediaResult.url}
+              src={displayMedia.url}
               controls
               className="w-full max-h-[280px] bg-canvas-bg"
               preload="metadata"
             >
               {t('您的浏览器不支持视频播放')}
             </ViewportVideo>
-            {mediaResult.prompt && (
+            {displayMedia.prompt && (
               <p className="bg-canvas-bg/60 px-2 py-1.5 text-[11px] leading-[17px] text-canvas-text-muted">
-                {mediaResult.prompt}
+                {displayMedia.prompt}
               </p>
             )}
           </div>
         )}
-        {hasAudio && !isGenerating && (
+        {showMediaInChat && displayMedia?.kind === 'audio' && !isGenerating && (
           <div className="chat-message-audio mt-2 rounded-lg border border-canvas-border bg-canvas-bg/60 p-2">
             <div className="mb-2 flex items-center gap-1.5 text-[11px] text-canvas-text-secondary">
               <Icon
-                icon={mediaResult.audioPurpose === 'music' ? 'mdi:music-note' : 'mdi:account-voice'}
+                icon={displayMedia.audioPurpose === 'music' ? 'mdi:music-note' : 'mdi:account-voice'}
                 width="14"
               />
-              {mediaResult.audioPurpose === 'music' ? t('生成的音乐') : t('生成的语音')}
+              {displayMedia.audioPurpose === 'music' ? t('生成的音乐') : t('生成的语音')}
             </div>
-            <ViewportAudio src={mediaResult.url} controls className="h-9 w-full" preload="metadata">
+            <ViewportAudio src={displayMedia.url} controls className="h-9 w-full" preload="metadata">
               {t('您的浏览器不支持音频播放')}
             </ViewportAudio>
-            {mediaResult.prompt && (
+            {displayMedia.prompt && (
               <p className="mt-1.5 text-[11px] leading-[17px] text-canvas-text-muted">
-                {mediaResult.prompt}
+                {displayMedia.prompt}
               </p>
             )}
           </div>

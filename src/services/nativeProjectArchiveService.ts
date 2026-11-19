@@ -81,7 +81,10 @@ export function nativeMediaResultsForArchive(records: readonly NativeMediaTaskRe
       ? [{ relativePath: record.resultRelativePath, category: record.category }] : [];
     return outputs.map((file, ordinal) => ({ operationId: record.operationId, ...(record.apimartImageBatch || record.localResults ? { ordinal } : {}),
       canvasId: record.canvasId, relativePath: file.relativePath, category: file.category, providerConfigId: record.providerConfigId, createdAt: record.createdAt,
-      ...(record.origin ? { origin: record.origin } : {}) }));
+      ...(record.origin ? { origin: record.origin } : {}), ...(record.resultRootRef ? { storageRootRef: record.resultRootRef } : {}),
+      ...(record.status === 'delivered' ? { delivered: true as const } : {}),
+      ...('bytes' in file && typeof file.bytes === 'number' && 'sha256' in file && typeof file.sha256 === 'string'
+        ? { bytes: file.bytes, sha256: file.sha256 } : {}) }));
   }).sort((left, right) => left.operationId.localeCompare(right.operationId) || (left.ordinal ?? 0) - (right.ordinal ?? 0));
 }
 
@@ -114,7 +117,7 @@ export async function captureNativeProjectArchive(projectId: string): Promise<{ 
     if (nativeMediaResults.some((file) => file.operationId === output.operationId && file.relativePath === output.relativePath && file.category === output.category)) continue;
     nativeMediaResults.push({ operationId: output.operationId, ordinal: output.ordinal, canvasId: output.canvasId,
       relativePath: output.relativePath, category: output.category, providerConfigId: original.providerConfigId, createdAt: original.createdAt,
-      ...(original.origin ? { origin: original.origin } : {}) });
+      ...(original.origin ? { origin: original.origin } : {}), ...(original.resultRootRef ? { storageRootRef: original.resultRootRef } : {}) });
   }
   nativeMediaResults.sort((left, right) => left.operationId.localeCompare(right.operationId) || (left.ordinal ?? 0) - (right.ordinal ?? 0)
     || left.relativePath.localeCompare(right.relativePath));
@@ -131,10 +134,12 @@ export async function captureNativeProjectArchive(projectId: string): Promise<{ 
   if (!after || before.changeRevision !== after.changeRevision || !configValuesEqual(before.exchange, after.exchange)) throw new Error('项目在捕获期间变化，请重试');
   const aggregate = { ...before.aggregate, previews: [], bindings: retired.map((id) => ({ namespace: 'legacy-canvas' as const,
     legacyId: id, projectId, canvasId: id, storageRootRef: before.aggregate.project.storageRootRef, sourceEpoch: 0, retired: true as const })) };
+  // 已发布导出和待续接更新沿用原快照指纹，卡片展示证据只用于验证本次归档的文件映射。
+  const mediaSourceIdentity = nativeMediaResults.map(({ storageRootRef: _root, delivered: _delivered, bytes: _bytes, sha256: _sha256, ...identity }) => identity);
   const sourceToken = await sha256BytesHex(new TextEncoder().encode(projectModelSourceToken({ aggregate, history,
     ...(editorRecords.length ? { editorRecords } : {}),
     ...(retiredEditorRecords.length ? { retiredEditorRecords } : {}),
-    ...(nativeMediaResults.length ? { nativeMediaResults } : {}),
+    ...(mediaSourceIdentity.length ? { nativeMediaResults: mediaSourceIdentity } : {}),
     ...(nativeEditorMediaArtifacts.length ? { nativeEditorMediaArtifacts } : {}),
     ...(assetMetadata.length ? { assetMetadata } : {}), exchange: before.exchange })));
   return { changeRevision: before.changeRevision, editorRecords, value: { schemaVersion: 1, generation: 1, sessionId: 'native-project',

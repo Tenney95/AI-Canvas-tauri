@@ -48,6 +48,13 @@ export interface NativeMediaOrigin {
 export interface NativeMediaLocalResult { relativePath: string; bytes: number; sha256: string }
 /** 完整的原作业产物集合；序号是投递身份，不能用请求数量截断。 */
 export interface NativeMediaLocalOutput extends NativeMediaLocalResult { category: MediaKind }
+/** 已归档对话素材的本地文件绑定，只用于展示。 */
+export interface NativeArchiveChatMedia extends NativeMediaLocalResult {
+  fileId: string;
+  storageRootRef: string;
+  kind: MediaKind;
+  audioPurpose?: 'speech' | 'music';
+}
 export interface NativeMediaCompletion {
   taskCount: number; failedTasks: number;
   failedSubmissions?: number; unknownSubmissions?: number; notStartedSubmissions?: number;

@@ -714,7 +714,8 @@ export function registerMediaAgentTools(): Array<() => void> {
             errorCode: 'AGENT_MEDIA_MESSAGE_NOT_FOUND',
           };
         }
-        if (store.projectExecutionContext?.modelGeneration === 1 && store.messages.some((message) => message.id === assistantMessageId && message.mediaResult)) {
+        if (store.projectExecutionContext?.modelGeneration === 1
+          && store.messages.some((message) => message.id === assistantMessageId && (message.mediaResult || message.archiveMedia))) {
           return { status: 'error', summary: '此消息已有媒体产物，请从新消息发起生成', modelContent: '原产物保留，未提交新的生成请求。', errorCode: 'AGENT_MEDIA_SLOT_OCCUPIED' };
         }
 

@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { ProjectRecord } from '../types/project';
 import { getAssetUrlFromPath, getProjectDataDir, joinPath, stripVerbatimPrefix } from './fs/core';
 import { isNativeMediaContentPath } from './nativeMediaContentPath';
+import { isArchiveChatMediaPath } from './projectArchiveChatMedia';
 import { isTauriAssetUrl, localMediaUrlToPath } from '../utils/mediaUrl';
 
 export { nativeMediaContentDigest } from './nativeMediaContentPath';
@@ -11,7 +12,7 @@ type DisplayProject = Pick<ProjectRecord, 'id' | 'storageRootRef' | 'storageBind
 export interface NativeMediaDisplayFile { relativePath: string; sha256: string; bytes?: number }
 export interface NativeMediaDisplay { filePath: string; url: string }
 export type NativeMediaDisplayResolver = ((rootRef: string, file: NativeMediaDisplayFile) => Promise<NativeMediaDisplay>)
-  & { directory: (rootRef: string) => Promise<string> };
+  & { directory: (rootRef: string) => Promise<string>; archive: (rootRef: string, file: NativeMediaDisplayFile & { bytes: number }) => Promise<NativeMediaDisplay> };
 const rootId = /^r2-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 export const isNativeMediaResultArtifact = (value: unknown): boolean => typeof value === 'string'
   && /^native-media-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}(?:-[1-9][0-9]{0,2})?$/.test(value);
@@ -41,9 +42,8 @@ export function createNativeMediaDisplayResolver(project: DisplayProject): Nativ
     }
     return pending;
   };
-  const resolve = (rootRef: string, file: NativeMediaDisplayFile): Promise<NativeMediaDisplay> => {
-    if (!isNativeMediaContentPath(file.relativePath, file.sha256)
-      || file.bytes !== undefined && (!Number.isSafeInteger(file.bytes) || file.bytes <= 0)) return Promise.reject(new Error('原媒体展示缺少受控内容身份'));
+  const verified = (rootRef: string, file: NativeMediaDisplayFile): Promise<NativeMediaDisplay> => {
+    if (file.bytes !== undefined && (!Number.isSafeInteger(file.bytes) || file.bytes <= 0)) return Promise.reject(new Error('原媒体展示缺少受控内容身份'));
     const key = JSON.stringify([rootRef, file.relativePath, file.sha256, file.bytes]);
     let pending = files.get(key);
     if (!pending) {
@@ -63,5 +63,10 @@ export function createNativeMediaDisplayResolver(project: DisplayProject): Nativ
     }
     return pending;
   };
-  return Object.assign(resolve, { directory: root });
+  const invalid = () => Promise.reject<NativeMediaDisplay>(new Error('原媒体展示缺少受控内容身份'));
+  const resolve = (rootRef: string, file: NativeMediaDisplayFile) => isNativeMediaContentPath(file.relativePath, file.sha256)
+    ? verified(rootRef, file) : invalid();
+  return Object.assign(resolve, { directory: root,
+    archive: (rootRef: string, file: NativeMediaDisplayFile & { bytes: number }) => /^[a-f0-9]{64}$/.test(file.sha256)
+      && isArchiveChatMediaPath(file.relativePath, file.sha256) ? verified(rootRef, file) : invalid() });
 }

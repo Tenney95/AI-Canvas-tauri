@@ -15,6 +15,7 @@ import type { NativeGlobalRecoveryFile } from '../nativeProjectArchiveService';
 import { validateNativeMissingAssetProof, type NativeMissingAssetProof } from '../nativeMissingAssetBackup';
 import { hasControlCharacters } from '../../utils/controlCharacters';
 import { validateNativeArchiveOutputRows } from '../projectOutputHistoryArchive';
+import { validateNativeArchiveChatMediaRows } from '../projectArchiveChatMedia';
 import { isProjectSnapshotDataUrl } from '../projectSnapshotValidation';
 import { assertProjectModelProjectSettings, assertProjectModelSettingsPolicy, withProjectTextModel } from '../projectModelSettings';
 import { nativeChatImagePaths } from '../../utils/chatImageReference';
@@ -2154,6 +2155,13 @@ options: NativeProjectOptions = {}): Promise<NativeProjectImportJournal> {
     || !/^[a-f0-9]{64}$/.test(fixed.packageDigest) || !/^[a-f0-9]{64}$/.test(fixed.intentDigest)
     || fixed.sourceRef !== undefined && !/^native-import-[a-f0-9-]{36}$/.test(fixed.sourceRef)) return fail('invalid-import');
   await verifiedExchange(fixed.exchange, null);
+  if (fixed.history.some((row) => row.kind === 'message' && row.value.archiveMedia !== undefined)) {
+    const head = fixed.exchange.bundle.revisions.find((revision) => revision.canonicalVersion === 2
+      && revision.revisionId === fixed.exchange!.bundle.head.revisionId);
+    if (!head || head.canonicalVersion !== 2) return fail('invalid-import');
+    const { readProjectArchiveV4Files } = await import('../projectArchiveV4');
+    validateNativeArchiveChatMediaRows(fixed.history, readProjectArchiveV4Files(head.snapshot), head.snapshot.media, fixed.exchange, fixed.media);
+  }
   validateNativeArchiveOutputRows(fixed.history, { projectId,
     canvasIds: fixed.idMap.filter((item) => item.kind === 'canvas').map((item) => item.localId),
     rootRefs: fixed.next.project.storageBindings.map((item) => item.rootRef), identities: fixed.idMap, bindings: fixed.exchange.fileBindings });

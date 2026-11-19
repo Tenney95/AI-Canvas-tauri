@@ -1,6 +1,6 @@
 /** P5 新模型归档编排。只接受已登记的 fixture 仓储；正式 Store 不调用该工厂。 */
 import type { ProjectExchangeMedia, ProjectExchangeObject, ProjectExchangeState } from '../types/projectExchange';
-import type { ProjectArchiveBusinessV4, ProjectArchivePayloadV4, ProjectArchiveHistoryV4, ValidatedProjectArchiveV4,
+import type { ProjectArchiveBusinessV4, ProjectArchiveChatMediaV4, ProjectArchivePayloadV4, ProjectArchiveHistoryV4, ValidatedProjectArchiveV4,
   ProjectExchangeSnapshotV2, ProjectArchiveFileV4 } from '../types/projectArchiveV4';
 import type { ProjectModelFixtureBusinessSession } from '../types/projectModelBusiness';
 import type { ProjectModelTransferAggregate, ProjectModelTransferCapture, ProjectModelTransferExchange,
@@ -28,6 +28,7 @@ import { withEpisodeEditorWrite } from './episodeEditorSessionService';
 import { captureArchiveVideoEditorProjects } from './videoEditorArchive';
 import { captureArchiveAssetMetadata } from './projectArchiveAssetMetadata';
 import { captureArchiveOutputHistory, materializeArchiveOutputHistory } from './projectOutputHistoryArchive';
+import { bindNativeArchiveChatMedia, isArchiveChatAudioPurpose, readNativeArchiveChatMedia } from './projectArchiveChatMedia';
 
 export interface ProjectModelArchiveAsset extends ArchiveAssetDigest {
   rootRef: string;
@@ -76,7 +77,14 @@ export function projectModelArchiveStorageContext(capture: ProjectModelTransferC
   walk(capture.aggregate.content); walk(capture.aggregate.project.defaultSettings); walk(capture.aggregate.episodeContents); walk(capture.aggregate.canvases);
   for (const asset of capture.assetMetadata ?? []) used.add(asset.rootRef);
   walk(capture.editorRecords); walk(capture.retiredEditorRecords);
-  for (const row of capture.history) if (row.kind === 'output') walk(row.value);
+  for (const row of capture.history) {
+    if (row.kind === 'output') walk(row.value);
+    if (row.kind === 'message') {
+      const card = readNativeArchiveChatMedia(row.value);
+      if (card) used.add(card.storageRootRef);
+    }
+  }
+  for (const result of capture.nativeMediaResults ?? []) if (result.storageRootRef) used.add(result.storageRootRef);
   const roots = capture.aggregate.project.storageBindings.filter((binding) => !declared || used.has(binding.rootRef)
     || declared.some((item) => local(item.id) === binding.rootRef));
   return { roots, primary, role: (rootRef: string) => declared?.find((item) => local(item.id) === rootRef)?.role
@@ -351,9 +359,56 @@ async function historyOrigin(capture: ProjectModelTransferCapture, row: ProjectM
   const legacyRoot = capture.aggregate.bindings.find((item) => item.namespace === 'legacy-root')?.legacyId ?? capture.aggregate.project.id;
   return digest([`legacy-project:${legacyRoot}`, row.kind, row.value.id]);
 }
+function captureChatMedia(capture: ProjectModelTransferCapture, mappings: ProjectModelTransferIdMapEntry[],
+  bindings: ProjectModelTransferExchange['fileBindings'], assets: ProjectModelArchiveAsset[], files: ProjectArchiveFileV4[],
+  media: ReadonlyMap<string, ProjectExchangeMedia>): ProjectArchiveChatMediaV4[] {
+  const rootByLocal = new Map(mappings.filter((item) => item.kind === 'storage-root').map((item) => [item.localId, item.sourceId]));
+  const fileById = new Map(files.map((file) => [file.id, file]));
+  const key = (root: string, path: string) => JSON.stringify([root, path]);
+  const bindingsByPath = new Map(bindings.map((binding) => [key(binding.rootRef, binding.localRelativePath), binding]));
+  for (const asset of assets) {
+    const logical = rootByLocal.get(asset.rootRef);
+    if (!logical) continue;
+    const paths = [asset.path, ...(asset.aliases ?? [])];
+    const binding = paths.map((path) => bindingsByPath.get(key(logical, path))).find(Boolean);
+    if (binding) for (const path of paths) if (!bindingsByPath.has(key(logical, path))) bindingsByPath.set(key(logical, path), binding);
+  }
+  const delivered = new Map((capture.nativeMediaResults ?? []).flatMap((result) => {
+    if (!result.delivered || !result.origin || result.origin.deliveryMode === 'canvas') return [];
+    const artifactId = `native-media-${result.operationId}${result.ordinal ? `-${result.ordinal}` : ''}`;
+    return [[artifactId, result] as const];
+  }));
+  const cards: ProjectArchiveChatMediaV4[] = [];
+  for (const row of capture.history) {
+    if (row.kind !== 'message' || row.value.role !== 'assistant') continue;
+    const { value } = row;
+    const archived = readNativeArchiveChatMedia(value);
+    const artifact = value.mediaResult as { id?: string; kind?: unknown; persistence?: unknown; audioPurpose?: unknown; sourceUrl?: unknown } | undefined;
+    const result = artifact?.id && delivered.get(artifact.id);
+    const origin = result && result.origin;
+    const original = result && origin && value.mediaStatus === 'succeeded' && artifact?.persistence === 'saved'
+      && artifact.kind === result.category && artifact.sourceUrl === result.relativePath
+      && value.id === (result.ordinal ? `media-output-${artifact.id}` : origin.messageId)
+      && value.conversationId === origin.conversationId && value.agentTaskId === origin.agentTaskId
+      ? result : undefined;
+    const physicalRoot = archived?.storageRootRef ?? original?.storageRootRef ?? capture.aggregate.project.storageRootRef;
+    const relativePath = archived?.relativePath ?? original?.relativePath, kind = archived?.kind ?? original?.category;
+    const logicalRoot = rootByLocal.get(physicalRoot);
+    if (!relativePath || !logicalRoot || !kind) continue;
+    const binding = bindingsByPath.get(key(logicalRoot, relativePath));
+    const file = binding && fileById.get(binding.id), descriptor = file && media.get(file.mediaId);
+    const sha256 = archived?.sha256 ?? original?.sha256, bytes = archived?.bytes ?? original?.bytes;
+    if (!file || !descriptor || descriptor.kind !== kind || descriptor.bytes <= 0
+      || sha256 !== undefined && descriptor.sha256 !== sha256 || bytes !== undefined && descriptor.bytes !== bytes) continue;
+    const purpose = archived?.audioPurpose ?? artifact?.audioPurpose;
+    cards.push({ messageId: value.id, fileId: file.id, kind, ...(purpose && isArchiveChatAudioPurpose(kind, purpose) ? { audioPurpose: purpose } : {}) });
+  }
+  return cards;
+}
+
 async function captureHistory(capture: ProjectModelTransferCapture, business: ProjectArchiveBusinessV4,
-  mappings = capture.exchange?.identities ?? [], fileBindings = capture.exchange?.fileBindings ?? [],
-  assets: ProjectModelArchiveAsset[] = []): Promise<ProjectArchiveHistoryV4 | undefined> {
+  mappings: ProjectModelTransferIdMapEntry[], fileBindings: ProjectModelTransferExchange['fileBindings'],
+  assets: ProjectModelArchiveAsset[], files: ProjectArchiveFileV4[], media: ReadonlyMap<string, ProjectExchangeMedia>): Promise<ProjectArchiveHistoryV4 | undefined> {
   if (!capture.includesHistory || !capture.history.length) return;
   const rows = (kind: ProjectModelTransferHistoryRow['kind']) => capture.history.filter((item) => item.kind === kind);
   const payload = portableArchiveChat({ conversations: rows('conversation').map((item) => item.value) as never,
@@ -409,11 +464,12 @@ async function captureHistory(capture: ProjectModelTransferCapture, business: Pr
   const outputs = await Promise.all(rows('output').map(async (row) => captureArchiveOutputHistory(
     localFileReferences(row.value, capture.aggregate.project.storageRootRef, assets) as typeof row.value,
     await origin('output', row.value.id), business.project.id, capture.aggregate.project.storageRootRef, mappings, fileBindings)));
+  const mediaCards = captureChatMedia(capture, mappings, fileBindings, assets, files, media);
   return { payload: { conversations,
     messages: await Promise.all(payload.messages.map(async (row) => ({ ...row, projectId: business.project.id, archiveOriginId: await origin('message', row.id) }))),
     memories: await Promise.all(payload.memories.map(async (row) => ({ ...row, projectId: business.project.id, archiveOriginId: await origin('memory', row.id) }))),
     ...(outputs.length ? { outputs } : {}),
-  }, workbenchTargets, ...(scopes.length ? { scopes } : {}) };
+  }, workbenchTargets, ...(scopes.length ? { scopes } : {}), ...(mediaCards.length ? { mediaCards } : {}) };
 }
 
 export async function importProjectModelArchiveHistory(source: ValidatedProjectArchiveV4, targetId: string, namespace: string,
@@ -471,11 +527,21 @@ export async function importProjectModelArchiveHistory(source: ValidatedProjectA
         source.files, native.identities, native.fileBindings) as typeof value;
     }
     rows.push({ kind, sourceNamespace: namespace, archiveOriginId, ...(local ? { existingLocalId: local } : {}),
-      ...(historicalTarget ? { historicalTarget } : {}), value: { ...value, id, projectId: owner } });
+      ...(historicalTarget ? { historicalTarget } : {}), value: { ...value, id, projectId: owner,
+        ...(kind === 'message' && value.archiveMedia ? { archiveOriginId } : {}) } });
   };
   if (options.appendChat) {
     for (const row of history.payload.conversations) await add('conversation', { ...row, agentMode: 'plan', pinned: false });
-    for (const row of history.payload.messages) await add('message', { ...row });
+    const cards = new Map(history.mediaCards?.map((card) => [card.messageId, card]));
+    const files = new Map(cards.size ? source.files.map((file) => [file.id, file]) : []);
+    const media = new Map(cards.size ? source.snapshot.media.map((item) => [item.id, item]) : []);
+    const bindings = new Map(cards.size ? native?.fileBindings?.map((item) => [item.id, item]) : []);
+    for (const row of history.payload.messages) {
+      const card = cards.get(row.id), file = card && files.get(card.fileId);
+      const archiveMedia = native && card ? bindNativeArchiveChatMedia(card, file, file && media.get(file.mediaId),
+        native.identities, bindings.get(card.fileId)) : undefined;
+      await add('message', { ...row, ...(archiveMedia ? { archiveMedia } : {}) });
+    }
   }
   if (options.appendMemories) for (const row of history.payload.memories) await add('memory', { ...row });
   if (native) for (const row of history.payload.outputs ?? []) await add('output', { ...row });
@@ -564,7 +630,7 @@ export async function prepareProjectModelArchiveCapture(capture: ProjectModelTra
     files.push({ id, rootRef, relativePath, mediaId: descriptor.id });
     fileBindings.push({ id, rootRef, relativePath, localRelativePath: previousBinding?.localRelativePath ?? asset.path });
   }
-  const archivedHistory = await captureHistory(capture, business, identities, fileBindings, assets);
+  const archivedHistory = await captureHistory(capture, business, identities, fileBindings, assets, files, media);
   const retired = new Map(previous?.canonicalVersion === 2 ? previous.snapshot.historicalTargets.map((target) => [JSON.stringify([target.kind, target.id]), target]) : []);
   for (const binding of archivedHistory?.workbenchTargets ?? []) if (binding.target.state === 'retired') retired.set(JSON.stringify([binding.target.kind, binding.target.id]), binding.target);
   for (const scope of archivedHistory?.scopes ?? []) if (scope.retired) {

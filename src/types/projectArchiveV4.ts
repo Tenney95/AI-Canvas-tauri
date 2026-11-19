@@ -175,6 +175,14 @@ export interface ProjectArchiveOutputHistoryV4 {
   params?: Record<string, string | number | boolean>;
 }
 
+/** 助手媒体卡片仅关联归档内的素材，不能恢复任务身份。 */
+export interface ProjectArchiveChatMediaV4 {
+  messageId: string;
+  fileId: string;
+  kind: import('./media').MediaKind;
+  audioPurpose?: 'speech' | 'music';
+}
+
 /** 只携带可阅读白名单内容，不携带任务/回执或租约。 */
 export interface ProjectArchiveHistoryV4 {
   /** 旧 workbenchTarget 不再与新绑定并存，避免 active/retired 双权威。 */
@@ -183,6 +191,7 @@ export interface ProjectArchiveHistoryV4 {
     outputs?: ProjectArchiveOutputHistoryV4[];
   };
   workbenchTargets: Array<{ conversationId: string; target: ProjectArchiveWorkbenchTargetV4 }>;
+  mediaCards?: ProjectArchiveChatMediaV4[];
   /** 会话、记忆与输出原本所属画布；输出必须声明，消息沿用所属会话。 */
   scopes?: Array<{ kind: 'conversation' | 'memory' | 'output'; id: string; canvasId: string; retired?: true }>;
 }

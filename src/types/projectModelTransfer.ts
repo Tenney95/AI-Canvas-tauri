@@ -59,7 +59,8 @@ export interface ProjectModelTransferCapture {
   retiredEditorRecords?: import('./videoEditor').VideoEditorProjectRecord[];
   /** 新库完成回执冻结的产物闭包，任务和预算本身不导出或回滚。 */
   nativeMediaResults?: Array<{ operationId: string; ordinal?: number; canvasId: string; relativePath: string; category: 'image' | 'video' | 'audio';
-    providerConfigId: string; createdAt: number; origin?: import('./media').NativeMediaOrigin }>;
+    providerConfigId: string; createdAt: number; origin?: import('./media').NativeMediaOrigin; storageRootRef?: string;
+    delivered?: true; bytes?: number; sha256?: string }>;
   nativeEditorMediaArtifacts?: Array<{ operationId: string; canvasId: string; path: string }>;
 }
 export interface ProjectModelTransferMedia {

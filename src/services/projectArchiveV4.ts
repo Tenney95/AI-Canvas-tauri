@@ -17,6 +17,7 @@ import { sha256BytesHex } from './mediaDataUrl';
 import { validateArchiveVideoEditorProjects } from './videoEditorArchive';
 import { validateArchiveAssetMetadata } from './projectArchiveAssetMetadata';
 import { validateArchiveOutputHistory } from './projectOutputHistoryArchive';
+import { isArchiveChatAudioPurpose, isArchiveChatMediaKind } from './projectArchiveChatMedia';
 
 const encoder = new TextEncoder();
 const JSON_ENTRIES = [...PROJECT_ARCHIVE_V4_ENTRIES, 'history.json', 'video-editor.json', 'asset-metadata.json'] as const;
@@ -252,7 +253,7 @@ export function projectArchivePayloadFromSnapshotV2(input: ProjectExchangeSnapsh
 
 function validateHistory(history: ProjectArchiveHistoryV4 | undefined, snapshot: ProjectExchangeSnapshotV2): void {
   if (!history) return;
-  const value = object(history, ['payload', 'workbenchTargets', 'scopes']), payload = object(value.payload, ['conversations', 'messages', 'memories', 'outputs']);
+  const value = object(history, ['payload', 'workbenchTargets', 'scopes', 'mediaCards']), payload = object(value.payload, ['conversations', 'messages', 'memories', 'outputs']);
   array(payload.conversations, 100_000); array(payload.messages, 100_000); array(payload.memories, 100_000);
   if ((payload.conversations as unknown[]).some((row) => Object.hasOwn(object(row), 'workbenchTarget'))) return fail('历史同时包含旧版和新版目标');
   const { outputs: _outputs, ...chat } = history.payload;
@@ -270,6 +271,21 @@ function validateHistory(history: ProjectArchiveHistoryV4 | undefined, snapshot:
   }
   const conversationIds = new Set(history.payload.conversations.map((row) => row.id));
   const messages = new Map(history.payload.messages.map((row) => [row.id, row])), sequences = new Set<string>();
+  if (value.mediaCards !== undefined) {
+    const files = new Map(readProjectArchiveV4Files(snapshot).map((file) => [file.id, file]));
+    const media = new Map(snapshot.media.map((item) => [item.id, item]));
+    const seenCards = new Set<string>();
+    for (const item of array(value.mediaCards, 100_000)) {
+      const card = object(item, ['messageId', 'fileId', 'kind', 'audioPurpose']);
+      const messageId = identity(card.messageId), file = files.get(identity(card.fileId));
+      const descriptor = file && media.get(file.mediaId);
+      if (seenCards.has(messageId) || messages.get(messageId)?.role !== 'assistant' || !descriptor || descriptor.bytes <= 0
+        || !isArchiveChatMediaKind(card.kind) || descriptor.kind !== card.kind || !isArchiveChatAudioPurpose(card.kind, card.audioPurpose)) {
+        return fail('助手媒体卡片的消息或素材身份无效');
+      }
+      seenCards.add(messageId);
+    }
+  }
   for (const row of [...history.payload.conversations, ...history.payload.messages, ...history.payload.memories]) {
     if (row.projectId !== snapshot.rootProjectId) return fail('历史记录跨项目');
   }

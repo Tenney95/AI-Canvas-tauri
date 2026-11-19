@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { exists } from '@tauri-apps/plugin-fs';
 import * as files from './fileService';
 import { projectModelArchiveMediaPrefix, projectModelArchiveStorageContext, readProjectModelArchive, type ProjectModelArchivePort, type ProjectModelArchiveAsset } from './projectModelArchiveService';
+import { readNativeArchiveChatMedia } from './projectArchiveChatMedia';
 import type { ProjectModelFixtureBusinessSession } from '../types/projectModelBusiness';
 import type { ProjectModelTransferCapture, ProjectModelTransferImportJournal } from '../types/projectModelTransfer';
 import { isOutlineDocumentFileName, OUTLINE_DOCUMENT_DIRECTORY } from '../types/outlineDocument';
@@ -134,8 +135,11 @@ export function currentStoragePaths(capture: ProjectModelTransferCapture, direct
   for (const editor of capture.editorRecords ?? []) walk(editor, primary, '', captureSourceLocation(ownerLocation(editor.projectId), '剪辑工程', editor as unknown as Record<string, unknown>));
   for (const editor of capture.retiredEditorRecords ?? []) walk(editor, primary, '', captureSourceLocation(ownerLocation(editor.projectId), '已退役剪辑工程', editor as unknown as Record<string, unknown>));
   for (const row of capture.history) if (row.kind === 'output') walk(row.value, primary, '', captureSourceLocation(ownerLocation(row.value.projectId), '输出历史', row.value));
-  for (const [index, result] of (capture.nativeMediaResults ?? []).entries()) add(capture.aggregate.project.storageRootRef,
-    safeExchangePath(result.relativePath), `${ownerLocation(result.canvasId)} → 已保留媒体产物（操作：${projectArchiveDisplayLabel(result.operationId, '格式无效')}）`, `nativeMediaResults[${index}].relativePath`);
+  for (const [index, result] of (capture.nativeMediaResults ?? []).entries()) {
+    const root = result.storageRootRef ?? capture.aggregate.project.storageRootRef;
+    if (!paths.has(root)) throw new Error('已保留媒体产物的原生根不存在');
+    add(root, safeExchangePath(result.relativePath), `${ownerLocation(result.canvasId)} → 已保留媒体产物（操作：${projectArchiveDisplayLabel(result.operationId, '格式无效')}）`, `nativeMediaResults[${index}].relativePath`);
+  }
   for (const [index, result] of (capture.nativeEditorMediaArtifacts ?? []).entries()) add(capture.aggregate.project.storageRootRef,
     safeExchangePath(result.path), `${ownerLocation(result.canvasId)} → 已保留剪辑产物（操作：${projectArchiveDisplayLabel(result.operationId, '格式无效')}）`, `nativeEditorMediaArtifacts[${index}].path`);
   for (const asset of capture.assetMetadata ?? []) {
@@ -309,21 +313,22 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
       const primary = capture.aggregate.project.storageRootRef;
       const primaryPaths = current.get(primary);
       const chatBindings = nativeChatImagePaths(primary, capture.exchange);
-      const chatPaths = new Set<string>();
+      const chatPaths = new Map<string, Set<string>>([[primary, new Set()]]);
       if (options.nativeProjectId && capture.includesHistory) for (const row of capture.history) {
         if (row.kind !== 'message' || typeof row.value.content !== 'string') continue;
-        for (const { fileName } of parseChatImageReferences(row.value.content)) chatPaths.add(chatBindings.get(fileName) ?? fileName);
+        for (const { fileName } of parseChatImageReferences(row.value.content)) chatPaths.get(primary)!.add(chatBindings.get(fileName) ?? fileName);
+        const card = readNativeArchiveChatMedia(row.value);
+        if (card && directories.has(card.storageRootRef)) {
+          const paths = chatPaths.get(card.storageRootRef) ?? new Set<string>();
+          paths.add(card.relativePath);
+          chatPaths.set(card.storageRootRef, paths);
+        }
       }
       if (accepted.length && !primaryPaths) throw new Error('已接受共享素材的项目根不存在');
       for (const asset of accepted) {
         primaryPaths?.add(asset.path);
         const key = storagePathKey(primary, asset.path);
         if (!origins.has(key)) origins.set(key, { location: '当前已接受的共享素材', fieldPath: 'sharedAssetSync.acceptedRevision' });
-      }
-      for (const result of capture.nativeMediaResults ?? []) {
-        const root = capture.aggregate.project.storageRootRef;
-        const paths = current.get(root) ?? new Set<string>();
-        paths.add(safeExchangePath(result.relativePath)); current.set(root, paths);
       }
       for (const result of capture.nativeEditorMediaArtifacts ?? []) {
         const root = capture.aggregate.project.storageRootRef;
@@ -382,8 +387,8 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
         }).filter((path) => {
           if (current.get(root.rootRef)?.has(path)) return true;
           // 已失效的只读聊天附件保留原消息；已有冻结归档继续要求相同文件。
-          if (root.rootRef === primary && chatPaths.has(path)
-            && !options.frozenPaths?.some((item) => item.rootRef === primary && item.path === path)) return false;
+          if (chatPaths.get(root.rootRef)?.has(path)
+            && !options.frozenPaths?.some((item) => item.rootRef === root.rootRef && item.path === path)) return false;
           // 旧版 head 曾自动收录共享缓存，单独的文件绑定不能证明它仍在使用。
           if (options.currentFilesOnly || options.nativeProjectId && sharedSyncPath.test(path)) return false;
           const [folder, fileName, nested] = path.split('/');
@@ -402,7 +407,7 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
           && !(options.nativeProjectId && sharedSyncPath.test(path) && !sharedSyncMediaPath.test(path))
           && !(options.missingFiles ?? []).some((proof) => proof.rootRef === root.rootRef && proof.path === path));
         // 合成路径无需本机存在，但扫描应发现同名实物，避免遮盖原项目的文件。
-        const includeImportPaths = [...new Set([...nativeReferences, ...(virtual?.keys() ?? []), ...(root.rootRef === primary ? chatPaths : [])]
+        const includeImportPaths = [...new Set([...nativeReferences, ...(virtual?.keys() ?? []), ...(chatPaths.get(root.rootRef) ?? [])]
           .filter((path) => /^imports\//i.test(path)))];
         const sharedReferences = new Set(nativeReferences.filter((path) => sharedSyncMediaPath.test(path)));
         const assets = await invoke<Array<ArchiveAssetDigest & { aliases?: string[] }>>('inspect_project_archive_assets', {

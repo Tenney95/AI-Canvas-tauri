@@ -166,6 +166,7 @@ export interface ChatMessageRecord {
   mediaStatus?: string;
   mediaError?: string;
   mediaResult?: unknown;
+  archiveMedia?: unknown;
   canvasStatus?: string;
   canvasNodeId?: string;
   canvasError?: string;

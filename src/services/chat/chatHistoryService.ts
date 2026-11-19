@@ -28,6 +28,7 @@ import { normalizeExecutionSelection, normalizeTeamProfile } from './teams/teamP
 import { restoreCreationProfileSelection } from '../creationProfiles/creationProfileManifest';
 import { normalizeConversationWorkbenchTarget } from './workbenchConversationScope';
 import { safeExchangePath } from '../projectExchangeDomain';
+import { readNativeArchiveChatMedia } from '../projectArchiveChatMedia';
 import { configValuesEqual } from '../configPatch';
 import { openDB, STORE_CHAT_MESSAGES, STORE_CHAT_CONVERSATIONS, STORE_METADATA } from '../indexedDb/schema';
 import type { NativeMediaTaskRecord } from '../indexedDb/nativeMediaTaskRepository';
@@ -152,6 +153,7 @@ function toMessageRecord(
 }
 
 function fromMessageRecord(r: ChatMessageRecord): ChatMessage {
+  const archiveMedia = readNativeArchiveChatMedia(r);
   return {
     id: r.id,
     conversationId: r.conversationId,
@@ -168,6 +170,7 @@ function fromMessageRecord(r: ChatMessageRecord): ChatMessage {
     mediaStatus: r.mediaStatus as MediaGenerationStatus | undefined,
     mediaError: r.mediaError,
     mediaResult: fromMediaResultRecord(r.mediaResult),
+    ...(archiveMedia ? { archiveMedia } : {}),
     canvasStatus: r.canvasStatus as CanvasMaterializationStatus | undefined,
     canvasNodeId: r.canvasNodeId,
     canvasError: r.canvasError,
@@ -225,6 +228,7 @@ export async function persistMessage(
   projectId: string,
   conversationId: string,
 ): Promise<void> {
+  if (message.archiveMedia) return;
   const record = await normalizeMessageMediaRecord(toMessageRecord(message, projectId, conversationId, 0));
   await persistMessageRecord(record);
 }
@@ -261,6 +265,7 @@ async function persistMessageRecord(incoming: ChatMessageRecord, normalizedFrom?
         if (previous) {
           if (previous.projectId !== projectId || previous.conversationId !== conversationId || !Number.isSafeInteger(previous.sequence) || previous.sequence < 0
             || !Number.isSafeInteger(previous.updatedAt) || previous.updatedAt < 0) throw new Error('原生消息持久归属冲突');
+          if (readNativeArchiveChatMedia(previous)) return;
           const oldArtifact = previous.mediaResult as MediaGenerationResult | undefined;
           const incomingArtifact = record.mediaResult as MediaGenerationResult | undefined;
           if (slot && (!oldArtifact || oldArtifact.id !== slot.artifactId)) return;
