@@ -16,8 +16,8 @@ vi.mock('react', async () => ({ ...await vi.importActual<typeof import('react')>
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: (selector: (state: typeof mocks.state) => unknown) => selector(mocks.state) }));
 vi.mock('../../src/services/pollManager', () => ({
   getPendingTasksForProject: () => mocks.tasks, resumeMediaNodeTask: mocks.resume, discardMediaTask: vi.fn(),
-  getNativeComfyVideoRecovery: () => undefined,
-  resumeNativeComfyVideoFromNode: vi.fn(),
+  getNativeWorkflowRecovery: () => undefined,
+  resumeNativeWorkflowFromNode: vi.fn(),
   hasMuseQueryIdentity: () => false,
 }));
 vi.mock('../../src/i18n', () => ({ useT: () => (text: string) => text }));

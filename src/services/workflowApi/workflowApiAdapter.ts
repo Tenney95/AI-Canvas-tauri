@@ -466,7 +466,7 @@ export function stopWorkflowApiNodeTask(nodeId: string): void {
   const task = store.currentProjectId ? getPendingTasksForProject(store.currentProjectId).find((item) => item.nodeId === nodeId && item.taskType === 'workflow-api') : undefined;
   cancelNodePolling(nodeId, true);
   store.updateNodeDataTransient(nodeId, task
-    ? { status: 'error', error: '已停止等待，远端任务可能仍在运行，可继续查询', workflowApiStage: '查询已停止' }
+    ? { status: 'idle', error: undefined, workflowApiStage: '查询已停止' }
     : { status: 'idle', error: undefined, workflowApiStage: '未提交' });
 }
 

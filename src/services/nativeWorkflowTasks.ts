@@ -9,7 +9,7 @@ import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from './p
 import { captureNativeVideoSubmissionBaseline, assertNativeVideoSubmissionInput, isNativeVideoSubmissionGuard } from './nativeVideoSubmission';
 import { nativeWorkflowDigest } from './nativeWorkflowExecution';
 import { createNativeWorkflowReceipt, beginNativeWorkflowSubmission, retainNativeWorkflowSubmission, sealNativeWorkflowSubmissions,
-  readNativeWorkflowReceipt, retainNativeWorkflowTaskOutputs, retainNativeWorkflowSyncOutputs,
+  isNativeWorkflowReceiptFor, readNativeWorkflowReceipt, retainNativeWorkflowTaskOutputs, retainNativeWorkflowSyncOutputs,
   nativeWorkflowSummary,
   type NativeWorkflowDescriptor, type NativeWorkflowReceipt, type NativeWorkflowTask } from './nativeWorkflowRepository';
 import { retainNativeMediaOutputs } from './indexedDb/nativeMediaCollectionRepository';
@@ -22,6 +22,7 @@ import { createMediaDownloadAccess } from './ai/mediaDownloadAccess';
 import { isSafeNativeProtocolTaskId, validateNativeProtocolContext } from './nativeProtocolContext';
 import { COMFY_AUDIO_OUTPUT_KINDS, findComfyOutputFiles, buildComfyFileUrl, type ComfyOutputs } from './comfyOutputs';
 import type { MediaDownloadAccess } from '../types/aiTypes';
+import type { CanvasContext } from '../types/project';
 
 export { listNativeWorkflowRetainedOutputs } from './nativeWorkflowRepository';
 export { nativeWorkflowDigest, isNativeWorkflowExecution } from './nativeWorkflowExecution';
@@ -40,6 +41,61 @@ function delivered(operationId: string): never {
 async function currentRecord(projectId: string, operationId: string): Promise<NativeMediaTaskRecord> {
   const record = (await listNativeMediaTasks(projectId, { operationId })).find((item) => item.operationId === operationId);
   if (!record) throw new Error('原工作流回执不存在，未重新生成'); return record;
+}
+
+/** 用户停止等待后，以原回执和确证的远端终态释放节点，保留未知提交和已经完成的产物。 */
+export async function cancelNativeWorkflowNodeTask(context: CanvasContext, nodeId: string, operationId?: string) {
+  const assertCurrent = () => {
+    if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) {
+      throw new DOMException('原画布已切换', 'AbortError');
+    }
+  };
+  const records = await listNativeMediaTasks(context.projectId, { canvasId: context.canvasId, nodeIds: new Set([nodeId]), operationId,
+    statuses: ['prepared', 'submitted', 'outcome-unknown'] });
+  assertCurrent();
+  const original = records.find((row) => row.recovery?.kind === 'workflow'
+    && row.projectEpoch === context.projectEpoch && row.canvasEpoch === context.canvasEpoch
+    && row.episodeId === context.episodeId && row.origin?.deliveryMode !== 'chat');
+  if (!original) return;
+  let record = original;
+  let receipt = await readNativeWorkflowReceipt(record.operationId);
+  assertCurrent();
+  if (!receipt) {
+    if (record.status !== 'prepared') return record;
+    await recordNativeMediaSubmission(record.operationId, record.lease, { notStarted: true });
+    return;
+  }
+  if (!isNativeWorkflowReceiptFor(receipt, record) || record.localResult || record.localResults?.length || receipt.syncOutputs) return record;
+  if (receipt.submissions.some((slot) => slot.state === 'prepared')) {
+    ({ record, receipt } = await sealNativeWorkflowSubmissions(record, context));
+    if (record.status === 'failed') return;
+  }
+
+  const { descriptor } = receipt;
+  try { await assertWorkflowContract(descriptor); } catch { return record; }
+  let cancelTask: (taskId: string) => Promise<boolean>;
+  if (descriptor.adapter === 'comfyui') {
+    const { cancelComfyPrompt } = await import('./comfyWorkflowService');
+    cancelTask = (taskId) => /^[A-Za-z0-9_-]{1,160}$/.test(taskId)
+      ? cancelComfyPrompt(descriptor.providerBase, taskId, true) : Promise.resolve(false);
+  } else if (descriptor.adapter === 'runninghub-workflow') {
+    const [{ cancelRunningHubWorkflowTask }, { runningHubConnection }, { runningHubSiteId }] = await Promise.all([
+      import('./ai/providers/runninghubWorkflow'), import('./workflowExecutionService'), import('./runninghubSiteCredentials'),
+    ]);
+    const connection = runningHubConnection(useAppStore.getState().config.providers, 'runninghub', runningHubSiteId(descriptor.providerBase));
+    if (normalizeNativeMediaProviderBase(connection.baseUrl) !== descriptor.providerBase) return record;
+    cancelTask = async (taskId) => /^\d{1,30}$/.test(taskId) && await cancelRunningHubWorkflowTask(connection, taskId) === 'ended';
+  } else return record;
+
+  for (const task of receipt.tasks) {
+    if (task.state === 'completed') continue;
+    assertCurrent();
+    if (task.state === 'failed' || await cancelTask(task.taskId).catch(() => false)) {
+      assertCurrent();
+      ({ record } = await retainNativeWorkflowTaskOutputs(record, task.taskId, { failed: true }));
+    }
+  }
+  return record.status === 'failed' ? undefined : record;
 }
 async function saveOutputs(record: NativeMediaTaskRecord, outputs: readonly CloudWorkflowOutput[], signal?: AbortSignal,
   assertCurrent?: () => void, mediaDownloadAccess?: MediaDownloadAccess): Promise<NativeMediaLocalOutput[]> {
@@ -257,18 +313,20 @@ async function workflowDownloadAccess(descriptor: NativeWorkflowDescriptor): Pro
   return createMediaDownloadAccess(descriptor.connectionId, descriptor.providerBase, auth);
 }
 export async function resumeNativeWorkflowTask(operationId: string, externalSignal?: AbortSignal): Promise<void> {
+  externalSignal?.throwIfAborted();
   const context = captureLegacyCanvasContext(useAppStore.getState());
   if (!context || context.modelGeneration !== 1) throw new Error('请返回原工作流画布');
   let record = await currentRecord(context.projectId, operationId), receipt = await readNativeWorkflowReceipt(operationId);
+  externalSignal?.throwIfAborted();
   if (!receipt || !isNativeWorkflowTask(record) || record.canvasId !== context.canvasId) throw new Error('原工作流不属于当前画布');
   if (record.status === 'delivered') { const { projectNativeMediaMessages } = await import('./nativeMediaMessages'); await projectNativeMediaMessages(); return; }
   if (!record.localResults) {
-    ({ record, receipt } = await sealNativeWorkflowSubmissions(record, context));
+    ({ record, receipt } = await sealNativeWorkflowSubmissions(record, context, { signal: externalSignal }));
     if (receipt.syncOutputs) record = await retainNativeMediaOutputs(record, receipt.syncOutputs);
   }
   if (record.status === 'failed') throw new Error('原工作流提交或任务均已明确失败，原回执保留');
   if (!['submitted', 'reviewed'].includes(record.status)) throw pending(record);
-  record = await claimNativeMediaRecovery(operationId, context);
+  record = await claimNativeMediaRecovery(operationId, context, { signal: externalSignal });
   const controller = new AbortController(), abort = () => controller.abort();
   externalSignal?.addEventListener('abort', abort, { once: true }); if (externalSignal?.aborted) controller.abort();
   const assertCurrent = () => { controller.signal.throwIfAborted(); if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) throw new Error('原画布已切换，原工作流回执及产物保留'); };

@@ -91,6 +91,17 @@ export async function cancelComfyUINodeTask(nodeId: string): Promise<'remote-end
 
   const baseUrl = task.baseUrl.replace(/\/+$/, '');
   const promptId = task.taskId;
+  if (!await cancelComfyPrompt(baseUrl, promptId)) {
+    updatePendingTask(nodeId, { comfyRecoveryState: 'disconnected' }, promptId, task.attemptId);
+    pauseMediaTask(task, undefined, 'query_interrupted');
+    return 'local-stopped';
+  }
+  removePendingTask(nodeId, promptId, task.attemptId);
+  return 'remote-ended';
+}
+
+/** 只取消指定的 prompt。原生回执还需辨别取消与已生成的任务。 */
+export async function cancelComfyPrompt(baseUrl: string, promptId: string, preserveCompleted = false): Promise<boolean> {
   const directResponse = await withComfyQueryTimeout((signal) => comfyFetch(
     `${baseUrl}/api/jobs/${encodeURIComponent(promptId)}/cancel`, { method: 'POST', signal },
   ));
@@ -107,7 +118,8 @@ export async function cancelComfyUINodeTask(nodeId: string): Promise<'remote-end
     return queue;
   });
   let queue = await readQueue();
-  if (queueContainsPrompt(queue.queue_pending, promptId)) {
+  const wasQueued = queueContainsPrompt(queue.queue_pending, promptId);
+  if (wasQueued) {
     const deleteResponse = await withComfyQueryTimeout((signal) => comfyFetch(`${baseUrl}/queue`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -120,12 +132,20 @@ export async function cancelComfyUINodeTask(nodeId: string): Promise<'remote-end
   }
   if (queueContainsPrompt(queue.queue_running, promptId) || queueContainsPrompt(queue.queue_pending, promptId)) {
     // 旧版 /interrupt 忽略 prompt_id，查询后全局中断会误停刚开始的其他任务。
-    updatePendingTask(nodeId, { comfyRecoveryState: 'disconnected' }, promptId, task.attemptId);
-    pauseMediaTask(task, undefined, 'query_interrupted');
-    return 'local-stopped';
+    return false;
   }
-  removePendingTask(nodeId, promptId, task.attemptId);
-  return 'remote-ended';
+  if (preserveCompleted) {
+    return withComfyQueryTimeout(async (signal) => {
+      const response = await comfyFetch(`${baseUrl}/history/${encodeURIComponent(promptId)}`, { signal });
+      await assertComfyResponse(response, '读取 ComfyUI 原任务');
+      const history = await response.json() as Record<string, { status?: { status_str?: string } }>;
+      if (!history || typeof history !== 'object' || Array.isArray(history)) return false;
+      const entry = history[promptId];
+      // 旧服务不支持定向取消且未见过排队项时，空历史不能证明原任务结束。
+      return entry ? entry.status?.status_str?.toLowerCase() === 'error' : directResponse.ok || wasQueued;
+    });
+  }
+  return true;
 }
 
 function assertComfyNodeCanSubmit(nodeId?: string): void {
@@ -1516,13 +1536,14 @@ async function promptComfyUIWorkflow(
 async function submitNativeComfyMedia(input: { nodeId?: string; category: 'image' | 'video' | 'audio'; workflow: WorkflowDefinition;
   baseUrl: string; workflowObj: Record<string, Record<string, unknown>>; signal?: AbortSignal; progress?: ComfyProgressSession;
   beforeSubmit?: () => void | Promise<void>; refmods?: ComfyRefmodSelection[] }): Promise<never> {
+  let sending = false;
   let rejected = false;
   const { submitNativeWorkflowTask } = await import('./nativeWorkflowTasks');
   return submitNativeWorkflowTask({ nodeId: input.nodeId, signal: input.signal, beforeSubmit: input.beforeSubmit,
     descriptor: { adapter: 'comfyui', connectionId: 'comfyui', providerBase: input.baseUrl, category: input.category,
       workflowId: input.workflow.id, serverId: input.workflow.serverId,
       digest: await nativeWorkflowDigest(['comfyui-native-media-v1', input.workflow.id, input.workflow.fileContent, input.workflow.serverId, input.category]) },
-    requestMaterial: { prompt: input.workflowObj, client_id: input.progress?.clientId }, isDefinitiveFailure: () => rejected,
+    requestMaterial: { prompt: input.workflowObj, client_id: input.progress?.clientId }, isDefinitiveFailure: () => !sending || rejected,
     submit: async (_index, signal, received) => {
       const taskId = await promptComfyUIWorkflow(input.baseUrl, input.workflowObj, signal, input.progress, async () => {
         await input.beforeSubmit?.();
@@ -1532,7 +1553,7 @@ async function submitNativeComfyMedia(input: { nodeId?: string; category: 'image
         const current = useAppStore.getState().workflows.find((item) => item.id === input.workflow.id);
         if (!current || current.fileContent !== input.workflow.fileContent || current.serverId !== input.workflow.serverId
           || comfyBaseUrlFor(current.id) !== input.baseUrl) throw new Error('原 ComfyUI 工作流或服务在提交前已变化');
-      }, undefined, { sending: () => {}, rejected: () => { rejected = true; }, received });
+      }, undefined, { sending: () => { sending = true; }, rejected: () => { rejected = true; }, received });
       return { taskId };
     } });
 }

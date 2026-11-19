@@ -37,7 +37,8 @@ import { videoInputFingerprint, videoInputFingerprintMaterial } from './videoBat
 import { registerNativeVideoSubmissionGuard } from './nativeVideoSubmission';
 import { nativeMediaInputMaterial } from './nativeMediaInput';
 import { nativeMediaOutputArtifactId } from './nativeMediaCollectionCanvas';
-import { beginComfyNodeDelivery, cancelNodePolling, cleanupNodePolling, completeComfyNodeTask, completeMediaNodeTask, getPendingTasksForProject, pauseComfyNodeDelivery, pauseMediaNodeTask, pauseMediaTask, prepareMediaNodeGeneration, registerMediaNodeOperation, registerNodePolling, isMediaTaskPausedError, showNativeComfyVideoRecovery } from './pollManager';
+import { beginComfyNodeDelivery, cancelNodePolling, cleanupNodePolling, completeComfyNodeTask, completeMediaNodeTask, getPendingTasksForProject, pauseComfyNodeDelivery, pauseMediaNodeTask, pauseMediaTask, prepareMediaNodeGeneration, registerMediaNodeOperation, registerNodePolling, isMediaTaskPausedError, showNativeWorkflowRecovery } from './pollManager';
+import { isNativeWorkflowNodeBusy, trackNativeWorkflowNodeRun } from './pollManager';
 import { isProjectExpectedContextCurrent } from './projectExecutionContext';
 import { resolveGenerationNodeData } from '../utils/nodeGeneration';
 import { applyGenerationCameraPrompt } from './shotlistPromptService';
@@ -481,10 +482,16 @@ export async function executeGeneration(
     }
   }
   const runningHubTask = cloudWorkflow || nodeProvider === 'runninghub';
+  const submissionKey = JSON.stringify([submittingProjectId, nodeId]);
+  const nativeWorkflow = mediaSubmission && executionContext?.kind === 'canvas' && executionContext.modelGeneration === 1
+    && (localComfyTask || runningHubTask) ? executionContext : undefined;
+  if (nativeWorkflow && isNativeWorkflowNodeBusy(nativeWorkflow.canvasId, nodeId)) return { success: false, message: '任务正在处理' };
+  const cancellation = nativeWorkflow ? new AbortController() : undefined;
+  const generationSignal = cancellation ? (lease?.signal ? AbortSignal.any([cancellation.signal, lease.signal]) : cancellation.signal) : lease?.signal;
   let comfyTaskId: string | undefined;
   let comfyDeliveryError: unknown;
   let savingSignal: AbortSignal | undefined;
-  const beginMediaSaving = () => savingSignal ??= registerNodePolling(nodeId, lease?.signal);
+  const beginMediaSaving = () => savingSignal ??= registerNodePolling(nodeId, generationSignal);
   const guardedSubmission = mediaSubmission || runningHubTask || localComfyTask;
   let cloudGuard = guardedSubmission ? registerCanvasDerivation(store, nodeId) : null;
   const videoNode = store.nodes.find((n) => n.id === nodeId);
@@ -499,11 +506,10 @@ export async function executeGeneration(
     && `${rawPrompt}\n${JSON.stringify(data.workflowInputs ?? {})}`.includes('/shot/');
   const hasProtectedVideoInputs = hasShotReference || (nodeType === 'ai-video'
     && (Boolean(data.comfyRefmods?.length) || ['@refmod', '@drama{global/'].some((marker) => `${effectivePrompt}\n${JSON.stringify(data.workflowInputs ?? {})}`.includes(marker))));
-  const submissionKey = JSON.stringify([submittingProjectId, nodeId]);
   const videoOwner = nodeType === 'ai-video' ? Symbol(nodeId) : undefined;
   if (videoOwner) videoSubmissionOwners.set(submissionKey, videoOwner);
   const promptOverride = overridePrompt === undefined ? {} : { prompt: rawPrompt };
-  const ownsGeneration = (state: AppState) => leaseValid && !lease?.signal?.aborted && !savingSignal?.aborted
+  const ownsGeneration = (state: AppState) => leaseValid && !generationSignal?.aborted && !savingSignal?.aborted
     && state.currentProjectId === submittingProjectId && endOperation?.isCurrent?.() !== false;
   const isStillCurrentSubmission = () => {
     const s = useAppStore.getState();
@@ -518,7 +524,7 @@ export async function executeGeneration(
 
   // 文本和分镜也领取节点运行所有权，旧请求的取消收尾不能清掉新一轮的 loading。
   const endOperation = registerMediaNodeOperation(nodeId, true);
-  const ownsNativeComfyVideo = () => nativeComfyVideoContext && endOperation.isCurrent?.() !== false
+  const ownsNativeComfyVideo = () => nativeComfyVideoContext && !cancellation?.signal.aborted && endOperation.isCurrent?.() !== false
     && isProjectExpectedContextCurrent(nativeComfyVideoContext, useAppStore.getState(), { checkCanvasRevision: false });
   const nativeMediaGuard = nativeMediaMaterial === undefined ? undefined : registerNativeVideoSubmissionGuard(async () => {
     if (lease) await assertLease();
@@ -526,7 +532,6 @@ export async function executeGeneration(
     if (!isStillCurrentSubmission() || !node || nativeMediaInputMaterial(node, current, 'media-input-v3') !== nativeMediaMaterial
       || directionReference && !sameDirectionImage(directionReference, node.data)) throw new Error('原媒体输入已变化，未提交请求');
   });
-  store.updateNodeDataTransient(nodeId, { status: 'loading', error: undefined, videoTaskState: undefined, mediaTaskState: undefined });
   let batchNodeIds: string[] | undefined;
   let taskReceipt: MediaTaskReceipt | undefined;
   let mediaDelivered = false;
@@ -538,7 +543,9 @@ export async function executeGeneration(
     mediaDelivered = true;
   };
 
+  const generationFinished = nativeWorkflow && trackNativeWorkflowNodeRun(nativeWorkflow.canvasId, nodeId, cancellation);
   try {
+    store.updateNodeDataTransient(nodeId, { status: 'loading', error: undefined, videoTaskState: undefined, mediaTaskState: undefined });
     if (nodeType === 'ai-image' || nodeType === 'ai-animation') {
       const isAnimation = nodeType === 'ai-animation';
       const imageSize = (data.imageSize as string) || '2K';
@@ -564,7 +571,7 @@ export async function executeGeneration(
           workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
           ...outpaintReferences,
           ...(outputsPerJob > 1 ? { collectCandidates: true } : {}) },
-        batchCount, lease?.signal, nativeMediaGuard);
+        batchCount, generationSignal, nativeMediaGuard);
         throw new Error('原生图片生成缺少耐久原回执，未确认交付');
       }
       if (batchCount > 1 || outputsPerJob > 1) {
@@ -623,7 +630,7 @@ export async function executeGeneration(
         ...outpaintReferences,
       };
       if (lease) await assertLease();
-      const result = nativeMediaGuard ? await generateImage(imageOptions, lease?.signal, nativeMediaGuard)
+      const result = nativeMediaGuard ? await generateImage(imageOptions, generationSignal, nativeMediaGuard)
         : lease ? await generateImage(imageOptions, lease.signal) : await generateImage(imageOptions);
       taskReceipt = result.taskReceipt;
       comfyTaskId = result.comfyTaskId;
@@ -674,7 +681,7 @@ export async function executeGeneration(
         workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
       };
       if (lease) await assertLease();
-      const result = nativeMediaGuard ? await generateImage(imageOptions, lease?.signal, nativeMediaGuard)
+      const result = nativeMediaGuard ? await generateImage(imageOptions, generationSignal, nativeMediaGuard)
         : lease ? await generateImage(imageOptions, lease.signal) : await generateImage(imageOptions);
       taskReceipt = result.taskReceipt;
       comfyTaskId = result.comfyTaskId;
@@ -757,7 +764,7 @@ export async function executeGeneration(
       if (nativeVideoMaterial !== undefined) registerNativeVideoSubmissionGuard(assertVideoSubmission);
       videoExecutionStarted = true;
       const result = lease || hasProtectedVideoInputs || nativeVideoMaterial !== undefined
-        ? await generateVideo(videoOptions, lease?.signal, assertVideoSubmission)
+        ? await generateVideo(videoOptions, generationSignal, assertVideoSubmission)
         : await generateVideo(videoOptions);
       videoResultReceived = true;
       taskReceipt = result.taskReceipt;
@@ -812,7 +819,7 @@ export async function executeGeneration(
         workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
       };
       if (lease) await assertLease();
-      const result = nativeMediaGuard ? await generateAudio(audioOptions, lease?.signal, nativeMediaGuard)
+      const result = nativeMediaGuard ? await generateAudio(audioOptions, generationSignal, nativeMediaGuard)
         : lease ? await generateAudio(audioOptions, lease.signal) : await generateAudio(audioOptions);
       taskReceipt = result.taskReceipt;
       comfyTaskId = result.comfyTaskId;
@@ -909,6 +916,7 @@ export async function executeGeneration(
     return { success: true };
   } catch (err) {
     comfyDeliveryError = err;
+    if (cancellation?.signal.aborted) return { success: false, message: '任务已取消' };
     if (err instanceof Error && err.name === 'NativeMediaTaskDelivered') {
       mediaDelivered = true;
       if (postProcess === 'character-8-direction-grid' && nodeType === 'ai-image' && executionContext?.kind === 'canvas') {
@@ -927,10 +935,11 @@ export async function executeGeneration(
       const nativeOperationId = 'nativeOperationId' in err && typeof err.nativeOperationId === 'string' ? err.nativeOperationId : undefined;
       const state = 'localResultAvailable' in err && err.localResultAvailable === true ? 'delivery_pending'
         : 'remoteTaskKnown' in err && err.remoteTaskKnown === true ? 'paused' : 'unknown';
-      if (nativeComfyVideoContext && nativeOperationId && ownsNativeComfyVideo() && state !== 'unknown') {
+      if (nativeWorkflow && nativeOperationId
+        && (isStillCurrentSubmission() || ownsNativeComfyVideo())) {
         const currentNode = useAppStore.getState().nodes.find((node) => node.id === nodeId);
         const saving = state === 'delivery_pending' || currentNode?.data.mediaTaskStage === 'saving';
-        showNativeComfyVideoRecovery(nativeComfyVideoContext, nodeId, nativeOperationId, saving);
+        showNativeWorkflowRecovery(nativeWorkflow, nodeId, nativeOperationId, saving, state === 'unknown');
         return { success: false, message: err.message, recovery: { state: saving ? 'delivery_pending' : state, nativeOperationId } };
       }
       if (isStillCurrentSubmission() || ownsNativeComfyVideo()) {
@@ -1012,7 +1021,7 @@ export async function executeGeneration(
       current.updateNodeDataTransient(nodeId, { status: 'idle', error: undefined });
     }
     const currentVideo = hasProtectedVideoInputs ? current.nodes.find((node) => node.id === nodeId) : undefined;
-    if (!leaseRevoked && videoOwner && videoSubmissionOwners.get(submissionKey) === videoOwner
+    if (!leaseRevoked && !cancellation?.signal.aborted && videoOwner && videoSubmissionOwners.get(submissionKey) === videoOwner
       && current.currentProjectId === submittingProjectId && currentVideo?.data.status === 'loading'
       && (!cloudGuard || !isCanvasDerivationFresh(cloudGuard, current)
         || videoInputFingerprint({ ...currentVideo, data: { ...currentVideo.data, ...promptOverride } }, current) !== videoFingerprint)) {
@@ -1021,5 +1030,6 @@ export async function executeGeneration(
     if (videoOwner && videoSubmissionOwners.get(submissionKey) === videoOwner) videoSubmissionOwners.delete(submissionKey);
     if (cloudGuard) completeCanvasDerivation(cloudGuard);
     endOperation?.();
+    generationFinished?.();
   }
 }

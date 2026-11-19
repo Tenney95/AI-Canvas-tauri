@@ -57,6 +57,8 @@ vi.mock('../../src/services/videoBatchPlanning', () => ({ videoInputFingerprint:
 vi.mock('../../src/services/pollManager', () => ({
   prepareMediaNodeGeneration: mocks.prepareMedia, completeMediaNodeTask: mocks.completeMedia, pauseMediaTask: mocks.pauseMedia,
   registerMediaNodeOperation: mocks.registerOperation,
+  isNativeWorkflowNodeBusy: () => false,
+  trackNativeWorkflowNodeRun: vi.fn((_canvasId: string, _nodeId: string, _controller?: AbortController) => () => {}),
   registerNodePolling: vi.fn((nodeId: string, parentSignal?: AbortSignal) => {
     mocks.polling.get(nodeId)?.controller.abort();
     const controller = new AbortController();
@@ -79,7 +81,7 @@ vi.mock('../../src/services/pollManager', () => ({
 }));
 
 import { executeGeneration, type GenerationLease } from '../../src/services/generationService';
-import { cleanupNodePolling, registerNodePolling, VideoPollingPausedError } from '../../src/services/pollManager';
+import { cleanupNodePolling, registerNodePolling, trackNativeWorkflowNodeRun, VideoPollingPausedError } from '../../src/services/pollManager';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -319,6 +321,23 @@ describe('原生角色八向宫格', () => {
 });
 
 describe('节点视频生成的宿主任务租约', () => {
+  it('新项目主动取消工作流时中止原请求，正常取消不记红色错误或失败历史', async () => {
+    mocks.store.projectExecutionContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'runtime',
+      projectId: 'p', projectEpoch: 1, canvasId: 'p', episodeId: null, canvasEpoch: 1, canvasRevision: 0 };
+    mocks.store.nodes[0].data = { ...data(), provider: 'comfyui', model: 'comfyui/workflow', workflowId: 'wf-1' };
+    const response = deferred<never>();
+    mocks.generate.mockReturnValueOnce(response.promise);
+    const pending = run();
+    await vi.waitFor(() => expect(mocks.generate).toHaveBeenCalledOnce());
+    const controller = vi.mocked(trackNativeWorkflowNodeRun).mock.calls[0][2];
+    expect(mocks.generate.mock.calls[0][1]).toBe(controller?.signal);
+    controller!.abort();
+    response.reject(new DOMException('请求已取消', 'AbortError'));
+    expect(await pending).toEqual(cancelled);
+    expectNoCommit();
+    expect(mocks.store.showToast).not.toHaveBeenCalled();
+  });
+
   it('新项目先规范化参考素材，再冻结原生提交守卫；同一次生成不会因身份补齐自行失效', async () => {
     mocks.store.projectExecutionContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'runtime',
       projectId: 'p', projectEpoch: 1, canvasId: 'p', episodeId: null, canvasEpoch: 1, canvasRevision: 0 };

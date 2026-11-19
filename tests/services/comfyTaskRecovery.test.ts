@@ -10,7 +10,7 @@ import {
   resumeMediaNodeTask, resumePendingTasks, resumeVideoNodeTask, savePendingTask, VideoPollingPausedError,
 } from '../../src/services/pollManager';
 import {
-  cancelComfyUINodeTask, executeComfyUIAudioGenerate, executeComfyUIGenerate, executeComfyUITextGenerate, executeComfyUIVideoGenerate,
+  cancelComfyPrompt, cancelComfyUINodeTask, executeComfyUIAudioGenerate, executeComfyUIGenerate, executeComfyUITextGenerate, executeComfyUIVideoGenerate,
 } from '../../src/services/comfyWorkflowService';
 import { COMFY_OUTPUT_UNAVAILABLE_MESSAGE, COMFY_TEXT_OUTPUT_UNAVAILABLE_MESSAGE, ComfyOutputUnavailableError, ComfyPendingError, ComfyQueryAuthorizationError, pollComfyHistory } from '../../src/services/comfyPolling';
 import type { ComfyOutputFile } from '../../src/services/comfyOutputs';
@@ -180,6 +180,14 @@ describe('ComfyUI 任务恢复合同', () => {
     await expect(cancelComfyUINodeTask('n1')).resolves.toBe('local-stopped');
     expect(pending()[0]).toMatchObject({ taskId: task.taskId, comfyRecoveryState: 'disconnected', mediaRecoveryState: 'query_paused' });
     expect(mocks.fetch.mock.calls.some(([url]) => String(url).endsWith('/interrupt'))).toBe(false);
+  });
+
+  it('定向取消原生任务后核对队列和历史，保留恰好完成的产物', async () => {
+    await expect(cancelComfyPrompt(task.baseUrl, task.taskId, true)).resolves.toBe(false);
+    mocks.history.mockResolvedValueOnce(json({ 'prompt-1': { status: { status_str: 'error' } } }));
+    await expect(cancelComfyPrompt(task.baseUrl, task.taskId, true)).resolves.toBe(true);
+    expect(mocks.cancel).toHaveBeenLastCalledWith(`${task.baseUrl}/api/jobs/${task.taskId}/cancel`, expect.objectContaining({ method: 'POST' }));
+    expect(mocks.history).toHaveBeenLastCalledWith(`${task.baseUrl}/history/${task.taskId}`, expect.anything());
   });
 
   it('旧版排队删除期间转为运行时不清回执；再次核对确认退出后才结束', async () => {

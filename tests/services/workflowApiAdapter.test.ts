@@ -243,6 +243,7 @@ describe('AutoDL 提交、查询及恢复', () => {
     remoteState = 'RUNNING'; const running = generate(); const stopped = expect(running).rejects.toThrow();
     await vi.waitFor(() => expect(pending()[0]?.taskId).toBe(taskId));
     stopWorkflowApiNodeTask('n1'); await stopped;
+    expect(useAppStore.getState().nodes[0].data).toMatchObject({ status: 'idle', error: undefined, workflowApiStage: '查询已停止' });
     remoteState = 'SUCCESS'; await resumeWorkflowApiNodeTask('n1');
     expect(submissions()).toHaveLength(1); expect(pending()).toEqual([]);
     expect(useAppStore.getState().nodes[0].data).toMatchObject({ status: 'success', videoUrl: 'asset://localhost/result.mp4' });

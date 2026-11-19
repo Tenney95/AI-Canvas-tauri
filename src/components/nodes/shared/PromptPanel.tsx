@@ -722,6 +722,8 @@ export default function PromptPanel({
   }, []);
 
   const hasGenerationInput = !!prompt.trim() || selectedProvider === 'runninghub' || selectedProvider === 'runninghubwf' || selectedProvider === 'workflow-api';
+  const stopLabel = t(selectedProvider === 'comfyui' ? '终止 ComfyUI 任务' : selectedProvider === 'runninghubwf' ? '请求远端取消'
+    : selectedProvider === 'runninghub' || selectedProvider === 'workflow-api' ? '停止等待' : '取消生成');
   // 单次只能一张的通用模型由画布创建多个节点逐张执行，不限制用户选择的总张数。
   const sequentialImageBatch = selectedProvider === 'general' && !selectedWorkflowId
     && (imageCapability?.supportsBatch === false || imageCapability?.maxBatchCount === 1);
@@ -1287,8 +1289,8 @@ export default function PromptPanel({
                 <button
                   type="button"
                   className="prompt-btn prompt-stop-btn"
-                  data-tooltip={selectedProvider === 'workflow-api' ? t('停止等待') : t('终止 ComfyUI 任务')}
-                  aria-label={selectedProvider === 'workflow-api' ? t('停止等待') : t('终止 ComfyUI 任务')}
+                  data-tooltip={stopLabel}
+                  aria-label={stopLabel}
                   onClick={(event) => {
                     event.stopPropagation();
                     onCancelGeneration();

@@ -2,7 +2,7 @@
 import type { CanvasContext } from '../types/project';
 import type { NativeMediaLocalOutput, NativeMediaSubmissionPreparation, MediaKind } from '../types/media';
 import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
-import { validateNativeMediaTaskRecord, normalizeNativeMediaProviderBase, readRelatedNativeMediaTasks } from './indexedDb/nativeMediaTaskRepository';
+import { ACTIVE_NATIVE_MEDIA_STATES, validateNativeMediaTaskRecord, normalizeNativeMediaProviderBase, readRelatedNativeMediaTasks } from './indexedDb/nativeMediaTaskRepository';
 import { assertNoPendingNativeSharedSync, EXCHANGE, ROOTS, CANVASES, EPISODES, REVISIONS, TRANSFER, openNativeProjectDatabase,
   readCanvasTarget, transact, increment, type NativeProjectOptions } from './indexedDb/nativeProjectRepository';
 import { validateNativeMediaLocalOutputs } from './nativeMediaCollection';
@@ -70,7 +70,7 @@ export function validateNativeWorkflowReceipt(value: NativeWorkflowReceipt): Nat
   if (value.tasks.reduce((count, task) => count + (task.outputs?.length ?? 0), 0) > 128) return fail();
   return value;
 }
-function belongs(receipt: NativeWorkflowReceipt, main: NativeMediaTaskRecord): boolean {
+export function isNativeWorkflowReceiptFor(receipt: NativeWorkflowReceipt, main: NativeMediaTaskRecord): boolean {
   return receipt.operationId === main.operationId && receipt.ownerProjectId === main.ownerProjectId && receipt.canvasId === main.canvasId
     && receipt.episodeId === main.episodeId && receipt.projectEpoch === main.projectEpoch && receipt.canvasEpoch === main.canvasEpoch
     && receipt.nodeId === main.nodeId && receipt.descriptor.digest === main.recovery?.digest && main.recovery?.kind === 'workflow'
@@ -88,7 +88,7 @@ export async function createNativeWorkflowReceipt(main: NativeMediaTaskRecord, d
   try { return await transact(db, 'readwrite', options, async (tx) => {
     if (tx.durability !== 'strict') return fail();
     const row = await req(tx.objectStore(EXCHANGE).get(main.projectId)) as NativeMediaTaskRecord | undefined;
-    if (!row || row.lease !== main.lease || row.revision !== main.revision || row.status !== 'prepared' || !belongs(receipt, row)) return fail();
+    if (!row || row.lease !== main.lease || row.revision !== main.revision || row.status !== 'prepared' || !isNativeWorkflowReceiptFor(receipt, row)) return fail();
     const revision = await req(tx.objectStore(REVISIONS).get(main.ownerProjectId)) as { projectId: string; changeRevision: number } | undefined;
     if (!revision) return fail();
     await Promise.all([req(tx.objectStore(EXCHANGE).add(receipt)), req(tx.objectStore(REVISIONS).put({ ...revision, changeRevision: increment(revision.changeRevision) }))]); return receipt;
@@ -117,7 +117,7 @@ export function nativeWorkflowSummary(receipt: NativeWorkflowReceipt) {
 export async function readNativeWorkflowSummary(record: NativeMediaTaskRecord, options: NativeProjectOptions = {}) {
   if (record.recovery?.kind !== 'workflow') return undefined;
   const receipt = await readNativeWorkflowReceipt(record.operationId, options);
-  if (!receipt || !belongs(receipt, record)) return fail();
+  if (!receipt || !isNativeWorkflowReceiptFor(receipt, record)) return fail();
   return nativeWorkflowSummary(receipt);
 }
 async function change(main: NativeMediaTaskRecord, mutate: (receipt: NativeWorkflowReceipt, current: NativeMediaTaskRecord, tx: IDBTransaction) => Promise<void> | void,
@@ -130,7 +130,7 @@ async function change(main: NativeMediaTaskRecord, mutate: (receipt: NativeWorkf
       req(store.get(PREFIX + main.operationId)) as Promise<NativeWorkflowReceipt | undefined>]);
     if (!row || !value) return fail();
     const current = validateNativeMediaTaskRecord(row), receipt = validateNativeWorkflowReceipt(value);
-    if (!belongs(receipt, current) || !late && (current.lease !== main.lease || current.revision !== main.revision)) return fail();
+    if (!isNativeWorkflowReceiptFor(receipt, current) || !late && (current.lease !== main.lease || current.revision !== main.revision)) return fail();
     await mutate(receipt, current, tx);
     receipt.revision = increment(receipt.revision); current.revision = increment(current.revision); current.updatedAt = Date.now();
     validateNativeWorkflowReceipt(receipt); validateNativeMediaTaskRecord(current);
@@ -214,14 +214,21 @@ export async function retainNativeWorkflowTaskOutputs(main: NativeMediaTaskRecor
     for (const output of result.outputs) await readNativeMediaLocalResult(main.canvasId, output);
   }
   return change(main, (receipt, current) => {
-    if (current.status !== 'submitted') return fail();
     const task = receipt.tasks.find((item) => item.taskId === taskId); if (!task) return fail();
-    if (task.state !== 'submitted') {
-      if ('outputs' in result ? task.state !== 'completed' || !configValuesEqual(task.outputs, result.outputs) : task.state !== 'failed') return fail();
+    if ('failed' in result) {
+      if (current.status === 'failed' && task.state === 'failed') return;
+      if (!ACTIVE_NATIVE_MEDIA_STATES.includes(current.status) || task.state === 'completed' || current.localResult || current.localResults) return fail();
+      // 仅结束已确认的远端任务；其他在途槽位和已保存子产物继续参与父状态判定。
+      task.state = 'failed';
+      current.status = parentStatus(receipt);
       return;
     }
-    if ('outputs' in result) { validateNativeMediaLocalOutputs(result.outputs); task.outputs = structuredClone(result.outputs); task.state = 'completed'; }
-    else task.state = 'failed';
+    if (current.status !== 'submitted' || task.state === 'failed') return fail();
+    if (task.state === 'completed') {
+      if (!configValuesEqual(task.outputs, result.outputs)) return fail();
+      return;
+    }
+    validateNativeMediaLocalOutputs(result.outputs); task.outputs = structuredClone(result.outputs); task.state = 'completed';
     current.status = parentStatus(receipt);
   }, options);
 }

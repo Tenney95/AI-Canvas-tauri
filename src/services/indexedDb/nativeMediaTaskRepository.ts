@@ -425,7 +425,8 @@ export async function claimNativeMediaRecovery(operationId: string, context: Can
         || current.canvasEpoch !== context.canvasEpoch || !await matchingCanvas(tx, current)) {
         return fail('原画布身份已变化或原任务未确认，不能自动续查');
       }
-      if (isNativeMediaTaskSuperseded(current, await readRelatedNativeMediaTasks(tx, current))) {
+      const rows = await readRelatedNativeMediaTasks(tx, current);
+      if (isNativeMediaTaskSuperseded(current, rows)) {
         return fail('此节点或原消息已有后续尝试，原缓存不能覆盖新意图');
       }
       if (current.status === 'reviewed') {

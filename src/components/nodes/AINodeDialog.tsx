@@ -58,6 +58,7 @@ import { applyGenerationCameraPrompt } from '../../services/shotlistPromptServic
 import { cancelComfyUINodeTask } from '../../services/comfyWorkflowService';
 import { COMFY_OUTPUT_UNAVAILABLE_MESSAGE, getComfyQueryAuthorizationMessage } from '../../services/comfyPolling';
 import { beginComfyNodeDelivery, cleanupNodePolling, completeComfyNodeTask, completeMediaNodeTask, getPendingTasksForProject, isComfyNodeDeliveryActive, isMediaTaskPausedError, pauseComfyNodeDelivery, pauseMediaTask, prepareMediaNodeGeneration, registerMediaNodeOperation, registerNodePolling, resumeComfyUINodeTask, resumeRunningHubNodeTask, subscribeComfyDeliveries, updatePendingTask, removePendingTask } from '../../services/pollManager';
+import { cancelNativeWorkflowOnNode, clearNativeWorkflowRecovery, getNativeWorkflowRecovery, showNativeWorkflowRecovery } from '../../services/pollManager';
 import MediaTaskStatus from './shared/MediaTaskStatus';
 import { isCloudWorkflow, getCloudWorkflowPersistedOutput, workflowExecution } from '../../services/workflowExecutionService';
 import { splitRunningHubPrompt } from '../../services/ai/providers/runninghubWorkflowInputs';
@@ -71,6 +72,7 @@ import { historyMediaTaskReceipt } from '../../services/historyMediaRecovery';
 import { mergeAppendedNodeMentions } from '../../utils/promptConnectionMentions';
 import { resolveGenerationNodeData } from '../../utils/nodeGeneration';
 import { cancelImageBatchGeneration, isImageBatchGenerating, subscribeImageBatches, usesSequentialImageBatch } from '../../services/generationService';
+import { isProjectExpectedContextCurrent } from '../../services/projectExecutionContext';
 import { postProcessDramaExtractOutput, prepareDramaExtractPrompt } from '../../services/dramaAssetExtract';
 
 const DIALOG_VIEWPORT_MARGIN = 16;
@@ -410,6 +412,7 @@ function AINodeDialog() {
     () => !!activeNodeId && isImageBatchGenerating(activeNodeId), () => false);
 
   const onSubmit = useCallback(async (overridePrompt?: string, postProcess?: ImagePostProcess) => {
+    if (activeNodeId && cancellingNodeIdsRef.current.has(activeNodeId)) return;
     finishContinuousEdit();
     // 实时从 store 读取全部数据 — 避免闭包 data 为 undefined
     const store = useAppStore.getState();
@@ -417,6 +420,10 @@ function AINodeDialog() {
     const latestData = resolveGenerationNodeData(latestNode?.data);
     if (!latestData) {
       showToast(t('节点不存在'), 'error');
+      return;
+    }
+    if (activeNodeId && latestData.mediaTaskState && getNativeWorkflowRecovery(activeNodeId, store)) {
+      showToast(t(latestData.mediaTaskState === 'submit_unknown' ? '提交状态未知，请到对应平台核对；应用不会自动重新生成。' : '查询已暂停，任务已保留'), 'info');
       return;
     }
     if (latestData.type !== 'ai-director' && store.currentProjectId && getPendingTasksForProject(store.currentProjectId).some((task) => (
@@ -871,20 +878,57 @@ function AINodeDialog() {
 
   const onCancelGeneration = useCallback(async () => {
     if (!activeNodeId || cancellingNodeIdsRef.current.has(activeNodeId)) return;
-    if (useAppStore.getState().currentProjectId !== currentProjectId) return;
+    const store = useAppStore.getState();
+    if (store.currentProjectId !== currentProjectId) return;
     const nodeId = activeNodeId;
     if (cancelImageBatchGeneration(nodeId) || imageBatchGenerating) return;
-    if (useAppStore.getState().nodes.find((item) => item.id === nodeId)?.data.directorRuntimeKind === 'ai-threejs') {
+    const node = store.nodes.find((item) => item.id === nodeId);
+    if (node?.data.directorRuntimeKind === 'ai-threejs') {
       const { cancelDirectorPrevisGeneration } = await import('../../services/directorPrevisService');
       cancelDirectorPrevisGeneration(nodeId);
       return;
     }
     const projectId = currentProjectId;
-    if (useAppStore.getState().nodes.find((item) => item.id === nodeId)?.data.provider === 'workflow-api') {
+    const generationData = resolveGenerationNodeData(node?.data);
+    const provider = generationData?.provider;
+    const context = store.projectExecutionContext;
+    const originalTaskId = projectId ? getPendingTasksForProject(projectId).find((task) => task.nodeId === nodeId)?.taskId : undefined;
+    if (context?.kind === 'canvas' && context.modelGeneration === 1 && originalTaskId === undefined
+      && ['ai-video', 'ai-image', 'ai-audio', 'ai-animation', 'ai-panorama'].includes(generationData?.type ?? '')
+      && ['comfyui', 'runninghubwf', 'runninghub', 'workflow-api'].includes(provider ?? '')) {
+      const currentNode = () => {
+        const live = useAppStore.getState();
+        if (isProjectExpectedContextCurrent(context, live, { checkCanvasRevision: false })) return live.nodes.find((item) => item.id === nodeId);
+      };
+      cancellingNodeIdsRef.current.add(nodeId);
+      try {
+        const pending = await cancelNativeWorkflowOnNode(context, nodeId);
+        const current = currentNode();
+        if (!current) return;
+        if (pending) {
+          showNativeWorkflowRecovery(context, nodeId, pending.operationId, !!pending.localResults?.length, pending.status !== 'submitted');
+          showToast(t(pending.status === 'submitted' ? '查询已暂停，任务已保留' : '提交状态未知，请到对应平台核对；应用不会自动重新生成。'), 'info');
+        } else {
+          clearNativeWorkflowRecovery(context, nodeId);
+          const { imageUrl, audioUrl, videoUrl, output } = current.data;
+          updateNodeDataTransient(nodeId, { status: imageUrl || audioUrl || videoUrl || output ? 'success' : 'idle', error: undefined,
+            mediaTaskState: undefined, mediaTaskStage: undefined, videoTaskState: undefined, runninghubStage: undefined, workflowApiStage: undefined });
+          showToast(t('任务已取消'), 'info');
+        }
+      } catch {
+        const current = currentNode();
+        if (!current) return;
+        updateNodeDataTransient(nodeId, { status: current.data.status === 'success' ? 'success' : 'idle', error: undefined, mediaTaskStage: undefined });
+        showToast(t('查询已暂停，任务已保留'), 'info');
+      } finally {
+        cancellingNodeIdsRef.current.delete(nodeId);
+      }
+      return;
+    }
+    if (provider === 'workflow-api') {
       stopWorkflowApiNodeTask(nodeId); return;
     }
-    const cloud = ['runninghubwf', 'runninghub'].includes(useAppStore.getState().nodes.find((item) => item.id === nodeId)?.data.provider ?? '');
-    const originalTaskId = projectId ? getPendingTasksForProject(projectId).find((task) => task.nodeId === nodeId)?.taskId : undefined;
+    const cloud = ['runninghubwf', 'runninghub'].includes(provider ?? '');
     const isCurrent = () => useAppStore.getState().currentProjectId === projectId
       && useAppStore.getState().nodes.some((item) => item.id === nodeId)
       && (!projectId || !getPendingTasksForProject(projectId).some((task) => task.nodeId === nodeId && task.taskId !== originalTaskId));
@@ -1217,6 +1261,8 @@ function AINodeDialog() {
   const showMediaTaskStatus = data.status !== 'loading' && (data.mediaTaskState || data.videoTaskState === 'paused')
     && recoverableComfyTask?.comfyRecoveryState !== 'cancel_pending'
     && recoverableComfyTask?.comfyRecoveryState !== 'output_unavailable';
+  const canRetryNativeCancellation = !!getNativeWorkflowRecovery(activeNodeId) && data.mediaTaskState === 'paused'
+    && ['comfyui', 'runninghubwf'].includes(data.provider ?? '');
   const cloudTask = currentProjectId ? getPendingTasksForProject(currentProjectId).find((task) => task.nodeId === activeNodeId && ['runninghub-workflow', 'runninghub-model'].includes(task.taskType)) : undefined;
   const workflowApiTask = currentProjectId ? getPendingTasksForProject(currentProjectId).find((task) => task.nodeId === activeNodeId && task.taskType === 'workflow-api') : undefined;
 
@@ -1330,7 +1376,7 @@ function AINodeDialog() {
           {data.provider === 'workflow-api' && data.workflowApiStage && <p role="status" className="px-3 py-1 text-xs text-canvas-text-secondary">AutoDL · {data.workflowApiStage}</p>}
           {workflowApiTask && data.status !== 'loading' && <WorkflowApiTaskStatus key={`${activeNodeId}:${workflowApiTask.workflowApi?.attemptId}`} task={workflowApiTask} />}
           {showMediaTaskStatus && <div className="m-2"><MediaTaskStatus nodeId={activeNodeId}>
-            {recoverableComfyTask && <button type="button" className="ui-btn ui-btn--sm ui-btn--danger" onClick={() => { void onCancelGeneration(); }}>{t('再次终止')}</button>}
+            {(recoverableComfyTask || canRetryNativeCancellation) && <button type="button" className="ui-btn ui-btn--sm ui-btn--danger" onClick={() => { void onCancelGeneration(); }}>{t('再次终止')}</button>}
           </MediaTaskStatus></div>}
           {cloudTask && data.status !== 'loading' && <div className="ui-card m-2 flex flex-col gap-2 p-3 text-xs">
             <p>{cloudTask.taskId ? <>{t('任务 {ids} 已保留，可以继续查询。', { ids: (cloudTask.taskIds?.length ? cloudTask.taskIds : [cloudTask.taskId]).join('、') })}{cloudTask.runninghubSubmissionUncertain && t('另有提交状态未知，请到平台核对后再清除恢复记录。')}</> : t('提交状态未知。请到 RunningHub 平台核对，补充任务 ID 后继续查询。')}</p>

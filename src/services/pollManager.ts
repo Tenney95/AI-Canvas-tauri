@@ -76,6 +76,7 @@ function createPollManagerRuntime() {
     mediaTaskObservers: new Map<string, (receipt: MediaTaskReceipt) => void>(),
     activeMediaOperations: new Map<string, Set<symbol>>(),
     latestMediaOperationOwners: new Map<string, symbol>(),
+    nativeWorkflowNodeRuns: new Map<string, { controller?: AbortController; settled?: Promise<void>; cancelling?: boolean }>(),
     mediaMessageRecoveryHandler: undefined as MediaMessageRecoveryHandler | undefined,
     editorTransitionResultSinks: new Map<string, { receipt: MediaTaskReceipt; receive: (task: PendingTask, urls: string[]) => void }>(),
     mediaTaskListeners: new Set<() => void>(),
@@ -93,6 +94,7 @@ function createPollManagerRuntime() {
 export function createOrReusePollManagerRuntime(hotData?: { pollManagerRuntime?: ReturnType<typeof createPollManagerRuntime> }) {
   const runtime = hotData?.pollManagerRuntime ?? createPollManagerRuntime();
   runtime.latestMediaOperationOwners ??= new Map();
+  runtime.nativeWorkflowNodeRuns ??= new Map();
   runtime.mediaTaskSnapshot ??= createMediaTaskSnapshotState();
   runtime.pollingProjects ??= new Map();
   runtime.stoppedProjectIds ??= new Set();
@@ -539,83 +541,133 @@ export async function resumeNativeMediaLocalDelivery(canvasId: string, nodeId?: 
 }
 
 // 只投影当前画布的提示；恢复时仍以原生账本和原任务租约为准。
-let nativeComfyVideoRecovery: { context: CanvasContext; operations: Map<string, string> } | undefined;
+let nativeWorkflowRecovery: { context: CanvasContext; operations: Map<string, string> } | undefined;
 
-export function getNativeComfyVideoRecovery(nodeId: string, state = useAppStore.getState()): string | undefined {
-  const recovery = nativeComfyVideoRecovery;
+const { nativeWorkflowNodeRuns } = runtime;
+
+export function isNativeWorkflowNodeBusy(canvasId: string, nodeId: string): boolean {
+  return nativeWorkflowNodeRuns.has(JSON.stringify([canvasId, nodeId]));
+}
+
+export function trackNativeWorkflowNodeRun(canvasId: string, nodeId: string, controller?: AbortController): () => void {
+  const key = JSON.stringify([canvasId, nodeId]);
+  if (nativeWorkflowNodeRuns.has(key)) throw new Error('原工作流任务正在处理');
+  let finish!: () => void;
+  const run = { controller, settled: new Promise<void>((resolve) => { finish = resolve; }), cancelling: false };
+  nativeWorkflowNodeRuns.set(key, run);
+  return () => {
+    if (!run.cancelling && nativeWorkflowNodeRuns.get(key) === run) nativeWorkflowNodeRuns.delete(key);
+    finish();
+  };
+}
+
+export async function cancelNativeWorkflowOnNode(context: CanvasContext, nodeId: string) {
+  if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) return;
+  const operationId = getNativeWorkflowRecovery(nodeId);
+  const key = JSON.stringify([context.canvasId, nodeId]);
+  const run = nativeWorkflowNodeRuns.get(key) ?? { controller: undefined, settled: undefined, cancelling: false };
+  if (run.cancelling) throw new Error('原工作流任务正在取消');
+  run.cancelling = true;
+  nativeWorkflowNodeRuns.set(key, run);
+  try {
+    run.controller?.abort();
+    cancelNodePolling(nodeId, true);
+    // 等本轮生成或续查写完回执，再核对远端终态。
+    await run.settled;
+    if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) return;
+    const { cancelNativeWorkflowNodeTask } = await import('./nativeWorkflowTasks');
+    return await cancelNativeWorkflowNodeTask(context, nodeId, operationId);
+  } finally {
+    nativeWorkflowNodeRuns.delete(key);
+  }
+}
+
+export function getNativeWorkflowRecovery(nodeId: string, state = useAppStore.getState()): string | undefined {
+  const recovery = nativeWorkflowRecovery;
   if (recovery && isProjectExpectedContextCurrent(recovery.context, state, { checkCanvasRevision: false })) {
     return recovery.operations.get(nodeId);
   }
 }
 
-export function showNativeComfyVideoRecovery(context: CanvasContext, nodeId: string, operationId: string, saving: boolean): void {
+export function clearNativeWorkflowRecovery(context: CanvasContext, nodeId: string): void {
+  if (nativeWorkflowRecovery && isProjectExpectedContextCurrent(context, nativeWorkflowRecovery.context, { checkCanvasRevision: false })) {
+    nativeWorkflowRecovery.operations.delete(nodeId);
+  }
+}
+
+export function showNativeWorkflowRecovery(context: CanvasContext, nodeId: string, operationId: string, saving: boolean, unknown = false): void {
   const store = useAppStore.getState();
   if (!isProjectExpectedContextCurrent(context, store, { checkCanvasRevision: false })) return;
   const node = store.nodes.find((item) => item.id === nodeId);
-  if (node?.type !== 'ai-video' || node.data.role === 'source') return;
-  if (!nativeComfyVideoRecovery || !isProjectExpectedContextCurrent(nativeComfyVideoRecovery.context, context, { checkCanvasRevision: false })) {
-    nativeComfyVideoRecovery = { context, operations: new Map() };
+  if (!node || node.data.role === 'source') return;
+  if (!nativeWorkflowRecovery || !isProjectExpectedContextCurrent(nativeWorkflowRecovery.context, context, { checkCanvasRevision: false })) {
+    nativeWorkflowRecovery = { context, operations: new Map() };
   }
-  nativeComfyVideoRecovery.operations.set(nodeId, operationId);
+  nativeWorkflowRecovery.operations.set(nodeId, operationId);
   store.updateNodeDataTransient(nodeId, { status: node.data.status === 'success' ? 'success' : 'idle', error: undefined,
-    mediaTaskState: saving ? 'delivery_pending' : 'paused', mediaTaskStage: undefined });
+    mediaTaskState: unknown ? 'submit_unknown' : saving ? 'delivery_pending' : 'paused', mediaTaskStage: undefined });
 }
 
-async function restoreNativeComfyVideoRecoveries(context: CanvasContext): Promise<void> {
+async function restoreNativeWorkflowRecoveries(context: CanvasContext): Promise<void> {
   const { isNativeMediaTaskSuperseded, listNativeMediaTasks } = await import('./indexedDb/nativeMediaTaskRepository');
   const records = await listNativeMediaTasks(context.projectId, { canvasId: context.canvasId });
   if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) return;
   for (const record of records) {
     if (record.canvasId !== context.canvasId || record.projectEpoch !== context.projectEpoch || record.canvasEpoch !== context.canvasEpoch
-      || record.episodeId !== context.episodeId || record.category !== 'video' || record.providerConfigId !== 'comfyui'
-      || record.recovery?.kind !== 'workflow' || record.origin?.deliveryMode === 'chat' || record.status !== 'submitted'
-      || !record.remoteTaskId || isMediaOperationActive(context.canvasId, record.nodeId)
-      || isNativeMediaTaskSuperseded(record, records) || getNativeComfyVideoRecovery(record.nodeId)) continue;
-    showNativeComfyVideoRecovery(context, record.nodeId, record.operationId, !!record.localResults?.length);
+      || record.episodeId !== context.episodeId || record.recovery?.kind !== 'workflow' || record.origin?.deliveryMode === 'chat'
+      || !['prepared', 'submitted', 'outcome-unknown'].includes(record.status) || isMediaOperationActive(context.canvasId, record.nodeId)
+      || isNativeMediaTaskSuperseded(record, records) || getNativeWorkflowRecovery(record.nodeId)) continue;
+    const unknown = record.status === 'outcome-unknown' || record.status === 'prepared' && !record.remoteTaskId;
+    showNativeWorkflowRecovery(context, record.nodeId, record.operationId, !!record.localResults?.length, unknown);
   }
 }
 
-export async function resumeNativeComfyVideoFromNode(nodeId: string, operationId: string): Promise<void> {
+export async function resumeNativeWorkflowFromNode(nodeId: string, operationId: string): Promise<void> {
   const store = useAppStore.getState(), context = captureLegacyCanvasContext(store);
   const node = store.nodes.find((item) => item.id === nodeId);
-  if (!context || node?.type !== 'ai-video' || node.data.role === 'source'
-    || getNativeComfyVideoRecovery(nodeId) !== operationId || isMediaOperationActive(context.canvasId, nodeId)) {
-    throw new Error('原 ComfyUI 视频任务已变化或正在处理');
+  if (!context || !node || node.data.role === 'source' || node.data.mediaTaskState === 'submit_unknown'
+    || getNativeWorkflowRecovery(nodeId) !== operationId || isMediaOperationActive(context.canvasId, nodeId)
+    || isNativeWorkflowNodeBusy(context.canvasId, nodeId)) {
+    throw new Error('原工作流任务已变化或正在处理');
   }
   const wasSaving = node.data.mediaTaskState === 'delivery_pending';
   const release = registerMediaNodeOperation(nodeId, true);
   const signal = registerNodePolling(nodeId);
+  const finish = trackNativeWorkflowNodeRun(context.canvasId, nodeId);
   try {
     store.updateNodeDataTransient(nodeId, { status: 'loading', mediaTaskState: undefined, mediaTaskStage: 'querying' });
     const { resumeNativeWorkflowTask } = await import('./nativeWorkflowTasks');
     await resumeNativeWorkflowTask(operationId, signal);
     const current = useAppStore.getState();
-    if (release.isCurrent() && getNativeComfyVideoRecovery(nodeId, current) === operationId) {
-      nativeComfyVideoRecovery?.operations.delete(nodeId);
+    if (release.isCurrent() && getNativeWorkflowRecovery(nodeId, current) === operationId) {
+      nativeWorkflowRecovery?.operations.delete(nodeId);
       if (current.nodes.find((item) => item.id === nodeId)?.data.status === 'loading') {
         current.updateNodeDataTransient(nodeId, { status: node.data.status, mediaTaskStage: undefined });
       }
     }
   } catch (error) {
+    if (signal.aborted) return;
     const { listNativeMediaTasks } = await import('./indexedDb/nativeMediaTaskRepository');
     const records = await listNativeMediaTasks(context.projectId, { canvasId: context.canvasId, operationId }).catch(() => undefined);
-    if (release.isCurrent() && getNativeComfyVideoRecovery(nodeId) === operationId) {
+    if (release.isCurrent() && getNativeWorkflowRecovery(nodeId) === operationId) {
       const current = useAppStore.getState();
       const live = current.nodes.find((item) => item.id === nodeId);
       const record = records?.find((item) => item.operationId === operationId);
+      if (signal.aborted) return;
       if (records && (!record || record.status === 'failed' || record.status === 'delivered')) {
-        nativeComfyVideoRecovery?.operations.delete(nodeId);
+        nativeWorkflowRecovery?.operations.delete(nodeId);
         if (live?.data.status === 'loading') current.updateNodeDataTransient(nodeId, {
           status: record?.status === 'delivered' ? node.data.status : 'error', mediaTaskStage: undefined,
         });
       } else {
-        showNativeComfyVideoRecovery(context, nodeId, operationId, wasSaving || live?.data.mediaTaskStage === 'saving');
+        showNativeWorkflowRecovery(context, nodeId, operationId, wasSaving || live?.data.mediaTaskStage === 'saving');
       }
     }
     throw error;
   } finally {
     cleanupNodePolling(nodeId, signal);
     release();
+    finish();
   }
 }
 
@@ -632,7 +684,7 @@ function resumeNativeMediaWhenReady(context: CanvasContext): Promise<void> {
         || !isProjectExpectedContextCurrent(context, actual, { checkCanvasRevision: false })) { unsubscribe(); resolve(); return; }
       if (!isProjectExpectedContextCurrent(context, state, { checkCanvasRevision: false })) return;
       unsubscribe();
-      void resumeNativeMediaLocalDelivery(context.canvasId).finally(() => restoreNativeComfyVideoRecoveries(context)).then(resolve, reject);
+      void resumeNativeMediaLocalDelivery(context.canvasId).finally(() => restoreNativeWorkflowRecoveries(context)).then(resolve, reject);
     };
     unsubscribe = useAppStore.subscribe(inspect); inspect();
   }).finally(() => { if (nativeCanvasReadiness.get(key) === work) nativeCanvasReadiness.delete(key); });
@@ -1050,10 +1102,10 @@ export function prepareVideoNodeGeneration(nodeId: string): void {
 /** 再次生成是显式的新任务；先保留旧任务，不能覆盖其唯一恢复身份。 */
 export function prepareMediaNodeGeneration(nodeId: string): void {
   const store = useAppStore.getState();
-  const nativeRecoveryState = getNativeComfyVideoRecovery(nodeId, store)
+  const nativeRecoveryState = getNativeWorkflowRecovery(nodeId, store)
     && store.nodes.find((node) => node.id === nodeId)?.data.mediaTaskState;
-  if (nativeRecoveryState === 'paused' || nativeRecoveryState === 'delivery_pending') {
-    throw new Error('该节点还有未交付的 ComfyUI 视频，请先继续保存');
+  if (nativeRecoveryState === 'paused' || nativeRecoveryState === 'delivery_pending' || nativeRecoveryState === 'submit_unknown') {
+    throw new Error('查询已暂停，任务已保留');
   }
   const task = loadAll().find((item) => item.nodeId === nodeId && item.projectId === store.currentProjectId);
   if (!task) return;

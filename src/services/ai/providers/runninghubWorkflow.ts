@@ -237,16 +237,23 @@ export async function cancelRunningHubNodeTask(nodeId: string): Promise<'cancell
   if (!task.taskId) throw new Error('提交状态未知，请先到 RunningHub 平台确认任务');
   updatePendingTask(nodeId, { runninghubRecoveryState: 'cancel_pending' }, task.taskId);
   const connection = runningHubConnection(store.config.providers, task.providerConfigId === 'runninghub-model' ? 'runninghub-model' : 'runninghub', task.runninghubSite);
-  await runningHubRequest(connection, '/task/openapi/cancel', { taskId: task.taskId });
-  const status = await runningHubRequest(connection, '/task/openapi/status', { taskId: task.taskId });
-  if (['FAILED', 'CANCELED', 'CANCELLED'].includes(String(status.data).toUpperCase())) {
+  const status = await cancelRunningHubWorkflowTask(connection, task.taskId);
+  if (status === 'ended') {
     removePendingTask(nodeId, task.taskId); return 'cancelled';
   }
-  if (status.data === 'SUCCESS') {
+  if (status === 'completed') {
     updatePendingTask(nodeId, { runninghubRecoveryState: 'save_pending' }, task.taskId);
     throw new Error('任务已完成，请继续查询并保存产物');
   }
   throw new Error('RunningHub 已接受取消请求，但尚未确认任务结束，请继续查询或稍后再次终止');
+}
+
+export async function cancelRunningHubWorkflowTask(connection: RunningHubConnection, taskId: string): Promise<'ended' | 'completed' | 'pending'> {
+  await runningHubRequest(connection, '/task/openapi/cancel', { taskId });
+  const status = await runningHubRequest(connection, '/task/openapi/status', { taskId });
+  const value = String(status.data).toUpperCase();
+  if (['FAILED', 'CANCELED', 'CANCELLED'].includes(value)) return 'ended';
+  return value === 'SUCCESS' ? 'completed' : 'pending';
 }
 
 /** 仅在调用方已完成保存与回填后结束恢复记录；失败时保留任务供保存重试。 */

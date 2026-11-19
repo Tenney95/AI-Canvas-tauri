@@ -21,12 +21,13 @@ async function fixture(count = 2, sync = false) {
   const context: CanvasContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'session-1', projectId: aggregate.project.id,
     canvasId: aggregate.canvas!.id, episodeId: null, projectEpoch: aggregate.project.epoch, canvasEpoch: aggregate.canvas!.epoch, canvasRevision: 0 };
   const descriptor = { adapter: 'runninghub-model' as const, connectionId: 'runninghub-model', providerBase: 'https://service.example', modelId: 'known-model', category: 'image' as const, digest: 'a'.repeat(64) };
-  const record = await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: 'original-node', providerConfigId: descriptor.connectionId,
+  const prepare = () => prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: 'original-node', providerConfigId: descriptor.connectionId,
     providerBase: descriptor.providerBase, category: 'image', submissionKind: sync ? 'sync' : 'async', fingerprintScheme: 'media-input-v3',
     protocolDigest: descriptor.digest, requestFingerprint: 'b'.repeat(64), inputFingerprint: 'c'.repeat(64), sourceCanvasRevision: 0,
     modelRef: 'workflow/known-model', recovery: { kind: 'workflow', modelId: descriptor.modelId, digest: descriptor.digest } }, { factory });
+  const record = await prepare();
   const receipt = await createNativeWorkflowReceipt(record, descriptor, count, { factory });
-  return { record, receipt, context };
+  return { record, receipt, context, prepare };
 }
 
 it('每个POST先耐久写未知，原ID和所有额外候选都保留，部分失败不冒充完整成功', async () => {
@@ -77,6 +78,41 @@ it('重启将可证明未发送的槽位标记未开始，不补发；跨集上�
   ({ record, receipt } = await sealNativeWorkflowSubmissions(record, context, { factory }));
   expect(receipt.submissions[1].state).toBe('not-started'); expect(record.remoteTaskId).toBe('known-task');
   expect(nativeWorkflowSummary(receipt).partial).toBe(true);
+});
+
+it('最后一个已确认远端任务结束后可在原节点重新提交，原回执仍保留', async () => {
+  const initial = await fixture(), { context, prepare } = initial;
+  let { record, receipt } = initial;
+  ({ record, receipt } = await beginNativeWorkflowSubmission(record, receipt.submissions[0].id, { factory }));
+  ({ record, receipt } = await retainNativeWorkflowSubmission(record, receipt.submissions[0].id, { taskId: 'cancelled-task' }, { factory }));
+  ({ record, receipt } = await retainNativeWorkflowTaskOutputs(record, 'cancelled-task', { failed: true }, { factory }));
+  expect(record.status).toBe('prepared');
+  await expect(prepare()).rejects.toThrow('未结算');
+  ({ record, receipt } = await sealNativeWorkflowSubmissions(record, context, { factory }));
+  expect(record.status).toBe('failed');
+  expect(receipt.submissions[1].state).toBe('not-started');
+  ({ record } = await retainNativeWorkflowTaskOutputs(record, 'cancelled-task', { failed: true }, { factory }));
+  await expect(prepare()).resolves.toMatchObject({ nodeId: record.nodeId, status: 'prepared' });
+  expect((await readNativeWorkflowReceipt(record.operationId, { factory }))?.tasks).toEqual([
+    { taskId: 'cancelled-task', state: 'failed' },
+  ]);
+});
+
+it('只记录已确认结束的远端任务，未知提交仍保持防重', async () => {
+  const initial = await fixture(), { prepare } = initial;
+  let { record, receipt } = initial;
+  ({ record, receipt } = await beginNativeWorkflowSubmission(record, receipt.submissions[0].id, { factory }));
+  ({ record, receipt } = await retainNativeWorkflowSubmission(record, receipt.submissions[0].id, { taskId: 'first-task' }, { factory }));
+  ({ record, receipt } = await beginNativeWorkflowSubmission(record, receipt.submissions[1].id, { factory }));
+  ({ record, receipt } = await retainNativeWorkflowTaskOutputs(record, 'first-task', { failed: true }, { factory }));
+  expect(record.status).toBe('outcome-unknown');
+  expect(receipt.submissions[1].state).toBe('unknown');
+  await expect(prepare()).rejects.toThrow('未结算');
+  ({ record } = await retainNativeWorkflowSubmission(record, receipt.submissions[1].id, { taskId: 'second-task' }, { factory }));
+  expect(record.status).toBe('submitted');
+  ({ record } = await retainNativeWorkflowTaskOutputs(record, 'second-task', { failed: true }, { factory }));
+  expect(record.status).toBe('failed');
+  await expect(prepare()).resolves.toMatchObject({ nodeId: record.nodeId, status: 'prepared' });
 });
 
 it('同步响应只保留真实本机集合，无伪造taskId；丢失文件不能写完成收据', async () => {

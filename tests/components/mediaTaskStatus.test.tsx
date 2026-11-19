@@ -22,7 +22,7 @@ vi.mock('react', async () => ({ ...await vi.importActual<typeof import('react')>
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: (selector: (state: typeof mocks.state) => unknown) => selector(mocks.state) }));
 vi.mock('../../src/services/pollManager', () => ({
   getPendingTasksForProject: () => mocks.tasks, resumeMediaNodeTask: mocks.resume, discardMediaTask: mocks.discard,
-  getNativeComfyVideoRecovery: () => mocks.nativeOperationId, resumeNativeComfyVideoFromNode: mocks.resumeNative,
+  getNativeWorkflowRecovery: () => mocks.nativeOperationId, resumeNativeWorkflowFromNode: mocks.resumeNative,
   hasMuseQueryIdentity: (task: { taskType?: string; taskId: string }) => task.taskType === 'muse'
     && task.taskId === 'ac655c56-b537-4c04-8913-fd150fc0e92a',
 }));
@@ -70,6 +70,16 @@ describe('跨媒体原任务续取入口', () => {
     expect(mocks.resume).toHaveBeenCalledWith('media');
     expect(mocks.discard).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(mocks.busy).toBe(false));
+  });
+
+  it('新项目取消时未取得平台任务 ID，显示待核对状态', () => {
+    mocks.tasks = [];
+    mocks.nativeOperationId = 'original-operation';
+    mocks.state.nodes[0].data.mediaTaskState = 'submit_unknown';
+    expect(queryButton()).toBeUndefined();
+    expect(JSON.stringify(render())).toContain('提交状态未知');
+    expect(mocks.resumeNative).not.toHaveBeenCalled();
+    expect(mocks.state.showToast).not.toHaveBeenCalled();
   });
 
   it('ComfyUI 提交未知到迟到 ID 转换只恢复原任务查询，不显示重新生成', () => {

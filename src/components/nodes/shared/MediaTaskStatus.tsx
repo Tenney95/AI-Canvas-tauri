@@ -4,7 +4,7 @@
 import { memo, useState, type ReactNode } from 'react';
 import { RotateCw } from 'lucide-react';
 import { useAppStore } from '../../../store/useAppStore';
-import { discardMediaTask, getNativeComfyVideoRecovery, getPendingTasksForProject, hasMuseQueryIdentity, resumeMediaNodeTask, resumeNativeComfyVideoFromNode } from '../../../services/pollManager';
+import { discardMediaTask, getNativeWorkflowRecovery, getPendingTasksForProject, hasMuseQueryIdentity, resumeMediaNodeTask, resumeNativeWorkflowFromNode } from '../../../services/pollManager';
 import { COMFY_OUTPUT_UNAVAILABLE_MESSAGE, COMFY_TEXT_OUTPUT_UNAVAILABLE_MESSAGE, getComfyQueryAuthorizationMessage } from '../../../services/comfyPolling';
 import { useT } from '../../../i18n';
 import { GenerationWaitTime } from './NodeGenerationProgress';
@@ -16,7 +16,7 @@ function MediaTaskStatus({ nodeId, overlay = false, children }: { nodeId: string
   const taskState = useAppStore((state) => state.nodes.find((node) => node.id === nodeId)?.data.mediaTaskState);
   const videoPaused = useAppStore((state) => state.nodes.find((node) => node.id === nodeId)?.data.videoTaskState === 'paused');
   const loading = useAppStore((state) => state.nodes.find((node) => node.id === nodeId)?.data.status === 'loading');
-  const nativeOperationId = useAppStore((state) => getNativeComfyVideoRecovery(nodeId, state));
+  const nativeOperationId = useAppStore((state) => getNativeWorkflowRecovery(nodeId, state));
   const showToast = useAppStore((state) => state.showToast);
   const [busy, setBusy] = useState(false);
   const [confirmedIdentity, setConfirmedIdentity] = useState<string>();
@@ -30,7 +30,7 @@ function MediaTaskStatus({ nodeId, overlay = false, children }: { nodeId: string
   const resume = () => {
     if (busy) return;
     const result = task ? resumeMediaNodeTask(task.nodeId)
-      : nativeOperationId ? resumeNativeComfyVideoFromNode(nodeId, nativeOperationId) : undefined;
+      : nativeOperationId ? resumeNativeWorkflowFromNode(nodeId, nativeOperationId) : undefined;
     if (!result) return;
     setBusy(true);
     void result.catch(() => {
@@ -41,7 +41,7 @@ function MediaTaskStatus({ nodeId, overlay = false, children }: { nodeId: string
 
   const canQuery = task ? hasMuseQueryIdentity(task)
     || task.submitted && !!task.taskId && !task.mediaSubmissionUncertain && task.mediaRecoveryState !== 'submit_unknown'
-    : !!nativeOperationId;
+    : !!nativeOperationId && taskState !== 'submit_unknown';
   const authorizationMessage = getComfyQueryAuthorizationMessage(task?.comfyQueryHttpStatus);
   const message = !canQuery
     ? t('提交状态未知，请到对应平台核对；应用不会自动重新生成。')
