@@ -13,6 +13,11 @@ describe('万象媒体新地址与旧官方来源兼容', () => {
     expect(filterRelayonGroupPricing(RELAYON_MODEL_MANIFEST, group, payload).map((model) => model.id)).toEqual(['claude-opus-5-5']);
   });
 
+  it('空白分组不匹配价格目录中的空分组名', () => {
+    const payload = { success: true, data: [{ model_name: 'claude-opus-5-5', enable_groups: [''] }] };
+    expect(filterRelayonGroupPricing(RELAYON_MODEL_MANIFEST, ' \t ', payload)).toEqual([]);
+  });
+
   it('两款2.6格式变体只进入image分组，不扩大其他分组权限', () => {
     for (const id of ['image-2.6-flare-01', 'image-2.6-sunburst-01']) {
       expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, 'image').some((model) => model.id === id)).toBe(true);

@@ -83,7 +83,7 @@ export function filterRelayonGroupPricing(
       || !Array.isArray(entry.enable_groups) || !entry.enable_groups.every((value: unknown) => typeof value === 'string')) {
       throw new Error('万象分组目录无效');
     }
-    if (entry.enable_groups.includes(name)) ids.add(entry.model_name);
+    if (name !== undefined && entry.enable_groups.includes(name)) ids.add(entry.model_name);
   }
   return models.filter((model) => ids.has(model.id));
 }
