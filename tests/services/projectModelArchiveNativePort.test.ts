@@ -8,13 +8,14 @@ import type { ProjectArchiveBusinessV4, ValidatedProjectArchiveV4 } from '../../
 import type { ProjectModelTransferCapture, ProjectModelTransferExchange, ProjectModelTransferImportJournal, ProjectModelTransferExportJournal } from '../../src/types/projectModelTransfer';
 import type { ProjectModelFixtureBusinessSession } from '../../src/types/projectModelBusiness';
 
-const native = vi.hoisted(() => ({ invoke: vi.fn(), existing: new Set<string>() }));
+const native = vi.hoisted(() => ({ invoke: vi.fn(), existing: new Set<string>(), loadSharedAssetSyncState: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: native.invoke }));
 vi.mock('@tauri-apps/plugin-fs', () => ({ exists: async (path: string) => native.existing.has(path) }));
 vi.mock('../../src/services/fileService', () => ({ projectArchiveFixtureDirectory: async (_db: string, relative: string) => `fixture/${relative}`,
   getBaseDir: async () => 'authorized', joinPath: (...segments: string[]) => segments.join('/') }));
 vi.mock('../../src/services/fs/projectArchiveFixtureFiles', () => ({ createProjectArchiveFixturePreviewDirectory: vi.fn() }));
 vi.mock('../../src/services/projectModelPreRestoreBackup', () => ({ createProjectModelPreRestoreBackupService: () => ({ create: vi.fn(), verify: vi.fn(), verifyCommit: vi.fn() }) }));
+vi.mock('../../src/services/indexedDb/sharedAssetSyncRepository', () => ({ loadSharedAssetSyncState: native.loadSharedAssetSyncState }));
 
 const hash = 'a'.repeat(64), database = { name: 'ai-canvas-model-fixture-transfer' } as IDBDatabase;
 const session = { operationId: 'migration', generation: 1, sessionId: 'session' } as ProjectModelFixtureBusinessSession;
@@ -53,6 +54,7 @@ async function setup() {
 }
 beforeEach(() => {
   vi.clearAllMocks(); vi.stubGlobal('crypto', webcrypto); native.existing.clear();
+  native.loadSharedAssetSyncState.mockResolvedValue({ mappings: [], outbox: [], conflicts: [] });
   native.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
     if (command === 'inspect_project_archive_assets') return (args.selectedPaths as string[]).map((path) => ({ path, bytes: 3, sha256: hash }));
     if (command === 'publish_project_import_assets') { native.existing.add(`${args.projectDir}/imports/${args.operationId}`); return; }
@@ -112,6 +114,66 @@ describe('P5 native file projection', () => {
     expect(native.invoke).toHaveBeenCalledWith('resolve_native_project_media_subroot', { projectId, rootRef: rootB, create: false });
     capture.aggregate.project.storageBindings[1].folderName = `project-${projectId}/roots/../../outside`;
     await expect(port.inspectAssets(capture)).rejects.toThrow('素材根不属于该新项目');
+  });
+
+  it('新项目仅收录已接受和明确引用的共享素材，旧更新按冻结清单核验', async () => {
+    const { capture } = await setup();
+    const projectId = 'p2-00000000-0000-4000-8000-000000000001';
+    const root = 'r2-00000000-0000-4000-8000-000000000002';
+    const folder = `project-${projectId}`, physicalRoot = 'authorized/native';
+    capture.aggregate.project = { ...capture.aggregate.project, id: projectId, dataFolder: folder, storageRootRef: root,
+      storageBindings: [{ rootRef: root, folderName: folder, sourceRecordIds: [], source: 'project-managed' }] };
+    capture.aggregate.content.projectId = projectId;
+    // 上传只改元数据时可引用已存在的本地物理版本，不能按当前远端版本拼路径。
+    const accepted = '.shared-sync/files/other-asset/previous/other-media.png';
+    const old = '.shared-sync/files/asset/old/old.png';
+    const referenced = '.shared-sync/files/asset/old/explicit.txt';
+    const unaccepted = '.shared-sync/files/asset/pending/unaccepted.png';
+    const temp = '.shared-sync/inputs/pending/temporary.png';
+    const linked = { ...capture.exchange!.fileBindings[0], localRelativePath: old };
+    const imported = { id: 'F3', rootRef: 'A', relativePath: '.shared-sync/files/imported/version/attachment.png',
+      localRelativePath: 'imports/verified-operation/.shared-sync/files/imported/version/attachment.png' };
+    capture.exchange!.identities.find((item) => item.sourceId === 'A')!.localId = root;
+    // 旧 head 自动收录的旧版本没有画布引用，不能靠文件绑定再次进入归档。
+    const originalHead = capture.exchange!.bundle.revisions[0];
+    if (originalHead.canonicalVersion !== 2) throw new Error('invalid fixture');
+    const business: ProjectArchiveBusinessV4 = { project: { id: 'P', name: '项目', kind: 'series', storageRoots: [{ id: 'A', role: 'shared' }] },
+      episodes: [], canvases: [], contents: { project: { projectId: 'P', data: {} }, episodes: [] } };
+    const head = await createProjectExchangeRevisionV2(buildProjectExchangeSnapshotV2(business, capture.exchange!.lineageId,
+      [...originalHead.snapshot.media], [linked, imported].map(({ id, rootRef, relativePath }) => ({ id, rootRef, relativePath, mediaId: 'media-original' }))));
+    capture.exchange!.bundle.revisions = [head];
+    capture.exchange!.bundle.head = capture.exchange!.localHead = { canonicalVersion: 2, revisionId: head.revisionId };
+    capture.exchange!.fileBindings = [linked, imported];
+    capture.aggregate.content.originalWork = { fileName: 'explicit.txt', relativePath: referenced, addedAt: 1 };
+    const digest = { bytes: 3, sha256: hash };
+    const mapping = { id: 'mapping', sharedAssetId: 'asset', ownerId: projectId, kind: 'file',
+      acceptedRevisionId: 'current', currentFileAssetId: 'local-current',
+      media: [{ sharedMediaId: 'accepted', localAssetId: 'local-current', projectId, relativePath: accepted, ...digest },
+        { sharedMediaId: 'old', localAssetId: 'local-old', projectId, relativePath: old, ...digest },
+        { sharedMediaId: 'unaccepted', localAssetId: 'local-pending', projectId, relativePath: unaccepted, ...digest }] };
+    native.loadSharedAssetSyncState.mockResolvedValue({ mappings: [mapping], conflicts: [], outbox: [
+      { mappingId: mapping.id, ownerId: projectId, sharedAssetId: mapping.sharedAssetId, phase: 'completed', revisionId: 'current',
+        revision: { revisionId: 'current', sharedAssetId: mapping.sharedAssetId, media: [{ id: 'accepted', extension: 'png', ...digest }] } },
+      { mappingId: mapping.id, ownerId: projectId, sharedAssetId: mapping.sharedAssetId, phase: 'applying', revisionId: 'pending',
+        revision: { revisionId: 'pending', sharedAssetId: mapping.sharedAssetId, media: [{ id: 'unaccepted', extension: 'png', ...digest }] } },
+    ] });
+    native.existing.add(physicalRoot);
+    native.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+      if (command === 'resolve_native_project_media_root') return physicalRoot;
+      if (command === 'inspect_project_archive_assets') return (args.selectedPaths as string[] | undefined
+        ?? [accepted, referenced, old, unaccepted, temp, imported.localRelativePath]).map((path) => ({ path, ...digest }));
+      throw new Error('unexpected command');
+    });
+    const assets = await createBoundProjectModelArchiveExportPort(projectId, '').inspectAssets(capture);
+    expect(assets.map((asset) => asset.path)).toEqual([accepted, referenced, imported.localRelativePath]);
+    expect(native.invoke).toHaveBeenCalledWith('inspect_project_archive_assets', expect.objectContaining({
+      excludeUnreferencedSharedSync: true, includeImportPaths: [imported.localRelativePath],
+      referencePaths: [imported.localRelativePath, referenced, accepted],
+    }));
+    const frozen = await createBoundProjectModelArchiveExportPort(projectId, '', [], false,
+      [old, temp].map((path) => ({ path, rootRef: root }))).inspectAssets(capture);
+    expect(frozen.map((asset) => asset.path)).toEqual([accepted, referenced, imported.localRelativePath, old, temp]);
+    expect(native.invoke).toHaveBeenCalledWith('inspect_project_archive_assets', { assetsDir: physicalRoot, selectedPaths: [old, temp] });
   });
 
   it.each(['readable', 'existing-id'] as const)('bound导入%s物理目录沿原journal续接，逻辑目录不重算且重启不重发已发布子操作', async (binding) => {

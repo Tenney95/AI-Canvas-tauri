@@ -446,18 +446,19 @@ impl AssetScan {
         Ok(())
     }
 
-    fn walk(&mut self, relative: &Path, exclude_imports: bool) -> Result<(), String> {
+    fn walk(&mut self, relative: &Path, exclude_imports: bool, exclude_shared_sync: bool) -> Result<(), String> {
         if relative.components().count() > 64 { return Err("项目素材目录过深".into()); }
         for item in fs::read_dir(self.root.join(relative)).map_err(|_| "无法读取项目目录")? {
             let entry = item.map_err(|_| "无法读取素材目录项")?;
             let name = entry.file_name();
+            if exclude_shared_sync && name.to_string_lossy().eq_ignore_ascii_case(".shared-sync") { continue; }
             let imports_directory = name.to_string_lossy().eq_ignore_ascii_case("imports");
             if relative.as_os_str().is_empty() && exclude_imports && imports_directory { continue; }
             let child = relative.join(&name);
             let Some(metadata) = plain_asset_metadata(&entry.path())? else { return Err("项目素材在扫描时发生变化".into()); };
             if metadata.is_dir() {
                 if excluded_asset_directory(&name.to_string_lossy(), relative.as_os_str().is_empty()) { continue; }
-                self.walk(&child, exclude_imports)?;
+                self.walk(&child, exclude_imports, exclude_shared_sync)?;
             } else if metadata.is_file() {
                 if native_media_staging_path(&child) { continue; }
                 let portable = child.to_str().ok_or("项目素材文件名不是有效 UTF-8")?.replace(std::path::MAIN_SEPARATOR, "/");
@@ -470,16 +471,38 @@ impl AssetScan {
 
 fn inspect_assets_scoped(root: &Path, include_import_paths: Option<&[String]>, selected_paths: Option<&[String]>,
     max_files: usize, max_bytes: u64) -> Result<Vec<ArchiveAssetDigest>, String> {
-    if include_import_paths.is_some() && selected_paths.is_some() { return Err("项目素材扫描范围无效".into()); }
+    inspect_assets_with_shared_scope(root, include_import_paths, selected_paths, None, max_files, max_bytes)
+}
+
+/// 共享素材缓存只允许以实际媒体文件路径进入原生项目的扫描闭包。
+fn shared_sync_media_path(path: &str) -> bool {
+    let parts: Vec<_> = path.splitn(6, '/').collect();
+    let [directory, files, asset, revision, name] = parts.as_slice() else { return false; };
+    let valid_id = |id: &str| !id.is_empty() && id.len() <= 128 && id.as_bytes()[0].is_ascii_alphanumeric()
+        && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+    directory.eq_ignore_ascii_case(".shared-sync") && files.eq_ignore_ascii_case("files")
+        && valid_id(asset) && valid_id(revision) && name.split_once('.').is_some_and(|(id, extension)| valid_id(id)
+            && !extension.is_empty() && extension.len() <= 8 && extension.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+}
+
+fn inspect_assets_with_shared_scope(root: &Path, include_import_paths: Option<&[String]>, selected_paths: Option<&[String]>,
+    include_shared_paths: Option<&[String]>, max_files: usize, max_bytes: u64) -> Result<Vec<ArchiveAssetDigest>, String> {
+    if (include_import_paths.is_some() || include_shared_paths.is_some()) && selected_paths.is_some() {
+        return Err("项目素材扫描范围无效".into());
+    }
     let selected = selected_paths.map(|paths| selected_asset_paths(paths, false)).transpose()?;
     let imports = include_import_paths.map(|paths| selected_asset_paths(paths, true)).transpose()?;
+    let shared = include_shared_paths.map(|paths| {
+        if paths.iter().any(|path| !shared_sync_media_path(path)) { return Err("共享素材扫描范围无效".into()); }
+        selected_asset_paths(paths, false)
+    }).transpose()?;
     let mut scan = AssetScan { root: root.canonicalize().map_err(|_| "无法解析项目素材目录")?, rows: Vec::new(),
         real_files: HashSet::new(), bytes: 0, max_files, max_bytes, buffer: Vec::new() };
     if let Some(paths) = selected {
         for path in paths { scan.add_file(&path)?; }
     } else {
-        scan.walk(Path::new(""), imports.is_some())?;
-        for path in imports.unwrap_or_default() { scan.add_file(&path)?; }
+        scan.walk(Path::new(""), imports.is_some(), shared.is_some())?;
+        for path in imports.unwrap_or_default().into_iter().chain(shared.unwrap_or_default()) { scan.add_file(&path)?; }
     }
     scan.rows.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(scan.rows)
@@ -501,7 +524,7 @@ fn same_verified_asset_file(left: &Path, right: &Path) -> Result<bool, String> {
     { Ok(left == right) }
 }
 
-fn resolve_import_path_aliases(paths: &[String], mut resolve: impl FnMut(&Path) -> Result<Option<PathBuf>, String>)
+fn resolve_selected_path_aliases(paths: &[String], imports_only: bool, mut resolve: impl FnMut(&Path) -> Result<Option<PathBuf>, String>)
     -> Result<(Vec<String>, HashMap<String, Vec<String>>), String> {
     if paths.len() > MAX_ARCHIVE_ENTRIES { return Err("项目素材清单超过上限".into()); }
     let mut unique = Vec::new(); let mut groups: HashMap<String, String> = HashMap::new();
@@ -509,7 +532,7 @@ fn resolve_import_path_aliases(paths: &[String], mut resolve: impl FnMut(&Path) 
     #[cfg(target_os = "macos")]
     let mut files: HashMap<(u64, u64), String> = HashMap::new();
     for value in paths {
-        let path = selected_asset_paths(std::slice::from_ref(value), true)?.pop().ok_or("项目素材路径无效")?;
+        let path = selected_asset_paths(std::slice::from_ref(value), imports_only)?.pop().ok_or("项目素材路径无效")?;
         let name = to_archive_text(&path); let folded = name.to_lowercase();
         if let Some(first) = groups.get(&folded) {
             let source = resolve(&path)?.ok_or("项目素材引用缺失")?;
@@ -590,7 +613,8 @@ fn inspect_assets(root: &Path, relative: &Path, rows: &mut Vec<ArchiveAssetDiges
 #[tauri::command]
 pub async fn inspect_project_archive_assets<R: Runtime>(webview: Webview<R>, app: AppHandle<R>, assets_dir: String,
     include_import_paths: Option<Vec<String>>, selected_paths: Option<Vec<String>>,
-    resolve_import_aliases: Option<bool>, reference_paths: Option<Vec<String>>) -> Result<Vec<ArchiveAssetInspection>, String> {
+    resolve_import_aliases: Option<bool>, reference_paths: Option<Vec<String>>,
+    exclude_unreferenced_shared_sync: Option<bool>) -> Result<Vec<ArchiveAssetInspection>, String> {
     ensure_trusted_caller(&webview)?;
     if webview.label() != "main" { return Err("仅主窗口可以准备项目归档".into()); }
     let root = authorize_path(&app, &assets_dir, PathAccess::Read)?;
@@ -601,10 +625,20 @@ pub async fn inspect_project_archive_assets<R: Runtime>(webview: Webview<R>, app
             if selected_paths.is_some() { return Err("项目素材扫描范围无效".into()); }
             let paths = include_import_paths.as_ref().ok_or("项目素材扫描范围无效")?;
             let canonical_root = root.canonicalize().map_err(|_| "无法解析项目素材目录")?;
-            let (unique, mapped) = resolve_import_path_aliases(paths, |path| selected_asset_file(&canonical_root, path))?;
+            let (unique, mapped) = resolve_selected_path_aliases(paths, true, |path| selected_asset_file(&canonical_root, path))?;
             aliases = mapped; Some(unique)
         } else { include_import_paths };
-        let rows = inspect_assets_scoped(&root, imports.as_deref(), selected_paths.as_deref(), MAX_ARCHIVE_ENTRIES, MAX_EXPANDED_BYTES)?;
+        let shared = if exclude_unreferenced_shared_sync.unwrap_or(false) {
+            let references = reference_paths.as_ref().ok_or("项目素材扫描范围无效")?;
+            if references.len() > MAX_ARCHIVE_ENTRIES { return Err("项目素材扫描范围无效".into()); }
+            let paths = references.iter().filter(|path| shared_sync_media_path(path)).cloned().collect::<Vec<_>>();
+            let canonical_root = root.canonicalize().map_err(|_| "无法解析项目素材目录")?;
+            let (unique, mapped) = resolve_selected_path_aliases(&paths, false, |path| selected_asset_file(&canonical_root, path))?;
+            aliases.extend(mapped);
+            Some(unique)
+        } else { None };
+        let rows = inspect_assets_with_shared_scope(&root, imports.as_deref(), selected_paths.as_deref(),
+            shared.as_deref(), MAX_ARCHIVE_ENTRIES, MAX_EXPANDED_BYTES)?;
         if let Some(references) = reference_paths {
             if !resolve_import_aliases.unwrap_or(false) || selected_paths.is_some() || references.len() > MAX_ARCHIVE_ENTRIES {
                 return Err("项目素材扫描范围无效".into());
@@ -1298,11 +1332,11 @@ mod tests {
     fn import_aliases_require_same_verified_path_and_preserve_first_spelling() {
         let fixture = Fixture::new(); fixture.write("verified.png", b"fixture");
         let paths = vec!["imports/op/asset.png".to_owned(), "Imports/op/asset.png".to_owned()];
-        let (unique, aliases) = resolve_import_path_aliases(&paths, |_| Ok(Some(fixture.0.join("verified.png")))).unwrap();
+        let (unique, aliases) = resolve_selected_path_aliases(&paths, true, |_| Ok(Some(fixture.0.join("verified.png")))).unwrap();
         assert_eq!(unique, vec![paths[0].clone()]);
         assert_eq!(aliases.get(&paths[0]).unwrap(), &vec![paths[1].clone()]);
-        assert!(resolve_import_path_aliases(&paths, |path| Ok(Some(path.to_path_buf()))).is_err());
-        assert!(resolve_import_path_aliases(&paths, |_| Err("missing".into())).is_err());
+        assert!(resolve_selected_path_aliases(&paths, true, |path| Ok(Some(path.to_path_buf()))).is_err());
+        assert!(resolve_selected_path_aliases(&paths, true, |_| Err("missing".into())).is_err());
         assert!(selected_asset_paths(&paths, true).is_err()); // 旧调用仍严格拒绝大小写冲突。
     }
 
@@ -1311,7 +1345,7 @@ mod tests {
     fn import_aliases_are_verified_on_actual_windows_filesystem() {
         let fixture = Fixture::new(); fixture.write("imports/op/asset.png", b"fixture");
         let paths = vec!["imports/op/asset.png".to_owned(), "Imports/op/asset.png".to_owned()];
-        let (unique, aliases) = resolve_import_path_aliases(&paths, |path| selected_asset_file(&fixture.0, path)).unwrap();
+        let (unique, aliases) = resolve_selected_path_aliases(&paths, true, |path| selected_asset_file(&fixture.0, path)).unwrap();
         assert_eq!(unique, vec![paths[0].clone()]); assert_eq!(aliases.get(&paths[0]).unwrap(), &vec![paths[1].clone()]);
         let rows = inspect_assets_scoped(&fixture.0, Some(&unique), None, MAX_ARCHIVE_ENTRIES, MAX_EXPANDED_BYTES).unwrap();
         assert_eq!(rows.len(), 1); assert_eq!(rows[0].path, paths[0]);
@@ -1335,7 +1369,7 @@ mod tests {
             fs::hard_link(fixture.0.join(&composed), fixture.0.join(&decomposed)).unwrap();
         }
         let paths = vec![composed.clone(), decomposed.clone()];
-        let (unique, mut aliases) = resolve_import_path_aliases(&paths, |path| selected_asset_file(&fixture.0, path)).unwrap();
+        let (unique, mut aliases) = resolve_selected_path_aliases(&paths, true, |path| selected_asset_file(&fixture.0, path)).unwrap();
         assert_eq!(unique, vec![composed.clone()]);
         assert_eq!(aliases.get(&composed), Some(&vec![decomposed.clone()]));
         let rows = inspect_assets_scoped(&fixture.0, Some(&unique), None, MAX_ARCHIVE_ENTRIES, MAX_EXPANDED_BYTES).unwrap();
@@ -1357,7 +1391,7 @@ mod tests {
         let fixture = Fixture::new();
         fixture.write("imports/op/original.png", b"same"); fixture.write("imports/op/different.png", b"same");
         let paths = vec!["imports/op/original.png".to_owned(), "imports/op/different.png".to_owned()];
-        let (unique, aliases) = resolve_import_path_aliases(&paths, |path| selected_asset_file(&fixture.0, path)).unwrap();
+        let (unique, aliases) = resolve_selected_path_aliases(&paths, true, |path| selected_asset_file(&fixture.0, path)).unwrap();
         assert_eq!(unique, paths); assert!(aliases.is_empty());
         let rows = inspect_assets_scoped(&fixture.0, Some(&[paths[0].clone()]), None, MAX_ARCHIVE_ENTRIES, MAX_EXPANDED_BYTES).unwrap();
         let mut mapped = HashMap::new();
@@ -1678,6 +1712,26 @@ mod tests {
         let current = inspect_assets_scoped(&fixture.0, Some(&include), None, 2, 7).unwrap();
         assert_eq!(current.iter().map(|row| row.path.as_str()).collect::<Vec<_>>(), ["current.txt", "imports/live/current.txt"]);
         assert!(inspect_assets_scoped(&fixture.0, Some(&include), None, 2, 6).is_err());
+    }
+
+    #[test]
+    fn scoped_scan_only_hashes_selected_shared_media() {
+        let fixture = Fixture::new();
+        fixture.write("project.txt", b"own");
+        fixture.write(".shared-sync/files/asset/revision-current/current.png", b"current");
+        fixture.write(".shared-sync/files/asset/revision-old/referenced.png", b"historical");
+        fixture.write(".shared-sync/files/asset/revision-unaccepted/secret.png", b"do not pack");
+        fixture.write(".shared-sync/inputs/upload/temp.png", b"do not pack");
+        fixture.write("roots/sub/.shared-sync/files/asset/revision-old/cache.png", b"do not pack");
+        let selected = [
+            ".shared-sync/files/asset/revision-current/current.png".to_owned(),
+            ".shared-sync/files/asset/revision-old/referenced.png".to_owned(),
+        ];
+        let actual = inspect_assets_with_shared_scope(&fixture.0, Some(&[]), None, Some(&selected), 3, 20).unwrap();
+        assert_eq!(actual.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(),
+            [selected[0].as_str(), selected[1].as_str(), "project.txt"]);
+        assert!(inspect_assets_with_shared_scope(&fixture.0, Some(&[]), None,
+            Some(&[".shared-sync/inputs/upload/temp.png".to_owned()]), 3, 30).is_err());
     }
 
     #[test]

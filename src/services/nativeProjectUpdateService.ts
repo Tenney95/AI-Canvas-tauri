@@ -105,7 +105,7 @@ async function assertOriginalUpdate(operation: NativeProjectUpdateJournal): Prom
   const missing = operation.recoveryState?.missingFiles ?? [];
   if (missing.length) await verifyNativeMissingAssetBackups(operation.expected, await listNativeContentRecoveryPoints(operation.projectId), missing, operation.operationId);
   const currentOnly = operation.recoveryState?.currentFilesOnly ?? false;
-  const port = missing.length || currentOnly ? createBoundProjectModelArchiveExportPort(operation.projectId, '', missing, currentOnly) : createBoundProjectModelArchiveExportPort(operation.projectId, '');
+  const port = createBoundProjectModelArchiveExportPort(operation.projectId, '', missing, currentOnly, operation.oldAssets);
   const globals = operation.recoveryState?.globalFiles ?? [];
   await verifyNativeGlobalRecoverySources(operation.expected, globals);
   const currentAssets = nativeUpdateInventory(await port.inspectAssets(applyNativeGlobalRecoveryFiles(operation.expected, globals)));

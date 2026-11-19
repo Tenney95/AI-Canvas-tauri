@@ -24,7 +24,7 @@ export async function verifyNativeProjectUpdateCommit(operation: NativeProjectUp
   const missing = operation.recoveryState?.missingFiles ?? [];
   if (missing.length) await verifyNativeMissingAssetBackups(operation.expected, await listNativeContentRecoveryPoints(operation.projectId), missing, operation.operationId);
   const currentOnly = operation.recoveryState?.currentFilesOnly ?? false;
-  const read = missing.length || currentOnly ? createBoundProjectModelArchiveExportPort(operation.projectId, '', missing, currentOnly) : createBoundProjectModelArchiveExportPort(operation.projectId, '');
+  const read = createBoundProjectModelArchiveExportPort(operation.projectId, '', missing, currentOnly, operation.oldAssets);
   const globals = operation.recoveryState?.globalFiles ?? [];
   if (globals.length) await verifyNativeGlobalRecoverySources(operation.expected, globals);
   const inspected = await read.inspectAssets(applyNativeGlobalRecoveryFiles(operation.expected, globals));
@@ -32,7 +32,9 @@ export async function verifyNativeProjectUpdateCommit(operation: NativeProjectUp
   if (!configValuesEqual(assets, operation.oldAssets)) throw new Error('项目素材在更新期间变化，原操作已保留');
   // 回执只证明文件存在，不能证明其内容是原项目；必须从独立包读回并比较冻结的可移植投影。
   const recovery = operation.recoveryState?.capture ?? operation.expected;
-  const frozenAssets = operation.recoveryState ? await read.inspectAssets(recovery) : inspected;
+  const frozenAssets = operation.recoveryState
+    ? await createBoundProjectModelArchiveExportPort(operation.projectId, '', missing, currentOnly, operation.recoveryState.assets).inspectAssets(recovery)
+    : inspected;
   if (operation.recoveryState && !configValuesEqual(nativeUpdateInventory(frozenAssets), operation.recoveryState.assets)) throw new Error('恢复副本素材在更新前发生变化');
   const projected = await prepareProjectModelArchiveCapture(recovery, frozenAssets);
   const backup = await openNativeUpdateBackup(operation.projectId, operation.backup);

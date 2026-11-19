@@ -13,10 +13,48 @@ import type { ProjectModelTransferExchange } from '../types/projectModelTransfer
 import { createProjectArchiveFixturePreviewDirectory } from './fs/projectArchiveFixtureFiles';
 import { sha256BytesHex } from './mediaDataUrl';
 import { assertNativeFileMissing, type NativeMissingAssetProof } from './nativeMissingAssetBackup';
+import { configValuesEqual } from './configPatch';
 
 interface SourceRoot { rootRef: string; directory: string }
 type NativeAsset = ArchiveAssetDigest & { sourceRootRef?: string; sourceRelativePath?: string; destinationPath?: string };
 const sameAsset = (a: ArchiveAssetDigest, b: ArchiveAssetDigest) => a.bytes === b.bytes && a.sha256 === b.sha256;
+type FrozenArchivePaths = readonly Pick<ProjectModelArchiveAsset, 'rootRef' | 'path'>[];
+const sharedSyncPath = /^\.shared-sync(?:\/|$)/i;
+const sharedSyncMediaPath = /^\.shared-sync\/files\/[a-z\d][a-z\d_-]{0,127}\/[a-z\d][a-z\d_-]{0,127}\/[a-z\d][a-z\d_-]{0,127}\.[a-z\d]{1,8}$/i;
+
+/** 只认旧库已提交的当前版本，预览/准备阶段留下的映射与磁盘缓存均不参与。 */
+async function acceptedSharedSyncAssets(projectId: string): Promise<ArchiveAssetDigest[]> {
+  const { loadSharedAssetSyncState } = await import('./indexedDb/sharedAssetSyncRepository');
+  const { mappings, outbox } = await loadSharedAssetSyncState(projectId);
+  const applied = new Map(outbox.flatMap((entry) => {
+    const revision = entry.revision;
+    if (entry.ownerId !== projectId || (entry.phase !== 'applied' && entry.phase !== 'completed')
+      || !revision || revision.revisionId !== entry.revisionId || revision.sharedAssetId !== entry.sharedAssetId) return [];
+    return [[JSON.stringify([entry.mappingId, entry.revisionId, entry.sharedAssetId]), revision] as const];
+  }));
+  const assets = new Map<string, ArchiveAssetDigest>();
+  for (const mapping of mappings) {
+    if (mapping.ownerId !== projectId || !mapping.acceptedRevisionId) continue;
+    const revision = applied.get(JSON.stringify([mapping.id, mapping.acceptedRevisionId, mapping.sharedAssetId]));
+    const mediaById = new Map(revision?.media.map((media) => [media.id, media] as const));
+    for (const media of mapping.media) {
+      if (media.projectId !== projectId || !sharedSyncMediaPath.test(media.relativePath)) continue;
+      const current = mediaById.get(media.sharedMediaId);
+      // 兼容只有已接受文件映射的旧记录；没有收据时仅认已登记为当前的文件。
+      if (!current && (revision || mapping.kind !== 'file' || mapping.currentFileAssetId !== media.localAssetId)) continue;
+      const path = safeExchangePath(media.relativePath);
+      // 发布可复用其他共享资产的现有文件，按接受版本的摘要核对物理路径。
+      if (!Number.isSafeInteger(media.bytes) || media.bytes <= 0 || !/^[a-f0-9]{64}$/.test(media.sha256)
+        || current && (current.bytes !== media.bytes || current.sha256 !== media.sha256
+          || current.extension !== path.split('.').at(-1)?.toLowerCase())) throw new Error('当前共享素材的文件身份无法核对');
+      const descriptor = { path, bytes: media.bytes, sha256: media.sha256 };
+      const existing = assets.get(path);
+      if (existing && !sameAsset(existing, descriptor)) throw new Error('当前共享素材包含冲突版本');
+      assets.set(path, descriptor);
+    }
+  }
+  return [...assets.values()].sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+}
 
 /** 独立 fixture 的真实解包入口；正式 Store/UI 不接线，不删除可能被journal引用的来源。 */
 export async function prepareProjectModelArchiveFixtureImport(database: IDBDatabase, session: ProjectModelFixtureBusinessSession,
@@ -120,7 +158,8 @@ export function createNativeProjectModelArchivePort(database: IDBDatabase, sessi
  * 新库的只读导出文件端口。所有项目根均由原生已绑定身份解析，不能把 Renderer 拼出的路径作为授权。
  * 这里只提供文件步骤；调用者仍需事务捕获、变更版本 CAS、journal 和原生发布回执。
  */
-export function createBoundProjectModelArchiveExportPort(projectId: string, outputPath: string, missingFiles?: readonly NativeMissingAssetProof[], currentFilesOnly = false):
+export function createBoundProjectModelArchiveExportPort(projectId: string, outputPath: string, missingFiles?: readonly NativeMissingAssetProof[], currentFilesOnly = false,
+  frozenPaths?: FrozenArchivePaths):
   Pick<ProjectModelArchivePort, 'inspectAssets' | 'pack' | 'verifyExportPublication' | 'recoverExportPublication'> {
   if (!/^p2-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(projectId)) {
     throw new Error('新项目身份无效');
@@ -136,7 +175,8 @@ export function createBoundProjectModelArchiveExportPort(projectId: string, outp
     return invoke<string>('resolve_native_project_media_subroot', { projectId, rootRef, create: false });
   };
   const port = createArchiveFilePort(directory, { outputPath, nativeRootFolder: rootFolder, nativeProjectId: projectId,
-    ...(missingFiles?.length ? { missingFiles: structuredClone(missingFiles) as NativeMissingAssetProof[] } : {}), currentFilesOnly });
+    ...(missingFiles?.length ? { missingFiles: structuredClone(missingFiles) as NativeMissingAssetProof[] } : {}),
+    ...(frozenPaths?.length ? { frozenPaths: structuredClone(frozenPaths) } : {}), currentFilesOnly });
   return { inspectAssets: port.inspectAssets, pack: port.pack, verifyExportPublication: port.verifyExportPublication,
     recoverExportPublication: port.recoverExportPublication };
 }
@@ -178,7 +218,8 @@ export function createBoundProjectModelArchiveImportPort(projectId: string, inco
 }
 
 function createArchiveFilePort(directory: (relative: string, create?: boolean) => Promise<string>,
-  options: { incomingFolder?: string; outputPath?: string; nativeRootFolder?: string; nativeProjectId?: string; missingFiles?: readonly NativeMissingAssetProof[]; currentFilesOnly?: boolean },
+  options: { incomingFolder?: string; outputPath?: string; nativeRootFolder?: string; nativeProjectId?: string;
+    missingFiles?: readonly NativeMissingAssetProof[]; currentFilesOnly?: boolean; frozenPaths?: FrozenArchivePaths },
   backup?: ReturnType<typeof createProjectModelPreRestoreBackupService>): ProjectModelArchivePort {
   function assertBoundCapture(capture: ProjectModelTransferCapture): void {
     if (!options.nativeProjectId) return;
@@ -262,6 +303,15 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
       } else for (const root of activeRoots) directories.set(root.rootRef, await directory(root.folderName));
       const origins = new Map<string, StoragePathOrigin>();
       const current = currentStoragePaths(capture, directories, origins);
+      const accepted = options.nativeProjectId ? await acceptedSharedSyncAssets(options.nativeProjectId) : [];
+      const primary = capture.aggregate.project.storageRootRef;
+      const primaryPaths = current.get(primary);
+      if (accepted.length && !primaryPaths) throw new Error('已接受共享素材的项目根不存在');
+      for (const asset of accepted) {
+        primaryPaths?.add(asset.path);
+        const key = storagePathKey(primary, asset.path);
+        if (!origins.has(key)) origins.set(key, { location: '当前已接受的共享素材', fieldPath: 'sharedAssetSync.acceptedRevision' });
+      }
       for (const result of capture.nativeMediaResults ?? []) {
         const root = capture.aggregate.project.storageRootRef;
         const paths = current.get(root) ?? new Set<string>();
@@ -306,16 +356,23 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
           if (!origins.has(key)) origins.set(key, { location: `项目「${projectArchiveDisplayLabel(capture.aggregate.project.name)}」 → 旧版本附件（文件 ID：${projectArchiveDisplayLabel(file.id, '格式无效')}）`,
             fieldPath: 'exchange.fileBindings.localRelativePath' });
           return path;
-        }).filter((path) => !options.currentFilesOnly || current.get(root.rootRef)?.has(path));
+        }).filter((path) => {
+          if (current.get(root.rootRef)?.has(path)) return true;
+          // 旧版 head 曾自动收录共享缓存，单独的文件绑定不能证明它仍在使用。
+          return !options.currentFilesOnly && !(options.nativeProjectId && sharedSyncPath.test(path));
+        });
         if (!(await exists(assetsDir))) {
           if (required.length || current.get(root.rootRef)?.size) throw new Error('项目引用的素材根缺失，无法安全导出');
           continue;
         }
         const referencePaths = [...new Set([...required, ...(current.get(root.rootRef) ?? [])])];
-        const nativeReferences = referencePaths.filter((path) => !(options.missingFiles ?? []).some((proof) => proof.rootRef === root.rootRef && proof.path === path));
+        const nativeReferences = referencePaths.filter((path) => !(options.nativeProjectId && sharedSyncPath.test(path) && !sharedSyncMediaPath.test(path))
+          && !(options.missingFiles ?? []).some((proof) => proof.rootRef === root.rootRef && proof.path === path));
         const includeImportPaths = nativeReferences.filter((path) => /^imports\//i.test(path));
+        const sharedReferences = new Set(nativeReferences.filter((path) => sharedSyncMediaPath.test(path)));
         const assets = await invoke<Array<ArchiveAssetDigest & { aliases?: string[] }>>('inspect_project_archive_assets', {
           assetsDir, includeImportPaths, resolveImportAliases: true, referencePaths: nativeReferences,
+          ...(options.nativeProjectId ? { excludeUnreferencedSharedSync: true } : {}),
         });
         // 新项目的第二个根可位于 primary/roots 下，不能再按 primary 根捕获一次。
         const nestedRoots = capture.aggregate.project.storageBindings.filter((item) => item.folderName.startsWith(`${root.folderName}/`))
@@ -323,7 +380,15 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
         const retained: Array<ArchiveAssetDigest & { aliases?: string[]; backupSourceRelativePath?: string }> = assets.filter((asset) => !(root.folderName === options.nativeRootFolder
           && (asset.path.toLowerCase() === '.ai-canvas-native-project.json' || asset.path.toLowerCase().startsWith('roots/')))
           && !nestedRoots.some((prefix) => asset.path.startsWith(prefix))
+          && !(options.nativeProjectId && sharedSyncPath.test(asset.path)
+            && !sharedReferences.has(asset.path) && !asset.aliases?.some((path) => sharedReferences.has(path)))
           && !(options.missingFiles ?? []).some((proof) => proof.rootRef === root.rootRef && proof.copyPath === asset.path));
+        // 仅续接旧操作时按其冻结清单逐项核验；不为新归档重新枚举缓存。
+        const frozenSharedPaths = (options.frozenPaths ?? []).filter((item) => item.rootRef === root.rootRef && sharedSyncPath.test(item.path)
+          && !retained.some((asset) => asset.path === item.path || asset.aliases?.includes(item.path))).map((item) => item.path);
+        if (frozenSharedPaths.length) retained.push(...await invoke<ArchiveAssetDigest[]>('inspect_project_archive_assets', {
+          assetsDir, selectedPaths: frozenSharedPaths,
+        }));
         for (const proof of options.missingFiles ?? []) if (proof.rootRef === root.rootRef && referencePaths.includes(proof.path)) {
           if (retained.some((asset) => asset.path === proof.path || asset.aliases?.includes(proof.path))) throw new Error('原缺失文件重新出现，请重新核对备份');
           safeExchangePath(proof.path); safeExchangePath(proof.copyPath);
@@ -338,10 +403,17 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
           const location = `${origin?.location ?? `项目「${projectArchiveDisplayLabel(capture.aggregate.project.name)}」`}（素材根：${projectArchiveDisplayLabel(root.rootRef, '已绑定根')}）`;
           throw new Error(missingProjectAssetMessage(path, location, origin?.fieldPath, '项目引用的素材缺失，无法安全导出'));
         }
+        if (root.rootRef === primary) for (const expected of accepted) {
+          const found = retained.find((asset) => asset.path === expected.path || asset.aliases?.includes(expected.path));
+          if (!found || !sameAsset(expected, found)) throw new Error('当前已接受的共享素材内容已变化，未归档');
+        }
         result.push(...retained
           .map((asset) => ({ path: asset.path, bytes: asset.bytes, sha256: asset.sha256, rootRef: root.rootRef, aliases: asset.aliases,
             ...(asset.backupSourceRelativePath ? { backupSourceRelativePath: asset.backupSourceRelativePath } : {}),
             localAbsolutePath: `${assetsDir.replace(/\\/g, '/').replace(/\/$/, '')}/${asset.backupSourceRelativePath ?? asset.path}` })));
+      }
+      if (options.nativeProjectId && !configValuesEqual(accepted, await acceptedSharedSyncAssets(options.nativeProjectId))) {
+        throw new Error('归档扫描期间已接受的共享素材发生变化，请重试');
       }
       return result;
     },
