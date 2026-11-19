@@ -134,11 +134,7 @@ export async function createFarNodeWebGpu(
 
   try {
     signal.throwIfAborted();
-    const gpuContext = canvas.getContext('webgpu');
-    if (!gpuContext) throw new Error('WebGPU canvas context is unavailable');
-    context = gpuContext;
     const format = gpu.getPreferredCanvasFormat();
-    gpuContext.configure({ device, format, alphaMode: 'premultiplied' });
     const tileCanvas = canvas.ownerDocument.createElement('canvas');
     staging = tileCanvas;
     const tileContext = tileCanvas.getContext('2d');
@@ -268,6 +264,12 @@ export async function createFarNodeWebGpu(
           }
           if (canvas.width !== width) canvas.width = width;
           if (canvas.height !== height) canvas.height = height;
+          // Chromium validates the canvas texture at configure time. Wait for a real raster size.
+          if (!context) {
+            context = canvas.getContext('webgpu');
+            if (!context) throw new Error('WebGPU canvas context is unavailable');
+            context.configure({ device, format, alphaMode: 'premultiplied' });
+          }
           if (styleToken !== paintedStyle) {
             resetTiles();
             paintedStyle = styleToken;
@@ -291,7 +293,7 @@ export async function createFarNodeWebGpu(
           const encoder = device.createCommandEncoder();
           const pass = encoder.beginRenderPass({
             colorAttachments: [{
-              view: gpuContext.getCurrentTexture().createView(),
+              view: context.getCurrentTexture().createView(),
               clearValue: [0, 0, 0, 0],
               loadOp: 'clear',
               storeOp: 'store',

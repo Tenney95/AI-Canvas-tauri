@@ -2,9 +2,11 @@ import { isTauri } from '@tauri-apps/api/core';
 import { useAppStore } from '../store/useAppStore';
 import { getCanvasViewportController, type CanvasViewportController } from './canvasViewportService';
 import { probeHtmlInCanvas as runHtmlInCanvasProbe } from './htmlInCanvasProbe';
+import {
+  CANVAS_FAR_NODE_MODE_EVENT, CANVAS_FAR_NODE_MODE_KEY, canvasFarNodeRequiresNativeTouch,
+  isCanvasFarNodeMouseOnly, setCanvasFarNodeMouseOnly,
+} from './canvasFarNodeTestSession';
 
-const MODE_KEY = 'canvas-far-layer-benchmark';
-const MODE_EVENT = 'ai-canvas:far-layer-benchmark';
 const FAR_LAYER = '[data-canvas-far-layer]';
 const START_ZOOM = 0.11486761710794298;
 const PHASES = [[190, 0, 1], [-140, 120, 1], [120, 60, 1.4], [0, 0, 1]] as const;
@@ -20,8 +22,8 @@ function assertMode(mode: Mode) {
 
 function selectMode(mode: Mode) {
   assertMode(mode);
-  sessionStorage.setItem(MODE_KEY, mode);
-  window.dispatchEvent(new Event(MODE_EVENT));
+  sessionStorage.setItem(CANVAS_FAR_NODE_MODE_KEY, mode);
+  window.dispatchEvent(new Event(CANVAS_FAR_NODE_MODE_EVENT));
 }
 
 function status() {
@@ -30,7 +32,7 @@ function status() {
   const root = layer?.closest('.react-flow') ?? document.querySelector('.react-flow');
   const viewport = getCanvasViewportController()?.getSnapshot();
   return {
-    requestedMode: sessionStorage.getItem(MODE_KEY) ?? 'canvas',
+    requestedMode: sessionStorage.getItem(CANVAS_FAR_NODE_MODE_KEY) ?? 'canvas',
     backend: layer?.dataset.canvasFarBackend ?? (layer ? null : 'dom'),
     webgpuStatus: layer?.dataset.webgpuStatus ?? null,
     webgpuReason: layer?.dataset.webgpuReason ?? null,
@@ -53,6 +55,7 @@ function status() {
     platform: navigator.platform,
     userAgent: navigator.userAgent,
     touchPoints: navigator.maxTouchPoints,
+    mouseOnly: isCanvasFarNodeMouseOnly(),
   };
 }
 
@@ -143,6 +146,11 @@ export function installCanvasFarNodeBenchmark(): () => void {
       if (running || probing) throw new Error('请等待当前基准测试或能力探测完成');
       selectMode(mode);
     },
+    setMouseOnly(enabled: boolean) {
+      if (running || probing) throw new Error('请等待当前基准测试或能力探测完成');
+      if (typeof enabled !== 'boolean') throw new Error('请传入 true 或 false');
+      setCanvasFarNodeMouseOnly(enabled);
+    },
     probeHtmlInCanvas() {
       if (running) throw new Error('请等待当前基准测试完成');
       probing ??= runHtmlInCanvasProbe().finally(() => { probing = undefined; });
@@ -151,7 +159,6 @@ export function installCanvasFarNodeBenchmark(): () => void {
     async run(mode: Mode) {
       assertMode(mode);
       if (running || probing) throw new Error('请等待当前基准测试或能力探测完成');
-      if (mode !== 'dom' && navigator.maxTouchPoints > 0) throw new Error('此原型在具备触屏能力的设备保留 DOM 路径');
       const controller = getCanvasViewportController();
       const { currentProjectId, nodes, edges, selectedNodeIds, activeNodeId } = useAppStore.getState();
       if (!controller || !currentProjectId || nodes.length !== 600 || edges.length !== 1353) {
@@ -169,6 +176,9 @@ export function installCanvasFarNodeBenchmark(): () => void {
       const assertCurrent = () => {
         if (!isCurrent()) throw new Error('测试项目已切换');
         if (!foreground || document.visibilityState !== 'visible') throw new Error('请让测试窗口保持前台');
+        if (mode !== 'dom' && canvasFarNodeRequiresNativeTouch()) {
+          throw new Error('当前启用触控保护。若只用鼠标复测，请先执行 canvasFarNodeBenchmark.setMouseOnly(true)');
+        }
       };
       assertCurrent();
       running = true;
@@ -215,7 +225,10 @@ export function installCanvasFarNodeBenchmark(): () => void {
   window.canvasFarNodeBenchmark = api;
   return () => {
     disposed = true;
-    if (window.canvasFarNodeBenchmark === api) delete window.canvasFarNodeBenchmark;
+    if (window.canvasFarNodeBenchmark === api) {
+      delete window.canvasFarNodeBenchmark;
+      setCanvasFarNodeMouseOnly(false);
+    }
   };
 }
 
@@ -224,6 +237,7 @@ declare global {
     canvasFarNodeBenchmark?: {
       status: typeof status;
       setMode: (mode: Mode) => void;
+      setMouseOnly: (enabled: boolean) => void;
       probeHtmlInCanvas: typeof runHtmlInCanvasProbe;
       run: (mode: Mode) => Promise<unknown>;
     };

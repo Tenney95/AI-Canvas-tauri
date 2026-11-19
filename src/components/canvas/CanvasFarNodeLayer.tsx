@@ -5,6 +5,10 @@ import { useStore, useStoreApi, type Node, type ReactFlowState, type Rect } from
 import { CanvasNodeLodContext } from '../../hooks/useCanvasNodeLod';
 import { useReferencedImageRevisions, withPreviewRevision } from '../../hooks/useReferencedImageWatcher';
 import type { CanvasNodeLodRuntime } from '../../services/canvasNodeLodRuntime';
+import {
+  CANVAS_FAR_NODE_MODE_EVENT, CANVAS_FAR_NODE_MODE_KEY, canvasFarNodeRequiresNativeTouch,
+  isCanvasFarNodeMouseOnly, setCanvasFarNodeMouseOnly,
+} from '../../services/canvasFarNodeTestSession';
 import { useAppStore } from '../../store/useAppStore';
 import { isAssetNodeConnectionDragging, subscribeAssetNodeConnectionDrag } from '../../utils/assetNodeConnection';
 import { needsNativeCanvasEdge } from '../../utils/canvasEdgeModels';
@@ -21,25 +25,23 @@ interface Props {
   };
 }
 
-const BENCHMARK_EVENT = 'ai-canvas:far-layer-benchmark';
-const BENCHMARK_KEY = 'canvas-far-layer-benchmark';
 const MEDIA_TYPES = new Set(['ai-image', 'source-image', 'ai-video', 'source-video']);
 const EMPTY_NODE_IDS: ReadonlySet<string> = new Set();
 type PrototypeMode = 'dom' | 'unlinked' | 'canvas' | 'webgpu';
 type HitCard = CanvasFarNodeCard & { handles: readonly Rect[] };
 
 function readPrototypeMode(): PrototypeMode {
-  if (!import.meta.env.DEV || !isTauri() || navigator.maxTouchPoints > 0) return 'dom';
+  if (!import.meta.env.DEV || !isTauri() || canvasFarNodeRequiresNativeTouch()) return 'dom';
   try {
-    const mode = sessionStorage.getItem(BENCHMARK_KEY);
+    const mode = sessionStorage.getItem(CANVAS_FAR_NODE_MODE_KEY);
     if (mode === 'dom' || mode === 'unlinked' || mode === 'webgpu') return mode;
   } catch { /* The development prototype still works without session storage. */ }
   return 'canvas';
 }
 
 function subscribePrototypeMode(listener: () => void) {
-  window.addEventListener(BENCHMARK_EVENT, listener);
-  return () => window.removeEventListener(BENCHMARK_EVENT, listener);
+  window.addEventListener(CANVAS_FAR_NODE_MODE_EVENT, listener);
+  return () => window.removeEventListener(CANVAS_FAR_NODE_MODE_EVENT, listener);
 }
 
 function previewKey(source: string, image: boolean) {
@@ -169,6 +171,13 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
     };
     const restoreTarget = (event: MouseEvent) => {
       if (captured.has(event)) return;
+      if (event instanceof PointerEvent && event.pointerType && event.pointerType !== 'mouse') {
+        // Disarm the developer override. Native hit-testing is available for the next gesture.
+        if (isCanvasFarNodeMouseOnly() && event.target instanceof Element && surface.contains(event.target)) {
+          flushSync(() => setCanvasFarNodeMouseOnly(false));
+        }
+        return;
+      }
       const hit = findTarget(input.current.models, surface, viewport, event);
       if (!hit) return;
       if (input.current.hoverId !== hit.id) flushSync(() => setHoverId(hit.id));

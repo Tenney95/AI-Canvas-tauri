@@ -999,3 +999,13 @@ await canvasFarNodeBenchmark.run('webgpu')
 两个 `run` 调用都先预热缩略图，再按原四段各 650 ms 的轨迹采样，结束后恢复原视口。交替重复四轮并对比 `zoom.p95`、`zoom.over50`、`over50`、实际 `backend` 和窗口 DPR。WebGPU 请求回退时会报出原因。手动检查当前后端时，先缩远到约 12%，再调用 `canvasFarNodeBenchmark.status()`。用 `setMode('canvas')` 恢复 Canvas 2D。可加跑 `run('dom')` 作为原节点对照。触屏设备的原型保护会禁用远景位图对照，先用非触屏 Windows 环境采样。
 
 Windows 和 macOS 均核对深浅主题、连线坐标和点击命中。点选远景图片应恢复原编辑节点，视频播放后取消选择应继续播放，拖线应恢复原端口。macOS 尝试请求 `webgpu` 时应保持 `canvas2d`。本分支已实现，未运行自动化、构建或实机测试。
+
+#### Windows 首轮回传与修正
+
+`b5f6d777` 在 RTX 4070 Ti、WebView2 157.0.4341.60、DPR 1.5 的 Windows 11 桌面实机上启动，测试项目为同一份 600 节点和 1,353 条线副本。WebView2 默认报告 10 个触点，远景层先按触控保护使用 DOM。测试在页面临时将报告值设为 0 后，四轮 Canvas 2D 的缩放 P95 分别为 20.90、27.60、20.80、20.70 ms，中位数 20.85 ms。604 个缩放帧间隔中有 1 个超过 50 ms。深浅主题、连线命中、框选、标注、视频播放、拖线撤销、缩放恢复及保存重开共八项 Canvas 2D 桌面检查通过。
+
+HTML-in-Canvas 探针回读红色像素成功。WebGPU 远景首次调用 `configure()` 时目标像素尺寸仍为 0×0，触发 WebView2 纹理校验并回退到 Canvas 2D。首轮 WebGPU 性能和交互均无有效结果。
+
+已将 GPU 上下文获取和配置推迟到首帧写入有效像素尺寸以后。另给开发版增加显式鼠标测试模式，保留 WebView2 原始触点报告，退出开发窗口或在画布内以触摸、笔输入时解除。触控设备的默认保护继续有效。修改后本次未运行测试，待用户验收。
+
+复测更新到测试分支最新提交，再打开同一测试副本。如果 `status().touchPoints` 大于 0，在 F12 Console 执行 `canvasFarNodeBenchmark.setMouseOnly(true)` 并仅使用鼠标交互。先运行 `run('canvas')` 和 `run('webgpu')` 确认后端，再按原顺序采样。WebGPU 组起止应均为 `backend: 'webgpu'`、`webgpuStatus: 'active'`，原生触点数量保持原值且 `mouseOnly: true`。若仍回退，记录 `webgpuReason` 和实际错误。完成后执行 `canvasFarNodeBenchmark.setMouseOnly(false)`，核对报告触点的设备恢复默认 DOM。
