@@ -252,11 +252,15 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     }
     const store = fixtureStore(aggregate);
     expect(await store.getState().switchProject(canvasA)).toBe(canvasA);
-    const added = await store.getState().addEpisodes([{ name: '新分集' }]);
+    const added = await store.getState().addEpisodes([{ name: '新分集', outline: ' 新分集大纲 ' },
+      { name: '次项失败', outline: 42 as unknown as string }, { name: '不再提交', outline: '尚未创建' }]);
     expect(added).toHaveLength(1);
     const persisted = (await readNativeProjectCapture(projectId))!.aggregate;
     const first = persisted.episodes.find((episode) => episode.canvasId === canvasA)!;
     const created = persisted.episodes.find((episode) => episode.canvasId === added[0])!;
+    expect(persisted.episodes.map((episode) => episode.name)).not.toContain('次项失败');
+    expect(persisted.episodes.map((episode) => episode.name)).not.toContain('不再提交');
+    expect(persisted.episodeContents.find((body) => body.episodeId === created.id)).toMatchObject({ revision: 0, outline: '新分集大纲' });
     expect(first.displayNo).toBeUndefined();
     expect(created.displayNo).toBe(scenario === 'standalone' ? 2 : 3);
     if (scenario === 'existing-conflict') expect(persisted.episodes.find((episode) => episode.id === episodeB)?.displayNo).toBe(1);

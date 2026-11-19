@@ -307,6 +307,22 @@ describe('series_split_episodes', () => {
     expect(result.retryable).toBe(true);
     unregisters.forEach((unregister) => unregister());
   });
+
+  it('部分创建按已提交 ID 计数，即使目录还未投影该分集', async () => {
+    const addEpisodes = vi.fn(async () => ['已提交画布']);
+    useAppStore.setState({ addEpisodes });
+    const unregisters = registerSeriesAgentTools();
+    try {
+      const result = await getAgentTool('series_split_episodes')!.execute(context(), {
+        episodes: [{ outline: '首项提交' }, { outline: '次项未创建' }],
+      });
+      expect(result).toMatchObject({ status: 'success', summary: '已创建 1 个分集画布，另有 1 个未创建' });
+      expect(JSON.parse(result.modelContent)).toEqual({ created: [{ id: '已提交画布' }], createdIds: ['已提交画布'], partial: 1 });
+      expect(addEpisodes).toHaveBeenCalledOnce();
+    } finally {
+      unregisters.forEach((unregister) => unregister());
+    }
+  });
 });
 
 describe('episode creative tools', () => {

@@ -2123,42 +2123,38 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       try {
         await runtime.tail;
         assertCurrent();
-        let selection = runtime.loaded.selection;
-        if (selection.project.kind === 'standalone') {
-          const canvas = selection.canvas;
-          if (!canvas) throw new Error('原画布不可用');
-          const episodeId = `e2-${crypto.randomUUID()}`;
-          if ((await resolveProjectModel(episodeId)).dataModel !== 'missing') throw new Error('分集身份已被占用');
-          assertCurrent();
-          await convertNativeProjectToSeries({ projectId: native.projectId, expectedProjectEpoch: selection.project.epoch,
-            expectedCanvasId: canvas.id, expectedCanvasEpoch: canvas.epoch, expectedCanvasRevision: canvas.revision,
-            expectedStandaloneRevision: runtime.loaded.content.standaloneCreative?.revision ?? 0, episodeId, name: selection.project.name });
-          const updated = await readNativeProjectView(native.projectId, currentId);
-          if (!updated) throw new Error('转换后的项目无法读取');
-          selection = updated.selection;
-        }
-        let nextNo = nativeEpisodeDisplayNumbers(selection.episodes).reduce((max, number) => Math.max(max, number), 0);
+        const selection = runtime.loaded.selection;
+        let project = selection.project;
+        let nextNo = project.kind === 'standalone' ? 1
+          : nativeEpisodeDisplayNumbers(selection.episodes).reduce((max, number) => Math.max(max, number), 0);
         for (const input of entries) {
           const episodeId = `e2-${crypto.randomUUID()}`, canvasId = `c2-${crypto.randomUUID()}`;
           const [episodeIdentity, canvasIdentity] = await Promise.all([resolveProjectModel(episodeId), resolveProjectModel(canvasId)]);
           if (episodeIdentity.dataModel !== 'missing' || canvasIdentity.dataModel !== 'missing') throw new Error('分集身份已被占用');
           assertCurrent();
           nextNo += 1;
-          const aggregate = await createNativeEpisode({ projectId: native.projectId, expectedProjectEpoch: selection.project.epoch,
-            episodeId, canvasId, displayNo: nextNo, name: input.name?.trim() || `第 ${nextNo} 集` });
-          created.push(canvasId);
-          if (input.outline?.trim()) {
-            const episode = aggregate.episodes.find((item) => item.id === episodeId);
-            const body = aggregate.episodeContents.find((item) => item.episodeId === episodeId);
-            if (!episode || !body) throw new Error('新分集正文无法读取');
-            await saveNativeEpisodeContent({ projectId: native.projectId, expectedProjectEpoch: aggregate.project.epoch,
-              episodeId, expectedCanvasId: canvasId, expectedEpisodeRevision: episode.revision,
-              expectedContentRevision: body.revision, patch: { outline: input.outline.trim() } });
+          const newEpisode = { episodeId, canvasId, displayNo: nextNo, name: input.name?.trim() || `第 ${nextNo} 集`, outline: input.outline };
+          const identity = { projectId: native.projectId, expectedProjectEpoch: project.epoch };
+          if (project.kind === 'standalone') {
+            const canvas = selection.canvas;
+            if (!canvas) throw new Error('原画布不可用');
+            const originalEpisodeId = `e2-${crypto.randomUUID()}`;
+            if ((await resolveProjectModel(originalEpisodeId)).dataModel !== 'missing') throw new Error('分集身份已被占用');
+            assertCurrent();
+            ({ project } = await convertNativeProjectToSeries({ ...identity, expectedCanvasId: canvas.id,
+              expectedCanvasEpoch: canvas.epoch, expectedCanvasRevision: canvas.revision,
+              expectedStandaloneRevision: runtime.loaded.content.standaloneCreative?.revision ?? 0,
+              episodeId: originalEpisodeId, name: project.name, appendEpisode: newEpisode }));
+          } else {
+            ({ project } = await createNativeEpisode({ ...identity, ...newEpisode }));
           }
-          selection = { ...selection, project: aggregate.project, episodes: aggregate.episodes };
+          created.push(canvasId);
         }
       } catch (error) {
-        if (isCurrent()) get().showToast(error instanceof Error ? error.message : '新增分集失败', 'error');
+        if (isCurrent()) {
+          const reason = error instanceof Error ? error.message : '新增分集失败';
+          get().showToast(created.length ? `只成功新增了 ${created.length} 集，${reason}` : reason, 'error');
+        }
       } finally {
         try { await restoreView(); }
         finally {

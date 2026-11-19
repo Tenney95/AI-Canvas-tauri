@@ -518,6 +518,31 @@ describe('独立新项目仓储', () => {
     expect((await listNativeEpisodes(initial.project.id, { factory })).map((episode) => episode.id)).toEqual([id('e2', '3')]);
   });
 
+  it('分集大纲、分集和画布原子创建，首次拆分失败也不提前转换普通项目', async () => {
+    const initial = await createNativeProject({ name: '原项目', projectId: id('p2', '1'), canvasId: id('c2', '2'), now: 1 }, { factory });
+    const conversion = { projectId: initial.project.id, expectedProjectEpoch: initial.project.epoch,
+      expectedCanvasId: initial.canvas!.id, expectedCanvasEpoch: initial.canvas!.epoch,
+      expectedCanvasRevision: initial.canvas!.revision, expectedStandaloneRevision: 0,
+      episodeId: id('e2', '3'), name: '原项目', now: 2 };
+    const second = { name: '第二集', episodeId: id('e2', '4'), canvasId: id('c2', '5'), displayNo: 2 };
+    const rejectedOutline = 42 as unknown as string;
+    await expect(convertNativeProjectToSeries({ ...conversion, appendEpisode: { ...second, outline: rejectedOutline } }, { factory }))
+      .rejects.toThrow('invalid-creative-content');
+    expect(await readNativeProject(initial.project.id, { factory })).toEqual(initial);
+
+    const converted = await convertNativeProjectToSeries({ ...conversion, appendEpisode: { ...second, outline: ' 第二集大纲 ' } }, { factory });
+    expect(converted.episodes.map((episode) => episode.canvasId)).toEqual([initial.canvas!.id, second.canvasId]);
+    expect(converted.episodeContents.find((body) => body.episodeId === second.episodeId)).toMatchObject({ revision: 0, outline: '第二集大纲' });
+    const third = { projectId: initial.project.id, expectedProjectEpoch: converted.project.epoch,
+      name: '第三集', episodeId: id('e2', '6'), canvasId: id('c2', '7') };
+    await expect(createNativeEpisode({ ...third, outline: rejectedOutline }, { factory })).rejects.toThrow('invalid-creative-content');
+    expect(await readNativeProject(initial.project.id, { factory })).toEqual(converted);
+
+    const complete = await createNativeEpisode({ ...third, outline: '第三集大纲' }, { factory });
+    expect(complete.episodeContents.find((body) => body.episodeId === third.episodeId)).toMatchObject({ revision: 0, outline: '第三集大纲' });
+    expect(await readNativeProject(initial.project.id, { factory })).toEqual(complete);
+  });
+
   it('分集正文先保存时旧删除被拒；删除末集保留剧集且墓碑阻止 ID 重用', async () => {
     const initial = await createNativeProject({ name: '零集剧集', kind: 'series', projectId: id('p2', '1'), now: 1 }, { factory });
     expect(initial.canvas).toBeNull();

@@ -541,22 +541,25 @@ export function registerSeriesAgentTools(): Array<() => void> {
           return {
             status: 'error',
             summary: '分集创建失败',
-            modelContent: '分集创建失败，画布与剧集数据未改动',
+            modelContent: '本次未确认创建任何新分集，请核对项目后重试',
             errorCode: 'SERIES_SPLIT_FAILED',
             retryable: true,
           };
         }
         const projects = useAppStore.getState().projects;
-        const created = createdIds.flatMap((id) => {
+        const created = createdIds.map((id) => {
           const episode = projects.find((project) => project.id === id);
-          return episode ? [{ episodeNo: episode.episodeNo, name: episode.name }] : [];
+          return episode ? { episodeNo: episode.episodeNo, name: episode.name } : { id };
         });
+        const partial = entries.length - createdIds.length;
         return {
           status: 'success',
-          summary: `已创建 ${created.length} 个分集画布`,
+          summary: partial > 0 ? `已创建 ${createdIds.length} 个分集画布，另有 ${partial} 个未创建`
+            : `已创建 ${createdIds.length} 个分集画布`,
           modelContent: JSON.stringify({
             created,
-            partial: created.length < entries.length ? entries.length - created.length : undefined,
+            createdIds,
+            partial: partial > 0 ? partial : undefined,
           }),
         };
       },

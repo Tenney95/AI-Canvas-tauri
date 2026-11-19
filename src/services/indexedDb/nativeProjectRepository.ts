@@ -934,9 +934,34 @@ export function validateCanvasTarget(project: ProjectRecord, episode: EpisodeRec
   return validateProjectModelTransferAggregate(frame, prior).canvases[0];
 }
 
-/** 原子转为剧集，保留项目和原画布 ID；已打开画布 epoch 推进。 */
+interface NativeEpisodeSeed {
+  name: string;
+  outline?: string;
+  episodeId?: string;
+  canvasId?: string;
+  displayNo?: number;
+}
+
+async function prepareNativeEpisodeRows(tx: IDBTransaction, project: ProjectRecord, seed: NativeEpisodeSeed, orderRank: number, now: number) {
+  const episodeId = seed.episodeId ?? `e2-${crypto.randomUUID()}`, canvasId = seed.canvasId ?? `c2-${crypto.randomUUID()}`;
+  if (!isNativeEpisodeId(episodeId) || !isNativeCanvasId(canvasId)
+    || seed.displayNo !== undefined && (!Number.isSafeInteger(seed.displayNo) || seed.displayNo < 1)) return fail('invalid-identity');
+  if (seed.outline !== undefined && typeof seed.outline !== 'string') return fail('invalid-creative-content');
+  await assertUnused(tx, episodeId, canvasId);
+  const outline = seed.outline?.trim();
+  const episode: EpisodeRecord = { id: episodeId, projectId: project.id, canvasId, name: nameValue(seed.name), orderRank,
+    ...(seed.displayNo !== undefined ? { displayNo: seed.displayNo } : {}), createdAt: now, updatedAt: now,
+    epoch: 1, revision: 0, settingsPolicy: { mode: 'inherit', overrides: {} } };
+  const body: EpisodeContent = { episodeId, revision: 0, storageRootRef: project.storageRootRef, ...(outline ? { outline } : {}) };
+  const canvas: CanvasDocument = { id: canvasId, projectId: project.id, episodeId, storageRootRef: project.storageRootRef,
+    nodes: [], edges: [], groups: [], epoch: 1, revision: 0, revisionScope: 'project' };
+  return { episode, body, canvas };
+}
+
+/** 原子转为剧集，可同事务新增下一集；原项目和原画布 ID 保留，原画布 epoch 推进。 */
 export async function convertNativeProjectToSeries(input: { projectId: string; expectedProjectEpoch: number; expectedCanvasId: string; expectedCanvasEpoch: number;
-  expectedCanvasRevision: number; expectedStandaloneRevision: number; episodeId?: string; name: string; now?: number }, options: NativeProjectOptions = {}): Promise<NativeProjectAggregate> {
+  expectedCanvasRevision: number; expectedStandaloneRevision: number; episodeId?: string; name: string;
+  appendEpisode?: NativeEpisodeSeed; now?: number }, options: NativeProjectOptions = {}): Promise<NativeProjectAggregate> {
   const fixed = structuredClone(input), episodeId = fixed.episodeId ?? `e2-${crypto.randomUUID()}`;
   const name = nameValue(fixed.name), now = timestamp(fixed.now);
   if (!isNativeEpisodeId(episodeId)) return fail('invalid-identity');
@@ -958,33 +983,28 @@ export async function convertNativeProjectToSeries(input: { projectId: string; e
     const body: EpisodeContent = { ...creative, episodeId };
     const updatedCanvas: CanvasDocument = { ...canvas, episodeId, epoch: increment(canvas.epoch) };
     const project: ProjectRecord = { ...current.project, kind: 'series', epoch: increment(current.project.epoch), updatedAt: now };
-    const next = validateAggregate(project, projectContent, [episode], [body], [updatedCanvas]);
+    const appended = fixed.appendEpisode !== undefined ? await prepareNativeEpisodeRows(tx, project, fixed.appendEpisode, 1, now) : undefined;
+    if (appended?.episode.id === episodeId) return fail('identity-conflict');
+    const next = validateAggregate(project, projectContent, appended ? [episode, appended.episode] : [episode],
+      appended ? [body, appended.body] : [body], appended ? [updatedCanvas, appended.canvas] : [updatedCanvas]);
     await Promise.all([request(tx.objectStore(ROOTS).put(next.project)), request(tx.objectStore(CONTENTS).put(next.content)),
       request(tx.objectStore(CANVASES).put(updatedCanvas)), request(tx.objectStore(EPISODES).add(episode)),
-      request(tx.objectStore(EPISODE_CONTENTS).add(body))]);
+      request(tx.objectStore(EPISODE_CONTENTS).add(body)), ...(appended ? [request(tx.objectStore(EPISODES).add(appended.episode)),
+        request(tx.objectStore(EPISODE_CONTENTS).add(appended.body)), request(tx.objectStore(CANVASES).add(appended.canvas))] : [])]);
     return next;
   });
 }
 
-/** 原子新增分集和独立画布；零集剧集仍保留根项目与共享正文。 */
-export async function createNativeEpisode(input: { projectId: string; expectedProjectEpoch: number; name: string;
-  episodeId?: string; canvasId?: string; displayNo?: number; now?: number }, options: NativeProjectOptions = {}): Promise<NativeProjectAggregate> {
-  const fixed = structuredClone(input), episodeId = fixed.episodeId ?? `e2-${crypto.randomUUID()}`,
-    canvasId = fixed.canvasId ?? `c2-${crypto.randomUUID()}`, name = nameValue(fixed.name), now = timestamp(fixed.now);
-  if (!isNativeEpisodeId(episodeId) || !isNativeCanvasId(canvasId)
-    || fixed.displayNo !== undefined && (!Number.isSafeInteger(fixed.displayNo) || fixed.displayNo < 1)) return fail('invalid-identity');
+/** 原子新增分集、初始大纲和独立画布；零集剧集仍保留根项目与共享正文。 */
+export async function createNativeEpisode(input: NativeEpisodeSeed & { projectId: string; expectedProjectEpoch: number; now?: number },
+  options: NativeProjectOptions = {}): Promise<NativeProjectAggregate> {
+  const fixed = structuredClone(input), now = timestamp(fixed.now);
   return mutate(fixed.projectId, fixed.expectedProjectEpoch, options, async (tx, current) => {
     if (current.project.kind !== 'series') return fail('not-series');
-    await assertUnused(tx, episodeId, canvasId);
     const rank = current.episodes.length ? increment(current.episodes.reduce((max, episode) => Math.max(max, episode.orderRank), 0)) : 0;
-    const episode: EpisodeRecord = { id: episodeId, projectId: fixed.projectId, canvasId, name, orderRank: rank,
-      ...(fixed.displayNo !== undefined ? { displayNo: fixed.displayNo } : {}), createdAt: now, updatedAt: now,
-      epoch: 1, revision: 0, settingsPolicy: { mode: 'inherit', overrides: {} } };
-    const body: EpisodeContent = { episodeId, revision: 0, storageRootRef: current.project.storageRootRef };
-    const canvas: CanvasDocument = { id: canvasId, projectId: fixed.projectId, episodeId, storageRootRef: current.project.storageRootRef,
-      nodes: [], edges: [], groups: [], epoch: 1, revision: 0, revisionScope: 'project' };
+    const { episode, body, canvas } = await prepareNativeEpisodeRows(tx, current.project, fixed, rank, now);
     const project: ProjectRecord = { ...current.project, epoch: increment(current.project.epoch), updatedAt: now,
-      lastOpenedCanvasId: current.project.lastOpenedCanvasId ?? canvasId };
+      lastOpenedCanvasId: current.project.lastOpenedCanvasId ?? canvas.id };
     const next = validateAggregate(project, current.content, [...current.episodes, episode], [...current.episodeContents, body], [...current.canvases, canvas]);
     await Promise.all([request(tx.objectStore(ROOTS).put(next.project)), request(tx.objectStore(EPISODES).add(episode)),
       request(tx.objectStore(EPISODE_CONTENTS).add(body)), request(tx.objectStore(CANVASES).add(canvas))]);
