@@ -2,7 +2,7 @@ import { materializeNativeArchiveAssetMetadata } from './nativeArchiveAssetMetad
 /** 新项目包新副本导入；未完成的操作保留原暂存与 journal。 */
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
-import { copyFile, exists, lstat, mkdir, readDir, remove } from '@tauri-apps/plugin-fs';
+import { exists, mkdir, readDir } from '@tauri-apps/plugin-fs';
 import * as files from './fileService';
 import { sha256BytesHex } from './mediaDataUrl';
 import { projectModelSourceToken } from './projectModelComparisonMaterial';
@@ -19,51 +19,17 @@ import type { ProjectImportResult } from './projectTransferService';
 import { withPreparedProjectImportRead, type PreparedProjectImport, type ProjectImportOptions } from './projectImportService';
 import type { ValidatedProjectArchiveV4 } from '../types/projectArchiveV4';
 import { isPathInsideDir, trashPathKey } from './fs/undoTrashJournal';
+import { assertPlainArchiveSource, cleanupVerifiedArchiveSource, frozenArchiveSourceAssets, nativeImportSourceName } from './nativeArchiveSourceCleanup';
 
 const digest = (value: unknown) => sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(value)));
-const importSourceName = /^native-import-([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
 const importSourceCleanups = new Map<string, Promise<void>>();
-
-async function assertPlainImportEntry(path: string, directory: boolean) {
-  const info = await lstat(path);
-  if (info.isSymlink || ((info.fileAttributes ?? 0) & 0x400) !== 0 || (directory ? !info.isDirectory : !info.isFile)) {
-    throw new Error('导入暂存目录已变化');
-  }
-  return info;
-}
-
-/** 清理之前核对整个隔离目录。中断过的清理允许部分文件已消失。 */
-async function readImportSourceTree(directory: string, expected: ReadonlyMap<string, ArchiveAssetDigest>) {
-  const allowedFolders = new Set<string>();
-  for (const path of expected.keys()) {
-    const parts = path.split('/').slice(0, -1);
-    while (parts.length) {
-      allowedFolders.add(parts.join('/'));
-      parts.pop();
-    }
-  }
-  const folders: Array<{ relative: string; assets: string[] }> = [{ relative: '', assets: [] }];
-  for (let index = 0; index < folders.length; index++) {
-    const { relative, assets } = folders[index];
-    const parent = relative ? files.joinPath(directory, relative) : directory;
-    await assertPlainImportEntry(parent, true);
-    for (const entry of await readDir(parent)) {
-      const path = relative ? `${relative}/${entry.name}` : entry.name;
-      if (entry.isSymlink) throw new Error('导入暂存包含未知条目');
-      if (entry.isDirectory && allowedFolders.has(path)) folders.push({ relative: path, assets: [] });
-      else if (entry.isFile && expected.has(path)) assets.push(path);
-      else throw new Error('导入暂存包含未知条目');
-    }
-  }
-  return folders;
-}
 
 /** 只清理由已提交的新建导入回执证明的暂存。任何核对失败继续保留。 */
 function cleanupFinalizedImportSource(operation: NativeProjectImportJournal, scannedBase?: string): Promise<void> {
   const { operationId, projectId, sourceRef, mediaPublicationRef, sourceFiles } = operation;
   if (operation.schemaVersion !== 1 || operation.sessionId !== 'native-project' || operation.generation !== 1
     || operation.kind !== 'project-model-import' || operation.mode !== 'import-new' || operation.phase !== 'finalized'
-    || !sourceRef || importSourceName.exec(sourceRef)?.[1] !== operationId || operation.id !== operationId
+    || !sourceRef || nativeImportSourceName.exec(sourceRef)?.[1] !== operationId || operation.id !== operationId
     || operation.targetProjectId !== projectId || operation.next?.project?.id !== projectId || operation.expected !== null
     || operation.committedToken !== operationId || mediaPublicationRef !== `media_v1_${operationId}` || !Array.isArray(sourceFiles)) return Promise.resolve();
   const previous = importSourceCleanups.get(operationId);
@@ -73,53 +39,13 @@ function cleanupFinalizedImportSource(operation: NativeProjectImportJournal, sca
     if (!base || scannedBase !== undefined && scannedBase !== base) return;
     const directory = files.joinPath(base, sourceRef);
     if (!await exists(directory)) return;
-    await assertPlainImportEntry(base, true);
+    await assertPlainArchiveSource(base, true);
     if (!await readNativeProjectContent(projectId)) return;
     const root = await invoke<string>('resolve_native_project_media_root', { projectId });
     if (!root || trashPathKey(directory) === trashPathKey(root) || isPathInsideDir(directory, root) || isPathInsideDir(root, directory)) return;
     await assertNativeArchiveHistoryCommitted(operation);
     await createBoundProjectModelArchiveImportPort(projectId, sourceRef).verifyMediaPublication(operation, mediaPublicationRef);
-    const expected = new Map<string, ArchiveAssetDigest>();
-    for (const file of sourceFiles) {
-      if (!file.archivePath.startsWith('assets/')) return;
-      const path = safeExchangePath(file.archivePath.slice('assets/'.length));
-      const previous = expected.get(path);
-      if (previous && (previous.bytes !== file.bytes || previous.sha256 !== file.sha256)) return;
-      expected.set(path, { path, bytes: file.bytes, sha256: file.sha256 });
-    }
-    const folders = await readImportSourceTree(directory, expected);
-    const assets = folders.flatMap((folder) => folder.assets);
-    if (assets.length) {
-      const actual = await invoke<ArchiveAssetDigest[]>('inspect_project_archive_assets', { assetsDir: directory, selectedPaths: assets });
-      const staged = new Set(assets);
-      if (actual.length !== staged.size || actual.some((file) => {
-        const required = expected.get(file.path);
-        return !staged.delete(file.path) || !required || required.bytes !== file.bytes || required.sha256 !== file.sha256;
-      })) return;
-    }
-    const recheckParents = async (segments: readonly string[]) => {
-      if (await files.getBaseDir() !== base) throw new Error('导入暂存根已变化');
-      await assertPlainImportEntry(base, true);
-      let parent = directory;
-      await assertPlainImportEntry(parent, true);
-      for (const segment of segments) {
-        parent = files.joinPath(parent, segment);
-        await assertPlainImportEntry(parent, true);
-      }
-      return parent;
-    };
-    for (const folder of folders.reverse()) {
-      const segments = folder.relative ? folder.relative.split('/') : [];
-      for (const relative of folder.assets) {
-        const path = files.joinPath(directory, relative);
-        await recheckParents(segments);
-        const info = await assertPlainImportEntry(path, false);
-        if (info.size !== expected.get(relative)?.bytes) return;
-        await remove(path);
-      }
-      // 非递归删除；扫描后新出现的条目不会被移除。
-      await remove(await recheckParents(segments));
-    }
+    await cleanupVerifiedArchiveSource(base, sourceRef, frozenArchiveSourceAssets(sourceFiles));
   })().catch(() => { /* 已导入作品仍可使用；保留材料供下次核对。 */ }).finally(() => importSourceCleanups.delete(operationId));
   importSourceCleanups.set(operationId, task);
   return task;
@@ -131,13 +57,15 @@ export async function cleanupFinalizedNativeProjectImportSources(): Promise<void
   try {
     const base = await files.getBaseDir();
     if (!base || !await exists(base)) return;
-    await assertPlainImportEntry(base, true);
+    await assertPlainArchiveSource(base, true);
     for (const entry of await readDir(base)) {
-      const operationId = entry.isDirectory && !entry.isSymlink ? importSourceName.exec(entry.name)?.[1] : undefined;
+      const operationId = entry.isDirectory && !entry.isSymlink ? nativeImportSourceName.exec(entry.name)?.[1] : undefined;
       if (!operationId) continue;
       const operation = await readNativeProjectImport(operationId).catch(() => undefined);
       if (operation) await cleanupFinalizedImportSource(operation, base);
     }
+    const { cleanupFinalizedNativeProjectUpdateSources } = await import('./nativeProjectUpdateMedia');
+    await cleanupFinalizedNativeProjectUpdateSources(base);
   } catch { /* 数据根暂不可用时，不影响启动。 */ }
 }
 
@@ -211,58 +139,64 @@ async function importSource(sourceValue: ValidatedProjectArchiveV4, originalDire
   const operationId = crypto.randomUUID(), projectId = `p2-${crypto.randomUUID()}`, sourceRef = `native-import-${operationId}`;
   const base = await files.getBaseDir(); if (!base) throw new Error('无法准备隔离导入目录');
   const directory = files.joinPath(base, sourceRef);
-  await mkdir(directory);
-  for (const asset of source.assets) {
-    options.signal?.throwIfAborted();
-    const segments = safeExchangePath(asset.path).split('/');
-    if (segments.length > 1) await mkdir(files.joinPath(directory, ...segments.slice(0, -1)), { recursive: true });
-    await copyFile(files.joinPath(originalDirectory, ...segments), files.joinPath(directory, ...segments));
-  }
-  const actual = await invoke<ArchiveAssetDigest[]>('inspect_project_archive_assets', { assetsDir: directory,
-    selectedPaths: source.assets.map((item) => item.path) });
-  if (actual.length !== source.assets.length || source.assets.some((item) => !actual.some((found) => found.path === item.path
-    && found.bytes === item.bytes && found.sha256 === item.sha256))) throw new Error('项目包素材在预览后变化，未导入');
-  const allocateId = (kind: 'episode' | 'canvas' | 'storage-root') => `${kind === 'episode' ? 'e2' : kind === 'canvas' ? 'c2' : 'r2'}-${crypto.randomUUID()}`;
-  const material = await materializeProjectModelArchiveBusiness(source.payload, source.snapshot, null, projectId, operationId,
-    undefined, { allocateId, folderName: `project-${projectId}` });
-  for (const scope of source.payload.history?.scopes ?? []) if (scope.retired
-    && !material.identities.some((item) => item.kind === 'canvas' && item.sourceId === scope.canvasId)) {
-    material.identities.push({ kind: 'canvas', sourceId: scope.canvasId, localId: allocateId('canvas') });
-  }
-  for (const record of source.payload.videoEditor?.retiredRecords ?? []) {
-    if (!source.snapshot.historicalTargets.some((item) => item.kind === 'canvas' && item.state === 'retired'
-      && item.projectId === source.snapshot.rootProjectId && item.id === record.projectId)) throw new Error('历史剪辑缺少原画布墓碑');
-    if (!material.identities.some((item) => item.kind === 'canvas' && item.sourceId === record.projectId)) {
-      material.identities.push({ kind: 'canvas', sourceId: record.projectId, localId: allocateId('canvas') });
+  let stageCreated = false, registering = false;
+  const operation = await (async () => {
+    await mkdir(directory);
+    stageCreated = true;
+    for (const asset of source.assets) {
+      options.signal?.throwIfAborted();
+      const segments = safeExchangePath(asset.path).split('/');
+      if (segments.length > 1) await mkdir(files.joinPath(directory, ...segments.slice(0, -1)), { recursive: true });
+      await files.copyLocalFileStreamed(files.joinPath(originalDirectory, ...segments), files.joinPath(directory, ...segments), { signal: options.signal });
     }
-  }
-  const exchange: ProjectModelTransferExchange = { lineageId: source.snapshot.lineageId, localHead: source.payload.exchange.head,
-    stateVersion: 1, bundle: source.payload.exchange, identities: material.identities, fileBindings: material.fileBindings, published: [] };
-  const editorArchive = await import('./videoEditorArchive');
-  const editorRecords = editorArchive.materializeArchiveVideoEditorProjects(source.payload.videoEditor, material.identities, material.fileBindings);
-  const retiredEditorRecords = editorArchive.materializeArchiveRetiredVideoEditorProjects(source.payload.videoEditor, material.identities, material.fileBindings);
-  const assetRecords = materializeNativeArchiveAssetMetadata({ aggregate: material.aggregate, editors: editorRecords,
-    identities: material.identities, bindings: material.fileBindings, selected: source.snapshot, source: source.snapshot,
-    metadata: source.payload.assetMetadata });
-  const defaultCanvasId = material.aggregate.project.kind === 'standalone' ? material.aggregate.canvases[0]?.id : undefined;
-  const history: ProjectModelTransferHistoryRow[] = await importProjectModelArchiveHistory(source, projectId, source.snapshot.lineageId, null,
-    { appendChat: options.appendChat, appendMemories: options.appendMemories }, { identities: material.identities, episodes: material.aggregate.episodes, defaultCanvasId, fileBindings: material.fileBindings });
-  const port = createBoundProjectModelArchiveImportPort(projectId, sourceRef);
-  const staged = await port.captureImportSource!(source);
-  const packageDigest = await digest([source.manifest, source.payload.exchange]), intentDigest = await digest([packageDigest, projectId, operationId]);
-  let operation: NativeProjectImportJournal;
-  try {
-    operation = await prepareNativeProjectImport({ operationId, mode: 'import-new', packageDigest, intentDigest,
+    const actual = await invoke<ArchiveAssetDigest[]>('inspect_project_archive_assets', { assetsDir: directory,
+      selectedPaths: source.assets.map((item) => item.path) });
+    if (actual.length !== source.assets.length || source.assets.some((item) => !actual.some((found) => found.path === item.path
+      && found.bytes === item.bytes && found.sha256 === item.sha256))) throw new Error('项目包素材在预览后变化，未导入');
+    const allocateId = (kind: 'episode' | 'canvas' | 'storage-root') => `${kind === 'episode' ? 'e2' : kind === 'canvas' ? 'c2' : 'r2'}-${crypto.randomUUID()}`;
+    const material = await materializeProjectModelArchiveBusiness(source.payload, source.snapshot, null, projectId, operationId,
+      undefined, { allocateId, folderName: `project-${projectId}` });
+    for (const scope of source.payload.history?.scopes ?? []) if (scope.retired
+      && !material.identities.some((item) => item.kind === 'canvas' && item.sourceId === scope.canvasId)) {
+      material.identities.push({ kind: 'canvas', sourceId: scope.canvasId, localId: allocateId('canvas') });
+    }
+    for (const record of source.payload.videoEditor?.retiredRecords ?? []) {
+      if (!source.snapshot.historicalTargets.some((item) => item.kind === 'canvas' && item.state === 'retired'
+        && item.projectId === source.snapshot.rootProjectId && item.id === record.projectId)) throw new Error('历史剪辑缺少原画布墓碑');
+      if (!material.identities.some((item) => item.kind === 'canvas' && item.sourceId === record.projectId)) {
+        material.identities.push({ kind: 'canvas', sourceId: record.projectId, localId: allocateId('canvas') });
+      }
+    }
+    const exchange: ProjectModelTransferExchange = { lineageId: source.snapshot.lineageId, localHead: source.payload.exchange.head,
+      stateVersion: 1, bundle: source.payload.exchange, identities: material.identities, fileBindings: material.fileBindings, published: [] };
+    const editorArchive = await import('./videoEditorArchive');
+    const editorRecords = editorArchive.materializeArchiveVideoEditorProjects(source.payload.videoEditor, material.identities, material.fileBindings);
+    const retiredEditorRecords = editorArchive.materializeArchiveRetiredVideoEditorProjects(source.payload.videoEditor, material.identities, material.fileBindings);
+    const assetRecords = materializeNativeArchiveAssetMetadata({ aggregate: material.aggregate, editors: editorRecords,
+      identities: material.identities, bindings: material.fileBindings, selected: source.snapshot, source: source.snapshot,
+      metadata: source.payload.assetMetadata });
+    const defaultCanvasId = material.aggregate.project.kind === 'standalone' ? material.aggregate.canvases[0]?.id : undefined;
+    const history: ProjectModelTransferHistoryRow[] = await importProjectModelArchiveHistory(source, projectId, source.snapshot.lineageId, null,
+      { appendChat: options.appendChat, appendMemories: options.appendMemories }, { identities: material.identities, episodes: material.aggregate.episodes, defaultCanvasId, fileBindings: material.fileBindings });
+    const port = createBoundProjectModelArchiveImportPort(projectId, sourceRef);
+    const staged = await port.captureImportSource!(source);
+    const packageDigest = await digest([source.manifest, source.payload.exchange]), intentDigest = await digest([packageDigest, projectId, operationId]);
+    options.signal?.throwIfAborted();
+    registering = true;
+    return prepareNativeProjectImport({ operationId, mode: 'import-new', packageDigest, intentDigest,
       sourceLineageId: source.snapshot.lineageId, targetProjectId: projectId, expected: null, next: material.aggregate, exchange,
       idMap: material.identities, history, media: material.media, editorRecords, retiredEditorRecords, assetRecords, sourceRef, sourceFiles: staged.sourceFiles ?? [] });
-  } catch (error) {
-    // 提交回执丢失时先查原 journal；连查询也失败则保留原操作身份，不能自动重新分配。
-    let existing: NativeProjectImportJournal | null;
-    try { existing = await readNativeProjectImport(operationId); }
-    catch (cause) { onOperation?.(operationId); throw new Error(`导入准备结果未知，原操作 ${operationId} 已保留，请先核对`, { cause }); }
-    if (existing) { onOperation?.(operationId); throw new Error(`导入准备已保存，原操作 ${operationId} 可续接`, { cause: error }); }
+  })().catch(async (error) => {
+    if (registering) {
+      // 提交回执丢失时先查原 journal；连查询也失败则保留原操作身份。
+      let existing: NativeProjectImportJournal | null;
+      try { existing = await readNativeProjectImport(operationId); }
+      catch (cause) { onOperation?.(operationId); throw new Error(`导入准备结果未知，原操作 ${operationId} 已保留，请先核对`, { cause }); }
+      if (existing) { onOperation?.(operationId); throw new Error(`导入准备已保存，原操作 ${operationId} 可续接`, { cause: error }); }
+    }
+    if (stageCreated) await cleanupVerifiedArchiveSource(base, sourceRef, source.assets).catch(() => undefined);
     throw error;
-  }
+  });
   onOperation?.(operationId);
   try { return result(await finishImport(operation, options.signal)); }
   catch (error) { throw new Error(`导入未完成，原操作 ${operationId} 已保留；${error instanceof Error ? error.message : '请核对后续接'}`, { cause: error }); }

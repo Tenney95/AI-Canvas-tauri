@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NativeProjectImportJournal } from '../../src/services/indexedDb/nativeProjectRepository';
 
 const io = vi.hoisted(() => ({
-  invoke: vi.fn(), getBaseDir: vi.fn(), readProject: vi.fn(), readImport: vi.fn(), advanceImport: vi.fn(), verifyHistory: vi.fn(), verifyMedia: vi.fn(),
+  invoke: vi.fn(), getBaseDir: vi.fn(), readProject: vi.fn(), readImport: vi.fn(), readUpdate: vi.fn(), advanceImport: vi.fn(), verifyHistory: vi.fn(), verifyMedia: vi.fn(),
   exists: vi.fn(), lstat: vi.fn(), readDir: vi.fn(), remove: vi.fn(),
 }));
 
@@ -15,7 +15,7 @@ vi.mock('../../src/services/nativeArchiveHistoryCommit', () => ({ assertNativeAr
 vi.mock('../../src/services/projectModelArchiveNativePort', () => ({ createBoundProjectModelArchiveImportPort: () => ({ verifyMediaPublication: io.verifyMedia }) }));
 vi.mock('../../src/services/indexedDb/nativeProjectRepository', () => ({
   advanceNativeProjectImport: io.advanceImport, commitNativeProjectImport: vi.fn(), prepareNativeProjectImport: vi.fn(),
-  readNativeProjectContent: io.readProject, readNativeProjectImport: io.readImport,
+  readNativeProjectContent: io.readProject, readNativeProjectImport: io.readImport, readNativeProjectUpdate: io.readUpdate,
 }));
 vi.mock('../../src/services/projectImportService', () => ({ withPreparedProjectImportRead: vi.fn() }));
 
@@ -39,7 +39,7 @@ function importJournal(phase: NativeProjectImportJournal['phase'] = 'finalized')
 }
 
 const entry = (name: string, kind: 'folder' | 'file' | 'link') => ({ name, isDirectory: kind === 'folder', isFile: kind === 'file',
-  isSymlink: kind === 'link', size: kind === 'file' ? sourceFile.bytes : 0 });
+  isSymlink: kind === 'link', size: kind === 'file' ? sourceFile.bytes : 0, mtime: new Date(1) });
 let stageEntries: Map<string, ReturnType<typeof entry>>;
 
 beforeEach(() => {
@@ -115,6 +115,33 @@ describe('新项目导入暂存清理', () => {
     });
     await cleanupFinalizedNativeProjectImportSources();
     expect(io.remove).not.toHaveBeenCalled();
+  });
+
+  it('摘要核对后替换为同样大小的文件时保留该暂存', async () => {
+    io.invoke.mockImplementation(async (command: string) => {
+      if (command === 'resolve_native_project_media_root') return root;
+      stageEntries.set(`${stage}/${sourceFile.path}`, { ...entry('frame.png', 'file'), mtime: new Date(2) });
+      return [sourceFile];
+    });
+    await cleanupFinalizedNativeProjectImportSources();
+    expect(io.remove).not.toHaveBeenCalled();
+  });
+
+  it.each(['update-existing', 'restore-content'])('启动补清理已最终完成的 %s 归档来源', async (mode) => {
+    const sourceRef = `imports/native-update-${operationId}`, updateStage = `${base}/${sourceRef}`;
+    stageEntries.set(`${base}/imports`, entry('imports', 'folder'));
+    stageEntries.set(updateStage, entry(`native-update-${operationId}`, 'folder'));
+    stageEntries.set(`${updateStage}/images`, entry('images', 'folder'));
+    stageEntries.set(`${updateStage}/${sourceFile.path}`, entry('frame.png', 'file'));
+    io.readImport.mockResolvedValue(null);
+    io.readUpdate.mockResolvedValueOnce({ ...importJournal(), mode, sourceRef, phase: 'media_ready' });
+    await cleanupFinalizedNativeProjectImportSources();
+    expect(io.remove).not.toHaveBeenCalled();
+    io.readUpdate.mockResolvedValueOnce({ ...importJournal(), mode, sourceRef });
+    await cleanupFinalizedNativeProjectImportSources();
+    expect(io.verifyHistory).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ mode, phase: 'finalized' }));
+    expect(io.remove.mock.calls).toEqual([[`${updateStage}/${sourceFile.path}`], [`${updateStage}/images`], [updateStage]]);
+    expect(stageEntries.has(`${root}/正式素材.png`)).toBe(true);
   });
 
   it('清理中断后允许补删已核对的空目录', async () => {

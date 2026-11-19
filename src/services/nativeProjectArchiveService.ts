@@ -165,7 +165,7 @@ export async function verifyNativeGlobalRecoverySources(capture: ProjectModelTra
   }
 }
 export async function materializeNativeArchiveGlobalAssets(capture: ProjectModelTransferCapture, operationId: string,
-  recovery?: { files: NativeGlobalRecoveryFile[] }): Promise<ProjectModelTransferCapture> {
+  recovery?: { files: NativeGlobalRecoveryFile[]; preview?: boolean }): Promise<ProjectModelTransferCapture> {
   const portable = structuredClone(capture), references: Array<{ row: Record<string, unknown>; id: string }> = [];
   const indexes = new Map<string, Awaited<ReturnType<typeof getAssetIndexById>>>();
   for (const record of nativeGlobalAssetReferenceRows(portable)) {
@@ -201,21 +201,27 @@ export async function materializeNativeArchiveGlobalAssets(capture: ProjectModel
     destination.set(path, `imports/${publicationId}/${name}`);
     return { path, sourceRootRef: 'global', destinationPath: name, bytes: source.bytes, sha256: source.sha256 };
   }));
-  const projectDir = await invoke<string>('resolve_native_project_media_root', { projectId: capture.aggregate.project.id });
-  const publicationDirectory = `${projectDir.replace(/[\\/]+$/, '')}/imports/${publicationId}`;
-  if (!await exists(publicationDirectory)) {
-    try { await invoke('publish_project_import_assets', { stagingDir: globalRoot, projectDir, operationId: publicationId,
-      sourceRoots: [{ rootRef: 'global', directory: globalRoot }], assets }); }
-    catch (error) { if (!await exists(publicationDirectory)) throw error; }
+  let copied: ArchiveAssetDigest[];
+  if (recovery?.preview) {
+    // 预览只投影将来会用的相对路径，摘要取自已核对的原全局素材，不在项目根创建副本。
+    copied = assets.map((asset) => ({ path: destination.get(asset.path)!, bytes: asset.bytes, sha256: asset.sha256 }));
+  } else {
+    const projectDir = await invoke<string>('resolve_native_project_media_root', { projectId: capture.aggregate.project.id });
+    const publicationDirectory = `${projectDir.replace(/[\\/]+$/, '')}/imports/${publicationId}`;
+    if (!await exists(publicationDirectory)) {
+      try { await invoke('publish_project_import_assets', { stagingDir: globalRoot, projectDir, operationId: publicationId,
+        sourceRoots: [{ rootRef: 'global', directory: globalRoot }], assets }); }
+      catch (error) { if (!await exists(publicationDirectory)) throw error; }
+    }
+    // 同操作只能核验原副本，不能覆盖；完整集合也须相同，不能复用部分或换过来源的目录。
+    const published = await invoke<ArchiveAssetDigest[]>('inspect_project_archive_assets', { assetsDir: publicationDirectory });
+    if (published.length !== assets.length || assets.some((asset) => !published.some((file) => file.path === asset.destinationPath
+      && file.bytes === asset.bytes && file.sha256 === asset.sha256))) throw new Error('原全局素材发布内容与本轮冻结清单不一致，未覆盖原副本');
+    copied = await invoke<ArchiveAssetDigest[]>('inspect_project_archive_assets', { assetsDir: projectDir,
+      selectedPaths: assets.map((item) => destination.get(item.path)!) });
+    if (copied.length !== assets.length || assets.some((item) => !copied.some((found) => found.path === destination.get(item.path)
+      && found.bytes === item.bytes && found.sha256 === item.sha256))) throw new Error('全局素材副本校验失败，未导出');
   }
-  // 同操作只能核验原副本，不能覆盖；完整集合也须相同，不能复用部分或换过来源的目录。
-  const published = await invoke<ArchiveAssetDigest[]>('inspect_project_archive_assets', { assetsDir: publicationDirectory });
-  if (published.length !== assets.length || assets.some((asset) => !published.some((file) => file.path === asset.destinationPath
-    && file.bytes === asset.bytes && file.sha256 === asset.sha256))) throw new Error('原全局素材发布内容与本轮冻结清单不一致，未覆盖原副本');
-  const copied = await invoke<ArchiveAssetDigest[]>('inspect_project_archive_assets', { assetsDir: projectDir,
-    selectedPaths: assets.map((item) => destination.get(item.path)!) });
-  if (copied.length !== assets.length || assets.some((item) => !copied.some((found) => found.path === destination.get(item.path)
-    && found.bytes === item.bytes && found.sha256 === item.sha256))) throw new Error('全局素材副本校验失败，未导出');
   const logicalRoot = portable.exchange?.identities.find((item) => item.kind === 'storage-root'
     && item.localId === portable.aggregate.project.storageRootRef)?.sourceId;
   if (portable.exchange && logicalRoot) for (const asset of assets) {

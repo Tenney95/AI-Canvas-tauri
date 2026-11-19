@@ -39,7 +39,7 @@ export interface ProjectModelArchiveAsset extends ArchiveAssetDigest {
   backupSourceRelativePath?: string;
 }
 export interface ProjectModelArchivePort {
-  inspectAssets(capture: ProjectModelTransferCapture): Promise<ProjectModelArchiveAsset[]>;
+  inspectAssets(capture: ProjectModelTransferCapture, previewAssets?: readonly ProjectModelArchiveAsset[]): Promise<ProjectModelArchiveAsset[]>;
   captureImportSource?(source: ValidatedProjectArchiveV4): Promise<Pick<ProjectModelTransferImportJournal, 'sourceRef' | 'sourceFiles'>>;
   publishMedia(operation: ProjectModelTransferImportJournal, source?: ValidatedProjectArchiveV4): Promise<string>;
   verifyMediaPublication(operation: ProjectModelTransferImportJournal, reference: string): Promise<void>;

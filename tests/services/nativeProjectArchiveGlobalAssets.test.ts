@@ -16,7 +16,7 @@ vi.mock('../../src/services/projectModelArchiveNativePort', () => ({ createBound
 vi.mock('../../src/services/indexedDb/nativeProjectRepository', () => ({ advanceNativeProjectExport: vi.fn(), prepareNativeProjectExport: vi.fn(),
   readNativeProjectCapture: vi.fn(), readNativeProjectExport: vi.fn(), listNativeRetiredCanvasIds: vi.fn() }));
 
-import { materializeNativeArchiveGlobalAssets, nativeMediaResultsForArchive } from '../../src/services/nativeProjectArchiveService';
+import { materializeNativeArchiveGlobalAssets, nativeMediaResultsForArchive, type NativeGlobalRecoveryFile } from '../../src/services/nativeProjectArchiveService';
 
 const hash = 'a'.repeat(64);
 const source = () => ({ aggregate: { project: { id: 'p2-11111111-1111-4111-8111-111111111111' },
@@ -84,6 +84,19 @@ describe('新项目包全局素材', () => {
     expect(scene.imageAssetId).toBeUndefined(); expect(reference.assetSource).toBeUndefined();
     expect((original.aggregate.content.dramaAssets as unknown as { scenes: Array<{ imageAssetId: string }> }).scenes[0].imageAssetId).toBe('global-1');
     expect(io.invoke).toHaveBeenCalledWith('publish_project_import_assets', expect.objectContaining({ operationId: 'global-op-123' }));
+  });
+
+  it('只读预览使用与确认发布相同的相对路径和摘要', async () => {
+    const original = source(), operationId = '11111111-1111-4111-8111-111111111111';
+    original.aggregate.project.storageRootRef = 'root';
+    const previewFiles: NativeGlobalRecoveryFile[] = [], confirmedFiles: NativeGlobalRecoveryFile[] = [];
+    const preview = await materializeNativeArchiveGlobalAssets(original, operationId, { files: previewFiles, preview: true });
+    expect(io.invoke).toHaveBeenCalledExactlyOnceWith('inspect_project_archive_assets', { assetsDir: 'C:/global', selectedPaths: ['scene.png'] });
+    expect(io.exists).not.toHaveBeenCalled();
+    expect(previewFiles).toEqual([expect.objectContaining({ rootRef: 'root', bytes: 3, sha256: hash })]);
+    const confirmed = await materializeNativeArchiveGlobalAssets(original, operationId, { files: confirmedFiles });
+    expect(confirmedFiles).toEqual(previewFiles);
+    expect(confirmed).toEqual(preview);
   });
 
   it('索引或字节缺失时拒绝导出且不发布文件', async () => {

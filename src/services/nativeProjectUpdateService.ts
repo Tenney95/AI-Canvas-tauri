@@ -12,7 +12,8 @@ import { buildProjectExchangeBundleV2, createProjectExchangeRevisionV2, findProj
 import { deriveLegacyProjectionProofFromRevisions } from './projectExchangeV2Domain';
 import { listNativeContentRecoveryPoints, replaceNativeContentWithRecovery } from './indexedDb/nativeProjectRepository';
 import { NATIVE_EDITOR_CHOICE_KEY, nativeEditorChoiceRequired, resolveNativeEditorUpdate } from './videoEditorArchive';
-import { createNativeUpdateBackup, inspectNativeRestorePoint, nativeUpdateInventory, stageNativeUpdateSource, verifyNativeRestoreAssets, verifyNativeUpdateBackup } from './nativeProjectUpdateMedia';
+import { cleanupFinalizedNativeProjectUpdateSource, createNativeUpdateBackup, withNativeRestorePoint, nativeUpdateInventory, stageNativeUpdateSource,
+  verifyNativeRestoreAssets, verifyNativeUpdateBackup } from './nativeProjectUpdateMedia';
 import { createBoundProjectModelArchiveImportPort } from './projectModelArchiveNativePort';
 import { configValuesEqual } from './configPatch';
 import { sha256BytesHex } from './mediaDataUrl';
@@ -23,7 +24,7 @@ import { pinNativeHistoricalEditorMedia } from './nativeProjectHistoricalEditorM
 import { materializeNativeRawRecovery, referencedNativeRecoveryAssets } from './nativeProjectRawRecovery';
 import { materializeNativeArchiveAssetMetadata } from './nativeArchiveAssetMetadata';
 import { allocateNativeRecoveryAssets, applyNativeGlobalRecoveryFiles } from './nativeProjectAssetRecovery';
-import { materializeNativeArchiveGlobalAssets, verifyNativeGlobalRecoverySources } from './nativeProjectArchiveService';
+import { materializeNativeArchiveGlobalAssets, verifyNativeGlobalRecoverySources, type NativeGlobalRecoveryFile } from './nativeProjectArchiveService';
 import { prepareNativeMissingAssetBackup, verifyNativeMissingAssetBackups } from './nativeMissingAssetBackup';
 import { rebindRetiredNativeSnapshot } from './nativeProjectIdentityRebind';
 import { prepareNativeProjectUpdate, readNativeProjectUpdate, advanceNativeProjectUpdate, commitNativeProjectUpdate, listNativeRetiredIdentityIds,
@@ -31,6 +32,7 @@ import { prepareNativeProjectUpdate, readNativeProjectUpdate, advanceNativeProje
 
 export interface NativeProjectUpdatePreview {
   operationId: string;
+  globalFiles?: readonly NativeGlobalRecoveryFile[];
   sourceDirectory?: string;
   editorChoiceRequired: boolean;
   source: ValidatedProjectArchiveV4;
@@ -64,11 +66,11 @@ export async function previewNativeProjectUpdate(source: ValidatedProjectArchive
   const entries = await serializeProjectArchiveV4(source.payload, source.manifest, source.assets);
   source = await readProjectArchiveV4(Object.fromEntries(entries.map((entry) => [entry.path, entry.content])), source.assets);
   const { value: expected } = await captureNativeProjectArchive(projectId);
-  const operationId = crypto.randomUUID();
-  const portable = await materializeNativeArchiveGlobalAssets(expected, operationId, { files: [] });
   if (!expected.exchange || expected.exchange.lineageId !== source.snapshot.lineageId) throw new Error('项目缺少可证明的共同来源，请导入为新项目');
+  const operationId = crypto.randomUUID(), globalFiles: NativeGlobalRecoveryFile[] = [];
+  const portable = await materializeNativeArchiveGlobalAssets(expected, operationId, { files: globalFiles, preview: true });
   const port = createBoundProjectModelArchiveExportPort(projectId, '');
-  const assets = await port.inspectAssets(portable);
+  const assets = await port.inspectAssets(portable, globalFiles);
   const prepared = await prepareProjectModelArchiveCapture(portable, assets);
   assertRetiredEditorKnown(source.payload.videoEditor, prepared.payload.videoEditor, source.snapshot, prepared.snapshot);
   const latest = await captureNativeProjectArchive(projectId);
@@ -80,7 +82,7 @@ export async function previewNativeProjectUpdate(source: ValidatedProjectArchive
   if (base.status !== 'found') throw new Error('缺少完整共同版本，请导入为新项目');
   const baseProof = base.revision.canonicalVersion === 1 ? await deriveLegacyProjectionProofFromRevisions(base.revision, graph) : undefined;
   const plan = await buildProjectMergePlanV2(base.revision.snapshot, prepared.snapshot, source.snapshot, { base: baseProof });
-  return { source, sourceDirectory, expected, plan, localExchange: prepared.exchange, operationId,
+  return { source, sourceDirectory, expected, plan, localExchange: prepared.exchange, operationId, globalFiles,
     editorChoiceRequired: nativeEditorChoiceRequired(prepared.payload.videoEditor, source.payload.videoEditor) };
 }
 
@@ -114,14 +116,20 @@ async function assertOriginalUpdate(operation: NativeProjectUpdateJournal): Prom
 }
 
 /** 按 journal 中冻结的身份、素材和备份续接；不会重新合并或分配 ID。 */
-async function finishNativeUpdate(initial: NativeProjectUpdateJournal, assertCurrent?: () => void): Promise<NativeProjectUpdateJournal> {
-  let operation = initial;
-  if (operation.phase === 'finalized') return operation;
-  if (operation.phase === 'aborted') throw new Error('原更新已撤销，备份和已发布素材仍保留');
+async function finalizeNativeUpdate(operation: NativeProjectUpdateJournal): Promise<NativeProjectUpdateJournal> {
   if (operation.phase === 'db_committed') {
     await commitNativeArchiveHistory(operation);
-    return advanceNativeProjectUpdate(operation.operationId, operation.sequence, 'finalized');
+    operation = await advanceNativeProjectUpdate(operation.operationId, operation.sequence, 'finalized');
   }
+  if (operation.phase !== 'finalized') throw new Error('原更新阶段无效，未确认提交');
+  void cleanupFinalizedNativeProjectUpdateSource(operation);
+  return operation;
+}
+
+async function finishNativeUpdate(initial: NativeProjectUpdateJournal, assertCurrent?: () => void): Promise<NativeProjectUpdateJournal> {
+  let operation = initial;
+  if (operation.phase === 'finalized' || operation.phase === 'db_committed') return finalizeNativeUpdate(operation);
+  if (operation.phase === 'aborted') throw new Error('原更新已撤销，备份和已发布素材仍保留');
   if (!operation.sourceRef) throw new Error('原更新的隔离来源缺失，请保留操作材料');
   const port = createBoundProjectModelArchiveImportPort(operation.projectId, operation.sourceRef);
   await assertOriginalUpdate(operation); assertCurrent?.();
@@ -144,12 +152,7 @@ async function finishNativeUpdate(initial: NativeProjectUpdateJournal, assertCur
     await assertOriginalUpdate(operation); assertCurrent?.();
     operation = await commitNativeProjectUpdate(operation.operationId, operation.sequence);
   }
-  if (operation.phase === 'db_committed') {
-    await commitNativeArchiveHistory(operation);
-    operation = await advanceNativeProjectUpdate(operation.operationId, operation.sequence, 'finalized');
-  }
-  if (operation.phase !== 'finalized') throw new Error('原更新阶段无效，未确认提交');
-  return operation;
+  return finalizeNativeUpdate(operation);
 }
 
 /** 各事务的副作用可能已提交，失败时必须保留原操作而不是生成新的 ID。 */
@@ -171,6 +174,7 @@ async function makeUpdateInput(preview: NativeProjectUpdatePreview, choices: Rea
   const snapshot = pinNativeHistoricalEditorMedia({ selected: rebound.snapshot, local: preview.plan.local,
     localExchange: preview.localExchange, expected });
   const operationId = preview.operationId;
+  await verifyNativeGlobalRecoverySources(expected, preview.globalFiles ?? []);
   const material = await materializeProjectModelArchiveBusiness(projectArchivePayloadFromSnapshotV2(snapshot), snapshot,
     expected, projectId, operationId, { exchange: preview.localExchange, snapshot: preview.plan.local },
     { allocateId: (kind) => `${kind === 'episode' ? 'e2' : kind === 'canvas' ? 'c2' : 'r2'}-${crypto.randomUUID()}`,
@@ -190,9 +194,8 @@ async function makeUpdateInput(preview: NativeProjectUpdatePreview, choices: Rea
     published: expected.exchange.published };
   if (!preview.sourceDirectory) throw new Error('项目包隔离来源不可用，请重新预览');
   assertCurrent?.();
-  const source = await stageNativeUpdateSource(preview.source, preview.sourceDirectory, projectId, operationId);
-  assertCurrent?.();
   const { backup, oldAssets, assetSnapshots, recoveryState } = await createNativeUpdateBackup(expected, operationId);
+  if (!configValuesEqual(preview.globalFiles ?? [], recoveryState.globalFiles)) throw new Error('预览后全局素材变化，请重新对比');
   const assetRecords = materializeNativeArchiveAssetMetadata({ aggregate: material.aggregate, editors: editorRecords,
     identities: material.identities, bindings: material.fileBindings, selected: snapshot, source: preview.source.snapshot,
     metadata: preview.source.payload.assetMetadata, local: assetSnapshots });
@@ -206,6 +209,8 @@ async function makeUpdateInput(preview: NativeProjectUpdatePreview, choices: Rea
     snapshot.lineageId, expected, { appendChat: false, appendMemories: false }, { identities: material.identities,
       episodes: material.aggregate.episodes, defaultCanvasId: material.aggregate.project.kind === 'standalone' ? material.aggregate.canvases[0]?.id : undefined,
       fileBindings: material.fileBindings })).filter((row) => row.kind === 'output');
+  assertCurrent?.();
+  const source = await stageNativeUpdateSource(preview.source, preview.sourceDirectory, projectId, operationId);
   return { operationId, mode, packageDigest, intentDigest, sourceLineageId: snapshot.lineageId, targetProjectId: projectId,
     expected, next: { ...material.aggregate, bindings: [], previews: [] }, exchange, idMap: material.identities,
     history, media: material.media, editorRecords, backup, oldAssets, oldAssetSnapshots: assetSnapshots, recoveryState, assetRecords, ...source };
@@ -247,6 +252,7 @@ export async function restoreNativeContentRecovery(projectId: string, recoveryId
   const point = (await listNativeContentRecoveryPoints(projectId)).find((item) => item.operationId === recoveryId);
   const { value: expected } = await captureNativeProjectArchive(projectId);
   if (!point?.exchange || !expected.exchange || point.exchange.lineageId !== expected.exchange.lineageId) throw new Error('恢复点来源不可用');
+  const expectedExchange = expected.exchange;
   if (!point.backup) {
     if (expected.editorRecords?.length || (await createBoundProjectModelArchiveExportPort(projectId, '').inspectAssets(expected)).length) {
       throw new Error('旧恢复点没有独立素材备份，不能安全恢复');
@@ -262,128 +268,130 @@ export async function restoreNativeContentRecovery(projectId: string, recoveryId
     return;
   }
   const retired = await listNativeRetiredIdentityIds(projectId);
-  const { source, directory, prepared: previous, reusableAssets: existingAssets } = await inspectNativeRestorePoint(projectId, point, expected);
-  // 老恢复点未冻结的标签/图片信息不能从今日索引补造为历史事实；原文件可复用时保留原ID。
-  const assetSnapshots = point.assetSnapshots ?? [];
-  // 带索引的恢复素材始终发布到新目录，旧路径及索引留给原历史，不与新身份争用同一路径。
-  const indexedPaths = new Set(assetSnapshots.map((asset) => JSON.stringify([asset.rootRef, asset.path])));
-  const reusableAssets = existingAssets.filter((asset) => !indexedPaths.has(JSON.stringify([asset.rootRef, asset.path])));
-  const missingFiles = await prepareNativeMissingAssetBackup(expected, point, source, directory, operationId);
-  await verifyNativeMissingAssetBackups(expected, [point], missingFiles, operationId);
-  const portable = await materializeNativeArchiveGlobalAssets(expected, operationId, { files: [] });
-  const localRead = createBoundProjectModelArchiveExportPort(projectId, '', missingFiles, true);
-  const localAssets = await localRead.inspectAssets(portable);
-  const local = await prepareProjectModelArchiveCapture(portable, localAssets);
-  assertRetiredEditorKnown(source.payload.videoEditor, local.payload.videoEditor, source.snapshot, local.snapshot);
-  const identities = [...local.exchange.identities];
-  for (const identity of previous.exchange.identities) {
-    const sourceMatch = identities.find((item) => item.kind === identity.kind && item.sourceId === identity.sourceId);
-    const localMatch = identities.find((item) => item.kind === identity.kind && item.localId === identity.localId);
-    if (sourceMatch && !configValuesEqual(sourceMatch, identity) || localMatch && !configValuesEqual(localMatch, identity)) {
-      throw new Error('恢复点的协作身份与当前作品冲突，未恢复');
+  return withNativeRestorePoint(projectId, point, expected, async ({ source, directory, prepared: previous, reusableAssets: existingAssets }) => {
+    // 老恢复点未冻结的标签/图片信息不能从今日索引补造为历史事实；原文件可复用时保留原ID。
+    const assetSnapshots = point.assetSnapshots ?? [];
+    // 带索引的恢复素材始终发布到新目录，旧路径及索引留给原历史，不与新身份争用同一路径。
+    const indexedPaths = new Set(assetSnapshots.map((asset) => JSON.stringify([asset.rootRef, asset.path])));
+    const reusableAssets = existingAssets.filter((asset) => !indexedPaths.has(JSON.stringify([asset.rootRef, asset.path])));
+    const missingFiles = await prepareNativeMissingAssetBackup(expected, point, source, directory, operationId);
+    await verifyNativeMissingAssetBackups(expected, [point], missingFiles, operationId);
+    const portable = await materializeNativeArchiveGlobalAssets(expected, operationId, { files: [] });
+    const localRead = createBoundProjectModelArchiveExportPort(projectId, '', missingFiles, true);
+    const localAssets = await localRead.inspectAssets(portable);
+    const local = await prepareProjectModelArchiveCapture(portable, localAssets);
+    assertRetiredEditorKnown(source.payload.videoEditor, local.payload.videoEditor, source.snapshot, local.snapshot);
+    const identities = [...local.exchange.identities];
+    for (const identity of previous.exchange.identities) {
+      const sourceMatch = identities.find((item) => item.kind === identity.kind && item.sourceId === identity.sourceId);
+      const localMatch = identities.find((item) => item.kind === identity.kind && item.localId === identity.localId);
+      if (sourceMatch && !configValuesEqual(sourceMatch, identity) || localMatch && !configValuesEqual(localMatch, identity)) {
+        throw new Error('恢复点的协作身份与当前作品冲突，未恢复');
+      }
+      if (!sourceMatch) identities.push(identity);
     }
-    if (!sourceMatch) identities.push(identity);
-  }
-  // 协作身份必须全新，旧 sourceId 和本机墓碑继续保留供审计。
-  const rebound = rebindRetiredNativeSnapshot(source.snapshot, local.exchange, retired, source.payload.videoEditor);
-  const snapshot = pinNativeHistoricalEditorMedia({ selected: rebound.snapshot, local: local.snapshot,
-    localExchange: local.exchange, expected });
-  const sourceFiles = readProjectArchiveV4Files(source.snapshot);
-  const reusableKeys = new Set(reusableAssets.map((item) => JSON.stringify([item.rootRef, item.path])));
-  const missingIds = new Set<string>();
-  for (const asset of point.oldAssets ?? []) {
-    if (reusableKeys.has(JSON.stringify([asset.rootRef, asset.path]))) continue;
-    const roots = previous.exchange.identities.filter((item) => item.kind === 'storage-root' && item.localId === asset.rootRef);
-    const matches = previous.exchange.fileBindings.filter((item) => roots.length === 1 && item.rootRef === roots[0].sourceId && item.localRelativePath === asset.path);
-    if (matches.length !== 1) throw new Error('缺失恢复素材没有唯一原文件身份');
-    missingIds.add(matches[0].id);
-  }
-  // 未复用原文件不得继承旧路径；发布器将其从原备份写入本操作的新目录。
-  const fileBindings = previous.exchange.fileBindings.filter((item) => !missingIds.has(item.id));
-  for (const binding of local.exchange.fileBindings) if (!missingIds.has(binding.id) && !fileBindings.some((item) => item.id === binding.id)) fileBindings.push(binding);
-  const available = { ...previous.exchange, identities, fileBindings };
-  const material = await materializeProjectModelArchiveBusiness(projectArchivePayloadFromSnapshotV2(snapshot), snapshot,
-    expected, projectId, operationId, { exchange: available, snapshot },
-    { allocateId: (kind) => `${kind === 'episode' ? 'e2' : kind === 'canvas' ? 'c2' : 'r2'}-${crypto.randomUUID()}`,
-      folderName: expected.aggregate.project.dataFolder });
-  const mapIdentity = (kind: 'episode' | 'canvas', from: string) => {
-    const previousMappings = previous.exchange.identities.filter((item) => item.kind === kind && item.localId === from);
-    if (previousMappings.length !== 1) throw new Error('恢复点缺少原身份映射');
-    const oldSource = previousMappings[0].sourceId;
-    const changes = rebound.rebindings.filter((item) => item.kind === kind && item.from === oldSource);
-    if (changes.length > 1) throw new Error('恢复身份映射重复');
-    const targetSource = changes[0]?.to ?? oldSource;
-    const targetMappings = material.identities.filter((item) => item.kind === kind && item.sourceId === targetSource);
-    if (targetMappings.length !== 1) throw new Error('恢复目标身份缺失');
-    return { from, to: targetMappings[0].localId };
-  };
-  // 仓储以恢复点的根为先，再追加当前新增根，保持原先身份与顺序。
-  const roots = structuredClone(point.aggregate.project.storageBindings);
-  for (const binding of expected.aggregate.project.storageBindings) {
-    const existing = roots.find((item) => item.rootRef === binding.rootRef);
-    if (existing && !configValuesEqual(existing, binding)) throw new Error('恢复素材根绑定已变化');
-    if (!existing) roots.push(structuredClone(binding));
-  }
-  if (material.aggregate.project.storageBindings.some((item) => !roots.some((root) => configValuesEqual(root, item)))) {
-    throw new Error('恢复素材根不属于原恢复点或当前作品');
-  }
-  material.aggregate.project.storageBindings = roots;
-  const episodeIds = point.aggregate.episodes.map((item) => mapIdentity('episode', item.id));
-  const canvasIds = point.aggregate.canvases.map((item) => mapIdentity('canvas', item.id));
-  // 同一文件 ID、根与摘要必须一致；缺失或变化的文件只能从备份发布到新路径。
-  const files = (point.oldAssets ?? []).map((asset) => {
-    const roots = previous.exchange.identities.filter((item) => item.kind === 'storage-root' && item.localId === asset.rootRef);
-    if (roots.length !== 1) throw new Error('恢复素材根身份无效');
-    const candidates = previous.exchange.fileBindings.filter((item) => item.rootRef === roots[0].sourceId && item.localRelativePath === asset.path);
-    if (candidates.length !== 1) throw new Error('恢复素材缺少唯一原文件绑定');
-    const old = candidates[0];
-    const sourceFile = sourceFiles.find((item) => item.id === old.id && item.rootRef === old.rootRef && item.relativePath === old.relativePath);
-    const descriptor = source.snapshot.media.find((item) => item.id === sourceFile?.mediaId);
-    const targets = material.fileBindings.filter((item) => item.id === old.id && item.rootRef === old.rootRef
-      && item.relativePath === old.relativePath);
-    if (!descriptor || descriptor.bytes !== asset.bytes || descriptor.sha256 !== asset.sha256 || targets.length !== 1) {
-      throw new Error('恢复素材的原身份、路径或摘要不一致，未恢复');
+    // 协作身份必须全新，旧 sourceId 和本机墓碑继续保留供审计。
+    const rebound = rebindRetiredNativeSnapshot(source.snapshot, local.exchange, retired, source.payload.videoEditor);
+    const snapshot = pinNativeHistoricalEditorMedia({ selected: rebound.snapshot, local: local.snapshot,
+      localExchange: local.exchange, expected });
+    const sourceFiles = readProjectArchiveV4Files(source.snapshot);
+    const reusableKeys = new Set(reusableAssets.map((item) => JSON.stringify([item.rootRef, item.path])));
+    const missingIds = new Set<string>();
+    for (const asset of point.oldAssets ?? []) {
+      if (reusableKeys.has(JSON.stringify([asset.rootRef, asset.path]))) continue;
+      const roots = previous.exchange.identities.filter((item) => item.kind === 'storage-root' && item.localId === asset.rootRef);
+      const matches = previous.exchange.fileBindings.filter((item) => roots.length === 1 && item.rootRef === roots[0].sourceId && item.localRelativePath === asset.path);
+      if (matches.length !== 1) throw new Error('缺失恢复素材没有唯一原文件身份');
+      missingIds.add(matches[0].id);
     }
-    const targetPath = targets[0].localRelativePath;
-    const reusable = reusableKeys.has(JSON.stringify([asset.rootRef, asset.path]));
-    const publications = material.media.filter((item) => item.rootRef === asset.rootRef && item.relativePath === targetPath
-      && item.bytes === asset.bytes && item.sha256 === asset.sha256);
-    if (reusable ? targetPath !== asset.path || publications.length !== 0 : targetPath === asset.path || publications.length !== 1) {
-      throw new Error('恢复素材的复用或发布状态不一致，未恢复');
+    // 未复用原文件不得继承旧路径；发布器将其从原备份写入本操作的新目录。
+    const fileBindings = previous.exchange.fileBindings.filter((item) => !missingIds.has(item.id));
+    for (const binding of local.exchange.fileBindings) if (!missingIds.has(binding.id) && !fileBindings.some((item) => item.id === binding.id)) fileBindings.push(binding);
+    const available = { ...previous.exchange, identities, fileBindings };
+    const material = await materializeProjectModelArchiveBusiness(projectArchivePayloadFromSnapshotV2(snapshot), snapshot,
+      expected, projectId, operationId, { exchange: available, snapshot },
+      { allocateId: (kind) => `${kind === 'episode' ? 'e2' : kind === 'canvas' ? 'c2' : 'r2'}-${crypto.randomUUID()}`,
+        folderName: expected.aggregate.project.dataFolder });
+    const mapIdentity = (kind: 'episode' | 'canvas', from: string) => {
+      const previousMappings = previous.exchange.identities.filter((item) => item.kind === kind && item.localId === from);
+      if (previousMappings.length !== 1) throw new Error('恢复点缺少原身份映射');
+      const oldSource = previousMappings[0].sourceId;
+      const changes = rebound.rebindings.filter((item) => item.kind === kind && item.from === oldSource);
+      if (changes.length > 1) throw new Error('恢复身份映射重复');
+      const targetSource = changes[0]?.to ?? oldSource;
+      const targetMappings = material.identities.filter((item) => item.kind === kind && item.sourceId === targetSource);
+      if (targetMappings.length !== 1) throw new Error('恢复目标身份缺失');
+      return { from, to: targetMappings[0].localId };
+    };
+    // 仓储以恢复点的根为先，再追加当前新增根，保持原先身份与顺序。
+    const roots = structuredClone(point.aggregate.project.storageBindings);
+    for (const binding of expected.aggregate.project.storageBindings) {
+      const existing = roots.find((item) => item.rootRef === binding.rootRef);
+      if (existing && !configValuesEqual(existing, binding)) throw new Error('恢复素材根绑定已变化');
+      if (!existing) roots.push(structuredClone(binding));
     }
-    return { rootRef: asset.rootRef, from: asset.path, to: targetPath };
+    if (material.aggregate.project.storageBindings.some((item) => !roots.some((root) => configValuesEqual(root, item)))) {
+      throw new Error('恢复素材根不属于原恢复点或当前作品');
+    }
+    material.aggregate.project.storageBindings = roots;
+    const episodeIds = point.aggregate.episodes.map((item) => mapIdentity('episode', item.id));
+    const canvasIds = point.aggregate.canvases.map((item) => mapIdentity('canvas', item.id));
+    // 同一文件 ID、根与摘要必须一致；缺失或变化的文件只能从备份发布到新路径。
+    const files = (point.oldAssets ?? []).map((asset) => {
+      const roots = previous.exchange.identities.filter((item) => item.kind === 'storage-root' && item.localId === asset.rootRef);
+      if (roots.length !== 1) throw new Error('恢复素材根身份无效');
+      const candidates = previous.exchange.fileBindings.filter((item) => item.rootRef === roots[0].sourceId && item.localRelativePath === asset.path);
+      if (candidates.length !== 1) throw new Error('恢复素材缺少唯一原文件绑定');
+      const old = candidates[0];
+      const sourceFile = sourceFiles.find((item) => item.id === old.id && item.rootRef === old.rootRef && item.relativePath === old.relativePath);
+      const descriptor = source.snapshot.media.find((item) => item.id === sourceFile?.mediaId);
+      const targets = material.fileBindings.filter((item) => item.id === old.id && item.rootRef === old.rootRef
+        && item.relativePath === old.relativePath);
+      if (!descriptor || descriptor.bytes !== asset.bytes || descriptor.sha256 !== asset.sha256 || targets.length !== 1) {
+        throw new Error('恢复素材的原身份、路径或摘要不一致，未恢复');
+      }
+      const targetPath = targets[0].localRelativePath;
+      const reusable = reusableKeys.has(JSON.stringify([asset.rootRef, asset.path]));
+      const publications = material.media.filter((item) => item.rootRef === asset.rootRef && item.relativePath === targetPath
+        && item.bytes === asset.bytes && item.sha256 === asset.sha256);
+      if (reusable ? targetPath !== asset.path || publications.length !== 0 : targetPath === asset.path || publications.length !== 1) {
+        throw new Error('恢复素材的复用或发布状态不一致，未恢复');
+      }
+      return { rootRef: asset.rootRef, from: asset.path, to: targetPath };
+    });
+    const recoveredAssets = allocateNativeRecoveryAssets(projectId, point.aggregate.project.storageRootRef, assetSnapshots, files, canvasIds,
+      point.aggregate.bindings.filter((binding) => binding.retired && binding.canvasId).map((binding) => binding.canvasId!));
+    const rawRecovery = { recoveryId, episodeIds, canvasIds, files, rebindings: rebound.rebindings, assets: recoveredAssets.mappings, assetSnapshots };
+    const raw = materializeNativeRawRecovery({ original: point.aggregate, target: material.aggregate,
+      episodeIds, canvasIds, files, editors: point.editorRecords ?? [],
+      assets: referencedNativeRecoveryAssets(point.aggregate, point.editorRecords ?? [], recoveredAssets.mappings), knownAssets: recoveredAssets.mappings });
+    const parents = [local.exchange.localHead, source.payload.exchange.head];
+    const head = await createProjectExchangeRevisionV2(snapshot,
+      [...new Map(parents.map((item) => [`${item.canonicalVersion}:${item.revisionId}`, item])).values()]);
+    const bundle = await mergeBundle(local.exchange, source.payload.exchange, head);
+    const exchange: ProjectModelTransferExchange = { lineageId: source.snapshot.lineageId, localHead: bundle.head, bundle,
+      identities: material.identities, fileBindings: material.fileBindings, stateVersion: expectedExchange.stateVersion + 1,
+      published: expectedExchange.published };
+    const next = raw.aggregate;
+    assertCurrent?.();
+    const { backup, oldAssets, assetSnapshots: oldAssetSnapshots, recoveryState } = await createNativeUpdateBackup(expected, operationId, missingFiles, true);
+    await verifyNativeRestoreAssets(projectId, point, expected, reusableAssets); assertCurrent?.();
+    const packageDigest = await digest([source.manifest, source.payload.exchange]);
+    const intentDigest = await digest([packageDigest, expected.sourceToken, 'restore-content', recoveryId]);
+    assertCurrent?.();
+    const staged = await stageNativeUpdateSource(source, directory, projectId, operationId);
+    const input: Parameters<typeof prepareNativeProjectUpdate>[0] = { operationId, mode: 'restore-content', packageDigest, intentDigest,
+      sourceLineageId: source.snapshot.lineageId, targetProjectId: projectId, expected, next, exchange,
+      idMap: material.identities, history: [], media: material.media, editorRecords: raw.editors, backup, oldAssets,
+      restoreRecoveryId: recoveryId, restoreAssets: structuredClone(reusableAssets), rawRecovery, oldAssetSnapshots,
+      assetRecords: recoveredAssets.records, recoveryState, ...staged };
+    try { await finishNativeUpdate(await prepareNativeProjectUpdate(input), assertCurrent); }
+    catch (error) {
+      let operation: NativeProjectUpdateJournal | null;
+      try { operation = await readNativeProjectUpdate(operationId); }
+      catch (cause) { throw new Error(`恢复结果未知，原操作 ${operationId} 已保留，请先核对`, { cause }); }
+      if (operation) throw new Error(`恢复未完成，原操作 ${operationId} 已保留；${error instanceof Error ? error.message : '请核对后续接'}`, { cause: error });
+      throw error;
+    }
   });
-  const recoveredAssets = allocateNativeRecoveryAssets(projectId, point.aggregate.project.storageRootRef, assetSnapshots, files, canvasIds,
-    point.aggregate.bindings.filter((binding) => binding.retired && binding.canvasId).map((binding) => binding.canvasId!));
-  const rawRecovery = { recoveryId, episodeIds, canvasIds, files, rebindings: rebound.rebindings, assets: recoveredAssets.mappings, assetSnapshots };
-  const raw = materializeNativeRawRecovery({ original: point.aggregate, target: material.aggregate,
-    episodeIds, canvasIds, files, editors: point.editorRecords ?? [],
-    assets: referencedNativeRecoveryAssets(point.aggregate, point.editorRecords ?? [], recoveredAssets.mappings), knownAssets: recoveredAssets.mappings });
-  const parents = [local.exchange.localHead, source.payload.exchange.head];
-  const head = await createProjectExchangeRevisionV2(snapshot,
-    [...new Map(parents.map((item) => [`${item.canonicalVersion}:${item.revisionId}`, item])).values()]);
-  const bundle = await mergeBundle(local.exchange, source.payload.exchange, head);
-  const exchange: ProjectModelTransferExchange = { lineageId: source.snapshot.lineageId, localHead: bundle.head, bundle,
-    identities: material.identities, fileBindings: material.fileBindings, stateVersion: expected.exchange.stateVersion + 1,
-    published: expected.exchange.published };
-  const next = raw.aggregate;
-  assertCurrent?.();
-  const staged = await stageNativeUpdateSource(source, directory, projectId, operationId);
-  const { backup, oldAssets, assetSnapshots: oldAssetSnapshots, recoveryState } = await createNativeUpdateBackup(expected, operationId, missingFiles, true);
-  await verifyNativeRestoreAssets(projectId, point, expected, reusableAssets); assertCurrent?.();
-  const packageDigest = await digest([source.manifest, source.payload.exchange]);
-  const intentDigest = await digest([packageDigest, expected.sourceToken, 'restore-content', recoveryId]);
-  const input: Parameters<typeof prepareNativeProjectUpdate>[0] = { operationId, mode: 'restore-content', packageDigest, intentDigest,
-    sourceLineageId: source.snapshot.lineageId, targetProjectId: projectId, expected, next, exchange,
-    idMap: material.identities, history: [], media: material.media, editorRecords: raw.editors, backup, oldAssets,
-    restoreRecoveryId: recoveryId, restoreAssets: structuredClone(reusableAssets), rawRecovery, oldAssetSnapshots,
-    assetRecords: recoveredAssets.records, recoveryState, ...staged };
-  try { await finishNativeUpdate(await prepareNativeProjectUpdate(input), assertCurrent); }
-  catch (error) {
-    let operation: NativeProjectUpdateJournal | null;
-    try { operation = await readNativeProjectUpdate(operationId); }
-    catch (cause) { throw new Error(`恢复结果未知，原操作 ${operationId} 已保留，请先核对`, { cause }); }
-    if (operation) throw new Error(`恢复未完成，原操作 ${operationId} 已保留；${error instanceof Error ? error.message : '请核对后续接'}`, { cause: error });
-    throw error;
-  }
 }

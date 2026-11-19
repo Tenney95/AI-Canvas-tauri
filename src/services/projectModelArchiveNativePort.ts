@@ -292,7 +292,7 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
       })) throw new Error('隔离来源素材不完整或摘要变化');
       return { sourceRef, sourceFiles };
     },
-    async inspectAssets(capture) {
+    async inspectAssets(capture, previewAssets = []) {
       assertBoundCapture(capture);
       const result: ProjectModelArchiveAsset[] = [];
       const directories = new Map<string, string>();
@@ -329,6 +329,17 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
         paths.add(safeExchangePath(asset.path));
         for (const image of asset.images ?? []) for (const reference of image.references) paths.add(safeExchangePath(reference.relativePath));
         current.set(asset.rootRef, paths);
+      }
+      const projected = new Map<string, ProjectModelArchiveAsset>();
+      for (const asset of previewAssets) {
+        if (!options.nativeProjectId || asset.rootRef !== primary || !primaryPaths?.has(asset.path)
+          || !/^imports\/global-[a-f0-9-]{36}\/global-[a-f0-9]{64}\.[a-z0-9]{1,16}$/.test(asset.path)
+          || !Number.isSafeInteger(asset.bytes) || asset.bytes < 0 || !/^[a-f0-9]{64}$/.test(asset.sha256)) {
+          throw new Error('无效的全局素材预览证据');
+        }
+        const previous = projected.get(asset.path);
+        if (previous && !sameAsset(previous, asset)) throw new Error('全局素材预览映射冲突');
+        projected.set(asset.path, { rootRef: primary, path: asset.path, bytes: asset.bytes, sha256: asset.sha256 });
       }
       const head = capture.exchange ? headFiles(capture.exchange) : null;
       for (const proof of options.missingFiles ?? []) {
@@ -372,7 +383,9 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
           continue;
         }
         const referencePaths = [...new Set([...required, ...(current.get(root.rootRef) ?? [])])];
-        const nativeReferences = referencePaths.filter((path) => !(options.nativeProjectId && sharedSyncPath.test(path) && !sharedSyncMediaPath.test(path))
+        const virtual = root.rootRef === primary ? projected : undefined;
+        const nativeReferences = referencePaths.filter((path) => !virtual?.has(path)
+          && !(options.nativeProjectId && sharedSyncPath.test(path) && !sharedSyncMediaPath.test(path))
           && !(options.missingFiles ?? []).some((proof) => proof.rootRef === root.rootRef && proof.path === path));
         const includeImportPaths = nativeReferences.filter((path) => /^imports\//i.test(path));
         const sharedReferences = new Set(nativeReferences.filter((path) => sharedSyncMediaPath.test(path)));
@@ -404,7 +417,7 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
           if (copied.length !== 1 || copied[0].path !== proof.copyPath || copied[0].bytes !== proof.bytes || copied[0].sha256 !== proof.sha256) throw new Error('缺失文件的备份来源已变化');
           retained.push({ path: proof.path, bytes: proof.bytes, sha256: proof.sha256, backupSourceRelativePath: proof.copyPath });
         }
-        for (const path of referencePaths) if (!retained.some((asset) => asset.path === path || asset.aliases?.includes(path))) {
+        for (const path of referencePaths) if (!virtual?.has(path) && !retained.some((asset) => asset.path === path || asset.aliases?.includes(path))) {
           const origin = origins.get(storagePathKey(root.rootRef, path));
           const location = `${origin?.location ?? `项目「${projectArchiveDisplayLabel(capture.aggregate.project.name)}」`}（素材根：${projectArchiveDisplayLabel(root.rootRef, '已绑定根')}）`;
           throw new Error(missingProjectAssetMessage(path, location, origin?.fieldPath, '项目引用的素材缺失，无法安全导出'));
@@ -417,6 +430,12 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
           .map((asset) => ({ path: asset.path, bytes: asset.bytes, sha256: asset.sha256, rootRef: root.rootRef, aliases: asset.aliases,
             ...(asset.backupSourceRelativePath ? { backupSourceRelativePath: asset.backupSourceRelativePath } : {}),
             localAbsolutePath: `${assetsDir.replace(/\\/g, '/').replace(/\/$/, '')}/${asset.backupSourceRelativePath ?? asset.path}` })));
+        if (virtual) {
+          if (retained.some((asset) => virtual.has(asset.path) || asset.aliases?.some((path) => virtual.has(path)))) {
+            throw new Error('全局素材预览位置已被占用');
+          }
+          result.push(...virtual.values());
+        }
       }
       if (options.nativeProjectId && !configValuesEqual(accepted, await acceptedSharedSyncAssets(options.nativeProjectId))) {
         throw new Error('归档扫描期间已接受的共享素材发生变化，请重试');
