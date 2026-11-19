@@ -1,6 +1,7 @@
 /** 助手与剧本工作台共用团队发起、排队与恢复入口；主窗口是唯一执行源。 */
 import { useAppStore } from '../../../store/useAppStore';
-import { listEpisodes, seriesOwnerId } from '../../../store/store.utils';
+import { listEpisodes } from '../../../store/store.utils';
+import { isConversationInProjectScope, resolveConversationProjectScope } from '../conversationProjectScope';
 import type { AgentMode, AgentTask } from '../../../types/agent';
 import type { AgentTeamProfile, TeamInvocationContext, TeamTemplateId } from '../../../types/agentTeam';
 import type { ChatMessage } from '../../../types/chat';
@@ -147,13 +148,15 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
     || (state.currentProjectId !== projectId && !workbenchScope) || state.projectLoadStatus !== 'ready')) {
     throw new Error('请先打开团队任务所属项目');
   }
-  const ownerId = seriesOwnerId(state.projects, projectId);
+  const scope = resolveConversationProjectScope(state.projects, projectId);
+  const inScope = (conversationProjectId: string) => context.source === 'script-workbench'
+    ? conversationProjectId === scope.ownerId : scope.projectIds.has(conversationProjectId);
   let conversation = state.conversations.find((item) => item.id === input.conversationId && !item.deletedAt);
-  if (input.conversationId && (!conversation || conversation.projectId !== ownerId || !conversation.id.startsWith('conv-'))) {
+  if (input.conversationId && (!conversation || !inScope(conversation.projectId) || !conversation.id.startsWith('conv-'))) {
     throw new Error('来源对话与任务项目不一致');
   }
   if (context.target && (isGeneralAssistantScope(projectId) || context.target.episodeId !== projectId
-    || context.target.seriesId !== ownerId || (workbenchScope && context.target.seriesId !== workbenchScope.owner.id))) {
+    || context.target.seriesId !== scope.ownerId || (workbenchScope && context.target.seriesId !== workbenchScope.owner.id))) {
     throw new Error('团队成果目标与当前分集不一致');
   }
   const projectScope = captureAgentProjectScope(state, { projectId,
@@ -161,7 +164,7 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
   const assertCurrent = () => assertAgentProjectContext(useAppStore.getState(), { projectId, projectScope }, { checkRevision: false });
   assertCurrent();
   if (!conversation) conversation = state.conversations.find((item) => item.id === state.activeConversationId
-    && item.projectId === ownerId && !item.deletedAt && item.id.startsWith('conv-'));
+    && inScope(item.projectId) && !item.deletedAt && item.id.startsWith('conv-'));
   const creationOwner = input.creationProfileSource === 'conversation' ? conversation
     : context.source === 'script-workbench' ? state.projects.find((item) => item.id === projectId && !!item.parentId) : conversation;
   const creationSelection = creationOwner?.creationProfile ? structuredClone(creationOwner.creationProfile) : undefined;
@@ -178,7 +181,7 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
     return previous;
   }
   if (!conversation) {
-    const active = state.conversations.find((item) => item.id === state.activeConversationId && item.projectId === ownerId
+    const active = state.conversations.find((item) => item.id === state.activeConversationId && inScope(item.projectId)
       && !item.deletedAt && item.id.startsWith('conv-'));
     const conversationId = active?.id ?? state.createConversation(projectId, '团队创作');
     conversation = useAppStore.getState().conversations.find((item) => item.id === conversationId)!;
@@ -195,11 +198,12 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
   addMessage({ id: result.assistantMessageId, conversationId: conversation.id, role: 'assistant',
     content: '正在准备团队任务快照。', timestamp: now + 1, status: 'queued', agentTaskId: taskId });
   const frozen = { ...input, content, projectId, context, profile, materials, mode, conversationId: conversation.id };
+  const conversationOwnerId = conversation.projectId;
   const cancellation = { canceled: false };
   const sourceAvailable = () => {
     if (cancellation.canceled) return false;
     assertCurrent();
-    return useAppStore.getState().conversations.some((item) => item.id === frozen.conversationId && !item.deletedAt && item.projectId === ownerId);
+    return useAppStore.getState().conversations.some((item) => item.id === frozen.conversationId && !item.deletedAt && item.projectId === conversationOwnerId);
   };
   const ready = (async () => {
     const creation = await captureCreationProfile(creationSelection, projectId);
@@ -242,7 +246,7 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
     if ('error' in captured) throw captured.error;
     const modelFingerprints = captured.value;
     const currentConversation = useAppStore.getState().conversations.find((item) => item.id === frozen.conversationId && !item.deletedAt);
-    if (!currentConversation || currentConversation.projectId !== ownerId) throw new Error('来源对话已移除');
+    if (!currentConversation || currentConversation.projectId !== conversationOwnerId) throw new Error('来源对话已移除');
     await saveConversation(currentConversation);
     if (!sourceAvailable()) return;
     // 同一请求只核对原始提交与稿件。仅新任务投影当前已保存图谱，后续阶段沿用材料快照。
@@ -353,13 +357,13 @@ export async function openAgentTaskInAssistant(taskId: string): Promise<void> {
   const state = useAppStore.getState();
   const task = state.agentTasks.find((item) => item.id === taskId);
   if (!task) throw new Error('任务不存在');
-  const owner = seriesOwnerId(state.projects, state.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID);
-  const conversation = state.conversations.find((item) => item.id === task.conversationId && item.projectId === owner && !item.deletedAt);
+  const scope = resolveConversationProjectScope(state.projects, state.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID);
+  const conversation = state.conversations.find((item) => item.id === task.conversationId && scope.projectIds.has(item.projectId) && !item.deletedAt);
   if (!conversation) throw new Error('请先回到任务所属项目再查看');
   state.setActiveConversation(task.conversationId);
   await state.loadConversationMessages(task.conversationId);
   const latest = useAppStore.getState();
-  if (seriesOwnerId(latest.projects, latest.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID) !== owner
+  if (resolveConversationProjectScope(latest.projects, latest.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID).ownerId !== scope.ownerId
     || latest.activeConversationId !== task.conversationId
     || !latest.conversations.some((item) => item.id === conversation.id && !item.deletedAt)
     || !latest.agentTasks.some((item) => item.id === taskId)) return;
@@ -388,7 +392,7 @@ export async function readTeamTaskArtifact(taskId: string, artifactId: string): 
   const task = state.agentTasks.find((item) => item.id === taskId && item.executionKind === 'team');
   const scope = state.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID;
   const conversation = state.conversations.find((item) => item.id === task?.conversationId && !item.deletedAt);
-  if (!task?.teamRun || !conversation || conversation.projectId !== seriesOwnerId(state.projects, scope)) {
+  if (!task?.teamRun || !conversation || !isConversationInProjectScope(state.projects, scope, conversation.projectId)) {
     throw new Error('任务不属于当前项目范围');
   }
   const artifact = task.teamRun.artifacts.find((item) => item.id === artifactId);
@@ -400,7 +404,7 @@ export async function readTeamTaskArtifact(taskId: string, artifactId: string): 
       && (!latestTask || !isWorkbenchTeamTaskInScope(current, latestTask)))
     || !latestTask?.teamRun?.artifacts.some((item) => item.id === artifact.id && item.sha256 === artifact.sha256)
     || !current.conversations.some((item) => item.id === conversation.id && !item.deletedAt
-      && item.projectId === seriesOwnerId(current.projects, current.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID))) {
+      && isConversationInProjectScope(current.projects, current.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID, item.projectId))) {
     throw new Error('项目或任务已经变化，请重新查看成果');
   }
   return text;

@@ -33,6 +33,7 @@ import { openDB, STORE_CHAT_MESSAGES, STORE_CHAT_CONVERSATIONS, STORE_METADATA }
 import type { NativeMediaTaskRecord } from '../indexedDb/nativeMediaTaskRepository';
 import { nativeImageBatchResults, nativeImageBatchSettled, nativeImageBatchSummary } from '../nativeImageBatch';
 import { nativeMediaLocalOutputs } from '../nativeMediaCollection';
+import { doesNativeExecutionOwnConversation, isRegisteredNativeConversationAlias } from './conversationProjectScope';
 
 const isNativeArtifact = (artifact: MediaGenerationResult | undefined) => !!artifact
   && /^native-media-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}(?:-[1-9][0-9]{0,5})?$/.test(artifact.id);
@@ -184,8 +185,8 @@ export async function saveConversation(conversation: ChatConversation): Promise<
 }
 
 /** 获取项目的全部会话（不含回收站） */
-export async function loadProjectConversations(projectId: string): Promise<ChatConversation[]> {
-  const records = await getProjectConversations(projectId);
+export async function loadProjectConversations(projectId: string, compatibleIds: readonly string[] = []): Promise<ChatConversation[]> {
+  const records = (await Promise.all([projectId, ...compatibleIds].map(getProjectConversations))).flat();
   return records
     .map(fromConversationRecord)
     .sort((a, b) => {
@@ -229,20 +230,28 @@ export async function persistMessage(
 }
 
 /** 规范化写回只更新仍存在的同一份媒体字段，保留并发更新的正文及消息元数据。 */
-async function persistMessageRecord(record: ChatMessageRecord, normalizedFrom?: ChatMessageRecord): Promise<void> {
-  const { projectId, conversationId } = record;
+async function persistMessageRecord(incoming: ChatMessageRecord, normalizedFrom?: ChatMessageRecord): Promise<void> {
+  const { conversationId } = incoming;
   // 前缀只选择持久化实现；投递授权仍由新库原回执、持久scope和文件校验决定。
-  if (isNativeArtifact(record.mediaResult as MediaGenerationResult | undefined) || /^(?:p2|c2)-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(projectId)) {
+  if (isNativeArtifact(incoming.mediaResult as MediaGenerationResult | undefined) || /^(?:p2|c2)-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(incoming.projectId)) {
     const db = await openDB();
     await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction([STORE_CHAT_MESSAGES, STORE_METADATA], 'readwrite', { durability: 'strict' });
+      const tx = db.transaction([STORE_CHAT_CONVERSATIONS, STORE_CHAT_MESSAGES, STORE_METADATA], 'readwrite', { durability: 'strict' });
       if (tx.durability !== 'strict') { tx.abort(); reject(new Error('原生消息需要耐久存储')); return; }
       const messages = tx.objectStore(STORE_CHAT_MESSAGES), metadata = tx.objectStore(STORE_METADATA);
       const read = <T>(request: IDBRequest<T>) => new Promise<T>((done, fail) => { request.onsuccess = () => done(request.result); request.onerror = () => fail(request.error); });
       let failure: unknown;
       const work = async () => {
-        const [previous, slot] = await Promise.all([read(messages.get(record.id)) as Promise<ChatMessageRecord | undefined>,
-          read(metadata.get(nativeMediaSlotKey(record.id))) as Promise<{ kind?: string; state?: string; projectId?: string; conversationId?: string; artifactId?: string } | undefined>]);
+        const [conversation, previous, slot] = await Promise.all([
+          read(tx.objectStore(STORE_CHAT_CONVERSATIONS).get(conversationId)) as Promise<ChatConversationRecord | undefined>,
+          read(messages.get(incoming.id)) as Promise<ChatMessageRecord | undefined>,
+          read(metadata.get(nativeMediaSlotKey(incoming.id))) as Promise<{ kind?: string; state?: string; projectId?: string; conversationId?: string; artifactId?: string } | undefined>,
+        ]);
+        if (!conversation || conversation.deletedAt) return;
+        // 后台调用携带的是执行画布 ID。消息始终使用会话原本的持久归属。
+        const projectId = conversation.projectId;
+        if (!doesNativeExecutionOwnConversation(incoming.projectId, projectId)) throw new Error('原生消息持久归属冲突');
+        const record = { ...incoming, projectId };
         if (slot && (slot.kind !== 'native-media-message-slot-v1' || slot.projectId !== projectId || slot.conversationId !== conversationId
           || !['committed', 'suppressed'].includes(slot.state ?? ''))) throw new Error('原生媒体消息槽归属冲突');
         // 投影收据确认过的消息被删除后，任何迟到快照都不能重新创建。
@@ -275,7 +284,7 @@ async function persistMessageRecord(record: ChatMessageRecord, normalizedFrom?: 
     });
     return;
   }
-  await putChatMessageWithSequence(record);
+  await putChatMessageWithSequence(incoming);
 }
 
 /** 一次追加所有候选并保存不可变投影收据；重试不重建已经被用户删除的消息。 */
@@ -319,6 +328,8 @@ export async function projectNativeMediaMessageBatch(record: NativeMediaTaskReco
     episodeId: record.episodeId, projectEpoch: record.projectEpoch, canvasEpoch: record.canvasEpoch,
     origin, deliveryDigest: record.deliveryDigest, outputs };
   const receiptId = `native-media-message-projection:${record.operationId}`;
+  const belongsToProject = (ownerId: string) => ownerId === record.ownerProjectId || ownerId === record.canvasId
+    || isRegisteredNativeConversationAlias(record.ownerProjectId, ownerId);
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction([STORE_CHAT_MESSAGES, STORE_CHAT_CONVERSATIONS, STORE_METADATA], 'readwrite', { durability: 'strict' });
@@ -338,7 +349,7 @@ export async function projectNativeMediaMessageBatch(record: NativeMediaTaskReco
         && row.agentTaskId === origin.agentTaskId && (row.mediaResult as MediaGenerationResult | undefined)?.id === outputs[ordinal].artifactId;
       if (receipt) {
         if (!configValuesEqual(receipt.binding, binding) || !['committed', 'suppressed'].includes(receipt.state ?? '')) throw new Error('图片消息投影收据冲突');
-        if (!conversation || conversation.deletedAt || ![record.ownerProjectId, record.canvasId].includes(conversation.projectId)
+        if (!conversation || conversation.deletedAt || !belongsToProject(conversation.projectId)
           || receipt.state === 'suppressed') return { created: false, messages: [] };
         if (receipt.ownerId !== conversation.projectId) throw new Error('原候选会话归属已变化');
         // 缺失记录表示用户删除；只水化仍存在的精确原消息，不补建。
@@ -352,7 +363,7 @@ export async function projectNativeMediaMessageBatch(record: NativeMediaTaskReco
         metadata.add({ id: receiptId, kind: 'native-media-message-projection-v1', binding, state: 'suppressed', createdAt: Date.now() });
         return { created: false, messages: [] };
       }
-      if (![record.ownerProjectId, record.canvasId].includes(conversation.projectId) || root.projectId !== conversation.projectId
+      if (!belongsToProject(conversation.projectId) || root.projectId !== conversation.projectId
         || root.conversationId !== origin.conversationId || root.id !== origin.messageId || root.role !== 'assistant'
         || !Number.isSafeInteger(conversation.updatedAt) || conversation.updatedAt < 0
         || !Number.isSafeInteger(root.sequence) || root.sequence < 0 || !Number.isSafeInteger(root.updatedAt) || root.updatedAt < 0

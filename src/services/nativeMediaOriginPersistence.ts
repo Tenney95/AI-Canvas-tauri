@@ -4,6 +4,7 @@ import type { NativeMediaOrigin } from '../types/media';
 import { useAppStore } from '../store/useAppStore';
 import { isProjectExpectedContextCurrent } from './projectExecutionContext';
 import { persistMessage, saveConversation } from './chat/chatHistoryService';
+import { isRegisteredNativeConversationAlias } from './chat/conversationProjectScope';
 import { openDB, STORE_CHAT_CONVERSATIONS, STORE_CHAT_MESSAGES } from './indexedDb/schema';
 
 export async function persistNativeMediaOrigin(context: CanvasContext, origin: NativeMediaOrigin): Promise<void> {
@@ -11,7 +12,8 @@ export async function persistNativeMediaOrigin(context: CanvasContext, origin: N
   const conversation = state.conversations.find((entry) => entry.id === origin.conversationId && !entry.deletedAt);
   const message = state.messages.find((entry) => entry.id === origin.messageId && entry.conversationId === origin.conversationId
     && entry.role === 'assistant' && (!origin.agentTaskId || entry.agentTaskId === origin.agentTaskId));
-  if (!conversation || !message || ![context.projectId, context.canvasId].includes(conversation.projectId)
+  if (!conversation || !message || (![context.projectId, context.canvasId].includes(conversation.projectId)
+    && !isRegisteredNativeConversationAlias(context.projectId, conversation.projectId))
     || !isProjectExpectedContextCurrent(context, state, { checkCanvasRevision: false })) throw new Error('原媒体对话或消息归属无法核对，未提交请求');
   if (message.mediaResult) throw new Error('此消息已有媒体产物，请从新消息发起生成，未提交请求');
   if (origin.agentTaskId) {

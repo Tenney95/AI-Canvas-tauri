@@ -5,7 +5,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { CallToolResultSchema, ListToolsResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { useAppStore } from '../../store/useAppStore';
-import { seriesOwnerId } from '../../store/store.utils';
+import { isConversationInProjectScope } from '../chat/conversationProjectScope';
 import { isGeneralAssistantScope } from '../chat/assistantScope';
 import type { McpClientConnection, McpClientOption, McpClientToolInfo } from '../../types/mcpClient';
 import { deleteAppSecret, writeAppSecret } from '../providerSecretService';
@@ -57,7 +57,7 @@ export function selectedMcpConnection(context: { projectId: string; conversation
   const state = useAppStore.getState();
   if (!isGeneralAssistantScope(context.projectId) && state.currentProjectId !== context.projectId) return;
   const conversation = state.conversations.find((item) => item.id === context.conversationId && !item.deletedAt);
-  if (!conversation || !conversation.id.startsWith('conv-') || conversation.projectId !== seriesOwnerId(state.projects, context.projectId)
+  if (!conversation || !conversation.id.startsWith('conv-') || !isConversationInProjectScope(state.projects, context.projectId, conversation.projectId)
     || !conversation.mcpServerIds?.includes(serverId)) return;
   return state.config.mcpClientConnections?.find((item) => item.id === serverId && item.enabled);
 }

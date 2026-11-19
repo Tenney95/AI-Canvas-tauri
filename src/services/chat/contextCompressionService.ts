@@ -6,7 +6,7 @@
  * 摘要必须保留：目标、约束、已做决定、未完成计划、节点 ID、工具来源和失败原因。
  */
 import { useAppStore } from '../../store/useAppStore';
-import { seriesOwnerId } from '../../store/store.utils';
+import { isConversationInProjectScope, resolveNativeConversationCanvas } from './conversationProjectScope';
 import { streamAssistantReply, resolveAssistantModel } from '../ai/assistantStream';
 import { assertAgentProjectContext, captureAgentProjectScope } from './agentProjectContext';
 import { loadMessages } from './chatHistoryService';
@@ -241,7 +241,8 @@ async function doCompress(
     // 会话不在当前项目内存中时跳过压缩，避免绕过统一的会话更新链路
     return null;
   }
-  const projectId = options.projectId ?? conversation.projectId;
+  const projectId = options.projectId
+    ?? resolveNativeConversationCanvas(store.projects, store.currentProjectId, conversation.projectId) ?? conversation.projectId;
   const workbenchTarget = conversation.workbenchTarget ? { ...conversation.workbenchTarget } : undefined;
   const projectScope = captureAgentProjectScope(store, { projectId, workbenchTarget });
   const assertWorkbenchScope = () => {
@@ -260,7 +261,7 @@ async function doCompress(
     }
     assertAgentProjectContext(currentStore, { projectId, projectScope }, { checkRevision: false });
   };
-  if (seriesOwnerId(store.projects, projectId) !== conversation.projectId) {
+  if (!isConversationInProjectScope(store.projects, projectId, conversation.projectId)) {
     throw new Error('执行项目不属于该会话，无法压缩上下文');
   }
   assertWorkbenchScope();
@@ -344,7 +345,7 @@ async function doCompress(
   const currentStore = useAppStore.getState();
   const current = currentStore.conversations.find((item) => item.id === conversationId);
   if (!current || current.projectId !== conversation.projectId
-    || seriesOwnerId(currentStore.projects, projectId) !== current.projectId
+    || !isConversationInProjectScope(currentStore.projects, projectId, current.projectId)
     || current.contextSummary?.updatedAt !== previousSummary?.updatedAt) return null;
   useAppStore.getState().updateConversation(conversationId, { contextSummary: summary });
   return summary;

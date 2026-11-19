@@ -30,7 +30,8 @@ import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
 import { openDetachedChatWindow } from '../../services/chat/chatWindowLifecycle';
 import { useAppStore } from '../../store/useAppStore';
-import { projectMemoryOwnerId, seriesOwnerId } from '../../store/store.utils';
+import { projectMemoryOwnerId } from '../../store/store.utils';
+import { resolveConversationProjectScope } from '../../services/chat/conversationProjectScope';
 import { GENERAL_ASSISTANT_SCOPE_ID } from '../../services/chat/assistantScope';
 import ConversationList from './ConversationList';
 import ChatHeader from './ChatHeader';
@@ -225,10 +226,10 @@ export default function ChatPanel({
 
   // ── detached 模式数据 ──
   const effectiveConversations = detached ? (detachedSnapshot?.conversations ?? []) : conversations;
-  const conversationScopeId = currentProjectId ? seriesOwnerId(projects, currentProjectId) : GENERAL_ASSISTANT_SCOPE_ID;
+  const conversationScope = resolveConversationProjectScope(projects, currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID);
   const effectiveActiveConversationId = detached ? (detachedSnapshot?.activeConversationId ?? null)
     : activeConversationId !== MCP_SETTINGS_CONVERSATION_ID
-      && !conversations.some((conversation) => conversation.id === activeConversationId && conversation.projectId === conversationScopeId)
+      && !conversations.some((conversation) => conversation.id === activeConversationId && conversationScope.projectIds.has(conversation.projectId))
       ? null : activeConversationId;
   const effectiveMessages = useMemo(
     () => detached ? (detachedSnapshot?.messages ?? []) : messages,

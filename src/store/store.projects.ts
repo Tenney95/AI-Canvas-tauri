@@ -172,6 +172,8 @@ async function activateNativeProject(set: ProjectSliceSet, get: ProjectSliceGet,
   assertCurrent();
   const ids = [entry.project.id, ...entry.episodeIds, ...entry.canvasIds];
   fileService.registerNativeProjectFolders(ids.map((id) => ({ id, projectId: entry.project.id })));
+  await get().repairNativeWorkConversationsOnFirstOpen(entry.project.id);
+  assertCurrent();
   const { emptyDramaAssetLibrary } = await import('../types/dramaAssets');
   assertCurrent();
   const library = data.dramaAssets ?? emptyDramaAssetLibrary();
@@ -3047,9 +3049,9 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           if (activeOwner && activeId) {
             const nextId = activeId === id ? (entry.episodes[0]?.canvasId ?? entry.project.id) : activeId;
             await activateNativeProject(set, get, entry, nextId, assertCurrent, nextId === activeId);
+            get().loadConversationsForProject(nextId).catch((e) => console.warn('[删除分集] 加载会话失败:', e));
             if (nextId !== activeId) {
               rememberActiveProject(nextId);
-              get().loadConversationsForProject(nextId).catch((e) => console.warn('[删除分集] 加载会话失败:', e));
               get().repairInterruptedForProject(nextId).catch((e) => console.warn('[删除分集] 修复中断消息失败:', e));
               get().loadAgentTasksForProject(nextId).catch((e) => console.warn('[删除分集] 加载任务失败:', e));
               get().loadProjectMemoriesForProject(native.projectId).catch((e) => console.warn('[删除分集] 加载项目记忆失败:', e));

@@ -3,11 +3,13 @@ import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { NativeMediaTaskRecord } from '../../src/services/indexedDb/nativeMediaTaskRepository';
 import type { ChatMessageRecord } from '../../src/services/indexedDbService';
-const io = vi.hoisted(() => ({ db: null as IDBDatabase | null, records: [] as NativeMediaTaskRecord[], verify: vi.fn(async () => {}) }));
+const io = vi.hoisted(() => ({ db: null as IDBDatabase | null, records: [] as NativeMediaTaskRecord[], verify: vi.fn(async () => {}),
+  nativeOwners: new Map<string, string>() }));
 vi.mock('../../src/services/indexedDbService', () => ({ putChatConversation: vi.fn(), getProjectConversations: vi.fn(),
   putChatMessageWithSequence: vi.fn(), getConversationMessages: vi.fn(), deleteConversationMessages: vi.fn() }));
 vi.mock('../../src/services/indexedDb/schema', () => ({ openDB: async () => io.db!, STORE_CHAT_MESSAGES: 'messages', STORE_CHAT_CONVERSATIONS: 'conversations', STORE_METADATA: 'metadata' }));
 vi.mock('../../src/services/fileService', () => ({ isTransientMediaUrl: () => false, persistMediaUrlToProjectData: vi.fn() }));
+vi.mock('../../src/services/fs/core', () => ({ getNativeProjectOwner: (id: string) => io.nativeOwners.get(id) }));
 vi.mock('../../src/services/indexedDb/nativeMediaTaskRepository', () => ({ listNativeMediaTasks: async () => io.records }));
 vi.mock('../../src/services/nativeMediaLocalResult', () => ({ readNativeMediaLocalResult: io.verify }));
 vi.mock('../../src/services/chat/teams/teamProfileService', () => ({ normalizeExecutionSelection: (value: unknown) => value, normalizeTeamProfile: (value: unknown) => value }));
@@ -33,6 +35,7 @@ async function all(store: string): Promise<Array<Record<string, unknown>>> {
 }
 beforeEach(async () => {
   vi.stubGlobal('IDBKeyRange', IDBKeyRange); io.verify.mockReset(); io.verify.mockResolvedValue(undefined);
+  io.nativeOwners.clear(); io.nativeOwners.set(canvas, owner);
   vi.mocked(getConversationMessages).mockReset(); vi.mocked(putChatMessageWithSequence).mockClear();
   io.db = await new Promise((resolve, reject) => { const request = new IDBFactory().open('fixture', 1);
     request.onupgradeneeded = () => { request.result.createObjectStore('conversations', { keyPath: 'id' }); request.result.createObjectStore('metadata', { keyPath: 'id' });
@@ -122,6 +125,24 @@ it('普通迟到快照不抹首张或复活已删除候选，新原生产物只�
   await persistMessage({ ...projected.messages[0], content: '迟到的无产物快照', mediaResult: undefined, mediaStatus: 'generating' }, owner, 'original-conversation');
   expect((await all('messages'))[0].mediaResult).toMatchObject({ id: `native-media-${op}` });
   expect((await all('messages'))[0].mediaStatus).toBe('succeeded');
+});
+it('同一作品其他画布可写原会话并沿用旧归属，另一作品不能写入', async () => {
+  const originalCanvas = 'c2-99999999-9999-4999-8999-999999999999';
+  const otherCanvas = 'c2-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const otherProject = 'p2-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  io.nativeOwners.set(originalCanvas, owner);
+  io.nativeOwners.set(otherCanvas, otherProject);
+  const [conversation] = await all('conversations');
+  await write('conversations', { ...conversation, projectId: originalCanvas });
+  await write('messages', { ...root(), projectId: originalCanvas });
+
+  const projected = await projectNativeMediaMessageBatch(io.records[0], [undefined, undefined], () => true);
+  expect(projected.messages).toHaveLength(2);
+  expect((await all('messages')).every((row) => row.projectId === originalCanvas)).toBe(true);
+  const message = { ...projected.messages[0], content: '原会话标题下的后续更新' };
+  await persistMessage(message, canvas, 'original-conversation');
+  await expect(persistMessage({ ...message, content: '另一作品的更新' }, otherCanvas, 'original-conversation')).rejects.toThrow('归属冲突');
+  expect((await all('messages')).find((row) => row.id === message.id)).toMatchObject({ projectId: originalCanvas, content: message.content });
 });
 it('用户核对未知提交后只投影已知候选，消息明确保留原批次部分完成统计', async () => {
   const batch = io.records[0].apimartImageBatch!;

@@ -1,5 +1,5 @@
 import { useAppStore } from '../../store/useAppStore';
-import { seriesOwnerId } from '../../store/store.utils';
+import { resolveConversationProjectScope } from './conversationProjectScope';
 import type { ChatConversation, ChatMessage } from '../../types/chat';
 import { forkChatConversationAtMessage } from '../indexedDbService';
 import { isGeneralAssistantScope } from './assistantScope';
@@ -18,10 +18,12 @@ export async function createConversationBranch(input: {
 }): Promise<{ conversation: ChatConversation; messages: ChatMessage[] }> {
   const state = useAppStore.getState();
   const source = state.conversations.find((item) => item.id === input.conversationId);
-  const ownerId = state.currentProjectId ? seriesOwnerId(state.projects, state.currentProjectId) : null;
+  const scope = state.currentProjectId ? resolveConversationProjectScope(state.projects, state.currentProjectId) : null;
   if (!source || source.deletedAt || source.projectId !== input.projectId
-    || (!isGeneralAssistantScope(source.projectId) && ownerId !== source.projectId)) throw new Error('只能对当前项目中的有效对话创建分支');
+    || (!isGeneralAssistantScope(source.projectId) && !scope?.projectIds.has(source.projectId))) throw new Error('只能对当前项目中的有效对话创建分支');
   const result = await forkChatConversationAtMessage({ ...input, newConversationId: `conv-${crypto.randomUUID()}`,
+    ...(scope?.nativeProjectId && scope.ownerId !== source.projectId && scope.projectIds.has(source.projectId)
+      ? { newProjectId: scope.ownerId } : {}),
     sanitize: sanitizeConversationBranchText });
   return { conversation: result.conversation,
     messages: result.messages.map<ChatMessage>((message) => ({ id: message.id, conversationId: message.conversationId,

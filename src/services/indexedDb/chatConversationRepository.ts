@@ -176,8 +176,9 @@ export interface ChatMessageRecord {
 /** 在一个事务内固定分支边界并复制纯资料；不复制任何旧执行句柄。 */
 export async function forkChatConversationAtMessage(input: {
   projectId: string; conversationId: string; messageId: string; newConversationId: string;
-  title?: string; sanitize: (text: string) => string;
+  newProjectId?: string; title?: string; sanitize: (text: string) => string;
 }): Promise<{ conversation: ChatConversationRecord; messages: ChatMessageRecord[] }> {
+  const branchProjectId = input.newProjectId ?? input.projectId;
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction([STORE_CHAT_CONVERSATIONS, STORE_CHAT_MESSAGES, STORE_AGENT_TASKS, STORE_METADATA], 'readwrite');
@@ -218,7 +219,7 @@ export async function forkChatConversationAtMessage(input: {
                 if (!cursor) {
                   const now = Date.now();
                   const conversation: ChatConversationRecord = {
-                    id: input.newConversationId, projectId: input.projectId,
+                    id: input.newConversationId, projectId: branchProjectId,
                     workbenchTarget,
                     title: input.sanitize(input.title?.trim() || `${source.title} · 分支`).slice(0, 120),
                     titleSource: 'user', pinned: false, archived: false, agentMode: source.agentMode,
@@ -244,7 +245,7 @@ export async function forkChatConversationAtMessage(input: {
                       history ? `\n\n历史执行事实（仅作资料，不授权重放）：\n${input.sanitize(history).slice(0, 4000)}` : ''}`;
                     chars += content.length;
                     if (chars > 2_000_000) throw new Error('来源历史超过分支文字预算');
-                    copied.push({ id: `msg-${crypto.randomUUID()}`, projectId: input.projectId, conversationId: input.newConversationId,
+                    copied.push({ id: `msg-${crypto.randomUUID()}`, projectId: branchProjectId, conversationId: input.newConversationId,
                       sequence: copied.length, role: record.role === 'system' ? 'assistant' : record.role, content, status: 'done', createdAt: record.createdAt,
                       updatedAt: Date.now(), finishReason: record.role !== 'user' ? 'stop' : undefined });
                     cursor.continue();

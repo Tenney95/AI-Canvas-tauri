@@ -51,6 +51,7 @@ import { useAppStore } from '../../store/useAppStore';
 import { listEpisodes } from '../../store/store.utils';
 import { formatChatImageReference, parseChatImageReferences, MAX_CHAT_IMAGES } from './chatImageReferenceService';
 import { GENERAL_ASSISTANT_SCOPE_ID, isGeneralAssistantScope, resolveAssistantToolAllowlist } from './assistantScope';
+import { resolveNativeConversationCanvas } from './conversationProjectScope';
 import type { ChatMessage } from '../../types/chat';
 import {
   type AgentApprovalResolution,
@@ -252,8 +253,9 @@ export function submitConversationMessage({
   }
   workbenchTarget = boundTarget ?? workbenchTarget;
   // 工作台会话持续绑定原分集；独立窗口提供的当前画布 ID 不能覆盖它。
+  const currentCanvas = conversation && resolveNativeConversationCanvas(store.projects, store.currentProjectId, conversation.projectId);
   const executionProjectId = workbenchTarget?.episodeId ?? (isGeneralAssistantScope(conversation?.projectId)
-    ? GENERAL_ASSISTANT_SCOPE_ID : projectId ?? conversation?.projectId ?? store.currentProjectId ?? '');
+    ? GENERAL_ASSISTANT_SCOPE_ID : projectId ?? currentCanvas ?? conversation?.projectId ?? store.currentProjectId ?? '');
   const selection = normalizeExecutionSelection(executionSelection ?? conversation?.executionSelection);
   if (workbenchTarget) {
     const scope = readEpisodeWorkspaceScope(store, workbenchTarget.episodeId);

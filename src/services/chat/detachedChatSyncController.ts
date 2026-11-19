@@ -5,7 +5,7 @@ import type { Node } from '@xyflow/react';
 import { useAppStore } from '../../store/useAppStore';
 import { t } from '../../i18n';
 import { isTauriEnv } from '../fs/core';
-import { seriesOwnerId } from '../../store/store.utils';
+import { isConversationInProjectScope, resolveConversationProjectScope } from './conversationProjectScope';
 import { GENERAL_ASSISTANT_SCOPE_ID } from './assistantScope';
 import { getMcpClientOptions } from '../mcp/mcpClientService';
 import { MCP_SETTINGS_CONVERSATION_ID, MCP_SETTINGS_SCOPE_ID } from '../mcp/mcpSettingsScope';
@@ -305,7 +305,7 @@ let cachedConversationImages: string[] = [];
 let cachedImageDraft = '';
 let cachedDraftImages: string[] = [];
 let cachedConversations: ChatConversation[] | undefined;
-let cachedConversationOwner: string | undefined;
+let cachedConversationScopeKey: string | undefined;
 let cachedScopedConversations: ChatConversation[] = [];
 
 function conversationImageFileNames(messages: ChatMessage[], conversationId: string | null): string[] {
@@ -328,12 +328,13 @@ function conversationImageFileNames(messages: ChatMessage[], conversationId: str
 
 export function buildDetachedChatSnapshot(state: AppState): ChatStateSnapshot {
   const chatScopeId = state.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID;
-  const ownerId = seriesOwnerId(state.projects, chatScopeId);
-  if (state.conversations !== cachedConversations || ownerId !== cachedConversationOwner) {
-    cachedScopedConversations = state.conversations.filter((conversation) => conversation.projectId === ownerId
+  const scope = resolveConversationProjectScope(state.projects, chatScopeId);
+  const scopeKey = [...scope.projectIds].join('\0');
+  if (state.conversations !== cachedConversations || scopeKey !== cachedConversationScopeKey) {
+    cachedScopedConversations = state.conversations.filter((conversation) => scope.projectIds.has(conversation.projectId)
       || conversation.id === MCP_SETTINGS_CONVERSATION_ID);
     cachedConversations = state.conversations;
-    cachedConversationOwner = ownerId;
+    cachedConversationScopeKey = scopeKey;
   }
   const conversations = cachedScopedConversations;
   const activeConversationId = conversations.some((conversation) => conversation.id === state.activeConversationId)
@@ -446,10 +447,10 @@ export async function executeManagedChatOperation(operation: ChatManagedOperatio
     assertCurrent?.();
     const state = useAppStore.getState();
     if ((state.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID) !== scopeId) throw new Error('项目已变化，请刷新后重试');
-    const owner = seriesOwnerId(state.projects, scopeId);
-    const conversation = conversationId ? state.conversations.find((item) => item.id === conversationId && !item.deletedAt && item.projectId === owner) : undefined;
+    const scope = resolveConversationProjectScope(state.projects, scopeId);
+    const conversation = conversationId ? state.conversations.find((item) => item.id === conversationId && !item.deletedAt && scope.projectIds.has(item.projectId)) : undefined;
     if (conversationId && (!conversation || conversation.id === MCP_SETTINGS_CONVERSATION_ID)) throw new Error('会话已变化，请重新选择');
-    return { state, conversation, owner };
+    return { state, conversation, scope };
   };
   const initial = assertScope();
   if (initial.conversation?.workbenchTarget
@@ -498,7 +499,7 @@ export async function executeManagedChatOperation(operation: ChatManagedOperatio
     return initial.state.branchConversation(initial.conversation.id, operation.messageId);
   }
   const task = initial.state.agentTasks.find((entry) => entry.id === operation.taskId);
-  const ownerConversation = initial.state.conversations.find((entry) => entry.id === task?.conversationId && !entry.deletedAt && entry.projectId === initial.owner);
+  const ownerConversation = initial.state.conversations.find((entry) => entry.id === task?.conversationId && !entry.deletedAt && initial.scope.projectIds.has(entry.projectId));
   if (!task || !ownerConversation || (conversationId && task.conversationId !== conversationId)) throw new Error('任务不属于当前会话范围');
   switch (operation.kind) {
     case 'edit_team_graph': return editTeamGraph(task.id, operation.graph, operation.expected);
@@ -562,11 +563,11 @@ export function handleDetachedChatAction(
     case 'set_execution_selection': {
       const scopeId = store.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID;
       if (action.scopeId !== scopeId || (action.conversationId && action.conversationId !== store.activeConversationId)) break;
-      const owner = seriesOwnerId(store.projects, scopeId);
-      const current = store.conversations.find((item) => item.id === store.activeConversationId && item.projectId === owner && !item.deletedAt);
+      const scope = resolveConversationProjectScope(store.projects, scopeId);
+      const current = store.conversations.find((item) => item.id === store.activeConversationId && scope.projectIds.has(item.projectId) && !item.deletedAt);
       const conversationId = action.conversationId ?? current?.id ?? store.createConversation(scopeId);
       const conversation = useAppStore.getState().conversations.find((item) => item.id === conversationId && !item.deletedAt);
-      if (conversation?.projectId !== owner || !conversation.id.startsWith('conv-') || conversation.workbenchTarget) break;
+      if (!conversation || !scope.projectIds.has(conversation.projectId) || !conversation.id.startsWith('conv-') || conversation.workbenchTarget) break;
       store.updateConversation(conversationId, { executionSelection: normalizeExecutionSelection(action.selection) });
       if (!action.conversationId && action.draft !== undefined) store.setChatComposerLiveDraft(action.draft, conversationId);
       requestSync(true);
@@ -588,7 +589,7 @@ export function handleDetachedChatAction(
       const scopeId = store.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID;
       const task = store.agentTasks.find((item) => item.id === action.taskId && item.executionKind === 'team');
       const conversation = store.conversations.find((item) => item.id === task?.conversationId && !item.deletedAt);
-      if (!task || !conversation || conversation.projectId !== seriesOwnerId(store.projects, scopeId)) break;
+      if (!task || !conversation || !isConversationInProjectScope(store.projects, scopeId, conversation.projectId)) break;
       if (action.type === 'amend_team_task') {
         void appendTeamInstruction(action.taskId, action.instruction)
           .catch((error: unknown) => store.showToast(error instanceof Error ? error.message.slice(0, 300) : '补充要求未能应用', 'error'))
@@ -622,14 +623,15 @@ export function handleDetachedChatAction(
       if (action.scopeId !== scopeId) break;
       if (!store.config.mcpClientConnections?.some((item) => item.id === action.serverId && item.enabled)) break;
       if (action.conversationId && action.conversationId !== store.activeConversationId) break;
+      const scope = resolveConversationProjectScope(store.projects, scopeId);
       const current = store.conversations.find((item) => item.id === store.activeConversationId && !item.deletedAt
-        && item.projectId === seriesOwnerId(store.projects, scopeId));
+        && scope.projectIds.has(item.projectId));
       if (!action.conversationId && current && (pendingMcpSelection?.scopeId !== scopeId || pendingMcpSelection.conversationId !== current.id)) break;
       const created = !action.conversationId && !current;
       const conversationId = action.conversationId ?? current?.id ?? store.createConversation(scopeId);
       if (created) pendingMcpSelection = { scopeId, conversationId };
       const conversation = useAppStore.getState().conversations.find((item) => item.id === conversationId && !item.deletedAt);
-      if (conversation?.projectId !== seriesOwnerId(store.projects, scopeId)) break;
+      if (!conversation || !scope.projectIds.has(conversation.projectId)) break;
       if (created && action.draft !== undefined) store.setChatComposerLiveDraft(action.draft, conversationId);
       store.setConversationMcpServer(conversationId, action.serverId, action.enabled);
       requestSync(true);
@@ -651,7 +653,7 @@ export function handleDetachedChatAction(
       const submitted = submitConversationMessage({
         content: action.content,
         ...(action.imageFileNames !== undefined ? { imageFileNames: action.imageFileNames } : {}),
-        projectId: store.currentProjectId && conversation?.projectId === seriesOwnerId(store.projects, store.currentProjectId)
+        projectId: store.currentProjectId && conversation && isConversationInProjectScope(store.projects, store.currentProjectId, conversation.projectId)
           ? store.currentProjectId : conversation?.projectId ?? store.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID,
         conversationId,
         mode: conversation?.agentMode ?? 'collaborative',
@@ -951,15 +953,21 @@ export function createDetachedChatSyncController(
     const owner = draft.conversationId === MCP_SETTINGS_CONVERSATION_ID ? MCP_SETTINGS_SCOPE_ID
       : frame.context.target.kind === 'global' ? GENERAL_ASSISTANT_SCOPE_ID : frame.context.target.projectId;
     if (draft.conversationId) {
-      const current = useAppStore.getState().conversations.find((item) => item.id === draft.conversationId);
-      if (current ? current.deletedAt || current.projectId !== owner : !(
-        await (await import('../indexedDbService')).getProjectConversations(owner)
-      ).some((item) => item.id === draft.conversationId && !item.deletedAt && item.projectId === owner)) return false;
+      const state = useAppStore.getState();
+      const scope = resolveConversationProjectScope(state.projects, owner);
+      const current = state.conversations.find((item) => item.id === draft.conversationId);
+      let conversation = current;
+      if (!conversation) {
+        const { getProjectConversations } = await import('../indexedDbService');
+        const groups = await Promise.all([...scope.projectIds].map(getProjectConversations));
+        conversation = groups.flat().find((item) => item.id === draft.conversationId);
+      }
+      if (!conversation || conversation.deletedAt || !scope.projectIds.has(conversation.projectId)) return false;
       if (disposed || frame.sessionId !== sessionId) return false;
       const latest = useAppStore.getState(), currentDraft = latest.chatComposerDrafts[draft.conversationId] ?? '';
       if (consumedDraftConflict(frame, draft.draft, currentDraft, beforeSequence)) return false;
       if (currentDraft !== published.draft && currentDraft !== draft.draft && currentDraft !== acceptedClientEdit(frame, beforeSequence)?.draft) return false;
-      return latest.setChatComposerLiveDraft(draft.draft, draft.conversationId, owner);
+      return latest.setChatComposerLiveDraft(draft.draft, draft.conversationId, conversation.projectId);
     }
     const current = useAppStore.getState();
     if (!draft.draft) return true;
@@ -1154,9 +1162,9 @@ export function createDetachedChatSyncController(
         const frame = action?.windowFrame;
         const published = frame && frames.get(frame.revision);
         const state = useAppStore.getState();
-        const activeOwner = seriesOwnerId(state.projects, state.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID);
+        const activeScope = resolveConversationProjectScope(state.projects, state.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID);
         const activeConversationId = state.conversations.find((item) => item.id === state.activeConversationId
-          && (item.projectId === activeOwner || item.id === MCP_SETTINGS_CONVERSATION_ID))?.id ?? null;
+          && (activeScope.projectIds.has(item.projectId) || item.id === MCP_SETTINGS_CONVERSATION_ID))?.id ?? null;
         const valid = !disposed && state.chatPanelDetached && sessionId && frame?.schemaVersion === 2 && frame.sessionId === sessionId
           && !!published && configValuesEqual(frame, published)
           && Number.isSafeInteger(action.sequence) && action.sequence! > acceptedSequence
@@ -1174,14 +1182,15 @@ export function createDetachedChatSyncController(
           return;
         }
         acceptedSequence = action.sequence!;
-        const ownerId = frame.context.target.kind === 'global' ? GENERAL_ASSISTANT_SCOPE_ID : frame.context.target.projectId;
+        const frameScope = resolveConversationProjectScope(state.projects,
+          frame.context.target.kind === 'global' ? GENERAL_ASSISTANT_SCOPE_ID : frame.context.target.projectId);
         if ('conversationId' in action && action.conversationId
           && !state.conversations.some((item) => item.id === action.conversationId && !item.deletedAt
-            && (item.projectId === ownerId || item.id === MCP_SETTINGS_CONVERSATION_ID))) { sync(true, true); return; }
+            && (frameScope.projectIds.has(item.projectId) || item.id === MCP_SETTINGS_CONVERSATION_ID))) { sync(true, true); return; }
         if ('taskId' in action) {
           const task = state.agentTasks.find((item) => item.id === action.taskId);
           const conversation = state.conversations.find((item) => item.id === task?.conversationId && !item.deletedAt);
-          if (!task || !conversation || conversation.projectId !== ownerId) { sync(true, true); return; }
+          if (!task || !conversation || !frameScope.projectIds.has(conversation.projectId)) { sync(true, true); return; }
         }
         const assertCurrent = () => {
           if (disposed || frame.sessionId !== sessionId || !useAppStore.getState().chatPanelDetached

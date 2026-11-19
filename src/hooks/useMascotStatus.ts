@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { MascotStatus } from '../components/shared/mascot/Mascot';
 import { useAppStore, type AppState } from '../store/useAppStore';
+import { resolveConversationProjectScope } from '../services/chat/conversationProjectScope';
 
 const RESULT_HOLD_MS = 1800;
 
@@ -49,9 +50,11 @@ function selectMascotActivity(state: AppState): MascotActivitySnapshot {
     }
   }
 
+  const scope = currentProjectId ? resolveConversationProjectScope(state.projects, currentProjectId) : null;
   const projectConversationIds = new Set(
     state.conversations
-      .filter((conversation) => conversation.projectId === currentProjectId && !conversation.deletedAt)
+      .filter((conversation) => !conversation.deletedAt && (conversation.projectId === currentProjectId
+        || !!scope?.nativeProjectId && scope.projectIds.has(conversation.projectId)))
       .map((conversation) => conversation.id),
   );
   for (const message of state.messages) {

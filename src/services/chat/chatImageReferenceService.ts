@@ -5,7 +5,7 @@ import {
   readFileToDataUrl, saveBinaryToProjectData, selectAgentTextFiles,
 } from '../fileService';
 import { useAppStore } from '../../store/useAppStore';
-import { seriesOwnerId } from '../../store/store.utils';
+import { isConversationInProjectScope } from './conversationProjectScope';
 import { GENERAL_ASSISTANT_SCOPE_ID } from './assistantScope';
 import { authorizeConversationFiles } from './fileGrantService';
 
@@ -94,7 +94,7 @@ async function attachSelectedConversationFiles(conversationId: string): Promise<
   const projectId = initial.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID;
   const conversation = initial.conversations.find((item) => item.id === conversationId && !item.deletedAt);
   if (!projectId || initial.projectLoadStatus !== 'ready' || !conversation
-    || conversation.projectId !== seriesOwnerId(initial.projects, projectId)) throw new Error('请先选择当前范围的普通对话');
+    || !isConversationInProjectScope(initial.projects, projectId, conversation.projectId)) throw new Error('请先选择当前范围的普通对话');
   const valid = () => {
     const state = useAppStore.getState();
     return (state.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID) === projectId && state.activeConversationId === conversationId
