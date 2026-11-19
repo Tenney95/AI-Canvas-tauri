@@ -258,6 +258,8 @@ const settings = {
   "在平台确认任务结束后解除限制": "Unlock after confirming the task has ended on the platform",
   "我已在平台确认任务未提交或已经结束": "I confirmed on the platform that the task was not submitted or has ended",
   "清除本地恢复记录": "Clear local recovery record",
+  "原任务回执会保留。再次生成会发起新的请求。": "The original task record is kept. Generating again starts a new request.",
+  "原媒体任务未能解除占用，请重新核对。": "The original media task could not be released. Please review it again.",
   "停止等待": "Stop waiting",
   "ComfyUI、RunningHub 与工作流 API": "ComfyUI, RunningHub and workflow APIs",
   "站点根地址": "Site root URL",

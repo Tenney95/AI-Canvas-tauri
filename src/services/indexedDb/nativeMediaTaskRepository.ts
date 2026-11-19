@@ -514,7 +514,8 @@ export async function failNativeMediaTask(record: NativeMediaTaskRecord, options
 }
 
 /** 用户核对原平台后结束本机跟踪；原回执、候选和远端 ID 保留，不取消或重新提交远端任务。 */
-export async function reviewNativeMediaTask(operationId: string, context: CanvasContext, options: NativeProjectOptions = {}): Promise<void> {
+export async function reviewNativeMediaTask(operationId: string, context: CanvasContext,
+  options: NativeProjectOptions & { expected?: Pick<NativeMediaTaskRecord, 'nodeId' | 'lease' | 'revision'> } = {}): Promise<void> {
   if (!UUID.test(operationId) || context.kind !== 'canvas' || context.modelGeneration !== 1 || !context.runtimeEpoch) return fail();
   const db = await openNativeProjectDatabase(false, options); if (!db) return fail();
   try {
@@ -523,7 +524,10 @@ export async function reviewNativeMediaTask(operationId: string, context: Canvas
       const store = tx.objectStore(EXCHANGE), row = await req(store.get(`${PREFIX}${operationId}`)) as NativeMediaTaskRecord | undefined;
       if (!row) return fail();
       const current = validateNativeMediaTaskRecord(row);
-      if (!['prepared', 'submitted', 'outcome-unknown'].includes(current.status) || current.revision >= Number.MAX_SAFE_INTEGER
+      const expected = options.expected;
+      if (!ACTIVE_NATIVE_MEDIA_STATES.includes(current.status) || current.revision >= Number.MAX_SAFE_INTEGER
+        || expected && (current.nodeId !== expected.nodeId || current.lease !== expected.lease || current.revision !== expected.revision
+          || current.origin?.deliveryMode === 'chat')
         || current.ownerProjectId !== context.projectId || current.canvasId !== context.canvasId
         || current.episodeId !== context.episodeId || current.projectEpoch !== context.projectEpoch
         || current.canvasEpoch !== context.canvasEpoch || !await matchingCanvas(tx, current)) return fail('原任务或画布已变化，未解除防重');

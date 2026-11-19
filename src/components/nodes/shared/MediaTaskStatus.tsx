@@ -4,7 +4,7 @@
 import { memo, useState, type ReactNode } from 'react';
 import { RotateCw } from 'lucide-react';
 import { useAppStore } from '../../../store/useAppStore';
-import { discardMediaTask, getNativeWorkflowRecovery, getPendingTasksForProject, hasMuseQueryIdentity, resumeMediaNodeTask, resumeNativeWorkflowFromNode } from '../../../services/pollManager';
+import { discardMediaTask, getNativeMediaNodeRecovery, getPendingTasksForProject, hasMuseQueryIdentity, resumeMediaNodeTask, resumeNativeMediaFromNode, reviewNativeMediaFromNode } from '../../../services/pollManager';
 import { COMFY_OUTPUT_UNAVAILABLE_MESSAGE, COMFY_TEXT_OUTPUT_UNAVAILABLE_MESSAGE, getComfyQueryAuthorizationMessage } from '../../../services/comfyPolling';
 import { useT } from '../../../i18n';
 import { GenerationWaitTime } from './NodeGenerationProgress';
@@ -16,11 +16,12 @@ function MediaTaskStatus({ nodeId, overlay = false, children }: { nodeId: string
   const taskState = useAppStore((state) => state.nodes.find((node) => node.id === nodeId)?.data.mediaTaskState);
   const videoPaused = useAppStore((state) => state.nodes.find((node) => node.id === nodeId)?.data.videoTaskState === 'paused');
   const loading = useAppStore((state) => state.nodes.find((node) => node.id === nodeId)?.data.status === 'loading');
-  const nativeOperationId = useAppStore((state) => getNativeWorkflowRecovery(nodeId, state));
+  const nodeType = useAppStore((state) => state.nodes.find((node) => node.id === nodeId)?.data.type);
+  const nativeOperationId = useAppStore((state) => getNativeMediaNodeRecovery(nodeId, state));
   const showToast = useAppStore((state) => state.showToast);
   const [busy, setBusy] = useState(false);
   const [confirmedIdentity, setConfirmedIdentity] = useState<string>();
-  const task = projectId && (taskState || videoPaused) ? getPendingTasksForProject(projectId).find((item) => item.nodeId === nodeId
+  const task = !nativeOperationId && projectId && (taskState || videoPaused) ? getPendingTasksForProject(projectId).find((item) => item.nodeId === nodeId
     || item.mediaContext?.canvasNodeId === nodeId) : undefined;
   if (loading || (!taskState && !videoPaused) || (!task && !nativeOperationId)) return null;
 
@@ -30,7 +31,7 @@ function MediaTaskStatus({ nodeId, overlay = false, children }: { nodeId: string
   const resume = () => {
     if (busy) return;
     const result = task ? resumeMediaNodeTask(task.nodeId)
-      : nativeOperationId ? resumeNativeWorkflowFromNode(nodeId, nativeOperationId) : undefined;
+      : nativeOperationId ? resumeNativeMediaFromNode(nodeId, nativeOperationId) : undefined;
     if (!result) return;
     setBusy(true);
     void result.catch(() => {
@@ -82,8 +83,23 @@ function MediaTaskStatus({ nodeId, overlay = false, children }: { nodeId: string
         : httpStatus >= 500 ? '服务商或网关返回异常（HTTP {status}）' : '接口请求被拒绝（HTTP {status}）', { status: httpStatus })
     : diagnostic?.kind === 'timeout' ? t('等待服务商响应超时，尚未确认最终结果')
       : diagnostic?.kind === 'network' ? t('网络连接中断，未收到完整结果') : undefined;
-  const kind = !task || task.nodeType === 'ai-video' ? 'video' : task.nodeType === 'ai-text' ? 'text' : task.nodeType === 'ai-audio' ? 'audio' : 'image';
-  const identity = task ? JSON.stringify([task.projectId, task.nodeId, task.taskId, task.attemptId]) : undefined;
+  const taskNodeType = task?.nodeType ?? nodeType;
+  const kind = taskNodeType === 'ai-video' ? 'video' : taskNodeType === 'ai-text' ? 'text' : taskNodeType === 'ai-audio' ? 'audio' : 'image';
+  const identity = nativeOperationId ? JSON.stringify([projectId, nodeId, nativeOperationId])
+    : task ? JSON.stringify([task.projectId, task.nodeId, task.taskId, task.attemptId]) : undefined;
+  const review = () => {
+    if (!identity || confirmedIdentity !== identity || busy || canQuery) return;
+    if (task) {
+      discardMediaTask({ projectId: task.projectId, nodeId: task.nodeId, taskId: task.taskId, attemptId: task.attemptId });
+      return;
+    }
+    if (!nativeOperationId) return;
+    setBusy(true);
+    void reviewNativeMediaFromNode(nodeId, nativeOperationId).catch(() => {
+      setConfirmedIdentity(undefined);
+      showToast(t('原媒体任务未能解除占用，请重新核对。'), 'error');
+    }).finally(() => setBusy(false));
+  };
   return <div className={overlay ? 'generation-progress-overlay generation-progress-overlay--interactive nodrag nopan text-center'
     : 'ui-card nodrag nopan flex flex-wrap items-center gap-2 p-2'} role="status"
     onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}
@@ -92,15 +108,14 @@ function MediaTaskStatus({ nodeId, overlay = false, children }: { nodeId: string
       <span className={`break-words text-canvas-text-secondary${overlay ? ' line-clamp-3 text-[11px]' : ' text-xs'}`} title={message}>{message}</span>
       {diagnosticMessage && <span className={`break-words text-canvas-text-secondary${overlay ? ' text-[11px]' : ' text-xs'}`} title={diagnosticMessage}>{diagnosticMessage}</span>}
       <GenerationWaitTime nodeId={nodeId} />
-      {task && !canQuery && !overlay && <details className="text-xs text-canvas-text-secondary">
+      {identity && !canQuery && !overlay && <details className="text-xs text-canvas-text-secondary">
         <summary className="cursor-pointer">{t('在平台确认任务结束后解除限制')}</summary>
-        <p className="my-2">{t('解除本地记录不会取消平台任务。')}</p>
+        <p className="my-2">{t(nativeOperationId ? '原任务回执会保留。再次生成会发起新的请求。' : '解除本地记录不会取消平台任务。')}</p>
         <label className="flex items-start gap-2"><input type="checkbox" checked={confirmedIdentity === identity}
           onChange={(event) => setConfirmedIdentity(event.target.checked ? identity : undefined)} />
           {t('我已在平台确认任务未提交或已经结束')}</label>
-        <button type="button" className="ui-btn ui-btn--sm mt-2" disabled={confirmedIdentity !== identity || busy}
-          onClick={() => discardMediaTask({ projectId: task.projectId, nodeId: task.nodeId, taskId: task.taskId, attemptId: task.attemptId })}>
-          {t('清除本地恢复记录')}
+        <button type="button" className="ui-btn ui-btn--sm mt-2" disabled={confirmedIdentity !== identity || busy} onClick={review}>
+          {t(nativeOperationId ? '结束跟踪' : '清除本地恢复记录')}
         </button>
       </details>}
     </div>

@@ -37,8 +37,8 @@ import { videoInputFingerprint, videoInputFingerprintMaterial } from './videoBat
 import { registerNativeVideoSubmissionGuard } from './nativeVideoSubmission';
 import { nativeMediaInputMaterial } from './nativeMediaInput';
 import { nativeMediaOutputArtifactId } from './nativeMediaCollectionCanvas';
-import { beginComfyNodeDelivery, cancelNodePolling, cleanupNodePolling, completeComfyNodeTask, completeMediaNodeTask, getPendingTasksForProject, pauseComfyNodeDelivery, pauseMediaNodeTask, pauseMediaTask, prepareMediaNodeGeneration, registerMediaNodeOperation, registerNodePolling, isMediaTaskPausedError, showNativeWorkflowRecovery } from './pollManager';
-import { isNativeWorkflowNodeBusy, trackNativeWorkflowNodeRun } from './pollManager';
+import { beginComfyNodeDelivery, cancelNodePolling, cleanupNodePolling, completeComfyNodeTask, completeMediaNodeTask, getPendingTasksForProject, pauseComfyNodeDelivery, pauseMediaNodeTask, pauseMediaTask, prepareMediaNodeGeneration, registerMediaNodeOperation, registerNodePolling, isMediaTaskPausedError, refreshNativeMediaNodeRecovery } from './pollManager';
+import { isNativeMediaNodeBusy, trackNativeMediaNodeRun } from './pollManager';
 import { isProjectExpectedContextCurrent } from './projectExecutionContext';
 import { resolveGenerationNodeData } from '../utils/nodeGeneration';
 import { applyGenerationCameraPrompt } from './shotlistPromptService';
@@ -485,7 +485,7 @@ export async function executeGeneration(
   const submissionKey = JSON.stringify([submittingProjectId, nodeId]);
   const nativeWorkflow = mediaSubmission && executionContext?.kind === 'canvas' && executionContext.modelGeneration === 1
     && (localComfyTask || runningHubTask) ? executionContext : undefined;
-  if (nativeWorkflow && isNativeWorkflowNodeBusy(nativeWorkflow.canvasId, nodeId)) return { success: false, message: '任务正在处理' };
+  if (nativeWorkflow && isNativeMediaNodeBusy(nativeWorkflow.canvasId, nodeId)) return { success: false, message: '任务正在处理' };
   const cancellation = nativeWorkflow ? new AbortController() : undefined;
   const generationSignal = cancellation ? (lease?.signal ? AbortSignal.any([cancellation.signal, lease.signal]) : cancellation.signal) : lease?.signal;
   let comfyTaskId: string | undefined;
@@ -543,7 +543,7 @@ export async function executeGeneration(
     mediaDelivered = true;
   };
 
-  const generationFinished = nativeWorkflow && trackNativeWorkflowNodeRun(nativeWorkflow.canvasId, nodeId, cancellation);
+  const generationFinished = nativeWorkflow && trackNativeMediaNodeRun(nativeWorkflow.canvasId, nodeId, cancellation);
   try {
     store.updateNodeDataTransient(nodeId, { status: 'loading', error: undefined, videoTaskState: undefined, mediaTaskState: undefined });
     if (nodeType === 'ai-image' || nodeType === 'ai-animation') {
@@ -935,12 +935,12 @@ export async function executeGeneration(
       const nativeOperationId = 'nativeOperationId' in err && typeof err.nativeOperationId === 'string' ? err.nativeOperationId : undefined;
       const state = 'localResultAvailable' in err && err.localResultAvailable === true ? 'delivery_pending'
         : 'remoteTaskKnown' in err && err.remoteTaskKnown === true ? 'paused' : 'unknown';
-      if (nativeWorkflow && nativeOperationId
-        && (isStillCurrentSubmission() || ownsNativeComfyVideo())) {
-        const currentNode = useAppStore.getState().nodes.find((node) => node.id === nodeId);
-        const saving = state === 'delivery_pending' || currentNode?.data.mediaTaskStage === 'saving';
-        showNativeWorkflowRecovery(nativeWorkflow, nodeId, nativeOperationId, saving, state === 'unknown');
-        return { success: false, message: err.message, recovery: { state: saving ? 'delivery_pending' : state, nativeOperationId } };
+      if (mediaSubmission && executionContext?.kind === 'canvas' && executionContext.modelGeneration === 1 && nativeOperationId
+        && (ownsGeneration(useAppStore.getState()) || ownsNativeComfyVideo())) {
+        const recoverable = await refreshNativeMediaNodeRecovery(executionContext, nodeId, nativeOperationId,
+          () => ownsGeneration(useAppStore.getState()) || !!ownsNativeComfyVideo()).catch(() => undefined);
+        if (recoverable) return { success: false, message: err.message,
+          recovery: { state: recoverable === 'submit_unknown' ? 'unknown' : recoverable, nativeOperationId } };
       }
       if (isStillCurrentSubmission() || ownsNativeComfyVideo()) {
         store.updateNodeDataTransient(nodeId, { status: 'idle', error: err.message, mediaTaskState: 'paused', mediaTaskStage: undefined });

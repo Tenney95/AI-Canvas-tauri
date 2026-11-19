@@ -57,8 +57,9 @@ vi.mock('../../src/services/videoBatchPlanning', () => ({ videoInputFingerprint:
 vi.mock('../../src/services/pollManager', () => ({
   prepareMediaNodeGeneration: mocks.prepareMedia, completeMediaNodeTask: mocks.completeMedia, pauseMediaTask: mocks.pauseMedia,
   registerMediaNodeOperation: mocks.registerOperation,
-  isNativeWorkflowNodeBusy: () => false,
-  trackNativeWorkflowNodeRun: vi.fn((_canvasId: string, _nodeId: string, _controller?: AbortController) => () => {}),
+  isNativeMediaNodeBusy: () => false,
+  trackNativeMediaNodeRun: vi.fn((_canvasId: string, _nodeId: string, _controller?: AbortController) => () => {}),
+  refreshNativeMediaNodeRecovery: vi.fn(),
   registerNodePolling: vi.fn((nodeId: string, parentSignal?: AbortSignal) => {
     mocks.polling.get(nodeId)?.controller.abort();
     const controller = new AbortController();
@@ -81,7 +82,7 @@ vi.mock('../../src/services/pollManager', () => ({
 }));
 
 import { executeGeneration, type GenerationLease } from '../../src/services/generationService';
-import { cleanupNodePolling, registerNodePolling, trackNativeWorkflowNodeRun, VideoPollingPausedError } from '../../src/services/pollManager';
+import { cleanupNodePolling, registerNodePolling, trackNativeMediaNodeRun, VideoPollingPausedError } from '../../src/services/pollManager';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -329,7 +330,7 @@ describe('节点视频生成的宿主任务租约', () => {
     mocks.generate.mockReturnValueOnce(response.promise);
     const pending = run();
     await vi.waitFor(() => expect(mocks.generate).toHaveBeenCalledOnce());
-    const controller = vi.mocked(trackNativeWorkflowNodeRun).mock.calls[0][2];
+    const controller = vi.mocked(trackNativeMediaNodeRun).mock.calls[0][2];
     expect(mocks.generate.mock.calls[0][1]).toBe(controller?.signal);
     controller!.abort();
     response.reject(new DOMException('请求已取消', 'AbortError'));

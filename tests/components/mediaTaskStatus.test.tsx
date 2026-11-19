@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
     nodes: [{ id: 'media', data: { type: 'ai-image', label: '图片', mediaTaskState: 'paused', status: 'idle' } as BaseNodeData }],
     showToast: vi.fn() },
   tasks: [] as Array<Record<string, unknown>>, resume: vi.fn(), discard: vi.fn(),
-  nativeOperationId: undefined as string | undefined, resumeNative: vi.fn(),
+  nativeOperationId: undefined as string | undefined, resumeNative: vi.fn(), reviewNative: vi.fn(),
   busy: false, confirmed: undefined as string | undefined, cursor: 0,
 }));
 vi.mock('react', async () => ({ ...await vi.importActual<typeof import('react')>('react'),
@@ -22,7 +22,8 @@ vi.mock('react', async () => ({ ...await vi.importActual<typeof import('react')>
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: (selector: (state: typeof mocks.state) => unknown) => selector(mocks.state) }));
 vi.mock('../../src/services/pollManager', () => ({
   getPendingTasksForProject: () => mocks.tasks, resumeMediaNodeTask: mocks.resume, discardMediaTask: mocks.discard,
-  getNativeWorkflowRecovery: () => mocks.nativeOperationId, resumeNativeWorkflowFromNode: mocks.resumeNative,
+  getNativeMediaNodeRecovery: () => mocks.nativeOperationId, resumeNativeMediaFromNode: mocks.resumeNative,
+  reviewNativeMediaFromNode: mocks.reviewNative,
   hasMuseQueryIdentity: (task: { taskType?: string; taskId: string }) => task.taskType === 'muse'
     && task.taskId === 'ac655c56-b537-4c04-8913-fd150fc0e92a',
 }));
@@ -46,6 +47,7 @@ beforeEach(() => {
   mocks.tasks = [{ projectId: 'project', nodeId: 'media', nodeType: 'ai-image', taskId: 'original', attemptId: 'first', submitted: true, mediaRecoveryState: 'query_paused' }];
   mocks.resume.mockReset().mockResolvedValue(undefined); mocks.discard.mockReset(); mocks.state.showToast.mockReset();
   mocks.nativeOperationId = undefined; mocks.resumeNative.mockReset().mockResolvedValue(undefined);
+  mocks.reviewNative.mockReset().mockResolvedValue(undefined);
 });
 
 describe('跨媒体原任务续取入口', () => {
@@ -80,6 +82,32 @@ describe('跨媒体原任务续取入口', () => {
     expect(JSON.stringify(render())).toContain('提交状态未知');
     expect(mocks.resumeNative).not.toHaveBeenCalled();
     expect(mocks.state.showToast).not.toHaveBeenCalled();
+  });
+
+  it('核对确认绑定原生回执，回执换了以后重新确认', async () => {
+    mocks.tasks = [];
+    mocks.nativeOperationId = 'old-operation';
+    mocks.state.nodes[0].data.mediaTaskState = 'submit_unknown';
+    const button = () => elements(render()).find((element) => element.type === 'button' && element.props.children === '结束跟踪')!;
+    const check = () => {
+      const checkbox = elements(render()).find((element) => element.type === 'input')!;
+      (checkbox.props.onChange as (event: unknown) => void)({ target: { checked: true } });
+    };
+    expect(button().props.disabled).toBe(true);
+    (button().props.onClick as () => void)();
+    check();
+    expect(button().props.disabled).toBe(false);
+    mocks.nativeOperationId = 'current-operation';
+    expect(button().props.disabled).toBe(true);
+    (button().props.onClick as () => void)();
+    expect(mocks.reviewNative).not.toHaveBeenCalled();
+    check();
+    (button().props.onClick as () => void)();
+    expect(mocks.reviewNative).toHaveBeenCalledExactlyOnceWith('media', 'current-operation');
+    expect(mocks.resume).not.toHaveBeenCalled();
+    expect(mocks.resumeNative).not.toHaveBeenCalled();
+    expect(mocks.discard).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(mocks.busy).toBe(false));
   });
 
   it('ComfyUI 提交未知到迟到 ID 转换只恢复原任务查询，不显示重新生成', () => {

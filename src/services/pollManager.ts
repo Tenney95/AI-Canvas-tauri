@@ -35,6 +35,7 @@ import {
 } from './ai/apimartAudio';
 import type { BaseNodeData, NodeType } from '../types';
 import type { CanvasContext } from '../types/project';
+import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
 import type { MediaDownloadAccess, MediaTaskContext, MediaTaskReceipt, ResolvedModelProtocolPoll } from '../types/aiTypes';
 import { createMediaDownloadAccess, sanitizeMediaDownloadAccess, sanitizeMediaResultUrls } from './ai/mediaDownloadAccess';
 import { getHttpResponseError } from './ai/httpUtils';
@@ -518,7 +519,13 @@ export function registerMediaNodeOperation(nodeId: string, ownsGeneration = fals
     if (operations.size === 0 && activeMediaOperations.get(key) === operations) {
       activeMediaOperations.delete(key);
       latestMediaOperationOwners.delete(key);
-      if (projectId) void resumeNativeMediaLocalDelivery(projectId, nodeId).catch(() => undefined);
+      if (projectId) void resumeNativeMediaLocalDelivery(projectId, nodeId).finally(() => {
+        // 切回画布时旧查询可能尚在释放，回查该节点以补齐启动扫描跳过的原回执。
+        const context = captureLegacyCanvasContext(useAppStore.getState());
+        if (context?.modelGeneration === 1 && context.canvasId === projectId && !getNativeMediaNodeRecovery(nodeId)) {
+          return restoreNativeMediaNodeRecoveries(context, nodeId);
+        }
+      }).catch(() => undefined);
     }
   };
   // 新尝试结束也不让旧尝试重新取得保存资格；运行时身份不进入持久化。
@@ -537,38 +544,39 @@ export async function resumeNativeMediaLocalDelivery(canvasId: string, nodeId?: 
   if (!context || context.modelGeneration !== 1 || context.canvasId !== canvasId) return;
   const { resumeNativeMediaLocalResults } = await import('./nativeMediaAutoDelivery');
   await resumeNativeMediaLocalResults(canvasId, { nodeId, allowOriginalCccTaskQuery: true, isNodeBusy: (projectId, targetId) =>
-    isMediaOperationActive(projectId, targetId) || runtime.pollingProjects.get(targetId) === projectId && abortControllers.has(targetId) });
+    isMediaOperationActive(projectId, targetId) || isNativeMediaNodeBusy(projectId, targetId)
+    || runtime.pollingProjects.get(targetId) === projectId && abortControllers.has(targetId) });
 }
 
 // 只投影当前画布的提示；恢复时仍以原生账本和原任务租约为准。
-let nativeWorkflowRecovery: { context: CanvasContext; operations: Map<string, string> } | undefined;
+let nativeMediaNodeRecovery: { context: CanvasContext; operations: Map<string, string> } | undefined;
 
-const { nativeWorkflowNodeRuns } = runtime;
+const { nativeWorkflowNodeRuns: nativeMediaNodeRuns } = runtime;
 
-export function isNativeWorkflowNodeBusy(canvasId: string, nodeId: string): boolean {
-  return nativeWorkflowNodeRuns.has(JSON.stringify([canvasId, nodeId]));
+export function isNativeMediaNodeBusy(canvasId: string, nodeId: string): boolean {
+  return nativeMediaNodeRuns.has(JSON.stringify([canvasId, nodeId]));
 }
 
-export function trackNativeWorkflowNodeRun(canvasId: string, nodeId: string, controller?: AbortController): () => void {
+export function trackNativeMediaNodeRun(canvasId: string, nodeId: string, controller?: AbortController): () => void {
   const key = JSON.stringify([canvasId, nodeId]);
-  if (nativeWorkflowNodeRuns.has(key)) throw new Error('原工作流任务正在处理');
+  if (nativeMediaNodeRuns.has(key)) throw new Error('原媒体任务正在处理');
   let finish!: () => void;
   const run = { controller, settled: new Promise<void>((resolve) => { finish = resolve; }), cancelling: false };
-  nativeWorkflowNodeRuns.set(key, run);
+  nativeMediaNodeRuns.set(key, run);
   return () => {
-    if (!run.cancelling && nativeWorkflowNodeRuns.get(key) === run) nativeWorkflowNodeRuns.delete(key);
+    if (!run.cancelling && nativeMediaNodeRuns.get(key) === run) nativeMediaNodeRuns.delete(key);
     finish();
   };
 }
 
 export async function cancelNativeWorkflowOnNode(context: CanvasContext, nodeId: string) {
   if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) return;
-  const operationId = getNativeWorkflowRecovery(nodeId);
+  const operationId = getNativeMediaNodeRecovery(nodeId);
   const key = JSON.stringify([context.canvasId, nodeId]);
-  const run = nativeWorkflowNodeRuns.get(key) ?? { controller: undefined, settled: undefined, cancelling: false };
+  const run = nativeMediaNodeRuns.get(key) ?? { controller: undefined, settled: undefined, cancelling: false };
   if (run.cancelling) throw new Error('原工作流任务正在取消');
   run.cancelling = true;
-  nativeWorkflowNodeRuns.set(key, run);
+  nativeMediaNodeRuns.set(key, run);
   try {
     run.controller?.abort();
     cancelNodePolling(nodeId, true);
@@ -578,69 +586,143 @@ export async function cancelNativeWorkflowOnNode(context: CanvasContext, nodeId:
     const { cancelNativeWorkflowNodeTask } = await import('./nativeWorkflowTasks');
     return await cancelNativeWorkflowNodeTask(context, nodeId, operationId);
   } finally {
-    nativeWorkflowNodeRuns.delete(key);
+    nativeMediaNodeRuns.delete(key);
   }
 }
 
-export function getNativeWorkflowRecovery(nodeId: string, state = useAppStore.getState()): string | undefined {
-  const recovery = nativeWorkflowRecovery;
+export function getNativeMediaNodeRecovery(nodeId: string, state = useAppStore.getState()): string | undefined {
+  const recovery = nativeMediaNodeRecovery;
   if (recovery && isProjectExpectedContextCurrent(recovery.context, state, { checkCanvasRevision: false })) {
     return recovery.operations.get(nodeId);
   }
 }
 
-export function clearNativeWorkflowRecovery(context: CanvasContext, nodeId: string): void {
-  if (nativeWorkflowRecovery && isProjectExpectedContextCurrent(context, nativeWorkflowRecovery.context, { checkCanvasRevision: false })) {
-    nativeWorkflowRecovery.operations.delete(nodeId);
+export function clearNativeMediaNodeRecovery(context: CanvasContext, nodeId: string, operationId?: string): void {
+  if (nativeMediaNodeRecovery && isProjectExpectedContextCurrent(context, nativeMediaNodeRecovery.context, { checkCanvasRevision: false })
+    && (operationId === undefined || nativeMediaNodeRecovery.operations.get(nodeId) === operationId)) {
+    nativeMediaNodeRecovery.operations.delete(nodeId);
   }
 }
 
-export function showNativeWorkflowRecovery(context: CanvasContext, nodeId: string, operationId: string, saving: boolean, unknown = false): void {
+type NativeMediaNodeState = NonNullable<BaseNodeData['mediaTaskState']>;
+
+function showNativeMediaNodeRecovery(context: CanvasContext, nodeId: string, operationId: string, state: NativeMediaNodeState): void {
   const store = useAppStore.getState();
   if (!isProjectExpectedContextCurrent(context, store, { checkCanvasRevision: false })) return;
   const node = store.nodes.find((item) => item.id === nodeId);
   if (!node || node.data.role === 'source') return;
-  if (!nativeWorkflowRecovery || !isProjectExpectedContextCurrent(nativeWorkflowRecovery.context, context, { checkCanvasRevision: false })) {
-    nativeWorkflowRecovery = { context, operations: new Map() };
+  if (!nativeMediaNodeRecovery || !isProjectExpectedContextCurrent(nativeMediaNodeRecovery.context, context, { checkCanvasRevision: false })) {
+    nativeMediaNodeRecovery = { context, operations: new Map() };
   }
-  nativeWorkflowRecovery.operations.set(nodeId, operationId);
+  nativeMediaNodeRecovery.operations.set(nodeId, operationId);
   store.updateNodeDataTransient(nodeId, { status: node.data.status === 'success' ? 'success' : 'idle', error: undefined,
-    mediaTaskState: unknown ? 'submit_unknown' : saving ? 'delivery_pending' : 'paused', mediaTaskStage: undefined });
+    mediaTaskState: state, mediaTaskStage: undefined });
 }
 
-async function restoreNativeWorkflowRecoveries(context: CanvasContext): Promise<void> {
-  const { isNativeMediaTaskSuperseded, listNativeMediaTasks } = await import('./indexedDb/nativeMediaTaskRepository');
-  const records = await listNativeMediaTasks(context.projectId, { canvasId: context.canvasId });
-  if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) return;
+async function inspectNativeMediaNodeRecovery(context: CanvasContext, nodeId: string, operationId: string, signal?: AbortSignal) {
+  const { ACTIVE_NATIVE_MEDIA_STATES, readAvailableNativeMediaTask } = await import('./indexedDb/nativeMediaTaskRepository');
+  const record = await readAvailableNativeMediaTask(context.projectId, context.canvasId, operationId, { signal });
+  if (!record || record.nodeId !== nodeId || record.origin?.deliveryMode === 'chat' || record.episodeId !== context.episodeId
+    || record.projectEpoch !== context.projectEpoch || record.canvasEpoch !== context.canvasEpoch
+    || !ACTIVE_NATIVE_MEDIA_STATES.includes(record.status)) return;
+  return { record, state: await describeNativeMediaNodeRecovery(record) };
+}
+
+async function describeNativeMediaNodeRecovery(record: NativeMediaTaskRecord): Promise<NativeMediaNodeState> {
+  const { readNativeMediaRecoverySummary } = await import('./nativeMediaRecoverySummary');
+  const recovery = await readNativeMediaRecoverySummary(record);
+  if (!recovery.canResume) return 'submit_unknown';
+  return recovery.cachedOnly ? 'delivery_pending' : 'paused';
+}
+
+/** 以耐久回执及其阶段状态决定节点操作。 */
+export async function refreshNativeMediaNodeRecovery(context: CanvasContext, nodeId: string, operationId: string,
+  isCurrent: () => boolean = () => true): Promise<NativeMediaNodeState | undefined> {
+  const current = await inspectNativeMediaNodeRecovery(context, nodeId, operationId);
+  if (!current || !isCurrent() || !isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) return;
+  showNativeMediaNodeRecovery(context, nodeId, operationId, current.state);
+  return current.state;
+}
+
+async function restoreNativeMediaNodeRecoveries(context: CanvasContext, nodeId?: string): Promise<void> {
+  const { ACTIVE_NATIVE_MEDIA_STATES, listNativeMediaTasks } = await import('./indexedDb/nativeMediaTaskRepository');
+  const records = await listNativeMediaTasks(context.projectId, { canvasId: context.canvasId, statuses: ACTIVE_NATIVE_MEDIA_STATES,
+    ...(nodeId ? { nodeIds: new Set([nodeId]) } : {}) });
+  const canvasCurrent = () => isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false });
   for (const record of records) {
-    if (record.canvasId !== context.canvasId || record.projectEpoch !== context.projectEpoch || record.canvasEpoch !== context.canvasEpoch
-      || record.episodeId !== context.episodeId || record.recovery?.kind !== 'workflow' || record.origin?.deliveryMode === 'chat'
-      || !['prepared', 'submitted', 'outcome-unknown'].includes(record.status) || isMediaOperationActive(context.canvasId, record.nodeId)
-      || isNativeMediaTaskSuperseded(record, records) || getNativeWorkflowRecovery(record.nodeId)) continue;
-    const unknown = record.status === 'outcome-unknown' || record.status === 'prepared' && !record.remoteTaskId;
-    showNativeWorkflowRecovery(context, record.nodeId, record.operationId, !!record.localResults?.length, unknown);
+    if (!canvasCurrent()) return;
+    const canRestore = () => !isMediaOperationActive(context.canvasId, record.nodeId) && !isNativeMediaNodeBusy(context.canvasId, record.nodeId)
+      && !getNativeMediaNodeRecovery(record.nodeId);
+    if (record.origin?.deliveryMode === 'chat' || !canRestore()
+      || !useAppStore.getState().nodes.some((node) => node.id === record.nodeId && node.data.role !== 'source')) continue;
+    await refreshNativeMediaNodeRecovery(context, record.nodeId, record.operationId, canRestore).catch(() => undefined);
   }
 }
 
-export async function resumeNativeWorkflowFromNode(nodeId: string, operationId: string): Promise<void> {
+function nativeMediaNodeActionTarget(nodeId: string, operationId: string) {
   const store = useAppStore.getState(), context = captureLegacyCanvasContext(store);
   const node = store.nodes.find((item) => item.id === nodeId);
-  if (!context || !node || node.data.role === 'source' || node.data.mediaTaskState === 'submit_unknown'
-    || getNativeWorkflowRecovery(nodeId) !== operationId || isMediaOperationActive(context.canvasId, nodeId)
-    || isNativeWorkflowNodeBusy(context.canvasId, nodeId)) {
-    throw new Error('原工作流任务已变化或正在处理');
-  }
-  const wasSaving = node.data.mediaTaskState === 'delivery_pending';
-  const release = registerMediaNodeOperation(nodeId, true);
-  const signal = registerNodePolling(nodeId);
-  const finish = trackNativeWorkflowNodeRun(context.canvasId, nodeId);
+  const isCurrent = () => {
+    const state = useAppStore.getState();
+    return !!context && isProjectExpectedContextCurrent(context, state, { checkCanvasRevision: false })
+      && getNativeMediaNodeRecovery(nodeId, state) === operationId
+      && state.nodes.some((item) => item.id === nodeId && item.data.role !== 'source');
+  };
+  if (!context || !node || !isCurrent() || isMediaOperationActive(context.canvasId, nodeId)
+    || isNativeMediaNodeBusy(context.canvasId, nodeId)) throw new Error('原媒体任务已变化或正在处理');
+  return { context, node, isCurrent };
+}
+
+export async function reviewNativeMediaFromNode(nodeId: string, operationId: string): Promise<void> {
+  const { context, node, isCurrent } = nativeMediaNodeActionTarget(nodeId, operationId);
+  if (node.data.mediaTaskState !== 'submit_unknown') throw new Error('原媒体任务已变化，请重新核对');
+  const controller = new AbortController();
+  const finish = trackNativeMediaNodeRun(context.canvasId, nodeId, controller);
+  const unsubscribe = useAppStore.subscribe(() => { if (!isCurrent()) controller.abort(); });
   try {
+    const current = await inspectNativeMediaNodeRecovery(context, nodeId, operationId, controller.signal);
+    if (!current || !isCurrent()) throw new Error('原媒体任务已变化，请重新核对');
+    if (current.state !== 'submit_unknown') {
+      showNativeMediaNodeRecovery(context, nodeId, operationId, current.state);
+      throw new Error('原媒体任务已变化，请重新核对');
+    }
+    const { reviewNativeMediaTask } = await import('./indexedDb/nativeMediaTaskRepository');
+    if (!isCurrent()) throw new Error('原媒体任务已变化，请重新核对');
+    try { await reviewNativeMediaTask(operationId, context, { expected: current.record, signal: controller.signal }); }
+    catch (error) {
+      if (isCurrent()) await refreshNativeMediaNodeRecovery(context, nodeId, operationId, isCurrent).catch(() => undefined);
+      throw error;
+    }
+    if (!isCurrent()) return;
+    clearNativeMediaNodeRecovery(context, nodeId, operationId);
+    useAppStore.getState().updateNodeDataTransient(nodeId, { mediaTaskState: undefined, mediaTaskStage: undefined,
+      videoTaskState: undefined, error: undefined });
+  } finally {
+    unsubscribe();
+    finish();
+  }
+}
+
+export async function resumeNativeMediaFromNode(nodeId: string, operationId: string): Promise<void> {
+  const { context, node, isCurrent } = nativeMediaNodeActionTarget(nodeId, operationId);
+  if (node.data.mediaTaskState === 'submit_unknown') throw new Error('原媒体任务需要核对');
+  const store = useAppStore.getState();
+  const wasSaving = node.data.mediaTaskState === 'delivery_pending';
+  const controller = new AbortController();
+  const release = registerMediaNodeOperation(nodeId, true);
+  const signal = registerNodePolling(nodeId, controller.signal);
+  const finish = trackNativeMediaNodeRun(context.canvasId, nodeId, controller);
+  const unsubscribe = useAppStore.subscribe(() => { if (!isCurrent()) controller.abort(); });
+  try {
+    const original = await inspectNativeMediaNodeRecovery(context, nodeId, operationId, signal);
+    if (!original || !isCurrent() || original.state === 'submit_unknown') throw new Error('原媒体任务已变化，请重新核对');
     store.updateNodeDataTransient(nodeId, { status: 'loading', mediaTaskState: undefined, mediaTaskStage: 'querying' });
-    const { resumeNativeWorkflowTask } = await import('./nativeWorkflowTasks');
-    await resumeNativeWorkflowTask(operationId, signal);
+    const { resumeNativeVolcengineTask } = await import('./nativeVolcengineRecovery');
+    signal.throwIfAborted();
+    await resumeNativeVolcengineTask(operationId, signal, { allowUnstartedStage: false });
     const current = useAppStore.getState();
-    if (release.isCurrent() && getNativeWorkflowRecovery(nodeId, current) === operationId) {
-      nativeWorkflowRecovery?.operations.delete(nodeId);
+    if (release.isCurrent() && isCurrent()) {
+      clearNativeMediaNodeRecovery(context, nodeId, operationId);
       if (current.nodes.find((item) => item.id === nodeId)?.data.status === 'loading') {
         current.updateNodeDataTransient(nodeId, { status: node.data.status, mediaTaskStage: undefined });
       }
@@ -649,22 +731,24 @@ export async function resumeNativeWorkflowFromNode(nodeId: string, operationId: 
     if (signal.aborted) return;
     const { listNativeMediaTasks } = await import('./indexedDb/nativeMediaTaskRepository');
     const records = await listNativeMediaTasks(context.projectId, { canvasId: context.canvasId, operationId }).catch(() => undefined);
-    if (release.isCurrent() && getNativeWorkflowRecovery(nodeId) === operationId) {
+    if (release.isCurrent() && isCurrent()) {
       const current = useAppStore.getState();
       const live = current.nodes.find((item) => item.id === nodeId);
       const record = records?.find((item) => item.operationId === operationId);
       if (signal.aborted) return;
-      if (records && (!record || record.status === 'failed' || record.status === 'delivered')) {
-        nativeWorkflowRecovery?.operations.delete(nodeId);
+      if (records && (!record || ['failed', 'delivered', 'reviewed'].includes(record.status))) {
+        clearNativeMediaNodeRecovery(context, nodeId, operationId);
         if (live?.data.status === 'loading') current.updateNodeDataTransient(nodeId, {
-          status: record?.status === 'delivered' ? node.data.status : 'error', mediaTaskStage: undefined,
+          status: record?.status === 'failed' ? 'error' : node.data.status, mediaTaskStage: undefined,
         });
       } else {
-        showNativeWorkflowRecovery(context, nodeId, operationId, wasSaving || live?.data.mediaTaskStage === 'saving');
+        const state = record ? await describeNativeMediaNodeRecovery(record) : wasSaving ? 'delivery_pending' : 'paused';
+        if (!signal.aborted && release.isCurrent() && isCurrent()) showNativeMediaNodeRecovery(context, nodeId, operationId, state);
       }
     }
     throw error;
   } finally {
+    unsubscribe();
     cleanupNodePolling(nodeId, signal);
     release();
     finish();
@@ -684,7 +768,7 @@ function resumeNativeMediaWhenReady(context: CanvasContext): Promise<void> {
         || !isProjectExpectedContextCurrent(context, actual, { checkCanvasRevision: false })) { unsubscribe(); resolve(); return; }
       if (!isProjectExpectedContextCurrent(context, state, { checkCanvasRevision: false })) return;
       unsubscribe();
-      void resumeNativeMediaLocalDelivery(context.canvasId).finally(() => restoreNativeWorkflowRecoveries(context)).then(resolve, reject);
+      void resumeNativeMediaLocalDelivery(context.canvasId).finally(() => restoreNativeMediaNodeRecoveries(context)).then(resolve, reject);
     };
     unsubscribe = useAppStore.subscribe(inspect); inspect();
   }).finally(() => { if (nativeCanvasReadiness.get(key) === work) nativeCanvasReadiness.delete(key); });
@@ -1102,11 +1186,11 @@ export function prepareVideoNodeGeneration(nodeId: string): void {
 /** 再次生成是显式的新任务；先保留旧任务，不能覆盖其唯一恢复身份。 */
 export function prepareMediaNodeGeneration(nodeId: string): void {
   const store = useAppStore.getState();
-  const nativeRecoveryState = getNativeWorkflowRecovery(nodeId, store)
+  if (store.currentProjectId && isNativeMediaNodeBusy(store.currentProjectId, nodeId)) throw new Error('原媒体任务正在处理');
+  const nativeRecoveryState = getNativeMediaNodeRecovery(nodeId, store)
     && store.nodes.find((node) => node.id === nodeId)?.data.mediaTaskState;
-  if (nativeRecoveryState === 'paused' || nativeRecoveryState === 'delivery_pending' || nativeRecoveryState === 'submit_unknown') {
-    throw new Error('查询已暂停，任务已保留');
-  }
+  if (nativeRecoveryState === 'submit_unknown') throw new Error('提交状态未知，请到对应平台核对；应用不会自动重新生成。');
+  if (nativeRecoveryState === 'paused' || nativeRecoveryState === 'delivery_pending') throw new Error('查询已暂停，任务已保留');
   const task = loadAll().find((item) => item.nodeId === nodeId && item.projectId === store.currentProjectId);
   if (!task) return;
   if (task.terminalFailure) { removeFailedMediaTask(receiptForTask(task)); return; }

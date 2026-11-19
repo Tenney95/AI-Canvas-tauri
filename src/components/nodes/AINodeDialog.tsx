@@ -58,7 +58,7 @@ import { applyGenerationCameraPrompt } from '../../services/shotlistPromptServic
 import { cancelComfyUINodeTask } from '../../services/comfyWorkflowService';
 import { COMFY_OUTPUT_UNAVAILABLE_MESSAGE, getComfyQueryAuthorizationMessage } from '../../services/comfyPolling';
 import { beginComfyNodeDelivery, cleanupNodePolling, completeComfyNodeTask, completeMediaNodeTask, getPendingTasksForProject, isComfyNodeDeliveryActive, isMediaTaskPausedError, pauseComfyNodeDelivery, pauseMediaTask, prepareMediaNodeGeneration, registerMediaNodeOperation, registerNodePolling, resumeComfyUINodeTask, resumeRunningHubNodeTask, subscribeComfyDeliveries, updatePendingTask, removePendingTask } from '../../services/pollManager';
-import { cancelNativeWorkflowOnNode, clearNativeWorkflowRecovery, getNativeWorkflowRecovery, showNativeWorkflowRecovery } from '../../services/pollManager';
+import { cancelNativeWorkflowOnNode, clearNativeMediaNodeRecovery, getNativeMediaNodeRecovery, refreshNativeMediaNodeRecovery } from '../../services/pollManager';
 import MediaTaskStatus from './shared/MediaTaskStatus';
 import { isCloudWorkflow, getCloudWorkflowPersistedOutput, workflowExecution } from '../../services/workflowExecutionService';
 import { splitRunningHubPrompt } from '../../services/ai/providers/runninghubWorkflowInputs';
@@ -422,7 +422,7 @@ function AINodeDialog() {
       showToast(t('节点不存在'), 'error');
       return;
     }
-    if (activeNodeId && latestData.mediaTaskState && getNativeWorkflowRecovery(activeNodeId, store)) {
+    if (activeNodeId && store.projectExecutionContext?.modelGeneration === 1 && latestData.mediaTaskState && getNativeMediaNodeRecovery(activeNodeId, store)) {
       showToast(t(latestData.mediaTaskState === 'submit_unknown' ? '提交状态未知，请到对应平台核对；应用不会自动重新生成。' : '查询已暂停，任务已保留'), 'info');
       return;
     }
@@ -906,10 +906,11 @@ function AINodeDialog() {
         const current = currentNode();
         if (!current) return;
         if (pending) {
-          showNativeWorkflowRecovery(context, nodeId, pending.operationId, !!pending.localResults?.length, pending.status !== 'submitted');
-          showToast(t(pending.status === 'submitted' ? '查询已暂停，任务已保留' : '提交状态未知，请到对应平台核对；应用不会自动重新生成。'), 'info');
+          const state = await refreshNativeMediaNodeRecovery(context, nodeId, pending.operationId);
+          if (!currentNode()) return;
+          showToast(t(state === 'submit_unknown' ? '提交状态未知，请到对应平台核对；应用不会自动重新生成。' : '查询已暂停，任务已保留'), 'info');
         } else {
-          clearNativeWorkflowRecovery(context, nodeId);
+          clearNativeMediaNodeRecovery(context, nodeId);
           const { imageUrl, audioUrl, videoUrl, output } = current.data;
           updateNodeDataTransient(nodeId, { status: imageUrl || audioUrl || videoUrl || output ? 'success' : 'idle', error: undefined,
             mediaTaskState: undefined, mediaTaskStage: undefined, videoTaskState: undefined, runninghubStage: undefined, workflowApiStage: undefined });
@@ -1261,8 +1262,9 @@ function AINodeDialog() {
   const showMediaTaskStatus = data.status !== 'loading' && (data.mediaTaskState || data.videoTaskState === 'paused')
     && recoverableComfyTask?.comfyRecoveryState !== 'cancel_pending'
     && recoverableComfyTask?.comfyRecoveryState !== 'output_unavailable';
-  const canRetryNativeCancellation = !!getNativeWorkflowRecovery(activeNodeId) && data.mediaTaskState === 'paused'
-    && ['comfyui', 'runninghubwf'].includes(data.provider ?? '');
+  const canRetryNativeCancellation = useAppStore.getState().projectExecutionContext?.modelGeneration === 1
+    && data.mediaTaskState === 'paused' && ['comfyui', 'runninghubwf'].includes(data.provider ?? '')
+    && !!getNativeMediaNodeRecovery(activeNodeId);
   const cloudTask = currentProjectId ? getPendingTasksForProject(currentProjectId).find((task) => task.nodeId === activeNodeId && ['runninghub-workflow', 'runninghub-model'].includes(task.taskType)) : undefined;
   const workflowApiTask = currentProjectId ? getPendingTasksForProject(currentProjectId).find((task) => task.nodeId === activeNodeId && task.taskType === 'workflow-api') : undefined;
 

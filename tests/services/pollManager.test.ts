@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BaseNodeData } from '../../src/types';
 import {
   getPendingTaskCoveredNodeIds,
+  getNativeMediaNodeRecovery,
   getPendingTasksForProject,
   readPendingMediaTaskViews,
   registerPendingTaskContextGuard,
@@ -35,6 +36,7 @@ import {
   stopPollingForDeletedProjects,
   removePendingTask,
   resumeMediaNodeTask,
+  resumeNativeMediaFromNode,
   resumeRunningHubNodeTask,
   settleMediaTaskQueries,
   readVideoEditorTransitionTaskResult,
@@ -50,6 +52,8 @@ import { resolveModelExecutionProfile } from '../../src/services/ai/modelProtoco
 import { resolvePoll } from '../../src/services/ai/modelProtocolPoll';
 import { generateDreaminaVideo } from '../../src/services/dreaminaService';
 import type { ImageOutputParameters, ResolvedModelProtocolPoll } from '../../src/types/aiTypes';
+import type { CanvasContext } from '../../src/types/project';
+import type { NativeMediaTaskRecord } from '../../src/services/indexedDb/nativeMediaTaskRepository';
 import * as fileService from '../../src/services/fileService';
 import * as comfyPolling from '../../src/services/comfyPolling';
 import * as indexedDbService from '../../src/services/indexedDbService';
@@ -87,6 +91,42 @@ describe('新画布异步任务提交边界', () => {
         taskId: '', taskType: 'comfyui', submitted: false })).not.toThrow();
     },
   );
+
+  it('打开原画布时为非工作流的原任务恢复查询入口，并禁止续查发起未开始的阶段', async () => {
+    const context: CanvasContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, projectId: 'p2-fixture',
+      projectEpoch: 1, canvasId: 'project-1', canvasEpoch: 1, canvasRevision: 0, episodeId: null, runtimeEpoch: 'original-run' };
+    const receipt: NativeMediaTaskRecord = { projectId: 'media-task:test-operation', kind: 'native-media-task-v1', operationId: 'test-operation',
+      ownerProjectId: context.projectId, canvasId: context.canvasId, canvasEpoch: 1, projectEpoch: 1, episodeId: null, nodeId: 'video',
+      category: 'video', inputFingerprint: 'a'.repeat(64), providerConfigId: 'volcengine', providerBase: 'https://example.test', status: 'submitted',
+      sourceCanvasRevision: 0, remoteTaskId: 'remote-id', lease: 'lease', revision: 1, createdAt: 1, updatedAt: 1 };
+    useAppStore.setState({ projectExecutionContext: context, nodes: [{ id: 'video', type: 'ai-video', position: { x: 0, y: 0 },
+      data: { label: '视频', type: 'ai-video', status: 'loading' } }] });
+    const repository = await import('../../src/services/indexedDb/nativeMediaTaskRepository');
+    const dispatcher = await import('../../src/services/nativeVolcengineRecovery');
+    const auto = await import('../../src/services/nativeMediaAutoDelivery');
+    const list = vi.spyOn(repository, 'listNativeMediaTasks').mockResolvedValue([receipt]);
+    const inspect = vi.spyOn(repository, 'readAvailableNativeMediaTask').mockResolvedValue(receipt);
+    const autoDeliver = vi.spyOn(auto, 'resumeNativeMediaLocalResults').mockResolvedValue(undefined);
+    const resume = vi.spyOn(dispatcher, 'resumeNativeVolcengineTask').mockImplementation(async () => {
+      receipt.status = 'delivered';
+      useAppStore.getState().updateNodeDataTransient('video', { status: 'success' });
+    });
+    try {
+      await resumePendingTasks('project-1');
+      expect(useAppStore.getState().nodes[0].data).toMatchObject({ mediaTaskState: 'paused', status: 'idle' });
+      expect(getNativeMediaNodeRecovery('video')).toBe(receipt.operationId);
+      expect(resume).not.toHaveBeenCalled();
+      await expect(resumeNativeMediaFromNode('other-node', receipt.operationId)).rejects.toThrow('原媒体任务已变化');
+      useAppStore.setState({ projectExecutionContext: { ...context, runtimeEpoch: 'other-run' } });
+      await expect(resumeNativeMediaFromNode('video', receipt.operationId)).rejects.toThrow('原媒体任务已变化');
+      useAppStore.setState({ projectExecutionContext: context });
+      await resumeNativeMediaFromNode('video', receipt.operationId);
+      expect(resume).toHaveBeenCalledExactlyOnceWith(receipt.operationId, expect.any(AbortSignal), { allowUnstartedStage: false });
+      expect(getNativeMediaNodeRecovery('video')).toBeUndefined();
+    } finally {
+      list.mockRestore(); inspect.mockRestore(); resume.mockRestore(); autoDeliver.mockRestore();
+    }
+  });
 });
 
 describe('independent editor transition recovery', () => {

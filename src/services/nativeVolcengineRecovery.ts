@@ -45,6 +45,8 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
   const state = useAppStore.getState(), context = captureLegacyCanvasContext(state);
   if (!context || context.modelGeneration !== 1 || !context.runtimeEpoch) throw new Error('请先打开原新项目画布');
   const found = await inspectNativeVolcengineTask(operationId);
+  externalSignal?.throwIfAborted();
+  if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) throw new Error('原画布已切换，原媒体任务保留');
   if (found.status === 'delivered') {
     const { projectNativeMediaMessages } = await import('./nativeMediaMessages');
     await projectNativeMediaMessages(); return;
@@ -54,7 +56,7 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
     return resumeNativeApimartImageBatch(operationId, externalSignal);
   }
   if (found.localResults?.length || found.submissionKind === 'sync' && found.localResult) {
-    const record = await claimNativeMediaRecovery(operationId, context);
+    const record = await claimNativeMediaRecovery(operationId, context, { signal: externalSignal });
     const files = nativeMediaLocalOutputs(record);
     for (const file of files) await readNativeMediaLocalResult(record.canvasId, file);
     externalSignal?.throwIfAborted();
@@ -88,7 +90,7 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
     return resumeNativeComfyTask(operationId, externalSignal);
   }
   if (!['submitted', 'reviewed'].includes(found.status) || !found.remoteTaskId) throw new Error('原任务未取得可确认的远端 ID，请先到原平台核对，勿重新提交');
-  let record = await claimNativeMediaRecovery(operationId, context);
+  let record = await claimNativeMediaRecovery(operationId, context, { signal: externalSignal });
   if (record.imageReference) {
     const { verifyNativeVideoImageReference } = await import('./nativeVideoImageReference');
     await verifyNativeVideoImageReference(context, record.nodeId, record.imageReference);

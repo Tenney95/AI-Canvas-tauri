@@ -53,10 +53,9 @@ export async function cancelNativeWorkflowNodeTask(context: CanvasContext, nodeI
   const records = await listNativeMediaTasks(context.projectId, { canvasId: context.canvasId, nodeIds: new Set([nodeId]), operationId,
     statuses: ['prepared', 'submitted', 'outcome-unknown'] });
   assertCurrent();
-  const original = records.find((row) => row.recovery?.kind === 'workflow'
-    && row.projectEpoch === context.projectEpoch && row.canvasEpoch === context.canvasEpoch
+  const original = records.find((row) => row.projectEpoch === context.projectEpoch && row.canvasEpoch === context.canvasEpoch
     && row.episodeId === context.episodeId && row.origin?.deliveryMode !== 'chat');
-  if (!original) return;
+  if (!original || original.recovery?.kind !== 'workflow') return original;
   let record = original;
   let receipt = await readNativeWorkflowReceipt(record.operationId);
   assertCurrent();

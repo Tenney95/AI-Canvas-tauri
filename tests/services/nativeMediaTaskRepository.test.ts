@@ -187,13 +187,23 @@ describe('新画布媒体回执账本', () => {
     const context = await fixture();
     const task = await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: 'node',
       providerConfigId: 'provider', providerBase: 'https://example.test', inputFingerprint: 'a'.repeat(64), sourceCanvasRevision: 0, category: 'video' }, { factory });
-    await reviewNativeMediaTask(task.operationId, context, { factory });
+    await reviewNativeMediaTask(task.operationId, context, { factory, expected: task });
     const late = await recordNativeMediaSubmission(task.operationId, task.lease, { taskId: 'late-id' }, { factory });
     expect(late).toMatchObject({ status: 'reviewed', remoteTaskId: 'late-id' });
     await expect(prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: 'node',
       providerConfigId: 'provider', providerBase: 'https://example.test', inputFingerprint: 'a'.repeat(64), sourceCanvasRevision: 0, category: 'video' }, { factory })).resolves.toMatchObject({ status: 'prepared' });
     await expect(claimNativeMediaRecovery(task.operationId, context, { factory })).rejects.toThrow('已有后续尝试，原缓存不能覆盖新意图');
     expect((await listNativeMediaTasks(context.projectId, { factory })).find((row) => row.operationId === task.operationId)).toEqual(late);
+  });
+  it('人工核对必须匹配原节点、画布和核对时的回执版本', async () => {
+    const context = await fixture();
+    const task = await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: 'original-node',
+      providerConfigId: 'volcengine', providerBase: 'https://example.test', inputFingerprint: 'a'.repeat(64), sourceCanvasRevision: 0, category: 'video' }, { factory });
+    await expect(reviewNativeMediaTask(task.operationId, context, { factory, expected: { ...task, nodeId: 'other-node' } })).rejects.toThrow('未解除防重');
+    await expect(reviewNativeMediaTask(task.operationId, { ...context, canvasEpoch: context.canvasEpoch + 1 }, { factory, expected: task })).rejects.toThrow('未解除防重');
+    const late = await recordNativeMediaSubmission(task.operationId, task.lease, { taskId: 'known-id' }, { factory });
+    await expect(reviewNativeMediaTask(task.operationId, context, { factory, expected: task })).rejects.toThrow('未解除防重');
+    expect(await readAvailableNativeMediaTask(context.projectId, context.canvasId, task.operationId, { factory })).toEqual(late);
   });
   it('确认远端失败后保留 ID 并解除本机防重', async () => {
     const context = await fixture();
