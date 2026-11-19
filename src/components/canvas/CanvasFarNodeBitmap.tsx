@@ -1,7 +1,7 @@
 import { memo, useLayoutEffect, useRef } from 'react';
 import type { useStoreApi } from '@xyflow/react';
 import type { CanvasNodeLodRuntime } from '../../services/canvasNodeLodRuntime';
-import { getPerformanceModeBudget, subscribePerformanceMode } from '../../services/performanceModeRuntime';
+import { getPerformanceModeBudget, getPerformanceModeEnabled, subscribePerformanceMode } from '../../services/performanceModeRuntime';
 import { createFrameCoalescer } from '../../utils/frameCoalescer';
 import { CANVAS_NODE_Z_INDEX } from '../../utils/canvasElementLayering';
 import { acquireCachedCanvasImagePreview, acquireCanvasImagePreview } from '../nodes/shared/image/canvasImagePreviewCache';
@@ -53,6 +53,10 @@ interface BitmapWindow {
 const BITMAP_GUTTER = 288;
 const BITMAP_REDRAW_MARGIN = 44;
 const BITMAP_MAX_EDGE = 4096;
+const SETTLED_REDRAW_MIN_ZOOM = 0.35;
+const SETTLED_REDRAW_MAX_ZOOM = 0.55;
+const SETTLED_REDRAW_SCALE = 1.10;
+const SETTLED_REDRAW_DELAY_MS = 150;
 const GPU_INIT_TIMEOUT_MS = 8000;
 const BITMAP_CLASS = 'pointer-events-none absolute left-0 top-0 origin-top-left';
 
@@ -122,6 +126,8 @@ export default memo(function CanvasFarNodeBitmap({
     let resolution: MediaQueryList | undefined;
     let stopped = false;
     let bitmap: BitmapWindow | undefined;
+    const settledRedrawKey = {};
+    let settledRedraw: { bitmap: BitmapWindow; transform: string; cancel: () => void } | undefined;
     let dirty = true;
     let rasterCount = 0;
     let projectedCards: typeof cards | undefined;
@@ -246,6 +252,26 @@ export default memo(function CanvasFarNodeBitmap({
       return entry;
     };
 
+    const cancelSettledRedraw = () => {
+      settledRedraw?.cancel();
+      settledRedraw = undefined;
+    };
+
+    const refineAfterZoom = (cached: BitmapWindow, transform: string, width: number, height: number) => {
+      if (settledRedraw?.bitmap === cached && settledRedraw.transform === transform) return;
+      cancelSettledRedraw();
+      const cancel = runtime.enqueueDisplay(settledRedrawKey, () => {
+        settledRedraw = undefined;
+        const size = store.getState();
+        if (stopped || bitmap !== cached || viewport.style.transform !== transform || !getPerformanceModeEnabled()
+          || size.width !== width || size.height !== height || (view.devicePixelRatio || 1) !== cached.ratio) return;
+        // Reuse the existing backing canvas and decoded previews at the settled viewport scale.
+        bitmap = undefined;
+        draw();
+      }, undefined, SETTLED_REDRAW_DELAY_MS);
+      settledRedraw = { bitmap: cached, transform, cancel };
+    };
+
     const draw = () => {
       if (stopped) return;
       try {
@@ -266,6 +292,13 @@ export default memo(function CanvasFarNodeBitmap({
         const covered = bitmap && bitmap.ratio === ratio && zoom >= bitmap.zoom * 0.6 && zoom <= bitmap.zoom * 1.55
           && left - guard >= bitmap.left && top - guard >= bitmap.top
           && right + guard <= bitmap.right && bottom + guard <= bitmap.bottom;
+        if (covered && bitmap && !webGpuRequested && getPerformanceModeEnabled()
+          && zoom >= SETTLED_REDRAW_MIN_ZOOM && zoom <= SETTLED_REDRAW_MAX_ZOOM
+          && zoom > bitmap.zoom * SETTLED_REDRAW_SCALE) {
+          refineAfterZoom(bitmap, transform, width, height);
+        } else {
+          cancelSettledRedraw();
+        }
         if (covered && !dirty && projectedCards === cardsRef.current) return;
 
         if (!bitmap || !covered) {
@@ -366,11 +399,14 @@ export default memo(function CanvasFarNodeBitmap({
       if (stopped) return;
       stopped = true;
       frame.cancel();
+      cancelSettledRedraw();
       onUnavailable();
     };
     redrawRef.current = schedule;
     const unsubscribe = store.subscribe((current, previous) => {
-      if (current.width !== previous.width || current.height !== previous.height) schedule();
+      if (current.width === previous.width && current.height === previous.height) return;
+      cancelSettledRedraw();
+      schedule();
     });
     const viewportObserver = new MutationObserver(schedule);
     viewportObserver.observe(viewport, { attributes: true, attributeFilter: ['style'] });
@@ -422,6 +458,7 @@ export default memo(function CanvasFarNodeBitmap({
       canvas.dataset.canvasFarLayer = 'viewport';
       redrawRef.current = null;
       frame.cancel();
+      cancelSettledRedraw();
       unsubscribe();
       unsubscribeMode();
       viewportObserver.disconnect();
