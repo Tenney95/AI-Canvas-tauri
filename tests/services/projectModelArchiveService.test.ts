@@ -2,6 +2,7 @@
 import { webcrypto } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectArchiveBusinessV4, ProjectArchivePayloadV4, ValidatedProjectArchiveV4 } from '../../src/types/projectArchiveV4';
+import type { ProjectExchangeMedia } from '../../src/types/projectExchange';
 import type { ProjectModelTransferCapture, ProjectModelTransferImportInput, ProjectModelTransferImportJournal, ProjectModelTransferExportJournal } from '../../src/types/projectModelTransfer';
 import type { ProjectModelFixtureBusinessSession } from '../../src/types/projectModelBusiness';
 import type { ProjectArchiveTextEntry } from '../../src/services/projectArchiveSerialization';
@@ -10,6 +11,7 @@ import { createProjectModelArchiveService, materializeProjectModelArchiveBusines
   type ProjectModelArchivePort } from '../../src/services/projectModelArchiveService';
 import { buildProjectExchangeSnapshotV2, readProjectArchiveV4, serializeProjectArchiveV4 } from '../../src/services/projectArchiveV4';
 import { createProjectExchangeRevisionV2 } from '../../src/services/projectExchangeV2Format';
+import { buildProjectMergePlanV2, resolveProjectMergeV2 } from '../../src/services/projectMergeV2Service';
 import { readProjectArchiveContents } from '../../src/services/projectImportService';
 import { readProjectModelArchive } from '../../src/services/projectModelArchiveService';
 import { registerEpisodeEditorSession } from '../../src/services/episodeEditorSessionService';
@@ -123,6 +125,46 @@ describe('P5 portable/本机双向编排', () => {
     await expect(prepareProjectModelArchiveCapture(capture, [...assets,
       { ...other, path: actual, aliases: [alias], localAbsolutePath: `${root}/${actual}` }]))
       .rejects.toThrow('未证明来源');
+  });
+
+  it('AAC、Opus 和 PCM 随输出历史往返，旧媒体身份及冻结备份可继续核验', async () => {
+    const sample = harness();
+    await sample.service.apply(await sample.service.preview(await archive()), { operationId: 'audio-seed', mode: 'import-new' });
+    const capture = sample.capture!, canvas = capture.aggregate.canvases[0];
+    const rootRef = capture.aggregate.project.storageRootRef;
+    const legacyAudio: ProjectExchangeMedia[] = ['aac', 'opus', 'pcm'].map((extension, index) => ({
+      id: `${String(index + 1).repeat(64)}_${extension}`, kind: 'file', extension, bytes: 4,
+      sha256: String(index + 1).repeat(64),
+    }));
+    const audioAssets = legacyAudio.map(({ extension, sha256, bytes }) => ({ rootRef, sha256, bytes, path: `audio/result.${extension.toUpperCase()}` }));
+    const assets = [...await sample.port.inspectAssets(capture), ...audioAssets];
+
+    const legacy = await prepareProjectModelArchiveCapture(capture, assets, legacyAudio);
+    expect(legacy.snapshot.media).toEqual(expect.arrayContaining(legacyAudio));
+    capture.exchange = legacy.exchange;
+    const reconstructed = await prepareProjectModelArchiveCapture(capture, assets, legacy.snapshot.media);
+    expect(reconstructed.snapshot).toEqual(legacy.snapshot);
+
+    capture.history = audioAssets.map((asset, index) => ({ kind: 'output', sourceNamespace: 'native:audio', archiveOriginId: '', value: {
+      id: `audio-history-${index}`, projectId: canvas.id, nodeId: 'audio-node', nodeType: 'ai-audio', nodeLabel: '旁白', timestamp: 1,
+      prompt: '旁白', output: '', relativePath: asset.path, storageRootRef: asset.rootRef, status: 'success',
+    } }));
+    const current = await prepareProjectModelArchiveCapture(capture, assets);
+    const descriptors = current.snapshot.media.filter((entry) => entry.kind === 'audio');
+    expect(descriptors).toEqual(expect.arrayContaining(legacyAudio.map((entry) => ({ ...entry, kind: 'audio', id: `audio_${entry.id}` }))));
+    expect(current.exchange.bundle.revisions).toEqual(expect.arrayContaining(legacy.exchange.bundle.revisions));
+    expect(current.exchange.fileBindings).toEqual(legacy.exchange.fileBindings);
+
+    const plan = await buildProjectMergePlanV2(legacy.snapshot, current.snapshot, legacy.snapshot);
+    expect(resolveProjectMergeV2(plan, {}).media).toEqual(current.snapshot.media);
+    const packageAssets = current.exchange.bundle.files.map((file) => {
+      const media = current.snapshot.media.find((item) => item.id === file.mediaId)!;
+      return { path: file.archivePath.slice('assets/'.length), bytes: media.bytes, sha256: media.sha256 };
+    });
+    const entries = await serializeProjectArchiveV4(current.payload, { packageId: current.exchange.bundle.packageId, exportedAt: 1 }, packageAssets);
+    const readBack = await readProjectArchiveV4(textsOf(entries), packageAssets);
+    expect(readBack.snapshot).toEqual(current.snapshot);
+    expect(readBack.payload.history?.payload.outputs).toHaveLength(3);
   });
 
   it('新项目输出历史经归档映射原画布、旧节点与素材根，导入保持快照且重复更新只绑定既有记录', async () => {

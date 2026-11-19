@@ -22,6 +22,7 @@ import { sha256BytesHex } from './mediaDataUrl';
 import { buildProjectFolderName } from './fileService';
 import type { ProjectContent, EpisodeContent } from '../types/project';
 import type { StoryGraph } from '../types/storyGraph';
+import type { AudioOutputFormat } from '../types/aiTypes';
 import { storyGraphCanonicalSnapshot } from './storyGraphService';
 import { withEpisodeEditorWrite } from './episodeEditorSessionService';
 import { captureArchiveVideoEditorProjects } from './videoEditorArchive';
@@ -497,8 +498,30 @@ export async function importProjectModelArchiveHistory(source: ValidatedProjectA
   return rows;
 }
 
-/** 仅构造可序列化的捕获投影；调用者必须核验原材料、源版本和原生发布回执。 */
-export async function prepareProjectModelArchiveCapture(capture: ProjectModelTransferCapture, assets: ProjectModelArchiveAsset[]) {
+const newlyRecognizedAudioExtensions = new Set<string>(['aac', 'opus', 'pcm'] satisfies AudioOutputFormat[]);
+
+function captureMediaDescriptor(asset: ProjectModelArchiveAsset, relativePath: string, previous: ProjectExchangeMedia | undefined,
+  verifiedBackupMedia: ReadonlyMap<string, ProjectExchangeMedia>): ProjectExchangeMedia {
+  const candidate = relativePath.split('.').pop()?.toLowerCase() ?? 'bin';
+  const extension = /^[a-z0-9]{1,16}$/.test(candidate) ? candidate : 'bin';
+  const descriptor: ProjectExchangeMedia = previous ?? { id: `${asset.sha256}_${extension}`, bytes: asset.bytes, sha256: asset.sha256, extension,
+    kind: /^(png|jpe?g|webp|gif|avif)$/.test(extension) ? 'image' : /^(mp4|mov|webm|mkv)$/.test(extension) ? 'video'
+      : /^(mp3|wav|ogg|m4a|flac)$/.test(extension) ? 'audio' : 'file' };
+  if (descriptor.kind !== 'file' || descriptor.bytes === 0 || !newlyRecognizedAudioExtensions.has(descriptor.extension)
+    || !previous && !relativePath.toLowerCase().endsWith(`.${descriptor.extension}`)) return descriptor;
+
+  // 对已读回且核验回执的旧备份复现原描述，仍由调用方严格比较整份快照。
+  const frozen = verifiedBackupMedia.get(descriptor.id);
+  if (frozen?.kind === 'file' && frozen.extension === descriptor.extension && frozen.sha256 === descriptor.sha256
+    && frozen.bytes === descriptor.bytes) return descriptor;
+
+  // 旧修订中同一个媒体 ID 的类型不可变。新描述换媒体 ID，文件逻辑 ID、路径和摘要正常沿用。
+  return { ...descriptor, id: `audio_${descriptor.sha256}_${descriptor.extension}`, kind: 'audio' };
+}
+
+/** 仅构造可序列化的捕获投影；备份核验可根据已读回的原描述复现旧版分类。 */
+export async function prepareProjectModelArchiveCapture(capture: ProjectModelTransferCapture, assets: ProjectModelArchiveAsset[],
+  verifiedBackupMedia: readonly ProjectExchangeMedia[] = []) {
   const lineageId = capture.exchange?.lineageId ?? crypto.randomUUID();
   const roots = capture.aggregate.project.storageBindings;
   const identities = [...(capture.exchange?.identities ?? [])];
@@ -520,28 +543,28 @@ export async function prepareProjectModelArchiveCapture(capture: ProjectModelTra
   const logicalRoot = (id: string) => identities.find((mapping) => mapping.kind === 'storage-root' && mapping.localId === id)!.sourceId;
   const media = new Map<string, ProjectExchangeMedia>(), files: ProjectArchiveFileV4[] = [];
   const fileBindings: ProjectModelTransferExchange['fileBindings'] = [];
+  const backupMediaById = new Map(verifiedBackupMedia.map((item) => [item.id, item]));
+  const previous = capture.exchange?.bundle.revisions.find((revision) => refKey(revision) === refKey(capture.exchange!.localHead));
+  const previousFiles = previous?.canonicalVersion === 2
+    ? new Map(readProjectArchiveV4Files(previous.snapshot).map((item) => [item.id, item])) : undefined;
+  const previousMedia = previous?.canonicalVersion === 2 ? new Map(previous.snapshot.media.map((item) => [item.id, item])) : undefined;
   for (const asset of assets) {
     if (!roots.some((root) => root.rootRef === asset.rootRef)) throw new Error('素材来源根不属于捕获项目');
     safeExchangePath(asset.path);
     const rootRef = logicalRoot(asset.rootRef);
-    const previous = capture.exchange?.fileBindings.find((binding) => binding.rootRef === rootRef
+    const previousBinding = capture.exchange?.fileBindings.find((binding) => binding.rootRef === rootRef
       && (binding.localRelativePath === asset.path || asset.aliases?.includes(binding.localRelativePath)));
-    const relativePath = previous?.relativePath ?? asset.path;
-    const extension = relativePath.split('.').pop()?.toLowerCase() ?? 'bin', ext = /^[a-z0-9]{1,16}$/.test(extension) ? extension : 'bin';
-    const previousHead = capture.exchange?.bundle.revisions.find((item) => refKey(item) === refKey(capture.exchange!.localHead));
-    const previousFile = previousHead?.canonicalVersion === 2 && previous
-      ? readProjectArchiveV4Files(previousHead.snapshot).find((item) => item.id === previous.id) : undefined;
-    const oldMedia = previousHead?.canonicalVersion === 2 && previousFile
-      ? previousHead.snapshot.media.find((item) => item.id === previousFile.mediaId && item.sha256 === asset.sha256 && item.bytes === asset.bytes) : undefined;
-    const mediaId = oldMedia?.id ?? `${asset.sha256}_${ext}`;
-    media.set(mediaId, oldMedia ?? { id: mediaId, bytes: asset.bytes, sha256: asset.sha256, extension: ext,
-      kind: /^(png|jpe?g|webp|gif|avif)$/.test(ext) ? 'image' : /^(mp4|mov|webm|mkv)$/.test(ext) ? 'video' : /^(mp3|wav|ogg|m4a|flac)$/.test(ext) ? 'audio' : 'file' });
-    const id = previous?.id ?? `file_${await digest([lineageId, rootRef, relativePath])}`;
-    files.push({ id, rootRef, relativePath, mediaId });
-    fileBindings.push({ id, rootRef, relativePath, localRelativePath: previous?.localRelativePath ?? asset.path });
+    const relativePath = previousBinding?.relativePath ?? asset.path;
+    const previousFile = previousBinding && previousFiles?.get(previousBinding.id);
+    const oldMedia = previousFile && previousMedia?.get(previousFile.mediaId);
+    const descriptor = captureMediaDescriptor(asset, relativePath,
+      oldMedia?.sha256 === asset.sha256 && oldMedia.bytes === asset.bytes ? oldMedia : undefined, backupMediaById);
+    media.set(descriptor.id, descriptor);
+    const id = previousBinding?.id ?? `file_${await digest([lineageId, rootRef, relativePath])}`;
+    files.push({ id, rootRef, relativePath, mediaId: descriptor.id });
+    fileBindings.push({ id, rootRef, relativePath, localRelativePath: previousBinding?.localRelativePath ?? asset.path });
   }
   const history = await captureHistory(capture, business, identities, fileBindings, assets);
-  const previous = capture.exchange?.bundle.revisions.find((revision) => refKey(revision) === refKey(capture.exchange!.localHead));
   const retired = new Map(previous?.canonicalVersion === 2 ? previous.snapshot.historicalTargets.map((target) => [JSON.stringify([target.kind, target.id]), target]) : []);
   for (const binding of history?.workbenchTargets ?? []) if (binding.target.state === 'retired') retired.set(JSON.stringify([binding.target.kind, binding.target.id]), binding.target);
   for (const scope of history?.scopes ?? []) if (scope.retired) {

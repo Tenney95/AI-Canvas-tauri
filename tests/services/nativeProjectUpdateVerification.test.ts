@@ -2,6 +2,8 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { NativeProjectUpdateJournal } from '../../src/services/indexedDb/nativeProjectRepository';
 
+const legacyAudioMedia = [{ id: 'old-audio', kind: 'file', extension: 'pcm', bytes: 4, sha256: 'a'.repeat(64) }];
+
 const probes = vi.hoisted(() => ({ backup: vi.fn(async () => {}), capture: vi.fn(), inspect: vi.fn(async () => []),
   publish: vi.fn(async () => {}), points: vi.fn(async () => [] as Array<{ operationId: string }>), restore: vi.fn(async () => {}),
   openBackup: vi.fn(), project: vi.fn(), remove: vi.fn(async () => {}) }));
@@ -27,8 +29,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   probes.capture.mockResolvedValue({ value: { sourceToken: 'source-token' }, changeRevision: 4 });
   probes.inspect.mockResolvedValue([]); probes.points.mockResolvedValue([]);
-  probes.project.mockResolvedValue({ snapshot: { stable: true }, payload: {} });
-  probes.openBackup.mockResolvedValue({ directory: 'fixture', source: { snapshot: { stable: true }, payload: {} } });
+  probes.project.mockResolvedValue({ snapshot: { stable: true, media: legacyAudioMedia }, payload: {} });
+  probes.openBackup.mockResolvedValue({ directory: 'fixture', source: { snapshot: { stable: true, media: legacyAudioMedia }, payload: {} } });
 });
 
 it('先读回独立备份、原项目和媒体，再复核目标发布；缺任一证据不继续', async () => {
@@ -56,14 +58,14 @@ it('全局素材在核验时使用已冻结的项目副本，不重新复制或�
     content: { dramaAssets: { scenes: [{ assetId: 'global-index', relativePath: 'imports/global-fixture/a.png' }] } } } };
   journal.recoveryState = { capture: frozen as never, exchange: {} as never, assets: [], globalFiles: [], referenceFiles: [] };
   await verifyNativeProjectUpdateCommit(journal);
-  expect(probes.project).toHaveBeenCalledWith(frozen, []);
+  expect(probes.project).toHaveBeenCalledWith(frozen, [], legacyAudioMedia);
   expect(probes.publish).toHaveBeenCalledOnce();
   expect(probes.inspect).toHaveBeenNthCalledWith(1, journal.expected);
   expect(probes.inspect).toHaveBeenNthCalledWith(2, frozen);
 });
 
 it('素材字节相同也不能接受标签或图片专属信息不同的备份', async () => {
-  probes.project.mockResolvedValueOnce({ snapshot: { stable: true }, payload: { assetMetadata: { version: 1, records: [] } } });
+  probes.project.mockResolvedValueOnce({ snapshot: { stable: true, media: legacyAudioMedia }, payload: { assetMetadata: { version: 1, records: [] } } });
   await expect(verifyNativeProjectUpdateCommit(operation())).rejects.toThrow('独立备份与更新前项目内容不一致');
   expect(probes.publish).not.toHaveBeenCalled();
 });
