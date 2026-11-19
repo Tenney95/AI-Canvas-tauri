@@ -108,6 +108,16 @@ interface DragStart {
   onEnd: () => void;
 }
 
+let activeAssetNodeDrags = 0;
+const assetNodeDragListeners = new Set<() => void>();
+
+export const isAssetNodeConnectionDragging = () => activeAssetNodeDrags > 0;
+
+export function subscribeAssetNodeConnectionDrag(listener: () => void): () => void {
+  assetNodeDragListeners.add(listener);
+  return () => { assetNodeDragListeners.delete(listener); };
+}
+
 /** 指针会话只存内存；面板卸载、Esc、失焦和项目/源端口失效时完整取消。 */
 export function startAssetNodeConnectionDrag({ origin, pointerId, onMove, onEnd }: DragStart): () => void {
   let ended = false;
@@ -122,6 +132,7 @@ export function startAssetNodeConnectionDrag({ origin, pointerId, onMove, onEnd 
     window.removeEventListener('blur', finish);
     document.removeEventListener('keydown', key, capture);
     unsubscribe();
+    if (--activeAssetNodeDrags === 0) assetNodeDragListeners.forEach((listener) => listener());
     onEnd();
   };
   const move = (event: PointerEvent) => {
@@ -153,5 +164,6 @@ export function startAssetNodeConnectionDrag({ origin, pointerId, onMove, onEnd 
     if (state.currentProjectId !== origin.projectId || !node
       || !getAssetNodePorts(node.data, state.installedPlugins).some((port) => port.id === origin.handleId)) finish();
   });
+  if (++activeAssetNodeDrags === 1) assetNodeDragListeners.forEach((listener) => listener());
   return finish;
 }

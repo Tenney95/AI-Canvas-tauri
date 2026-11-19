@@ -89,7 +89,7 @@ function edgeValues(edge: Edge): Values {
   ];
 }
 
-function needsNativeEdge(edge: Edge) {
+export function needsNativeCanvasEdge(edge: Edge) {
   return (!!edge.type && !['default', 'smoothstep', 'selected-node-flow'].includes(edge.type))
     || (!!edge.domAttributes && Object.keys(edge.domAttributes).length > 0);
 }
@@ -191,7 +191,7 @@ export function createCanvasEdgeModelSelector() {
       const edge: Edge = { ...state.defaultEdgeOptions, ...original };
       if (edge.hidden) continue;
       const previous = edges.get(id);
-      if (needsNativeEdge(edge)) {
+      if (needsNativeCanvasEdge(edge)) {
         const model = previous?.model?.kind === 'native' ? previous.model : { kind: 'native' as const, id };
         nextEdges.set(id, { model });
         nextModels.push(model);

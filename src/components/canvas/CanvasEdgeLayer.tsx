@@ -24,6 +24,7 @@ import { canUseCanvasEdgeStroke } from '../../utils/canvasEdgePath';
 import { canvasEdgePointer, createCanvasEdgePicker } from '../../utils/canvasEdgePicking';
 import CanvasEdgeStrokeLayer from './CanvasEdgeStrokeLayer';
 import { CanvasEdgePanePointerContext } from '../../hooks/useCanvasEdgePanePointer';
+import { CanvasNodeLodContext } from '../../hooks/useCanvasNodeLod';
 
 type FlowStore = ReturnType<typeof useStoreApi>;
 type EdgeCallbacks = Pick<CanvasEdgeLayerProps,
@@ -31,6 +32,8 @@ type EdgeCallbacks = Pick<CanvasEdgeLayerProps,
   | 'onEdgeMouseEnter' | 'onEdgeMouseMove' | 'onEdgeMouseLeave'>;
 
 const EMPTY_NODE_IDS: ReadonlySet<string> = new Set();
+const getEmptyNodeIds = () => EMPTY_NODE_IDS;
+const subscribeEmptyNodeIds = () => () => {};
 // Bound viewport bitmap memory even when custom/SVG edges alternate frequently.
 const MAX_CANVAS_STROKE_LAYERS = 2;
 type PickPointerEdge = (point: { x: number; y: number }, svg: SVGSVGElement | null) => CanvasSharedEdgeModel | undefined;
@@ -206,11 +209,22 @@ export default function CanvasEdgeLayer({
   const handleCanvasUnavailable = useCallback(() => setCanvasStroke(false), []);
   const performanceMode = useAppStore((state) => state.config.performanceMode === true);
   const mountedNodeIds = useMountedNodeIds(store);
+  const lodRuntime = useContext(CanvasNodeLodContext);
+  const visibleFarNodeIds = useSyncExternalStore(
+    lodRuntime?.subscribeVisibleFarNodeIds ?? subscribeEmptyNodeIds,
+    lodRuntime?.getVisibleFarNodeIds ?? getEmptyNodeIds,
+    getEmptyNodeIds,
+  );
+  // Canvas cards replace wrappers only. Their visible edges retain the original hit paths.
+  const visibleNodeIds = useMemo(
+    () => visibleFarNodeIds.size ? new Set([...mountedNodeIds, ...visibleFarNodeIds]) : mountedNodeIds,
+    [mountedNodeIds, visibleFarNodeIds],
+  );
   const selectModels = useMemo(() => createCanvasEdgeModelSelector(), []);
   const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);
   const snapshot = useMemo(() => createCanvasEdgeSnapshotReader(
-    store.getState, selectModels, edgeIds, geometry, rfId, mountedNodeIds,
-  ), [store, selectModels, edgeIds, geometry, rfId, mountedNodeIds]);
+    store.getState, selectModels, edgeIds, geometry, rfId, visibleNodeIds,
+  ), [store, selectModels, edgeIds, geometry, rfId, visibleNodeIds]);
   const models = useSyncExternalStore(subscribe, snapshot, snapshot);
   const modelsRef = useRef(models);
   useLayoutEffect(() => { modelsRef.current = models; }, [models]);

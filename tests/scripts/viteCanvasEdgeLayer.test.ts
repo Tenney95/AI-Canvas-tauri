@@ -1,5 +1,5 @@
 /**
- * React Flow 集中连线与小地图构建适配的回归测试。
+ * React Flow 连线、小地图和远景节点构建适配的回归测试。
  */
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -101,6 +101,69 @@ interface ElementTree {
   props: Record<string, unknown>;
   key?: string;
 }
+
+describe('React Flow 远景节点构建适配', () => {
+  it.each(entries)('在真实 $name 入口保留原生回退，声明远景层时按需创建 wrapper', (entry) => {
+    const transform = canvasEdgeLayerPlugin().transform;
+    if (!transform || typeof transform === 'function') throw new Error('缺少 Vite 入口适配');
+    const invoke = transform.handler as (source: string, id: string) => { code: string } | null;
+    const code = invoke(entry.source, entry.id)?.code;
+    if (!code) throw new Error('真实 React Flow 入口没有经过适配');
+
+    const start = code.indexOf('/* ai-canvas-far-node-layer */');
+    const end = code.indexOf("\nNodeRendererComponent.displayName = 'NodeRenderer';", start);
+    const createRenderer = new Function(
+      'useStore', 'selector$b', 'shallow', 'useVisibleNodeIds', 'useResizeObserver',
+      'jsx', 'containerStyle', 'NodeWrapper$1', '__aiCanvasEdgeViewportRevision',
+      'getNodeDimensions', 'nodeHasDimensions',
+      `${code.slice(start, end)}\nreturn NodeRendererComponent;`,
+    ) as (...args: unknown[]) => (props: Record<string, unknown>) => ElementTree;
+    const nativeWrapper = Symbol('NodeWrapper');
+    const containerStyle = { position: 'absolute' };
+    const nodeIds = ['far', 'active'];
+    const resizeObserver = {};
+    const jsx = vi.fn((type: unknown, props: Record<string, unknown>, key?: string): ElementTree => ({ type, props, key }));
+    const revision = {};
+    const getViewportRevision = vi.fn(() => revision);
+    const geometry = { getNodeDimensions: vi.fn(), nodeHasDimensions: vi.fn() };
+    const useVisibleNodeIds = vi.fn(() => nodeIds);
+    const render = createRenderer(
+      () => ({ nodesDraggable: true, nodesConnectable: true, nodesFocusable: true, elementsSelectable: true }),
+      {}, {}, useVisibleNodeIds, () => resizeObserver, jsx, containerStyle, nativeWrapper,
+      getViewportRevision, geometry.getNodeDimensions, geometry.nodeHasDimensions,
+    );
+    const props = {
+      nodeTypes: { 'source-image': () => null },
+      onNodeClick: vi.fn(),
+      onNodeDoubleClick: vi.fn(),
+      noPanClassName: 'canvas-nopan',
+      onlyRenderVisibleElements: true,
+    };
+    const native = render(props);
+    expect(native.props).toMatchObject({ className: 'react-flow__nodes', style: containerStyle });
+    expect((native.props.children as ElementTree[]).map(({ type, key }) => [type, key]))
+      .toEqual([[nativeWrapper, 'far'], [nativeWrapper, 'active']]);
+
+    jsx.mockClear();
+    const renderFarLayer = () => null;
+    const nodeTypes = { 'source-image': Object.assign(() => null, { renderFarLayer }) };
+    const adapted = render({ ...props, nodeTypes });
+    expect(adapted.props).toMatchObject({ className: 'react-flow__nodes', style: containerStyle });
+    const layer = adapted.props.children as ElementTree;
+    expect(layer.type).toBe(renderFarLayer);
+    expect(layer.props).toMatchObject({ nodeIds, noPanClassName: props.noPanClassName, geometry });
+    expect(useVisibleNodeIds).toHaveBeenLastCalledWith(true);
+    expect(jsx.mock.calls.some(([type]) => type === nativeWrapper)).toBe(false);
+    expect((layer.props.geometry as { getViewportRevision(state: object): object }).getViewportRevision({})).toBe(revision);
+
+    const nativeNode = (layer.props.renderNode as (id: string) => ElementTree)('active');
+    expect(nativeNode).toMatchObject({
+      type: nativeWrapper, key: 'active',
+      props: { id: 'active', nodeTypes, onClick: props.onNodeClick, onDoubleClick: props.onNodeDoubleClick, resizeObserver },
+    });
+    expect(jsx.mock.calls.filter(([type]) => type === nativeWrapper)).toHaveLength(1);
+  });
+});
 
 function createRendererHarness(code: string) {
   const start = code.indexOf(CANVAS_EDGE_LAYER_ADAPTER_MARKER);

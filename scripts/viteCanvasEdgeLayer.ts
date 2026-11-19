@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import type { Plugin } from 'vite';
+import { adaptCanvasFarNodeLayer } from './viteCanvasFarNodeLayer';
 import { adaptCanvasMiniMap } from './viteCanvasMiniMap';
 
 export const CANVAS_EDGE_LAYER_REACT_FLOW_VERSION = '12.10.2';
@@ -175,7 +176,9 @@ export function canvasEdgeLayerPlugin(): Plugin {
       handler(source, id) {
         if (!entries.has(normalizeModuleId(id))) return null;
         const result = transformCanvasEdgeLayer(source, id, version);
-        return result && { ...result, code: adaptCanvasMiniMap(result.code, VIEWPORT_REVISION_NAME) };
+        if (!result) return null;
+        const code = adaptCanvasMiniMap(result.code, VIEWPORT_REVISION_NAME);
+        return { ...result, code: adaptCanvasFarNodeLayer(code, VIEWPORT_REVISION_NAME) };
       },
     },
   };

@@ -9,6 +9,7 @@ export const CANVAS_NODE_LOD = {
   enter: 0.16, exit: 0.25, restorePerFrame: CANVAS_DISPLAY_BUDGET.maxPerFrame, idleMs: CANVAS_DISPLAY_BUDGET.idleMs,
 } as const;
 const PERFORMANCE_NODE_LOD = { enter: 0.55, exit: 0.65 } as const;
+const EMPTY_VISIBLE_FAR_NODE_IDS: ReadonlySet<string> = new Set();
 interface Entry {
   id: string;
   full: boolean;
@@ -29,6 +30,14 @@ export function createCanvasNodeLodRuntime(initialZoom = 1, clock?: CanvasDispla
   let interacting = false;
   let center = { x: 0, y: 0 };
   const entries = new Map<string, Entry>();
+  const representationListeners = new Set<() => void>();
+  const visibleFarNodeListeners = new Set<() => void>();
+  let representationRevision = 0;
+  let visibleFarNodeIds = EMPTY_VISIBLE_FAR_NODE_IDS;
+  function notifyRepresentation() {
+    representationRevision++;
+    for (const listener of representationListeners) listener();
+  }
   function publish(entry: Entry, full: boolean) {
     if (entry.full === full) return;
     entry.full = full;
@@ -66,9 +75,28 @@ export function createCanvasNodeLodRuntime(initialZoom = 1, clock?: CanvasDispla
     far = next;
     progressive = true;
     for (const entry of entries.values()) queue(entry);
+    notifyRepresentation();
   }
 
   return {
+    isFar: () => far,
+    isPinned: (id: string) => (entries.get(id)?.pins.size ?? 0) > 0,
+    getRepresentationRevision: () => representationRevision,
+    subscribeRepresentation(listener: () => void) {
+      representationListeners.add(listener);
+      return () => { representationListeners.delete(listener); };
+    },
+    getVisibleFarNodeIds: () => visibleFarNodeIds,
+    subscribeVisibleFarNodeIds(listener: () => void) {
+      visibleFarNodeListeners.add(listener);
+      return () => { visibleFarNodeListeners.delete(listener); };
+    },
+    setVisibleFarNodeIds(ids: ReadonlySet<string>) {
+      if (ids === visibleFarNodeIds || (ids.size === visibleFarNodeIds.size
+        && Array.from(ids).every((id) => visibleFarNodeIds.has(id)))) return;
+      visibleFarNodeIds = ids.size ? new Set(ids) : EMPTY_VISIBLE_FAR_NODE_IDS;
+      for (const listener of visibleFarNodeListeners) listener();
+    },
     enqueueDisplay: (key: object, commit: () => void, nodeId?: string, delayMs = 0) => (
       display.enqueue(key, commit, () => priority(nodeId), delayMs)
     ),
@@ -84,14 +112,17 @@ export function createCanvasNodeLodRuntime(initialZoom = 1, clock?: CanvasDispla
     pin(id: string) {
       const entry = ensure(id);
       const token = Symbol();
+      const firstPin = entry.pins.size === 0;
       entry.pins.add(token);
       entry.cancel?.();
       entry.cancel = undefined;
       publish(entry, true);
+      if (firstPin) notifyRepresentation();
       return () => {
-        entry.pins.delete(token);
+        if (!entry.pins.delete(token)) return;
         queue(entry);
         release(entry);
+        if (entry.pins.size === 0) notifyRepresentation();
       };
     },
     position(id: string, x: number, y: number) {

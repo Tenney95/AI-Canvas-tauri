@@ -4,6 +4,8 @@
 import type { ReactNode } from 'react';
 import type { Edge, InternalNode, Position, ReactFlowState } from '@xyflow/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CanvasNodeLodContext } from '../../src/hooks/useCanvasNodeLod';
+import { createCanvasNodeLodRuntime, type CanvasNodeLodRuntime } from '../../src/services/canvasNodeLodRuntime';
 import type { CanvasEdgeGeometry, CanvasEdgeLayerProps } from '../../src/types/canvasEdges';
 
 interface Hooks {
@@ -25,6 +27,7 @@ const driver = vi.hoisted(() => ({
   observers: [] as Array<{ callback: () => void; observe: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }>,
   frames: new Map<number, FrameRequestCallback>(),
   nextFrame: 0,
+  lodRuntime: null as CanvasNodeLodRuntime | null,
   panePointer: { current: null as {
     handle(event: unknown, action: 'click' | 'doubleClick'): boolean;
     hitTest(point: { x: number; y: number }): boolean;
@@ -36,7 +39,7 @@ vi.mock('react', async () => ({
   ...await vi.importActual<typeof import('react')>('react'),
   memo: <T,>(component: T) => component,
   useCallback: <T,>(callback: T) => callback,
-  useContext: () => driver.panePointer,
+  useContext: (context: unknown) => context === CanvasNodeLodContext ? driver.lodRuntime : driver.panePointer,
   useMemo: (compute: () => unknown, deps?: readonly unknown[]) => {
     const hooks = driver.current!;
     const index = hooks.memoIndex++;
@@ -185,6 +188,7 @@ function groupHandlers(group: ElementTree) {
 
 beforeEach(() => {
   driver.instances.clear(); driver.observers = []; driver.frames.clear(); driver.nextFrame = 0;
+  driver.lodRuntime = null;
   driver.panePointer.current = null;
   driver.appState.onEdgesChange.mockClear();
   vi.stubGlobal('MutationObserver', class {
@@ -438,5 +442,27 @@ describe('central canvas edge rendering', () => {
     const frames = [...driver.frames.values()]; driver.frames.clear();
     frames.forEach((callback) => callback(0));
     expect(elements(sharedGroup(f.render()), 'edge-visual')[0].props.interactive).toBe(true);
+  });
+
+  it('retains the same path and interaction when visible endpoints use far cards', () => {
+    const runtime = createCanvasNodeLodRuntime(0.12);
+    driver.lodRuntime = runtime;
+    const changed = vi.fn();
+    const unsubscribe = runtime.subscribeVisibleFarNodeIds(changed);
+    const f = fixture();
+    const visual = () => elements(sharedGroup(f.render()), 'edge-visual')[0].props;
+    const offscreen = visual();
+    expect(offscreen.interactive).toBe(false);
+
+    runtime.setVisibleFarNodeIds(new Set(['a', 'b']));
+    expect(visual()).toMatchObject({ interactive: true, path: offscreen.path });
+    const represented = runtime.getVisibleFarNodeIds();
+    runtime.setVisibleFarNodeIds(new Set(['b', 'a']));
+    expect(runtime.getVisibleFarNodeIds()).toBe(represented);
+    expect(changed).toHaveBeenCalledTimes(1);
+
+    runtime.setVisibleFarNodeIds(new Set(['another-node']));
+    expect(visual()).toMatchObject({ interactive: false, path: offscreen.path });
+    unsubscribe();
   });
 });
