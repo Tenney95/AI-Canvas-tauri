@@ -118,10 +118,10 @@ export async function captureNativeProjectArchive(projectId: string): Promise<{ 
   }
   nativeMediaResults.sort((left, right) => left.operationId.localeCompare(right.operationId) || (left.ordinal ?? 0) - (right.ordinal ?? 0)
     || left.relativePath.localeCompare(right.relativePath));
-  const { readNativeAssets } = await import('./indexedDb/nativeAssetRepository');
+  const { readNativeAssetsForProject } = await import('./indexedDb/nativeAssetRepository');
   const { listNativeEditorMediaArtifactsForProject } = await import('./indexedDb/nativeEditorMediaTaskRepository');
   const nativeEditorMediaArtifacts = await listNativeEditorMediaArtifactsForProject(projectId);
-  const assetMetadata = (await readNativeAssets()).filter((record) => record.projectId === projectId).map((record) => ({
+  const assetMetadata = (await readNativeAssetsForProject(projectId)).map((record) => ({
     assetId: record.assetId, rootRef: record.rootRef, path: record.relativePath, ownerId: record.ownerId,
     bytes: record.bytes, sha256: record.sha256, ...(record.tags ? { tags: record.tags } : {}),
     ...(record.images ? { images: record.images } : {}),

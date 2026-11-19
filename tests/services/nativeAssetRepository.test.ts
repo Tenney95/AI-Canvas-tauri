@@ -24,6 +24,15 @@ describe('同库恢复素材身份', () => {
       }, [EXCHANGE]);
       expect(await readNativeAssetsForProject(first.project.id, { factory })).toEqual([row]);
       expect(await readNativeAssetsForProject(second.project.id, { factory })).toEqual([other]);
+      await transact(db, 'readwrite', { factory }, async (tx) => {
+        await new Promise<void>((resolve, reject) => {
+          const write = tx.objectStore(EXCHANGE).put({ projectId: `asset:${other.assetId}`,
+            kind: 'native-asset-v1', record: { ...other, bytes: -1 } });
+          write.onsuccess = () => resolve(); write.onerror = () => reject(write.error);
+        });
+      }, [EXCHANGE]);
+      await expect(readNativeAssetsForProject(first.project.id, { factory })).resolves.toEqual([row]);
+      await expect(readNativeAssetsForProject(second.project.id, { factory })).rejects.toThrow('恢复素材');
     } finally { db.close(); }
   });
 
