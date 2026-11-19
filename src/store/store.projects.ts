@@ -525,6 +525,8 @@ export interface EpisodeCreativeWriteOptions {
   expected?: TeamEpisodeTarget;
   /** 仅可信工作台宿主可在已加载的同一剧集中保存明确目标，不代表画布写权限。 */
   allowSameSeries?: boolean;
+  /** 工作台显式用已提交正文生成新的 TXT，旧文件保留。 */
+  rebuildScriptFile?: true;
   /** 仅供宿主编辑会话使用；不得进入持久化。 */
   assertCurrent?: () => void;
   /** 乐观更新后、磁盘读取及实际入队提交时的范围守卫，不重复检查提交前的脏稿。 */
@@ -2484,6 +2486,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
 
   updateEpisodeCreative: async (episodeId, updates, options) => serializeEpisodeCreativeWrite(episodeId, async () => {
     const native = nativeBinding(get().projects.find((item) => item.id === episodeId));
+    const rebuildScriptFile = options?.rebuildScriptFile === true;
+    if (rebuildScriptFile && (!native || options?.expected || Object.keys(updates).length)) return false;
     if (native) {
       if (!native.episodeId || !native.canvasId) return false;
       const state = get(), runtime = nativeRuntime.get(get), activeId = state.currentProjectId;
@@ -2509,7 +2513,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         const episode = loaded?.selection.episode, body = loaded?.episodeContent;
         if (!loaded || !episode || !body || episode.id !== native.episodeId) throw new Error('分集正文已变化');
         if (native.episodeContentRevision !== undefined && body.revision !== native.episodeContentRevision
-          && ('outline' in updates || 'script' in updates || 'creative' in updates)) throw new Error('分集正文已变化，草稿已保留');
+          && ('outline' in updates || 'script' in updates || 'creative' in updates || rebuildScriptFile)) throw new Error('分集正文已变化，草稿已保留');
         const expected = options?.expected;
         if (expected) {
           if (expected.kind !== 'episode' || expected.episodeId !== episodeId || expected.seriesId !== native.projectId
@@ -2536,12 +2540,16 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           if (!('teamProfileOverride' in updates)) metadata.teamProfileOverride = null;
         }
         if ('teamProfileOverride' in updates) metadata.teamProfileOverride = updates.teamProfileOverride ? normalizeTeamProfile(updates.teamProfileOverride) : null;
-        if (!Object.keys(patch).length && !Object.keys(metadata).length) return true;
-        if ('script' in updates) {
+        if (!Object.keys(patch).length && !Object.keys(metadata).length && !rebuildScriptFile) return true;
+        if ('script' in updates || rebuildScriptFile) {
+          if (rebuildScriptFile && !body.script?.trim()) throw new Error('请先保存本集剧本正文');
           const receipt = await prepareEpisodeScriptFileWrite({ episodeId: episode.id, projectId: native.projectId,
             exchangeEpoch: loaded.selection.project.epoch, episodeExchangeEpoch: episode.epoch, name: episode.name,
-            previousText: body.script ?? '', text: updates.script ?? '', reference: body.scriptFile,
+            previousText: body.script ?? '', text: (rebuildScriptFile ? body.script : updates.script) ?? '',
+            reference: rebuildScriptFile ? undefined : body.scriptFile,
+            nativeManuscriptRootRef: body.storageRootRef === loaded.selection.project.storageRootRef ? undefined : body.storageRootRef,
             preserveBoundFile: true, assertCurrent, subscribe: api.subscribe });
+          if (rebuildScriptFile && !receipt) throw new Error('请在桌面应用中重建 TXT');
           if (receipt) patch.scriptFile = receipt.reference;
         }
         assertCurrent();

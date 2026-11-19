@@ -93,7 +93,8 @@ export type ScriptWorkbenchAction =
   | { type: 'select_episode'; episodeId: string }
   | { type: 'reload_episode' }
   | { type: 'set_tab'; tab: WorkbenchEditorTab }
-  | { type: 'save' } | { type: 'close' } | { type: 'dock' } | { type: 'detach' }
+  | { type: 'save'; rebuildScriptFile?: true }
+  | { type: 'close' } | { type: 'dock' } | { type: 'detach' }
   | { type: 'cancel_pending' } | { type: 'discard_pending' } | { type: 'save_pending' }
   | { type: 'open_split' } | { type: 'close_split' }
   | { type: 'read_split_material'; part: SeriesSourcePart }

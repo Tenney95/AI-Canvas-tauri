@@ -6,7 +6,7 @@ import type { ProjectTextFileReference } from '../../src/types';
 import type { EpisodeScriptFileReceipt, EpisodeScriptFileWriteOptions } from '../../src/services/episodeScriptFileService';
 
 const mocks = vi.hoisted(() => ({
-  desktop: true, label: 'main', read: vi.fn(), save: vi.fn(), create: vi.fn(), stat: vi.fn(), directory: vi.fn(),
+  desktop: true, label: 'main', read: vi.fn(), save: vi.fn(), create: vi.fn(), stat: vi.fn(), directory: vi.fn(), subroot: vi.fn(),
   files: new Map<string, AssetTextSnapshot>(), listeners: new Set<() => void>(),
 }));
 vi.mock('../../src/services/fs/core', () => ({ isTauriEnv: () => mocks.desktop }));
@@ -14,6 +14,7 @@ vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ label: moc
 vi.mock('@tauri-apps/plugin-fs', () => ({ lstat: mocks.stat }));
 vi.mock('../../src/services/fileService', () => ({
   readAssetTextFile: mocks.read, saveAssetTextFile: mocks.save, createAssetTextFile: mocks.create, getProjectDataDir: mocks.directory,
+  resolveNativeManuscriptRoot: mocks.subroot,
   joinPath: (...segments: string[]) => segments.join('/'),
 }));
 
@@ -39,6 +40,7 @@ function receipt(value: EpisodeScriptFileReceipt | undefined): EpisodeScriptFile
 beforeEach(() => {
   vi.resetAllMocks(); mocks.files.clear(); mocks.listeners.clear(); mocks.desktop = true; mocks.label = 'main';
   mocks.directory.mockResolvedValue('/project');
+  mocks.subroot.mockResolvedValue('/project/roots/r2-file-root');
   mocks.stat.mockResolvedValue({ isDirectory: true, isSymlink: false });
   mocks.read.mockImplementation(async (path: string) => {
     const value = mocks.files.get(path);
@@ -49,9 +51,10 @@ beforeEach(() => {
     if (mocks.files.get(path)?.digest !== baseline.digest) throw new Error('磁盘文件已被修改');
     const saved = snapshot(content); mocks.files.set(path, saved); return structuredClone(saved);
   });
-  mocks.create.mockImplementation(async (_projectId: string, content: string, name: string) => {
+  mocks.create.mockImplementation(async (_projectId: string, content: string, name: string, options?: { nativeManuscriptRootRef?: string }) => {
     const fileName = name.replace(/\.txt$/, '_1.txt');
-    const filePath = `/project/manuscripts/${fileName}`;
+    const directory = options?.nativeManuscriptRootRef ? `/project/roots/${options.nativeManuscriptRootRef}` : '/project';
+    const filePath = `${directory}/manuscripts/${fileName}`;
     const saved = snapshot(content); mocks.files.set(filePath, saved);
     return { fileName, filePath, relativePath: `manuscripts/${fileName}`, snapshot: saved };
   });
@@ -91,6 +94,25 @@ describe('分集剧本 TXT 同步', () => {
     expect(retried.reference.digest).toBe(snapshot('新剧本').digest);
     expect(mocks.save).not.toHaveBeenCalled();
     retried.confirm();
+  });
+
+  it('原生分集按其素材子根核对 TXT，显式重建以独立文件接回数据库正文', async () => {
+    const rootRef = 'r2-file-root', bound = reference();
+    const originalPath = '/project/roots/r2-file-root/manuscripts/第一集.txt';
+    mocks.files.set(originalPath, snapshot('外部修改'));
+    const input = options({ text: '旧剧本', preserveBoundFile: true, nativeManuscriptRootRef: rootRef, reference: bound });
+    await expect(prepareEpisodeScriptFileWrite(input)).rejects.toThrow('已被修改');
+    expect(mocks.subroot).toHaveBeenCalledWith('series', rootRef);
+    expect(mocks.read).toHaveBeenCalledWith(originalPath, expect.any(AbortSignal));
+    const rebuilt = receipt(await prepareEpisodeScriptFileWrite({ ...input, reference: undefined }));
+    expect(rebuilt.reference.relativePath).not.toBe(bound.relativePath);
+    expect(rebuilt.reference.digest).toBe(bound.digest);
+    expect(mocks.create).toHaveBeenCalledWith('series', '旧剧本', expect.stringContaining('--v-'), expect.objectContaining({
+      projectSubdirectory: 'manuscripts', nativeManuscriptRootRef: rootRef, reuseMatchingName: true,
+    }));
+    expect(mocks.files.get(`/project/roots/${rootRef}/${rebuilt.reference.relativePath}`)?.content).toBe('旧剧本');
+    expect(mocks.files.get(originalPath)?.content).toBe('外部修改');
+    expect(mocks.save).not.toHaveBeenCalled();
   });
 
   it('分集改名后另存新的 TXT，原名字的文件继续保留', async () => {

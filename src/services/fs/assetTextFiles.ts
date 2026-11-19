@@ -2,6 +2,7 @@
  * assetTextFiles — 读取资产文本快照并保存文本修改。
  */
 import { exists, lstat, mkdir, open, writeFile } from '@tauri-apps/plugin-fs';
+import { invoke } from '@tauri-apps/api/core';
 import { isNativeProjectBindingFile } from '../../utils/nativeProjectBindingFile';
 import { mediaFileAllocationKey, retiredMediaPaths } from '../indexedDb/mediaRelocations';
 import { ensureProjectDataDir, getFileCategory, invalidateTextPreview, isTauriEnv, joinPath, notifyProjectDiskChanged, resolveUniqueDestPath, sanitizeFileName, stripVerbatimPrefix } from './core';
@@ -18,9 +19,17 @@ export interface AssetTextSnapshot {
 
 function checkAbort(signal?: AbortSignal) { signal?.throwIfAborted(); }
 
+/** 分集稿件保持仓储登记的素材根，物理子根由原生按作品解析。 */
+export async function resolveNativeManuscriptRoot(projectId: string, rootRef: string): Promise<string> {
+  const directory = await invoke<string>('resolve_native_project_media_subroot', { projectId, rootRef, create: false });
+  if (typeof directory !== 'string' || !directory) throw new Error('分集稿件素材根不可用');
+  return directory;
+}
+
 /** 首次保存时在目标项目内创建唯一 UTF-8 文本文件，不覆盖同名文件。 */
 export async function createAssetTextFile(projectId: string, content: string, suggestedName: string, options: {
   signal?: AbortSignal; assertCurrent?: () => void; projectSubdirectory?: 'manuscripts' | 'outline-documents';
+  nativeManuscriptRootRef?: string;
   /** 调用方以项目、稿件身份和正文确定文件名时，可复用经过读回复核的同一版本。 */
   reuseMatchingName?: boolean;
 } = {}): Promise<{ filePath: string; relativePath: string; fileName: string; snapshot: AssetTextSnapshot }> {
@@ -28,6 +37,7 @@ export async function createAssetTextFile(projectId: string, content: string, su
   const check = () => { checkAbort(options.signal); options.assertCurrent?.(); };
   if (options.projectSubdirectory !== undefined && options.projectSubdirectory !== 'manuscripts'
     && options.projectSubdirectory !== 'outline-documents') throw new Error('稿件目录无效');
+  if (options.nativeManuscriptRootRef && options.projectSubdirectory !== 'manuscripts') throw new Error('分集稿件目录无效');
   const fileName = sanitizeFileName(suggestedName) || '原文.txt';
   if (/[\\/]/.test(fileName)) throw new Error('文本文件名不能包含目录');
   if (isNativeProjectBindingFile(fileName)) throw new Error('项目归属标记由应用管理');
@@ -37,7 +47,8 @@ export async function createAssetTextFile(projectId: string, content: string, su
   const bytes = new TextEncoder().encode(normalized);
   if (bytes.byteLength > MAX_TEXT_BYTES) throw new Error('内容超过 2 MB，无法保存');
   check();
-  let directory = await ensureProjectDataDir(projectId, { throwOnError: true });
+  let directory = options.nativeManuscriptRootRef ? await resolveNativeManuscriptRoot(projectId, options.nativeManuscriptRootRef)
+    : await ensureProjectDataDir(projectId, { throwOnError: true });
   check();
   if (!directory) throw new Error('剧集素材目录不可用，请重新打开剧集');
   if (options.projectSubdirectory !== undefined) {

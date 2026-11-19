@@ -3,7 +3,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { lstat } from '@tauri-apps/plugin-fs';
 import type { ProjectTextFileReference } from '../types';
 import { buildEpisodeScriptFileName, needsEpisodeScriptFileSync, normalizeProjectTextFileReference } from '../utils/manuscriptFileReference';
-import { createAssetTextFile, getProjectDataDir, joinPath, readAssetTextFile, saveAssetTextFile, type AssetTextSnapshot } from './fileService';
+import { createAssetTextFile, getProjectDataDir, joinPath, readAssetTextFile, resolveNativeManuscriptRoot,
+  saveAssetTextFile, type AssetTextSnapshot } from './fileService';
 import { isTauriEnv } from './fs/core';
 import { sha256BytesHex } from './mediaDataUrl';
 
@@ -20,6 +21,7 @@ export interface EpisodeScriptFileWriteOptions {
   reference?: ProjectTextFileReference;
   /** 新项目先准备独立文件，正文与文件引用在同一个仓储事务中提交。 */
   preserveBoundFile?: boolean;
+  nativeManuscriptRootRef?: string;
   assertCurrent: () => void;
   subscribe?: (listener: () => void) => () => void;
   onPrepared?: (receipt: EpisodeScriptFileReceipt) => void;
@@ -85,7 +87,8 @@ export async function prepareEpisodeScriptFileWrite(options: EpisodeScriptFileWr
     let path: string | undefined;
     let boundDirectory: string | undefined;
     if (reference) {
-      const directory = await getProjectDataDir(options.projectId);
+      const directory = options.nativeManuscriptRootRef ? await resolveNativeManuscriptRoot(options.projectId, options.nativeManuscriptRootRef)
+        : await getProjectDataDir(options.projectId);
       check();
       if (!directory) throw new EpisodeScriptFileError('剧集素材目录不可用，请重新打开剧集');
       await assertPlainParents(directory, reference.relativePath, check);
@@ -109,7 +112,8 @@ export async function prepareEpisodeScriptFileWrite(options: EpisodeScriptFileWr
         // 48 个 Unicode 码点与版本后缀可放进 255 字节目录项，集名仍可直接辨认。
         const label = [...desiredName.slice(0, -4)].slice(0, 48).join('');
         const created = await createAssetTextFile(options.projectId, text, `${label}--v-${digest.slice(0, 24)}.txt`, {
-          projectSubdirectory: 'manuscripts', reuseMatchingName: true, signal: controller.signal, assertCurrent: check,
+          projectSubdirectory: 'manuscripts', reuseMatchingName: true, nativeManuscriptRootRef: options.nativeManuscriptRootRef,
+          signal: controller.signal, assertCurrent: check,
         });
         version = { fileName: created.fileName, relativePath: created.relativePath, digest: created.snapshot.digest, sourceName: desiredName };
       }

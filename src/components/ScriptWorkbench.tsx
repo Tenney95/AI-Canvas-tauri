@@ -620,21 +620,33 @@ export default function ScriptWorkbench({
   }, [currentEpisodeId, isOpen, replaceEpisodeDraft, originalWriting, outlineDocuments]);
   const analysis = analyzeEpisodeScript(draft.script, toCreativeInfo(draft.creative));
 
-  const saveDraft = async (): Promise<boolean> => {
+  const saveDraft = async (rebuildScriptFile = false): Promise<boolean> => {
     if (!currentEpisode || savingEpisodeRef.current || editorWriteLocked || !contextReady) return false;
     const episodeId = currentEpisode.id;
     const version = draftVersions.current.get(episodeId) ?? 0;
-    const savingDraft = draftsRef.current[episodeId] ?? createDraft(currentEpisode);
+    const persisted = createDraft(currentEpisode);
+    const savingDraft = draftsRef.current[episodeId] ?? persisted;
     const signature = draftSignature(savingDraft);
-    const baseline = draftsRef.current[episodeId] ? draftBaselines.current[episodeId] : draftSignature(createDraft(currentEpisode));
+    const persistedSignature = draftSignature(persisted);
+    const baseline = draftsRef.current[episodeId] ? draftBaselines.current[episodeId] : persistedSignature;
+    if (rebuildScriptFile && (signature !== persistedSignature || !persisted.script.trim())) {
+      showToast(t('请先保存本集修改，再重建 TXT'), 'error');
+      return false;
+    }
+    const creativeChanged = Object.keys(EMPTY_CREATIVE_DRAFT).some((field) =>
+      savingDraft.creative[field as keyof CreativeDraft] !== persisted.creative[field as keyof CreativeDraft]);
+    const creative = creativeChanged ? toCreativeInfo(savingDraft.creative) : undefined;
+    const syncScriptFile = !rebuildScriptFile && signature === persistedSignature && needsEpisodeScriptFileSync(currentEpisode);
+    const updates = {
+      ...(savingDraft.outline !== persisted.outline ? { outline: savingDraft.outline } : {}),
+      ...(savingDraft.script !== persisted.script || syncScriptFile ? { script: savingDraft.script } : {}),
+      ...(creativeChanged ? { creative } : {}),
+    };
     savingEpisodeRef.current = episodeId;
     setIsSaving(true);
     try {
-      const saved = await updateEpisodeCreative(episodeId, {
-        outline: savingDraft.outline,
-        script: savingDraft.script,
-        creative: toCreativeInfo(savingDraft.creative),
-      }, { allowSameSeries: true, assertCurrent: () => {
+      const saved = await updateEpisodeCreative(episodeId, updates, { allowSameSeries: true,
+        ...(rebuildScriptFile ? { rebuildScriptFile: true } : {}), assertCurrent: () => {
         if (selectedEpisodeRef.current !== episodeId || !readEpisodeWorkspaceScope(useAppStore.getState(), episodeId)) throw new Error(t('工作台分集或剧集已变化，请重新保存'));
         const latest = useAppStore.getState().projects.find((item) => item.id === episodeId);
         if (baseline === undefined || draftSignature(createDraft(latest ?? null)) !== baseline) {
@@ -644,8 +656,9 @@ export default function ScriptWorkbench({
         const scope = readEpisodeWorkspaceScope(useAppStore.getState(), episodeId);
         if (!scope || scope.owner.id !== seriesId || selectedEpisodeRef.current !== episodeId) throw new Error(t('工作台分集或剧集已变化，请重新保存'));
       } });
+      if (saved && rebuildScriptFile) return true;
       if (saved) {
-        draftBaselines.current[episodeId] = draftSignature({ ...savingDraft, creative: toCreativeDraft(toCreativeInfo(savingDraft.creative)) });
+        draftBaselines.current[episodeId] = draftSignature({ ...savingDraft, creative: creativeChanged ? toCreativeDraft(creative) : persisted.creative });
         const latest = draftsRef.current[episodeId];
         if ((draftVersions.current.get(episodeId) ?? 0) !== version
           || (latest && draftSignature(latest) !== signature)) {
@@ -1347,7 +1360,9 @@ export default function ScriptWorkbench({
         return true;
       }
       case 'save': {
-        if (!await saveDraft()) throw new Error(t('当前草稿尚未全部保存，请核对后重试'));
+        const rebuildScriptFile = action.rebuildScriptFile === true;
+        if (!await saveDraft(rebuildScriptFile)) throw new Error(t(rebuildScriptFile ? 'TXT 未重建，请核对后重试' : '当前草稿尚未全部保存，请核对后重试'));
+        if (rebuildScriptFile) showToast(t('已用本集正文重建 TXT'));
         return true;
       }
       case 'close': return requestClose();
@@ -2287,6 +2302,15 @@ export function ScriptWorkbenchView({ snapshot, dispatch: dispatchAction, standa
                     <Icon icon="lucide:list-video" className="h-3.5 w-3.5" />
                     {t('生成本集分镜')}
                   </button>
+                  {activeTab === 'script' && nativeWindowControls && snapshot.windowContext?.target.modelGeneration === 1
+                    && currentEpisode.episodeScriptFile && !!currentEpisode.episodeScript?.trim() && (
+                    <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary"
+                      title={t('用已保存的正文重建 TXT，保留原文件')}
+                      disabled={isDirty || isSaving || editorWriteLocked || !contextReady}
+                      onClick={() => fire({ type: 'save', rebuildScriptFile: true })}>
+                      {t('重建 TXT')}
+                    </button>
+                  )}
                   <button
                     type="button"
                     disabled={(!isDirty && !scriptFileSyncNeeded) || isSaving || editorWriteLocked || projectLoadStatus !== 'ready'}
