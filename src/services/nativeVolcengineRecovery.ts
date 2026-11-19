@@ -29,7 +29,7 @@ import { assertModelProtocolResult } from './ai/modelCapabilityValidation';
 export async function inspectNativeVolcengineTask(operationId: string) {
   const context = captureLegacyCanvasContext(useAppStore.getState());
   if (!context || context.modelGeneration !== 1) throw new Error('请先打开原新项目画布');
-  const row = (await listNativeMediaTasks(context.projectId)).find((item) => item.operationId === operationId);
+  const row = (await listNativeMediaTasks(context.projectId, { canvasId: context.canvasId, operationId })).find((item) => item.operationId === operationId);
   if (!row || row.canvasId !== context.canvasId || row.projectEpoch !== context.projectEpoch || row.canvasEpoch !== context.canvasEpoch
     || row.episodeId !== context.episodeId || (!row.recovery && !row.apimartImageBatch && !row.modelRef && (!['volcengine', 'apimart', 'grsai', 'comfyui'].includes(row.providerConfigId) || row.category !== 'video'))
     || row.category !== 'video' && !['media-input-v2', 'media-input-v3'].includes(row.fingerprintScheme ?? '')) {

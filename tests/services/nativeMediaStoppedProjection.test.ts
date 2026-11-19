@@ -17,10 +17,13 @@ vi.mock('../../src/services/projectExecutionContext', () => ({
     && context.canvasEpoch === io.context.canvasEpoch && context.runtimeEpoch === io.context.runtimeEpoch,
   captureLegacyCanvasContext: () => io.context,
 }));
-vi.mock('../../src/services/indexedDb/nativeMediaTaskRepository', async (original) => ({
-  ...await original<typeof import('../../src/services/indexedDb/nativeMediaTaskRepository')>(),
-  listNativeMediaTasks: async () => io.records,
-}));
+vi.mock('../../src/services/indexedDb/nativeMediaTaskRepository', async (original) => {
+  const repository = await original<typeof import('../../src/services/indexedDb/nativeMediaTaskRepository')>();
+  return { ...repository, readAvailableNativeMediaTask: async (projectId: string, canvasId: string, operationId: string) => {
+    const row = io.records.find((entry) => entry.ownerProjectId === projectId && entry.canvasId === canvasId && entry.operationId === operationId);
+    return row && !repository.isNativeMediaTaskSuperseded(row, io.records) ? row : undefined;
+  } };
+});
 vi.mock('../../src/services/nativeMediaRecoverySummary', () => ({ readNativeMediaRecoverySummary: io.summary }));
 import { projectNativeMediaStoppedState } from '../../src/services/nativeMediaAutoDelivery';
 import { assertNativeVideoSubmissionInput } from '../../src/services/nativeVideoSubmission';

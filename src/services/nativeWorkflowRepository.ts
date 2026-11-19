@@ -2,7 +2,7 @@
 import type { CanvasContext } from '../types/project';
 import type { NativeMediaLocalOutput, NativeMediaSubmissionPreparation, MediaKind } from '../types/media';
 import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
-import { validateNativeMediaTaskRecord, normalizeNativeMediaProviderBase } from './indexedDb/nativeMediaTaskRepository';
+import { validateNativeMediaTaskRecord, normalizeNativeMediaProviderBase, readRelatedNativeMediaTasks } from './indexedDb/nativeMediaTaskRepository';
 import { assertNoPendingNativeSharedSync, EXCHANGE, ROOTS, CANVASES, EPISODES, REVISIONS, TRANSFER, openNativeProjectDatabase,
   readCanvasTarget, transact, increment, type NativeProjectOptions } from './indexedDb/nativeProjectRepository';
 import { validateNativeMediaLocalOutputs } from './nativeMediaCollection';
@@ -199,11 +199,7 @@ export function sealNativeWorkflowSubmissions(main: NativeMediaTaskRecord, conte
     if (current.status === 'reviewed') {
       receipt.uncertainAcknowledged = true;
       if (receipt.syncOutputs) {
-        const rows = await req(tx.objectStore(EXCHANGE).getAll(IDBKeyRange.bound('media-task:', 'media-task:\uffff'))) as NativeMediaTaskRecord[];
-        if (rows.length > 100_000 || rows.map(validateNativeMediaTaskRecord).some((row) => row.operationId !== current.operationId
-          && row.ownerProjectId === current.ownerProjectId && row.canvasId === current.canvasId
-          && (row.nodeId === current.nodeId || !!current.origin && row.origin?.messageId === current.origin.messageId
-            && row.origin.conversationId === current.origin.conversationId))) return fail();
+        if ((await readRelatedNativeMediaTasks(tx, current)).some((row) => row.operationId !== current.operationId)) return fail();
         current.status = 'outcome-unknown'; // 仅恢复已存在的原同步文件；后续公共retainer仍验证文件与持久scope。
       }
     }

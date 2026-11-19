@@ -2,7 +2,8 @@
 import { useAppStore } from '../store/useAppStore';
 import type { CanvasContext } from '../types/project';
 import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
-import { claimNativeMediaRecovery, isNativeMediaTaskSuperseded, listNativeMediaTasks } from './indexedDb/nativeMediaTaskRepository';
+import { ACTIVE_NATIVE_MEDIA_STATES, claimNativeMediaRecovery, listNativeMediaTasks,
+  readAvailableNativeMediaTask } from './indexedDb/nativeMediaTaskRepository';
 import { nativeMediaLocalOutputs } from './nativeMediaCollection';
 import { nativeImageBatchSettled } from './nativeImageBatch';
 import { readNativeMediaLocalResult } from './nativeMediaLocalResult';
@@ -11,6 +12,7 @@ import { localMediaUrlToPath } from '../utils/mediaUrl';
 import { readNativeMediaRecoverySummary } from './nativeMediaRecoverySummary';
 
 const deliveries = new Map<string, Promise<boolean>>();
+const autoDeliveryStates = [...ACTIVE_NATIVE_MEDIA_STATES, 'failed'] as const;
 interface DeliveryQueue { repeat: boolean; nodes: Set<string> | null; allowOriginalCccTaskQuery: boolean; promise: Promise<void> }
 const queues = new Map<string, DeliveryQueue>();
 export interface NativeMediaAutoDeliveryOptions { nodeId?: string; isNodeBusy?: (canvasId: string, nodeId: string) => boolean; allowOriginalCccTaskQuery?: boolean }
@@ -30,10 +32,10 @@ function completeLocalSet(record: NativeMediaTaskRecord): boolean {
 export async function projectNativeMediaStoppedState(operationId: string, context: CanvasContext,
   options: Pick<NativeMediaAutoDeliveryOptions, 'isNodeBusy'> & { isCurrent?: () => boolean } = {}): Promise<boolean> {
   current(context);
-  const records = await listNativeMediaTasks(context.projectId), record = records.find((row) => row.operationId === operationId);
+  const record = await readAvailableNativeMediaTask(context.projectId, context.canvasId, operationId);
   current(context);
   if (!record || !sameCanvas(record, context) || record.origin?.deliveryMode === 'chat'
-    || isNativeMediaTaskSuperseded(record, records) || options.isNodeBusy?.(record.canvasId, record.nodeId)
+    || options.isNodeBusy?.(record.canvasId, record.nodeId)
     || options.isCurrent?.() === false) return false;
   const target = useAppStore.getState().nodes.find((node) => node.id === record.nodeId);
   if (!target || target.data.status !== 'loading') return false;
@@ -46,10 +48,10 @@ export async function projectNativeMediaStoppedState(operationId: string, contex
   }
   // 仅清除失效等待，不交付产物；输入或参考已改不能让旧计时继续，交付路径仍须核验输入指纹。
   // 异步读取期间可能产生后续尝试；最终写回前再次核对原回执和节点运行所有权。
-  const latest = await listNativeMediaTasks(context.projectId), actual = latest.find((row) => row.operationId === operationId);
+  const actual = await readAvailableNativeMediaTask(context.projectId, context.canvasId, operationId);
   current(context);
   if (!actual || actual.revision !== record.revision || actual.lease !== record.lease || actual.status !== record.status
-    || isNativeMediaTaskSuperseded(actual, latest) || options.isNodeBusy?.(actual.canvasId, actual.nodeId)
+    || options.isNodeBusy?.(actual.canvasId, actual.nodeId)
     || options.isCurrent?.() === false) return false;
   const state = useAppStore.getState(), node = state.nodes.find((item) => item.id === actual.nodeId);
   if (!node || node.type !== target.type || node.data !== target.data || node.data.status !== 'loading') return false;
@@ -88,11 +90,9 @@ export function deliverNativeMediaCachedResult(operationId: string, context: Can
   let committing: { artifactId: string; relativePath: string; rootRef?: string } | undefined;
   const work = (async () => {
     current(context, signal);
-    const records = await listNativeMediaTasks(context.projectId);
-    let record = records.find((row) => row.operationId === operationId);
+    let record = await readAvailableNativeMediaTask(context.projectId, context.canvasId, operationId, { signal });
     current(context, signal);
-    if (!record || !sameCanvas(record, context) || !['prepared', 'submitted', 'outcome-unknown'].includes(record.status)) return false;
-    if (isNativeMediaTaskSuperseded(record, records)) return false;
+    if (!record || !sameCanvas(record, context) || !ACTIVE_NATIVE_MEDIA_STATES.includes(record.status)) return false;
     if (isNodeBusy?.(record.canvasId, record.nodeId)) return false;
     const targetId = record.nodeId, target = useAppStore.getState().nodes.find((node) => node.id === targetId);
     const products = target ? productFields.map((field) => target.data[field]) : undefined;
@@ -178,13 +178,14 @@ export function resumeNativeMediaLocalResults(canvasId: string, options: NativeM
       queue.repeat = false;
       const nodes = queue.nodes; queue.nodes = new Set();
       current(context, controller.signal);
-      const records = await listNativeMediaTasks(context.projectId);
+      const records = await listNativeMediaTasks(context.projectId, { canvasId, statuses: autoDeliveryStates,
+        nodeIds: nodes ?? undefined, signal: controller.signal });
       const originalQueries: Array<{ operationId: string; nodeId: string }> = [];
       for (const record of records) {
         current(context, controller.signal);
         if (!sameCanvas(record, context) || nodes && !nodes.has(record.nodeId)
           || options.isNodeBusy?.(canvasId, record.nodeId)) continue;
-        if (!['prepared', 'submitted', 'outcome-unknown'].includes(record.status)) {
+        if (!ACTIVE_NATIVE_MEDIA_STATES.includes(record.status)) {
           if (record.status === 'failed') await projectStoppedLoading(record.operationId, record.nodeId);
           continue;
         }

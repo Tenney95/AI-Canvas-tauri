@@ -2,8 +2,10 @@
 import { webcrypto } from 'node:crypto';
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createNativeProject, deleteNativeProject, saveNativeCanvas, readNativeProjectCapture, openNativeProjectDatabase, TRANSFER } from '../../src/services/indexedDb/nativeProjectRepository';
-import { claimNativeMediaRecovery, isNativeMediaLeaseCurrent, listNativeMediaTasks, prepareNativeMediaTask,
+import { createNativeProject, deleteNativeProject, saveNativeCanvas, readNativeProjectCapture, openNativeProjectDatabase,
+  NATIVE_PROJECT_DATABASE_NAME, NATIVE_PROJECT_DATABASE_VERSION, ROOTS, CONTENTS, CANVASES, EPISODES,
+  EPISODE_CONTENTS, RETIRED, REVISIONS, EXCHANGE, TRANSFER } from '../../src/services/indexedDb/nativeProjectRepository';
+import { claimNativeMediaRecovery, isNativeMediaLeaseCurrent, listNativeMediaTasks, prepareNativeMediaTask, readAvailableNativeMediaTask,
   recordNativeMediaSubmission, retainNativeMediaLocalResult, assertNativeMediaResultRetention, assertNativeMediaPrepared,
   reviewNativeMediaTask, failNativeMediaTask } from '../../src/services/indexedDb/nativeMediaTaskRepository';
 import { commitNativeMediaDelivery, commitNativeMediaMessageDelivery } from '../../src/services/nativeMediaDelivery';
@@ -26,6 +28,43 @@ async function fixture() {
 }
 
 describe('新画布媒体回执账本', () => {
+  it('从 v1 只升级索引，按画布、节点、原消息和操作读取旧回执', async () => {
+    const context = await fixture(), unrelated = await fixture();
+    const nodeId = 'media-message-' + crypto.randomUUID();
+    const origin = { conversationId: 'original-conversation', messageId: 'original-message', deliveryMode: 'chat' as const };
+    const release = bindNativeMediaOrigin(context.canvasId, nodeId, origin);
+    const record = await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId, category: 'video',
+      providerConfigId: 'provider', providerBase: 'https://example.test', inputFingerprint: 'a'.repeat(64), sourceCanvasRevision: 0 }, { factory });
+    release();
+    const original = await recordNativeMediaSubmission(record.operationId, record.lease, { taskId: 'original-remote' }, { factory });
+    const otherId = crypto.randomUUID(), older = new IDBFactory();
+    await new Promise<void>((resolve, reject) => {
+      const opening = older.open(NATIVE_PROJECT_DATABASE_NAME, 1);
+      opening.onupgradeneeded = () => {
+        const db = opening.result;
+        for (const [name, key] of [[ROOTS, 'id'], [CONTENTS, 'projectId'], [CANVASES, 'id'], [EPISODES, 'id'],
+          [EPISODE_CONTENTS, 'episodeId'], [RETIRED, 'id'], [REVISIONS, 'projectId'], [EXCHANGE, 'projectId'], [TRANSFER, 'operationId']] as const) {
+          const store = db.createObjectStore(name, { keyPath: key });
+          if (name === CANVASES || name === EPISODES || name === TRANSFER) store.createIndex('projectId', 'projectId');
+        }
+        const receipts = opening.transaction!.objectStore(EXCHANGE);
+        receipts.add(original);
+        receipts.add({ ...original, projectId: 'media-task:' + otherId, operationId: otherId,
+          ownerProjectId: unrelated.projectId, canvasId: unrelated.canvasId, providerBase: 'invalid-other-project-row' });
+      };
+      opening.onsuccess = () => { opening.result.close(); resolve(); };
+      opening.onerror = () => reject(opening.error);
+    });
+    const scope = { factory: older, canvasId: context.canvasId };
+    expect(await listNativeMediaTasks(context.projectId, { ...scope, statuses: ['submitted'] })).toEqual([original]);
+    expect((await older.databases()).find((entry) => entry.name === NATIVE_PROJECT_DATABASE_NAME)?.version).toBe(NATIVE_PROJECT_DATABASE_VERSION);
+    expect(await listNativeMediaTasks(context.projectId, { ...scope, nodeIds: new Set([nodeId]) })).toEqual([original]);
+    expect(await listNativeMediaTasks(context.projectId, { ...scope, origin })).toEqual([original]);
+    expect(await listNativeMediaTasks(context.projectId, { ...scope, operationId: original.operationId })).toEqual([original]);
+    expect(await listNativeMediaTasks(context.projectId, { ...scope, canvasId: unrelated.canvasId })).toEqual([]);
+    expect(await readAvailableNativeMediaTask(context.projectId, context.canvasId, original.operationId, { factory: older })).toEqual(original);
+  });
+
   it('共享同步停写不丢弃已返回的同步产物，但仍阻止实际画布和消息交付', async () => {
     const context = await fixture(), nodeId = `media-message-${crypto.randomUUID()}`;
     const release = bindNativeMediaOrigin(context.canvasId, nodeId, { conversationId: 'original', messageId: 'result', deliveryMode: 'chat' });

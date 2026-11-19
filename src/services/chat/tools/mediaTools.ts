@@ -250,7 +250,7 @@ async function nativeMediaRows(canvasId: string, conversationId: string): Promis
   if (!context && state.projectExecutionContext?.modelGeneration === 1) throw new Error('原生画布上下文尚未就绪，请重新读取原回执');
   if (!context || context.modelGeneration !== 1) return null;
   if (context.canvasId !== canvasId) throw new Error('只能查看原媒体画布');
-  const records = await listNativeMediaTasks(context.projectId);
+  const records = await listNativeMediaTasks(context.projectId, { canvasId });
   if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) throw new Error('原媒体画布已切换');
   return records.filter((row) => row.canvasId === context.canvasId && row.episodeId === context.episodeId
     && row.projectEpoch === context.projectEpoch && row.canvasEpoch === context.canvasEpoch
@@ -281,14 +281,14 @@ async function executeNativeMediaResume(context: AgentToolContext, input: Native
   try {
     const { resumeNativeVolcengineTask } = await import('../../nativeVolcengineRecovery');
     await resumeNativeVolcengineTask(row.operationId, context.signal, { allowUnstartedStage: stageAllowed });
-    const completed = (await listNativeMediaTasks(row.ownerProjectId)).find((entry) => entry.operationId === row.operationId);
+    const completed = (await listNativeMediaTasks(row.ownerProjectId, { canvasId: row.canvasId, operationId: row.operationId })).find((entry) => entry.operationId === row.operationId);
     const recovery = completed && await readNativeMediaRecoverySummary(completed);
     return { status: completed?.status === 'delivered' ? 'success' : 'error', summary: completed?.status !== 'delivered'
       ? '原媒体操作尚未完成，原回执已保留' : recovery?.partial ? '已交付原操作的已确认产物，请核对部分失败或未知回执' : '已核验原任务并交付原结果',
       modelContent: JSON.stringify({ operationId: row.operationId, repeatedSubmittedStage: false, continuedOriginalStage: stageAllowed,
         batch: completed && nativeImageBatchSummary(completed), recovery }) };
   } catch (error) {
-    const latest = (await listNativeMediaTasks(row.ownerProjectId).catch(() => [])).find((entry) => entry.operationId === row.operationId);
+    const latest = (await listNativeMediaTasks(row.ownerProjectId, { canvasId: row.canvasId, operationId: row.operationId }).catch(() => [])).find((entry) => entry.operationId === row.operationId);
     return { status: 'error', summary: error instanceof Error ? error.message : '原任务续查未完成',
       modelContent: JSON.stringify({ operationId: row.operationId, repeatedSubmittedStage: false,
         ...(latest ? { recovery: await readNativeMediaRecoverySummary(latest) } : {}) }), errorCode: 'MEDIA_RECOVERY_PENDING' };
@@ -934,7 +934,7 @@ export function registerMediaAgentTools(): Array<() => void> {
           if (error instanceof Error && error.name === 'NativeMediaTaskDelivered') {
             const operationId = (error as Error & { nativeOperationId?: unknown }).nativeOperationId;
             const original = originalNativeContext && typeof operationId === 'string'
-              ? (await listNativeMediaTasks(originalNativeContext.projectId).catch(() => [])).find((row) => row.operationId === operationId
+              ? (await listNativeMediaTasks(originalNativeContext.projectId, { canvasId: originalNativeContext.canvasId, operationId }).catch(() => [])).find((row) => row.operationId === operationId
                 && row.canvasId === originalNativeContext.canvasId && row.episodeId === originalNativeContext.episodeId
                 && row.projectEpoch === originalNativeContext.projectEpoch && row.canvasEpoch === originalNativeContext.canvasEpoch
                 && row.origin?.messageId === assistantMessageId && row.origin.conversationId === context.conversationId && row.status === 'delivered') : undefined;

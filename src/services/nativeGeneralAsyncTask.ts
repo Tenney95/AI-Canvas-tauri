@@ -153,7 +153,7 @@ export async function executeNativeGeneralAsyncTask(input: { apiKey: string; bas
       record = await recordNativeMediaSubmission(record.operationId, record.lease,
         !sent || getHttpResponseError(error)?.definitiveFailure ? { notStarted: true } : { unknown: true }).catch(() => record);
     }
-    const latest = (await listNativeMediaTasks(record.ownerProjectId)).find((row) => row.operationId === record.operationId);
+    const latest = (await listNativeMediaTasks(record.ownerProjectId, { canvasId: record.canvasId, operationId: record.operationId })).find((row) => row.operationId === record.operationId);
     if (latest?.status === 'delivered') throw receiptError(latest, true);
     if (latest?.status === 'failed') throw new Error('原通用媒体任务已确认失败，回执保留', { cause: error });
     throw receiptError(record);
@@ -162,7 +162,7 @@ export async function executeNativeGeneralAsyncTask(input: { apiKey: string; bas
 }
 export async function resumeNativeGeneralAsyncTask(operationId: string, signal?: AbortSignal): Promise<void> {
   const context = contextFor();
-  let record = (await listNativeMediaTasks(context.projectId)).find((row) => row.operationId === operationId);
+  let record = (await listNativeMediaTasks(context.projectId, { canvasId: context.canvasId, operationId, signal })).find((row) => row.operationId === operationId);
   if (!record || record.recovery?.kind !== 'general-protocol' || record.recovery.serverId !== NATIVE_GENERAL_ASYNC_KIND) throw new Error('没有此原通用异步操作');
   contextFor(record);
   if (record.status === 'delivered' || nativeMediaLocalOutputs(record).length) return deliver(record, signal);

@@ -78,7 +78,7 @@ export async function submitNativeApimartImageBatch(input: { baseUrl: string; mo
     try { const { resumeNativeApimartImageBatch } = await import('./nativeApimartImageRecovery'); await resumeNativeApimartImageBatch(record.operationId, input.signal); }
     catch (error) { recoveryError = error; }
     let settled: NativeMediaTaskRecord | undefined;
-    try { settled = (await listNativeMediaTasks(record.ownerProjectId)).find((row) => row.operationId === record.operationId); }
+    try { settled = (await listNativeMediaTasks(record.ownerProjectId, { canvasId: record.canvasId, operationId: record.operationId })).find((row) => row.operationId === record.operationId); }
     catch (error) { recoveryError ??= error; }
     if (settled?.status === 'delivered') {
       const delivered = new Error(`原图片候选已完整保存并交付（${record.operationId}）`);

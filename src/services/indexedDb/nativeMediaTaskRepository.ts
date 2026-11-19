@@ -12,9 +12,13 @@ import { isNativeMediaContentPath } from '../nativeMediaContentPath';
 import { hasControlCharacters } from '../../utils/controlCharacters';
 import type { CanvasContext, CanvasDocument, ProjectRecord } from '../../types/project';
 import { assertNoPendingNativeSharedSync, CANVASES, EXCHANGE, ROOTS, TRANSFER, isNativeCanvasId, isNativeProjectId, openNativeProjectDatabase,
-  transact, REVISIONS, type NativeProjectOptions } from './nativeProjectRepository';
+  transact, REVISIONS, MEDIA_TASK_MESSAGE_INDEX, MEDIA_TASK_NODE_INDEX, MEDIA_TASK_STATUS_INDEX, stringKeyPrefix,
+  type NativeProjectOptions } from './nativeProjectRepository';
 
 const PREFIX = 'media-task:';
+const KIND = 'native-media-task-v1';
+const MAX_TASK_ROWS = 100_000;
+export const ACTIVE_NATIVE_MEDIA_STATES: readonly NativeMediaTaskRecord['status'][] = ['prepared', 'submitted', 'outcome-unknown'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const id = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 256
   && !hasControlCharacters(value);
@@ -168,6 +172,31 @@ export function validateNativeMediaTaskRecord(value: NativeMediaTaskRecord): Nat
   return value;
 }
 
+async function readTaskIndex(store: IDBObjectStore, index: string, key: IDBValidKey | IDBKeyRange): Promise<NativeMediaTaskRecord[]> {
+  const rows = await req(store.index(index).getAll(key, MAX_TASK_ROWS + 1)) as NativeMediaTaskRecord[];
+  if (rows.length > MAX_TASK_ROWS) return fail('当前范围的媒体回执过多，原操作已保留');
+  return rows.map(validateNativeMediaTaskRecord);
+}
+
+/** 历史投影等已有只读事务时，可直接按画布和回执状态取记录。 */
+export async function readNativeMediaTasksByStatus(tx: IDBTransaction, projectId: string, canvasId: string | undefined,
+  statuses: readonly NativeMediaTaskRecord['status'][]): Promise<NativeMediaTaskRecord[]> {
+  const store = tx.objectStore(EXCHANGE);
+  return (await Promise.all([...new Set(statuses)].map((status) => readTaskIndex(store, MEDIA_TASK_STATUS_INDEX,
+    canvasId ? [KIND, projectId, status, canvasId] : stringKeyPrefix([KIND, projectId, status]))))).flat();
+}
+
+/** 同一节点与同一原消息都可能阻止重复提交或覆盖更新的意图。 */
+export async function readRelatedNativeMediaTasks(tx: IDBTransaction, task: Pick<NativeMediaTaskRecord,
+  'ownerProjectId' | 'canvasId' | 'nodeId' | 'origin'>): Promise<NativeMediaTaskRecord[]> {
+  const store = tx.objectStore(EXCHANGE), scope = [KIND, task.ownerProjectId, task.canvasId];
+  const [node, message] = await Promise.all([
+    readTaskIndex(store, MEDIA_TASK_NODE_INDEX, [...scope, task.nodeId]),
+    task.origin ? readTaskIndex(store, MEDIA_TASK_MESSAGE_INDEX, [...scope, task.origin.conversationId, task.origin.messageId]) : [],
+  ]);
+  return [...new Map([...node, ...message].map((row) => [row.operationId, row])).values()];
+}
+
 async function matchingCanvas(tx: IDBTransaction, row: Pick<NativeMediaTaskRecord,
   'ownerProjectId' | 'projectEpoch' | 'canvasId' | 'canvasEpoch' | 'episodeId'>): Promise<boolean> {
   const [project, canvas] = await Promise.all([
@@ -228,16 +257,14 @@ export async function prepareNativeMediaTask(input: { context: CanvasContext; op
         if (sources.length !== 1 || source?.data?.type !== 'source-image' || source.data.relativePath !== ref.relativePath
           || links.length !== 1 || (links[0] as { source?: unknown }).source !== ref.sourceNodeId) return fail('保存的参考图片与原任务不一致');
       }
-      const existing = await req(tx.objectStore(EXCHANGE).getAll(IDBKeyRange.bound(PREFIX, `${PREFIX}\uffff`))) as NativeMediaTaskRecord[];
-      if (existing.length > 100_000) return fail('媒体回执过多，未提交生成');
-      if (existing.map(validateNativeMediaTaskRecord).some((row) => row.operationId === record.operationId
-        || row.ownerProjectId === record.ownerProjectId && row.canvasId === record.canvasId
-          && (row.nodeId === record.nodeId && ['prepared', 'submitted', 'outcome-unknown'].includes(row.status)
-            || !!record.origin && row.origin?.messageId === record.origin.messageId
-              && row.origin.conversationId === record.origin.conversationId && row.status !== 'failed'))) {
+      const store = tx.objectStore(EXCHANGE);
+      const [sameOperation, related] = await Promise.all([req(store.getKey(record.projectId)), readRelatedNativeMediaTasks(tx, record)]);
+      if (sameOperation !== undefined || related.some((row) => (row.nodeId === record.nodeId && ACTIVE_NATIVE_MEDIA_STATES.includes(row.status))
+        || (!!record.origin && row.origin?.messageId === record.origin.messageId
+          && row.origin.conversationId === record.origin.conversationId && row.status !== 'failed'))) {
         return fail('此节点已有未结算媒体任务，或原消息已绑定产物；请核对原回执，已完成时请从新消息发起');
       }
-      await req(tx.objectStore(EXCHANGE).add(record));
+      await req(store.add(record));
       return record;
     }, [ROOTS, CANVASES, EXCHANGE, TRANSFER], true);
   } finally { db.close(); }
@@ -356,6 +383,23 @@ export function isNativeMediaTaskSuperseded(record: NativeMediaTaskRecord, recor
       && other.origin.conversationId === record.origin.conversationId));
 }
 
+/** 自动恢复的预检，实际取得执行权仍在写事务内复核。 */
+export async function readAvailableNativeMediaTask(projectId: string, canvasId: string, operationId: string,
+  options: NativeProjectOptions = {}): Promise<NativeMediaTaskRecord | undefined> {
+  if (!isNativeProjectId(projectId) || !isNativeCanvasId(canvasId) || !UUID.test(operationId)) return fail();
+  const db = await openNativeProjectDatabase(false, options); if (!db) return undefined;
+  try {
+    return await transact(db, 'readonly', options, async (tx) => {
+      const row = await req(tx.objectStore(EXCHANGE).get(PREFIX + operationId)) as NativeMediaTaskRecord | undefined;
+      if (!row) return undefined;
+      const record = validateNativeMediaTaskRecord(row);
+      if (record.ownerProjectId !== projectId || record.canvasId !== canvasId
+        || isNativeMediaTaskSuperseded(record, await readRelatedNativeMediaTasks(tx, record))) return undefined;
+      return record;
+    }, [EXCHANGE]);
+  } finally { db.close(); }
+}
+
 /** 用户继续仅获取原查询/本机交付租约；不改变原远端 ID，不重新提交生成。 */
 export interface NativeMediaRecoveryClaimOptions extends NativeProjectOptions {
   /** 自动交付只能领取此前读到的 submitted；不能重新唤醒刚被用户结束的跟踪。 */
@@ -381,8 +425,9 @@ export async function claimNativeMediaRecovery(operationId: string, context: Can
         || current.canvasEpoch !== context.canvasEpoch || !await matchingCanvas(tx, current)) {
         return fail('原画布身份已变化或原任务未确认，不能自动续查');
       }
-      const rows = await req(store.getAll(IDBKeyRange.bound(PREFIX, `${PREFIX}\uffff`))) as NativeMediaTaskRecord[];
-      if (rows.length > 100_000 || isNativeMediaTaskSuperseded(current, rows.map(validateNativeMediaTaskRecord))) return fail('此节点或原消息已有后续尝试，原缓存不能覆盖新意图');
+      if (isNativeMediaTaskSuperseded(current, await readRelatedNativeMediaTasks(tx, current))) {
+        return fail('此节点或原消息已有后续尝试，原缓存不能覆盖新意图');
+      }
       if (current.status === 'reviewed') {
         if (rows.some((row) => row.operationId !== current.operationId
           && row.ownerProjectId === current.ownerProjectId && row.canvasId === current.canvasId
@@ -409,14 +454,43 @@ export async function isNativeMediaLeaseCurrent(record: NativeMediaTaskRecord, o
   } finally { db.close(); }
 }
 
-export async function listNativeMediaTasks(projectId: string, options: NativeProjectOptions = {}): Promise<NativeMediaTaskRecord[]> {
-  if (!isNativeProjectId(projectId)) return fail();
+interface NativeMediaTaskQuery extends NativeProjectOptions {
+  canvasId?: string;
+  operationId?: string;
+  nodeIds?: ReadonlySet<string>;
+  origin?: Pick<NativeMediaOrigin, 'conversationId' | 'messageId'>;
+  statuses?: readonly NativeMediaTaskRecord['status'][];
+}
+
+/** 使用已绑定身份查询；归档等确实需要作品历史时读取该作品的全部回执。 */
+export async function listNativeMediaTasks(projectId: string, options: NativeMediaTaskQuery = {}): Promise<NativeMediaTaskRecord[]> {
+  const { canvasId, operationId, nodeIds, origin, statuses } = options;
+  if (!isNativeProjectId(projectId) || (canvasId !== undefined && !isNativeCanvasId(canvasId))
+    || (operationId !== undefined && !UUID.test(operationId)) || ((nodeIds || origin) && !canvasId)
+    || (nodeIds && [...nodeIds].some((nodeId) => !id(nodeId)))
+    || (origin && (!id(origin.conversationId) || !id(origin.messageId)))) return fail();
   const db = await openNativeProjectDatabase(false, options); if (!db) return [];
   try {
     return await transact(db, 'readonly', options, async (tx) => {
-      const rows = await req(tx.objectStore(EXCHANGE).getAll(IDBKeyRange.bound(PREFIX, `${PREFIX}\uffff`))) as NativeMediaTaskRecord[];
-      if (rows.length > 100_000) return fail('媒体回执过多，不能自动恢复');
-      return rows.map(validateNativeMediaTaskRecord).filter((row) => row.ownerProjectId === projectId);
+      const store = tx.objectStore(EXCHANGE);
+      const scope = [KIND, projectId, ...(canvasId ? [canvasId] : [])];
+      let rows: NativeMediaTaskRecord[];
+      if (operationId) {
+        const row = await req(store.get(PREFIX + operationId)) as NativeMediaTaskRecord | undefined;
+        rows = row ? [validateNativeMediaTaskRecord(row)] : [];
+      } else if (origin) {
+        rows = await readTaskIndex(store, MEDIA_TASK_MESSAGE_INDEX, [...scope, origin.conversationId, origin.messageId]);
+      } else if (nodeIds) {
+        rows = (await Promise.all([...nodeIds].map((nodeId) => readTaskIndex(store, MEDIA_TASK_NODE_INDEX, [...scope, nodeId])))).flat();
+      } else if (statuses) {
+        rows = await readNativeMediaTasksByStatus(tx, projectId, canvasId, statuses);
+      } else rows = await readTaskIndex(store, MEDIA_TASK_NODE_INDEX, stringKeyPrefix(scope));
+      if (rows.length > MAX_TASK_ROWS) return fail('当前范围的媒体回执过多，原操作已保留');
+      // 保留原账本按主键枚举的顺序，旧调用的选取规则保持一致。
+      return rows.filter((row) => row.ownerProjectId === projectId && (!canvasId || row.canvasId === canvasId)
+        && (!nodeIds || nodeIds.has(row.nodeId)) && (!statuses || statuses.includes(row.status))
+        && (!origin || row.origin?.conversationId === origin.conversationId && row.origin.messageId === origin.messageId))
+        .sort((a, b) => a.projectId < b.projectId ? -1 : a.projectId > b.projectId ? 1 : 0);
     }, [EXCHANGE]);
   } finally { db.close(); }
 }

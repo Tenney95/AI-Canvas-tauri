@@ -19,12 +19,20 @@ import { isProjectSnapshotDataUrl } from '../projectSnapshotValidation';
 import { withProjectTextModel } from '../projectModelSettings';
 
 export const NATIVE_PROJECT_DATABASE_NAME = 'ai-canvas-native-projects-v2' as const;
-export const NATIVE_PROJECT_DATABASE_VERSION = 1 as const;
+export const NATIVE_PROJECT_DATABASE_VERSION = 2 as const;
 export const ROOTS = 'projectRoots', CONTENTS = 'projectContents', CANVASES = 'canvasDocuments';
 export const EPISODES = 'episodes', EPISODE_CONTENTS = 'episodeContents';
 export const RETIRED = 'retiredIds';
 export const REVISIONS = 'projectRevisions';
 export const EXCHANGE = 'nativeProjectExchange', TRANSFER = 'nativeTransferJournal';
+export const MEDIA_TASK_STATUS_INDEX = 'mediaTaskStatus';
+export const MEDIA_TASK_NODE_INDEX = 'mediaTaskNode';
+export const MEDIA_TASK_MESSAGE_INDEX = 'mediaTaskMessage';
+const MEDIA_TASK_INDEXES = {
+  [MEDIA_TASK_STATUS_INDEX]: ['kind', 'ownerProjectId', 'status', 'canvasId'],
+  [MEDIA_TASK_NODE_INDEX]: ['kind', 'ownerProjectId', 'canvasId', 'nodeId'],
+  [MEDIA_TASK_MESSAGE_INDEX]: ['kind', 'ownerProjectId', 'canvasId', 'origin.conversationId', 'origin.messageId'],
+};
 const canvasPreviewKey = (canvasId: string) => `canvas-preview:${canvasId}`;
 const STORES = [ROOTS, CONTENTS, CANVASES, EPISODES, EPISODE_CONTENTS, RETIRED, REVISIONS, EXCHANGE, TRANSFER] as const;
 const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
@@ -70,6 +78,11 @@ const request = <T>(value: IDBRequest<T>): Promise<T> => new Promise((resolve, r
   value.onerror = () => reject(value.error ?? new Error('indexeddb-request-failed'));
 });
 
+/** 复合索引的后续分量都是字符串；数组边界包含同前缀的任意字符串。 */
+export function stringKeyPrefix(parts: readonly string[]): IDBKeyRange {
+  return IDBKeyRange.bound([...parts], [...parts, []], false, true);
+}
+
 /** 未完成的跨库同步或更新在事务内冻结作品；只允许对应原操作结算。 */
 export async function assertNoPendingNativeSharedSync(tx: IDBTransaction, projectId: string, exceptOperationId?: string): Promise<void> {
   const rows = await request(tx.objectStore(TRANSFER).index('projectId').getAll(projectId)) as Array<{ kind?: string; phase?: string; operationId?: string; mode?: string }>;
@@ -89,21 +102,29 @@ export async function assertNoPendingNativeMediaTasks(tx: IDBTransaction, projec
     || row.ownerProjectId !== projectId || !['completed', 'failed', 'reviewed'].includes(row.status ?? ''))) {
     return fail('project-media-task-pending');
   }
-  const editorRows = await request(tx.objectStore(EXCHANGE).getAll(IDBKeyRange.bound('editor-task:', 'editor-task:\uffff'))) as
-    Array<{ kind?: string; ownerProjectId?: string; status?: string }>;
-  if (editorRows.some((row) => row.kind !== 'native-editor-media-v1' || row.ownerProjectId === projectId
-    && ['prepared', 'submitted', 'outcome-unknown'].includes(row.status ?? ''))) return fail('project-media-task-pending');
-  const rows = await request(tx.objectStore(EXCHANGE).getAll(IDBKeyRange.bound('media-task:', 'media-task:\uffff'))) as
-    Array<{ kind?: unknown; ownerProjectId?: unknown; status?: unknown; operationId?: unknown }>;
-  if (rows.length > 100_000 || rows.some((row) => !row || row.kind !== 'native-media-task-v1'
-    || typeof row.ownerProjectId !== 'string' || typeof row.operationId !== 'string'
-    || !['prepared', 'submitted', 'outcome-unknown', 'delivered', 'failed', 'reviewed'].includes(String(row.status)))) return fail('invalid-media-task-ledger');
-  if (rows.some((row) => row.ownerProjectId === projectId && ['prepared', 'submitted', 'outcome-unknown'].includes(String(row.status)))) {
-    return fail('project-media-task-pending');
+  const index = tx.objectStore(EXCHANGE).index(MEDIA_TASK_STATUS_INDEX);
+  const keys = await Promise.all(['native-editor-media-v1', 'native-media-task-v1'].flatMap((kind) =>
+    ['prepared', 'submitted', 'outcome-unknown'].map((status) => request(index.getKey(stringKeyPrefix([kind, projectId, status]))))));
+  if (keys.some((key) => key !== undefined)) return fail('project-media-task-pending');
+}
+
+function assertNativeProjectSchema(database: IDBDatabase, tx: IDBTransaction, mediaIndexes: boolean): void {
+  if (database.name !== NATIVE_PROJECT_DATABASE_NAME
+    || Array.from(database.objectStoreNames).sort().join('\0') !== [...STORES].sort().join('\0')) fail('unsupported-schema');
+  for (const [name, keyPath] of [[ROOTS, 'id'], [CONTENTS, 'projectId'], [CANVASES, 'id'], [EPISODES, 'id'], [EPISODE_CONTENTS, 'episodeId'], [RETIRED, 'id'], [REVISIONS, 'projectId'], [EXCHANGE, 'projectId'], [TRANSFER, 'operationId']] as const) {
+    const store = tx.objectStore(name);
+    const expectedIndexes: Record<string, string | string[]> = name === CANVASES || name === EPISODES || name === TRANSFER
+      ? { projectId: 'projectId' } : name === EXCHANGE && mediaIndexes ? MEDIA_TASK_INDEXES : {};
+    if (store.keyPath !== keyPath || store.autoIncrement
+      || Array.from(store.indexNames).join('\0') !== Object.keys(expectedIndexes).sort().join('\0')) fail('unsupported-schema');
+    for (const [indexName, indexPath] of Object.entries(expectedIndexes)) {
+      const index = store.index(indexName);
+      if (!configValuesEqual(index.keyPath, indexPath) || index.unique || index.multiEntry) fail('unsupported-schema');
+    }
   }
 }
 
-/** 不缓存连接；阻塞/取消后迟到的升级中止，迟到的连接立即关闭。 */
+/** 不缓存连接；仅升级已有新库的索引，用只读入口时不会创建空库。 */
 export async function openNativeProjectDatabase(create: boolean, options: NativeProjectOptions): Promise<IDBDatabase | null> {
   const factory = options.factory ?? globalThis.indexedDB;
   if (!factory) return fail('indexeddb-unavailable');
@@ -111,52 +132,61 @@ export async function openNativeProjectDatabase(create: boolean, options: Native
   const database = await new Promise<IDBDatabase | null>((resolve, reject) => {
     let settled = false;
     let missing = false;
+    let upgradeFailure: unknown;
+    let upgrade: IDBTransaction | undefined;
     const finish = (error?: unknown, result?: IDBDatabase | null) => {
       if (settled) { result?.close(); return; }
       settled = true;
       options.signal?.removeEventListener('abort', abort);
       if (error) reject(error); else resolve(result ?? null);
     };
-    const abort = () => finish(new DOMException('新项目操作已取消', 'AbortError'));
+    const abort = () => {
+      try { upgrade?.abort(); } catch { /* 已提交的索引升级不能撤销 */ }
+      finish(new DOMException('新项目操作已取消', 'AbortError'));
+    };
     options.signal?.addEventListener('abort', abort, { once: true });
     let opening: IDBOpenDBRequest;
-    try { opening = create ? factory.open(NATIVE_PROJECT_DATABASE_NAME, NATIVE_PROJECT_DATABASE_VERSION) : factory.open(NATIVE_PROJECT_DATABASE_NAME); }
+    try { opening = factory.open(NATIVE_PROJECT_DATABASE_NAME, NATIVE_PROJECT_DATABASE_VERSION); }
     catch (error) { finish(error); return; }
     opening.onupgradeneeded = (event) => {
-      if (settled || options.signal?.aborted || !create || event.oldVersion !== 0) {
+      if (settled || options.signal?.aborted || (!create && event.oldVersion === 0)) {
         missing = !create && event.oldVersion === 0;
         opening.transaction?.abort();
         return;
       }
       const db = opening.result;
-      db.createObjectStore(ROOTS, { keyPath: 'id' });
-      db.createObjectStore(CONTENTS, { keyPath: 'projectId' });
-      db.createObjectStore(CANVASES, { keyPath: 'id' }).createIndex('projectId', 'projectId', { unique: false });
-      db.createObjectStore(EPISODES, { keyPath: 'id' }).createIndex('projectId', 'projectId', { unique: false });
-      db.createObjectStore(EPISODE_CONTENTS, { keyPath: 'episodeId' });
-      db.createObjectStore(RETIRED, { keyPath: 'id' });
-      db.createObjectStore(REVISIONS, { keyPath: 'projectId' });
-      db.createObjectStore(EXCHANGE, { keyPath: 'projectId' });
-      db.createObjectStore(TRANSFER, { keyPath: 'operationId' }).createIndex('projectId', 'projectId', { unique: false });
+      const transaction = opening.transaction!;
+      upgrade = transaction;
+      try {
+        if (event.oldVersion === 0) {
+          db.createObjectStore(ROOTS, { keyPath: 'id' });
+          db.createObjectStore(CONTENTS, { keyPath: 'projectId' });
+          db.createObjectStore(CANVASES, { keyPath: 'id' }).createIndex('projectId', 'projectId', { unique: false });
+          db.createObjectStore(EPISODES, { keyPath: 'id' }).createIndex('projectId', 'projectId', { unique: false });
+          db.createObjectStore(EPISODE_CONTENTS, { keyPath: 'episodeId' });
+          db.createObjectStore(RETIRED, { keyPath: 'id' });
+          db.createObjectStore(REVISIONS, { keyPath: 'projectId' });
+          db.createObjectStore(EXCHANGE, { keyPath: 'projectId' });
+          db.createObjectStore(TRANSFER, { keyPath: 'operationId' }).createIndex('projectId', 'projectId', { unique: false });
+        } else if (event.oldVersion !== 1) return fail('unsupported-schema');
+        assertNativeProjectSchema(db, transaction, false);
+        for (const [name, keyPath] of Object.entries(MEDIA_TASK_INDEXES)) transaction.objectStore(EXCHANGE).createIndex(name, keyPath);
+      } catch (error) {
+        upgradeFailure = error;
+        transaction.abort();
+      }
     };
-    opening.onerror = () => missing && !settled ? finish(undefined, null) : finish(opening.error ?? new Error('indexeddb-open-failed'));
+    opening.onerror = () => missing && !settled ? finish(undefined, null)
+      : finish(upgradeFailure ?? (opening.error?.name === 'VersionError' ? new Error('新项目仓储不可用：unsupported-schema') : opening.error)
+        ?? new Error('indexeddb-open-failed'));
     opening.onblocked = () => finish(new Error('indexeddb-open-blocked'));
     opening.onsuccess = () => finish(undefined, opening.result);
   });
   if (!database) return null;
   try {
-    if (database.name !== NATIVE_PROJECT_DATABASE_NAME || database.version !== NATIVE_PROJECT_DATABASE_VERSION
-      || Array.from(database.objectStoreNames).sort().join('\0') !== [...STORES].sort().join('\0')) fail('unsupported-schema');
-    const tx = database.transaction([...STORES], 'readonly');
-    for (const [name, keyPath] of [[ROOTS, 'id'], [CONTENTS, 'projectId'], [CANVASES, 'id'], [EPISODES, 'id'], [EPISODE_CONTENTS, 'episodeId'], [RETIRED, 'id'], [REVISIONS, 'projectId'], [EXCHANGE, 'projectId'], [TRANSFER, 'operationId']] as const) {
-      const store = tx.objectStore(name);
-      const expectedIndexes = name === CANVASES || name === EPISODES || name === TRANSFER ? ['projectId'] : [];
-      if (store.keyPath !== keyPath || store.autoIncrement || Array.from(store.indexNames).join('\0') !== expectedIndexes.join('\0')) fail('unsupported-schema');
-      if (name === CANVASES || name === EPISODES || name === TRANSFER) {
-        const index = store.index('projectId');
-        if (index.keyPath !== 'projectId' || index.unique || index.multiEntry) fail('unsupported-schema');
-      }
-    }
+    if (database.version !== NATIVE_PROJECT_DATABASE_VERSION) fail('unsupported-schema');
+    assertNativeProjectSchema(database, database.transaction([...STORES], 'readonly'), true);
+    database.onversionchange = () => database.close();
     return database;
   } catch (error) { database.close(); throw error; }
 }

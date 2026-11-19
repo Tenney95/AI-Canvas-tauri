@@ -149,7 +149,7 @@ export async function generateNativeBuiltinAudio(input: { params: AIAudioGenPara
     preparation.release();
     try { await resumeNativeBuiltinAudioTask(record.operationId, input.signal, input.beforeSubmit); }
     catch (error) { if (error instanceof Error && error.name === 'NativeMediaTaskDelivered') throw error;
-      const latest = (await listNativeMediaTasks(record.ownerProjectId)).find((row) => row.operationId === record.operationId);
+      const latest = (await listNativeMediaTasks(record.ownerProjectId, { canvasId: record.canvasId, operationId: record.operationId })).find((row) => row.operationId === record.operationId);
       if (latest?.status === 'failed') throw new Error('原音频任务已确认失败，回执保留', { cause: error }); throw taskError(record); }
     throw taskError(record, true);
   }
@@ -188,7 +188,8 @@ export async function generateNativeBuiltinAudio(input: { params: AIAudioGenPara
 export async function resumeNativeBuiltinAudioTask(operationId: string, externalSignal?: AbortSignal,
   beforeSubmit?: () => void | Promise<void>, options: { allowUnstartedStage?: boolean } = {}): Promise<void> {
   const context = currentContext();
-  let record = (await listNativeMediaTasks(context.projectId)).find((row) => row.operationId === operationId);
+  let record = (await listNativeMediaTasks(context.projectId, { canvasId: context.canvasId, operationId,
+    signal: externalSignal })).find((row) => row.operationId === operationId);
   if (!record || record.recovery?.kind !== 'builtin-audio' || record.providerConfigId !== 'apimart') throw new Error('没有此原音频操作');
   assertScope(context, record);
   if (record.status === 'delivered' || nativeMediaLocalOutputs(record).length) return deliverCached(record, externalSignal);

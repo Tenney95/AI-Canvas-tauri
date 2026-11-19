@@ -563,7 +563,7 @@ export function showNativeComfyVideoRecovery(context: CanvasContext, nodeId: str
 
 async function restoreNativeComfyVideoRecoveries(context: CanvasContext): Promise<void> {
   const { isNativeMediaTaskSuperseded, listNativeMediaTasks } = await import('./indexedDb/nativeMediaTaskRepository');
-  const records = await listNativeMediaTasks(context.projectId);
+  const records = await listNativeMediaTasks(context.projectId, { canvasId: context.canvasId });
   if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) return;
   for (const record of records) {
     if (record.canvasId !== context.canvasId || record.projectEpoch !== context.projectEpoch || record.canvasEpoch !== context.canvasEpoch
@@ -598,7 +598,7 @@ export async function resumeNativeComfyVideoFromNode(nodeId: string, operationId
     }
   } catch (error) {
     const { listNativeMediaTasks } = await import('./indexedDb/nativeMediaTaskRepository');
-    const records = await listNativeMediaTasks(context.projectId).catch(() => undefined);
+    const records = await listNativeMediaTasks(context.projectId, { canvasId: context.canvasId, operationId }).catch(() => undefined);
     if (release.isCurrent() && getNativeComfyVideoRecovery(nodeId) === operationId) {
       const current = useAppStore.getState();
       const live = current.nodes.find((item) => item.id === nodeId);

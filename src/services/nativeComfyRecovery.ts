@@ -21,7 +21,8 @@ export const NATIVE_COMFY_VIDEO_PROTOCOL_DIGEST = (workflowId: string) => {
 export async function resumeNativeComfyTask(operationId: string, externalSignal?: AbortSignal): Promise<void> {
   const state = useAppStore.getState(), context = captureLegacyCanvasContext(state);
   if (!context || context.modelGeneration !== 1) throw new Error('请返回原新项目画布');
-  const found = (await listNativeMediaTasks(context.projectId)).find((row) => row.operationId === operationId);
+  const found = (await listNativeMediaTasks(context.projectId, { canvasId: context.canvasId, operationId,
+    signal: externalSignal })).find((row) => row.operationId === operationId);
   if (found?.recovery?.kind === 'workflow') {
     const { resumeNativeWorkflowTask } = await import('./nativeWorkflowTasks');
     return resumeNativeWorkflowTask(operationId, externalSignal);

@@ -3,7 +3,7 @@ import type { NodeType, OutputHistoryEntry } from '../types';
 import type { CanvasDocument, ProjectRecord } from '../types/project';
 import type { ProjectModelTransferExchange } from '../types/projectModelTransfer';
 import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
-import { validateNativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
+import { readNativeMediaTasksByStatus } from './indexedDb/nativeMediaTaskRepository';
 import { CANVASES, EXCHANGE, ROOTS, isNativeCanvasId, isNativeProjectId, openNativeProjectDatabase, transact,
   type NativeProjectOptions } from './indexedDb/nativeProjectRepository';
 import { nativeMediaLocalOutputs } from './nativeMediaCollection';
@@ -147,11 +147,10 @@ export async function readNativeOutputHistory(canvasId: string, options: NativeP
       const prefix = `${PREFIX}hist-native-${canvasId}-`;
       const stored = await req(store.getAll(IDBKeyRange.bound(prefix, `${prefix}\uffff`))) as NativeOutputHistoryRecord[];
       const rows = new Map(stored.map((row) => [validate(row).entry.id, row]));
-      const records = await req(store.getAll(IDBKeyRange.bound('media-task:', 'media-task:\uffff'))) as NativeMediaTaskRecord[];
-      if (records.length > 100_000 || rows.size > 100_000) throw new Error('新项目输出历史超过读取上限');
+      const records = await readNativeMediaTasksByStatus(tx, project.id, canvasId, ['delivered']);
+      if (rows.size > 100_000) throw new Error('新项目输出历史超过读取上限');
       for (const record of records) {
         if (record?.ownerProjectId !== project.id || record.canvasId !== canvasId || record.status !== 'delivered') continue;
-        validateNativeMediaTaskRecord(record);
         const rootRef = record.resultRootRef ?? project.storageRootRef;
         if (!project.storageBindings.some((binding) => binding.rootRef === rootRef)) continue;
         // 旧账本没有原稿；即使当前节点仍在，也不能把现在的提示词当成旧任务输入。

@@ -876,10 +876,11 @@ export async function triggerMediaGeneration(
     if (!isCurrentApiMessage()) return;
     const { captureLegacyCanvasContext } = await import('../projectExecutionContext');
     const nativeContext = captureLegacyCanvasContext(useAppStore.getState());
-    if (nativeContext?.modelGeneration === 1 && nativeContext.canvasId === projectId) {
+    if (nativeContext?.modelGeneration === 1 && nativeContext.canvasId === projectId && originMessage) {
       const { listNativeMediaTasks } = await import('../indexedDb/nativeMediaTaskRepository');
-      const pending = (await listNativeMediaTasks(nativeContext.projectId)).find((row) => row.canvasId === nativeContext.canvasId
-        && row.origin?.messageId === messageId && row.origin.conversationId === originMessage?.conversationId
+      const pending = (await listNativeMediaTasks(nativeContext.projectId, { canvasId: nativeContext.canvasId,
+        origin: { messageId, conversationId: originMessage.conversationId } })).find((row) => row.canvasId === nativeContext.canvasId
+        && row.origin?.messageId === messageId && row.origin.conversationId === originMessage.conversationId
         && (['prepared', 'submitted', 'outcome-unknown'].includes(row.status)
           || error instanceof Error && error.name === 'NativeMediaTaskDelivered' && row.status === 'delivered'));
       if (pending) {

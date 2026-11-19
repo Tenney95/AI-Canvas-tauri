@@ -38,7 +38,7 @@ function delivered(operationId: string): never {
   Object.assign(error, { nativeOperationId: operationId }); throw error;
 }
 async function currentRecord(projectId: string, operationId: string): Promise<NativeMediaTaskRecord> {
-  const record = (await listNativeMediaTasks(projectId)).find((item) => item.operationId === operationId);
+  const record = (await listNativeMediaTasks(projectId, { operationId })).find((item) => item.operationId === operationId);
   if (!record) throw new Error('原工作流回执不存在，未重新生成'); return record;
 }
 async function saveOutputs(record: NativeMediaTaskRecord, outputs: readonly CloudWorkflowOutput[], signal?: AbortSignal,

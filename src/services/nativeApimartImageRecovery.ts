@@ -17,7 +17,8 @@ import type { NativeMediaLocalResult } from '../types/media';
 export async function resumeNativeApimartImageBatch(operationId: string, externalSignal?: AbortSignal): Promise<void> {
   const context = captureLegacyCanvasContext(useAppStore.getState());
   if (!context || context.modelGeneration !== 1) throw new Error('请先打开原图片批次画布');
-  let found = (await listNativeMediaTasks(context.projectId)).find((record) => record.operationId === operationId);
+  let found = (await listNativeMediaTasks(context.projectId, { canvasId: context.canvasId, operationId,
+    signal: externalSignal })).find((record) => record.operationId === operationId);
   if (!found?.apimartImageBatch || found.canvasId !== context.canvasId) throw new Error('原图片批次不属于当前画布');
   if (found.status === 'delivered') { const { projectNativeMediaMessages } = await import('./nativeMediaMessages'); await projectNativeMediaMessages(); return; }
   // prepared槽位有持久的未发送证明，但重启续查仍不补发付费生成，只保留原请求集合。

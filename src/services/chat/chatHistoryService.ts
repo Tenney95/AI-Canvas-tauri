@@ -295,7 +295,7 @@ export async function projectNativeMediaMessageBatch(record: NativeMediaTaskReco
     || record.apimartImageBatch && !nativeImageBatchSettled(record.apimartImageBatch)
     || !/^[a-f0-9]{64}$/.test(record.deliveryDigest ?? '')) throw new Error('原媒体作业尚未完成，未投影消息');
   const { listNativeMediaTasks } = await import('../indexedDb/nativeMediaTaskRepository');
-  const current = (await listNativeMediaTasks(record.ownerProjectId)).find((row) => row.operationId === record.operationId);
+  const current = (await listNativeMediaTasks(record.ownerProjectId, { canvasId: record.canvasId, operationId: record.operationId })).find((row) => row.operationId === record.operationId);
   if (!current || !configValuesEqual(current, record)) throw new Error('原图片批次回执已变化，未投影消息');
   // 既有APIMart收据不追加category字段，保留其不可变binding字节语义。
   const files = record.apimartImageBatch ? nativeImageBatchResults(record) : nativeMediaLocalOutputs(record);

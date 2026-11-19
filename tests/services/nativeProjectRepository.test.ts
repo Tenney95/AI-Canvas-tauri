@@ -403,13 +403,13 @@ describe('独立新项目仓储', () => {
   });
 
   it('逻辑删除不等待原媒体任务，未结束的任务阻止认领目录回收', async () => {
-    const { project } = await createNativeProject({ name: '在途媒体' }, { factory });
+    const { project, canvas } = await createNativeProject({ name: '在途媒体' }, { factory });
     const db = (await openNativeProjectDatabase(false, { factory }))!;
     try {
       const operationId = crypto.randomUUID();
       await transact(db, 'readwrite', { factory }, (tx) => new Promise((resolve, reject) => {
         const request = tx.objectStore(EXCHANGE).add({ projectId: `media-task:${operationId}`,
-          ownerProjectId: project.id, kind: 'native-media-task-v1', operationId, status: 'submitted' });
+          ownerProjectId: project.id, canvasId: canvas!.id, kind: 'native-media-task-v1', operationId, status: 'submitted' });
         request.onsuccess = () => resolve(undefined);
         request.onerror = () => reject(request.error);
       }), [EXCHANGE]);

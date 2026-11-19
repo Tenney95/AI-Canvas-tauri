@@ -17,7 +17,7 @@ export async function continueNativeMediaTask(record: NativeMediaTaskRecord, sig
   let failure: unknown;
   try { const { resumeNativeVolcengineTask } = await import('./nativeVolcengineRecovery'); await resumeNativeVolcengineTask(record.operationId, signal); }
   catch (error) { failure = error; }
-  const current = (await listNativeMediaTasks(record.ownerProjectId)).find((row) => row.operationId === record.operationId);
+  const current = (await listNativeMediaTasks(record.ownerProjectId, { canvasId: record.canvasId, operationId: record.operationId })).find((row) => row.operationId === record.operationId);
   if (current?.status === 'failed') {
     const error = new Error('服务商已确认原媒体任务失败，回执已保留', failure ? { cause: failure } : undefined);
     error.name = 'NativeMediaTaskFailed'; throw error;

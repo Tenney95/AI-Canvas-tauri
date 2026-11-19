@@ -11,7 +11,7 @@ import type { ChatMessage } from '../types/chat';
 export async function projectNativeMediaMessages(conversationId?: string): Promise<void> {
   const context = captureLegacyCanvasContext(useAppStore.getState());
   if (!context || context.modelGeneration !== 1) return;
-  const records = await listNativeMediaTasks(context.projectId);
+  const records = await listNativeMediaTasks(context.projectId, { canvasId: context.canvasId, statuses: ['delivered'] });
   for (const record of records) {
     const origin = record.origin;
     if (!origin || record.canvasId !== context.canvasId || record.projectEpoch !== context.projectEpoch
