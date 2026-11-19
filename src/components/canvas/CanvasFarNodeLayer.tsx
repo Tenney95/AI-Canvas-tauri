@@ -1,14 +1,12 @@
 import { useCallback, useContext, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
-import { isTauri } from '@tauri-apps/api/core';
 import { useStore, useStoreApi, type Node, type ReactFlowState, type Rect } from '@xyflow/react';
 import { CanvasNodeLodContext } from '../../hooks/useCanvasNodeLod';
 import { useReferencedImageRevisions, withPreviewRevision } from '../../hooks/useReferencedImageWatcher';
 import type { CanvasNodeLodRuntime } from '../../services/canvasNodeLodRuntime';
 import {
-  CANVAS_FAR_NODE_MODE_EVENT, CANVAS_FAR_NODE_MODE_KEY, canvasFarNodeRequiresNativeTouch,
-  isCanvasFarNodeMouseOnly, setCanvasFarNodeMouseOnly,
-} from '../../services/canvasFarNodeTestSession';
+  readCanvasFarNodeMode, subscribeCanvasFarNodeMode, type CanvasFarNodeMode,
+} from '../../services/canvasFarNodeMode';
 import { useAppStore } from '../../store/useAppStore';
 import { isAssetNodeConnectionDragging, subscribeAssetNodeConnectionDrag } from '../../utils/assetNodeConnection';
 import { needsNativeCanvasEdge } from '../../utils/canvasEdgeModels';
@@ -27,23 +25,9 @@ interface Props {
 
 const MEDIA_TYPES = new Set(['ai-image', 'source-image', 'ai-video', 'source-video']);
 const EMPTY_NODE_IDS: ReadonlySet<string> = new Set();
-type PrototypeMode = 'dom' | 'touch' | 'unlinked' | 'canvas' | 'webgpu';
+const CONTACT_CLICK_GRACE_MS = 400;
 type HitCard = CanvasFarNodeCard & { handles: readonly Rect[] };
-
-function readPrototypeMode(): PrototypeMode {
-  if (!import.meta.env.DEV || !isTauri()) return 'dom';
-  if (canvasFarNodeRequiresNativeTouch()) return 'touch';
-  try {
-    const mode = sessionStorage.getItem(CANVAS_FAR_NODE_MODE_KEY);
-    if (mode === 'dom' || mode === 'unlinked' || mode === 'webgpu') return mode;
-  } catch { /* The development prototype still works without session storage. */ }
-  return 'canvas';
-}
-
-function subscribePrototypeMode(listener: () => void) {
-  window.addEventListener(CANVAS_FAR_NODE_MODE_EVENT, listener);
-  return () => window.removeEventListener(CANVAS_FAR_NODE_MODE_EVENT, listener);
-}
+type HitPoint = Pick<MouseEvent, 'target' | 'clientX' | 'clientY'>;
 
 function previewKey(source: string, image: boolean) {
   return `${image ? 'image' : 'video'}:${source}`;
@@ -53,11 +37,14 @@ function intersects(a: Rect, b: Rect) {
   return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
 }
 
+function isFarPaneTarget(surface: HTMLElement, target: EventTarget | null): boolean {
+  return target instanceof Element && surface.contains(target) && !!target.closest('.react-flow__pane')
+    && !target.closest('.react-flow__node, .react-flow__panel');
+}
+
 /** Resolve the same wrapper or port the pointer would have reached in the DOM. */
-function findTarget(cards: readonly HitCard[], surface: HTMLElement, viewport: HTMLElement, event: MouseEvent) {
-  const target = event.target;
-  if (!cards.length || !(target instanceof Element) || !surface.contains(target)
-    || !target.closest('.react-flow__pane') || target.closest('.react-flow__node, .react-flow__panel')) return;
+function findTarget(cards: readonly HitCard[], surface: HTMLElement, viewport: HTMLElement, event: HitPoint) {
+  if (!cards.length || !isFarPaneTarget(surface, event.target)) return;
   // Hit-test against the same committed transform used by the bitmap.
   const { a: zoom, e: tx, f: ty } = new DOMMatrixReadOnly(viewport.style.transform || undefined);
   const bounds = surface.getBoundingClientRect();
@@ -84,8 +71,8 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
   );
   const flowRevision = useStore(geometry.getViewportRevision);
   const lodRevision = useSyncExternalStore(runtime.subscribeRepresentation, runtime.getRepresentationRevision);
-  const mode = useSyncExternalStore(subscribePrototypeMode, readPrototypeMode, (): PrototypeMode => 'dom');
-  const enabled = mode !== 'dom' && mode !== 'touch';
+  const mode = useSyncExternalStore(subscribeCanvasFarNodeMode, readCanvasFarNodeMode, (): CanvasFarNodeMode => 'dom');
+  const enabled = mode !== 'dom';
   const nodes = useAppStore((state) => state.nodes);
   const edges = useAppStore((state) => state.edges);
   const selected = useAppStore((state) => state.selectedNodeIds);
@@ -96,6 +83,7 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
   const [keyboard, setKeyboard] = useState(false);
   const [focusedId, setFocusedId] = useState<string>();
   const [hoverId, setHoverId] = useState<string>();
+  const [contactId, setContactId] = useState<string>();
   const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
   const onUnavailable = useCallback(() => setNativeOnly(true), []);
   const onPreviewError = useCallback((source: string, image: boolean) => {
@@ -104,7 +92,6 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
   }, []);
   const resolveRevision = useReferencedImageRevisions(useMemo(() => nodes.map((node) => node.data.filePath), [nodes]));
   const { models, fallbackReason } = useMemo((): { models: HitCard[]; fallbackReason: string | null } => {
-    if (mode === 'touch') return { models: [], fallbackReason: 'touch' };
     if (mode === 'dom') return { models: [], fallbackReason: 'requested-dom' };
     if (!surface || !projectId) return { models: [], fallbackReason: 'canvas-not-ready' };
     if (nativeOnly) return { models: [], fallbackReason: 'bitmap-unavailable' };
@@ -122,7 +109,7 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
     }
     const byId = new Map(nodes.map((node) => [node.id, node]));
     const nativeEndpoints = new Set<string>();
-    // In click-to-connect, keep the source port live and restore a target on mouse hit.
+    // In click-to-connect, keep the source port live and restore the destination on hit.
     if (clickConnectionSource) nativeEndpoints.add(clickConnectionSource);
     for (const edge of edges) {
       if (mode === 'unlinked' || needsNativeCanvasEdge(edge)) {
@@ -169,28 +156,33 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
     geometry, keyboard, lodRevision, mode, nativeOnly, nodeGesturesEnabled, nodes, projectId, resolveRevision,
     runtime, selected, store, surface]);
 
-  const input = useRef({ models, hoverId, keyboard });
-  useLayoutEffect(() => { input.current = { models, hoverId, keyboard }; }, [models, hoverId, keyboard]);
-  useLayoutEffect(() => {
-    const view = surface?.ownerDocument.defaultView;
-    if (!surface || !view) return;
-    const onPointerDown = (event: PointerEvent) => {
-      // Disarm the override even if the renderer is already using DOM.
-      if (isCanvasFarNodeMouseOnly() && event.pointerType && event.pointerType !== 'mouse'
-        && event.target instanceof Element && surface.contains(event.target)) {
-        flushSync(() => setCanvasFarNodeMouseOnly(false));
-      }
-    };
-    view.addEventListener('pointerdown', onPointerDown, true);
-    return () => view.removeEventListener('pointerdown', onPointerDown, true);
-  }, [surface]);
+  const input = useRef({ models, hoverId, contactId, keyboard });
+  useLayoutEffect(() => { input.current = { models, hoverId, contactId, keyboard }; }, [models, hoverId, contactId, keyboard]);
   useLayoutEffect(() => {
     if (!surface || !projectId || !enabled || nativeOnly) return;
     const view = surface.ownerDocument.defaultView;
     const viewport = surface.querySelector<HTMLElement>('.react-flow__viewport');
     if (!view || !viewport) return;
     const captured = new WeakSet<Event>();
+    let contactPointerId: number | undefined;
+    let touchRoute: { touch: Touch; target: Element; wrapper: Element } | undefined;
+    let contactTimer: number | undefined;
     let focusFrame: number | undefined;
+    const cancelContactTimer = () => {
+      if (contactTimer !== undefined) view.clearTimeout(contactTimer);
+      contactTimer = undefined;
+    };
+    const releaseContact = (cancelled: boolean) => {
+      cancelContactTimer();
+      if (cancelled) setContactId(undefined);
+      else {
+        // Keep the wrapper until the browser has delivered the compatibility click.
+        contactTimer = view.setTimeout(() => {
+          contactTimer = undefined;
+          setContactId(undefined);
+        }, CONTACT_CLICK_GRACE_MS);
+      }
+    };
     const cancelFocusCheck = () => {
       if (focusFrame !== undefined) view.cancelAnimationFrame(focusFrame);
       focusFrame = undefined;
@@ -205,6 +197,33 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
     const getMountedNodeId = (target: EventTarget | null) => {
       const node = target instanceof Element ? target.closest('.react-flow__node') : null;
       return node && surface.contains(node) ? node.getAttribute('data-id') ?? undefined : undefined;
+    };
+    const elementAt = (point: HitPoint) => view.document.elementFromPoint(point.clientX, point.clientY);
+    const contactTarget = (point: HitPoint) => {
+      if (!input.current.contactId || !isFarPaneTarget(surface, point.target)) return;
+      const target = elementAt(point);
+      if (getMountedNodeId(target) === input.current.contactId) return target;
+    };
+    const restoreCard = (point: HitPoint, contact: boolean) => {
+      const hit = findTarget(input.current.models, surface, viewport, point);
+      if (!hit) return;
+      if (contact) {
+        cancelContactTimer();
+        if (input.current.contactId !== hit.id) flushSync(() => setContactId(hit.id));
+      } else if (input.current.hoverId !== hit.id) {
+        flushSync(() => setHoverId(hit.id));
+      }
+      const target = elementAt(point);
+      if (getMountedNodeId(target) === hit.id) return target;
+    };
+    const dispatchReplay = (target: Element, replay: Event) => {
+      captured.add(replay);
+      target.dispatchEvent(replay);
+    };
+    const forward = (event: Event, replay: Event, target: Element) => {
+      event.stopImmediatePropagation();
+      dispatchReplay(target, replay);
+      if (replay.defaultPrevented && event.cancelable) event.preventDefault();
     };
     const leaveKeyboardMode = (event: Event) => {
       cancelFocusCheck();
@@ -225,20 +244,75 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
     };
     const restoreTarget = (event: MouseEvent) => {
       if (captured.has(event)) return;
-      if (event instanceof PointerEvent && event.pointerType && event.pointerType !== 'mouse') return;
-      if (event instanceof PointerEvent && event.type === 'pointerdown' && event.isTrusted && event.pointerType === 'mouse'
-        && event.target instanceof Element && surface.contains(event.target) && leaveKeyboardMode(event)) return;
-      const hit = findTarget(input.current.models, surface, viewport, event);
-      if (!hit) return;
-      if (input.current.hoverId !== hit.id) flushSync(() => setHoverId(hit.id));
-      const target = view.document.elementFromPoint(event.clientX, event.clientY);
-      if (target?.closest('.react-flow__node')?.getAttribute('data-id') !== hit.id) return;
+      const pointer = event instanceof PointerEvent ? event : undefined;
+      const press = pointer?.type === 'pointerdown';
+      const direct = pointer?.pointerType === 'touch' || pointer?.pointerType === 'pen';
+      if (press && pointer) {
+        if (direct && !pointer.isPrimary) return;
+        if (pointer.isTrusted && event.target instanceof Element && surface.contains(event.target)
+          && leaveKeyboardMode(event)) return;
+      }
+      const target = press
+        ? restoreCard(event, direct)
+        : contactTarget(event) ?? (direct ? undefined : restoreCard(event, false));
+      if (!target) return;
+      if (press && direct) contactPointerId = pointer?.pointerId;
       // Route the first press to the restored wrapper before the pane can begin a selection.
-      const replay = event instanceof PointerEvent ? new PointerEvent(event.type, event) : new MouseEvent(event.type, event);
-      captured.add(replay);
-      event.stopImmediatePropagation();
-      target.dispatchEvent(replay);
-      if (replay.defaultPrevented) event.preventDefault();
+      forward(event, pointer ? new PointerEvent(event.type, pointer) : new MouseEvent(event.type, event), target);
+    };
+    const onPointerEnd = (event: PointerEvent) => {
+      if (event.pointerId !== contactPointerId) return;
+      contactPointerId = undefined;
+      if (!touchRoute) releaseContact(event.type === 'pointercancel');
+    };
+    const replayTouch = (event: TouchEvent, changedTouches: Touch[], target: Element, include: (touch: Touch) => boolean) => {
+      forward(event, new TouchEvent(event.type, {
+        bubbles: event.bubbles, cancelable: event.cancelable, composed: event.composed,
+        touches: Array.from(event.touches), targetTouches: Array.from(event.targetTouches).filter(include),
+        changedTouches, altKey: event.altKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey,
+        view: event.view, detail: event.detail,
+      }), target);
+    };
+    const routeTouch = (event: TouchEvent) => {
+      if (captured.has(event)) return;
+      if (event.type === 'touchstart') {
+        if (touchRoute || event.touches.length !== 1 || event.changedTouches.length !== 1) return;
+        const touch = event.changedTouches[0];
+        // WebView2 keeps the TouchEvent target from before the wrapper was mounted.
+        const target = restoreCard(touch, true) ?? contactTarget(touch);
+        const wrapper = target?.closest('.react-flow__node');
+        if (!target || !wrapper) return;
+        touchRoute = { touch, target, wrapper };
+      }
+      if (!touchRoute) return;
+      const { touch: start, target, wrapper } = touchRoute;
+      const isRouted = (touch: Touch) => touch.identifier === start.identifier;
+      const changedTouches = Array.from(event.changedTouches);
+      const touch = changedTouches.find(isRouted);
+      if (!touch) return;
+      const ended = event.type === 'touchend' || event.type === 'touchcancel';
+      if (ended) touchRoute = undefined;
+      else touchRoute.touch = touch;
+      if (wrapper.isConnected) {
+        // React Flow uses TouchEvents for connections; d3 listens for move/end on the original node.
+        replayTouch(event, [touch], target.isConnected ? target : wrapper, isRouted);
+        if (changedTouches.length > 1 && event.target instanceof Element) {
+          const isOther = (contact: Touch) => !isRouted(contact);
+          replayTouch(event, changedTouches.filter(isOther), event.target, isOther);
+        }
+      }
+      if (ended) releaseContact(event.type === 'touchcancel');
+    };
+    const onBlur = () => {
+      const route = touchRoute;
+      contactPointerId = undefined;
+      touchRoute = undefined;
+      if (route?.wrapper.isConnected) {
+        dispatchReplay(route.target.isConnected ? route.target : route.wrapper, new TouchEvent('touchcancel', {
+          bubbles: true, composed: true, changedTouches: [route.touch],
+        }));
+      }
+      releaseContact(true);
     };
     const leave = (event: PointerEvent) => { if (event.buttons === 0) setHoverId(undefined); };
     const onWheel = (event: WheelEvent) => {
@@ -258,8 +332,15 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
       checkKeyboardFocus();
     };
     const events = ['pointerdown', 'mousedown', 'click', 'dblclick', 'contextmenu'] as const;
+    const touchEvents = ['touchstart', 'touchmove', 'touchend', 'touchcancel'] as const;
     // Capture above the React root so the original pointerdown cannot start a pane selection.
     for (const type of events) view.addEventListener(type, restoreTarget, true);
+    if (typeof TouchEvent === 'function') {
+      for (const type of touchEvents) view.addEventListener(type, routeTouch, { capture: true, passive: false });
+    }
+    view.addEventListener('pointerup', onPointerEnd, true);
+    view.addEventListener('pointercancel', onPointerEnd, true);
+    view.addEventListener('blur', onBlur);
     surface.addEventListener('pointermove', hover, true);
     surface.addEventListener('dragover', hover, true);
     surface.addEventListener('pointerleave', leave);
@@ -271,7 +352,13 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
     if (input.current.keyboard) checkKeyboardFocus();
     return () => {
       cancelFocusCheck();
+      cancelContactTimer();
+      setContactId(undefined);
       for (const type of events) view.removeEventListener(type, restoreTarget, true);
+      for (const type of touchEvents) view.removeEventListener(type, routeTouch, true);
+      view.removeEventListener('pointerup', onPointerEnd, true);
+      view.removeEventListener('pointercancel', onPointerEnd, true);
+      view.removeEventListener('blur', onBlur);
       surface.removeEventListener('pointermove', hover, true);
       surface.removeEventListener('dragover', hover, true);
       surface.removeEventListener('pointerleave', leave);
@@ -283,8 +370,8 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
   }, [enabled, nativeOnly, projectId, surface]);
 
   // Mouse zoom can resume the bitmap while a node still holds keyboard focus.
-  const staticCards = useMemo(() => models.filter((card) => card.id !== hoverId && card.id !== focusedId),
-    [models, hoverId, focusedId]);
+  const staticCards = useMemo(() => models.filter((card) => card.id !== hoverId && card.id !== focusedId && card.id !== contactId),
+    [models, hoverId, focusedId, contactId]);
   const hasStaticCards = staticCards.length > 0;
   useLayoutEffect(() => {
     if (!surface || hasStaticCards) return;
@@ -300,7 +387,8 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
   useLayoutEffect(() => () => runtime.setVisibleFarNodeIds(EMPTY_NODE_IDS), [runtime]);
   return <>
     {staticCards.length > 0 && projectId && <CanvasFarNodeBitmap cards={staticCards} store={store} projectId={projectId}
-      runtime={runtime} webGpuRequested={mode === 'webgpu'} onUnavailable={onUnavailable} onPreviewError={onPreviewError} />}
+      runtime={runtime} webGpuRequested={import.meta.env.DEV && mode === 'webgpu'}
+      onUnavailable={onUnavailable} onPreviewError={onPreviewError} />}
     {nodeIds.map((id) => staticIds.has(id) ? null : renderNode(id))}
   </>;
 }

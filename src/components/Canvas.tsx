@@ -57,6 +57,7 @@ import SelectedNodeFlowEdge from './canvas/SelectedNodeFlowEdge';
 import CanvasEdgeLayer from './canvas/CanvasEdgeLayer';
 import CanvasFarNodeLayer from './canvas/CanvasFarNodeLayer';
 import { installCanvasFarNodeBenchmark } from '../services/canvasFarNodeBenchmark';
+import { canUseCanvasFarNodeLayer } from '../services/canvasFarNodeMode';
 import { CanvasEdgePanePointerContext, useCanvasEdgePanePointer } from '../hooks/useCanvasEdgePanePointer';
 import CanvasRadialMenu, { CanvasLongPressIndicator } from './canvas/CanvasRadialMenu';
 import NodePluginToolDialog from './nodes/shared/toolbar/NodePluginToolDialog';
@@ -165,7 +166,7 @@ const nodeTypes: NodeTypes = withNodeRenderBoundaries({
 });
 
 const sharedEdgeType = Object.assign(SelectedNodeFlowEdge, { renderLayer: CanvasEdgeLayer });
-if (import.meta.env.DEV) Object.assign(nodeTypes['source-image'], { renderFarLayer: CanvasFarNodeLayer });
+if (canUseCanvasFarNodeLayer()) Object.assign(nodeTypes['source-image'], { renderFarLayer: CanvasFarNodeLayer });
 const edgeTypes: EdgeTypes = {
   default: sharedEdgeType,
   smoothstep: SelectedNodeFlowEdge,

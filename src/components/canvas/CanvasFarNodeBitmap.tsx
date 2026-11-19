@@ -6,7 +6,7 @@ import { createFrameCoalescer } from '../../utils/frameCoalescer';
 import { CANVAS_NODE_Z_INDEX } from '../../utils/canvasElementLayering';
 import { acquireCachedCanvasImagePreview, acquireCanvasImagePreview } from '../nodes/shared/image/canvasImagePreviewCache';
 import { acquireCanvasVideoPoster } from '../nodes/shared/video/canvasVideoPreviewCache';
-import { createFarNodeWebGpu, type FarNodeGpuCard, type FarNodeWebGpu } from './canvasFarNodeWebGpu';
+import type { FarNodeGpuCard, FarNodeWebGpu } from './canvasFarNodeWebGpu';
 
 export interface CanvasFarNodeCard {
   id: string;
@@ -388,7 +388,7 @@ export default memo(function CanvasFarNodeBitmap({
     watchResolution();
     view.addEventListener('resize', schedule);
     canvas.addEventListener('contextlost', fail);
-    if (gpuCanvas && webGpuRequested) {
+    if (import.meta.env.DEV && gpuCanvas && webGpuRequested) {
       if (!/^win/i.test(view.navigator.platform || '')) {
         gpuStatus = 'unsupported';
         gpuReason = 'windows-only';
@@ -398,13 +398,16 @@ export default memo(function CanvasFarNodeBitmap({
       } else {
         gpuStatus = 'initializing';
         gpuTimeout = view.setTimeout(() => useCanvas2d('gpu-init-timeout'), GPU_INIT_TIMEOUT_MS);
-        void createFarNodeWebGpu(gpuCanvas, gpuAbort.signal, () => useCanvas2d('gpu-device-error')).then((backend) => {
-          view.clearTimeout(gpuTimeout);
-          if (stopped || gpuAbort.signal.aborted) { backend.destroy(); return; }
-          gpu = backend;
-          dirty = true;
-          schedule();
-        }, () => useCanvas2d('gpu-init'));
+        void import('./canvasFarNodeWebGpu')
+          .then(({ createFarNodeWebGpu }) =>
+            createFarNodeWebGpu(gpuCanvas, gpuAbort.signal, () => useCanvas2d('gpu-device-error')))
+          .then((backend) => {
+            view.clearTimeout(gpuTimeout);
+            if (stopped || gpuAbort.signal.aborted) { backend.destroy(); return; }
+            gpu = backend;
+            dirty = true;
+            schedule();
+          }, () => useCanvas2d('gpu-init'));
       }
     }
     reportGpuStatus();
@@ -446,7 +449,7 @@ export default memo(function CanvasFarNodeBitmap({
     <canvas ref={canvasRef} className={BITMAP_CLASS}
       style={{ zIndex: CANVAS_NODE_Z_INDEX }} width={0} height={0} data-canvas-far-layer="viewport"
       data-canvas-far-backend="canvas2d" aria-hidden="true" />
-    {webGpuRequested && <canvas ref={gpuCanvasRef} className={BITMAP_CLASS}
+    {import.meta.env.DEV && webGpuRequested && <canvas ref={gpuCanvasRef} className={BITMAP_CLASS}
       style={{ zIndex: CANVAS_NODE_Z_INDEX }} width={0} height={0} hidden aria-hidden="true" />}
     <div ref={probeRef} className="canvas-node-lod-preview hidden" aria-hidden="true" />
   </>;

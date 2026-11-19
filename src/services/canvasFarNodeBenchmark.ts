@@ -1,11 +1,9 @@
-import { isTauri } from '@tauri-apps/api/core';
 import { useAppStore } from '../store/useAppStore';
 import { getCanvasViewportController, type CanvasViewportController } from './canvasViewportService';
 import { probeHtmlInCanvas as runHtmlInCanvasProbe } from './htmlInCanvasProbe';
 import {
-  CANVAS_FAR_NODE_MODE_EVENT, CANVAS_FAR_NODE_MODE_KEY, canvasFarNodeRequiresNativeTouch,
-  isCanvasFarNodeMouseOnly, setCanvasFarNodeMouseOnly,
-} from './canvasFarNodeTestSession';
+  CANVAS_FAR_NODE_MODE_EVENT, CANVAS_FAR_NODE_MODE_KEY, canUseCanvasFarNodeLayer,
+} from './canvasFarNodeMode';
 
 const FAR_LAYER = '[data-canvas-far-layer]';
 const START_ZOOM = 0.11486761710794298;
@@ -56,7 +54,6 @@ function status() {
     platform: navigator.platform,
     userAgent: navigator.userAgent,
     touchPoints: navigator.maxTouchPoints,
-    mouseOnly: isCanvasFarNodeMouseOnly(),
   };
 }
 
@@ -140,7 +137,7 @@ async function runTrajectory(controller: CanvasViewportController, origin: Viewp
 
 /** 开发版桌面窗口的 DevTools 入口。只读取项目并临时改变视口和渲染模式。 */
 export function installCanvasFarNodeBenchmark(): () => void {
-  if (!import.meta.env.DEV || !isTauri()) return () => {};
+  if (!import.meta.env.DEV || !canUseCanvasFarNodeLayer()) return () => {};
 
   let running = false;
   let disposed = false;
@@ -150,11 +147,6 @@ export function installCanvasFarNodeBenchmark(): () => void {
     setMode(mode: Mode) {
       if (running || probing) throw new Error('请等待当前基准测试或能力探测完成');
       selectMode(mode);
-    },
-    setMouseOnly(enabled: boolean) {
-      if (running || probing) throw new Error('请等待当前基准测试或能力探测完成');
-      if (typeof enabled !== 'boolean') throw new Error('请传入 true 或 false');
-      setCanvasFarNodeMouseOnly(enabled);
     },
     probeHtmlInCanvas() {
       if (running) throw new Error('请等待当前基准测试完成');
@@ -181,9 +173,6 @@ export function installCanvasFarNodeBenchmark(): () => void {
       const assertCurrent = () => {
         if (!isCurrent()) throw new Error('测试项目已切换');
         if (!foreground || document.visibilityState !== 'visible') throw new Error('请让测试窗口保持前台');
-        if (mode !== 'dom' && canvasFarNodeRequiresNativeTouch()) {
-          throw new Error('当前启用触控保护。若只用鼠标复测，请先执行 canvasFarNodeBenchmark.setMouseOnly(true)');
-        }
       };
       assertCurrent();
       running = true;
@@ -232,7 +221,6 @@ export function installCanvasFarNodeBenchmark(): () => void {
     disposed = true;
     if (window.canvasFarNodeBenchmark === api) {
       delete window.canvasFarNodeBenchmark;
-      setCanvasFarNodeMouseOnly(false);
     }
   };
 }
@@ -242,7 +230,6 @@ declare global {
     canvasFarNodeBenchmark?: {
       status: typeof status;
       setMode: (mode: Mode) => void;
-      setMouseOnly: (enabled: boolean) => void;
       probeHtmlInCanvas: typeof runHtmlInCanvasProbe;
       run: (mode: Mode) => Promise<unknown>;
     };
