@@ -16,6 +16,7 @@ import { downloadGithubBytes, githubMirrorUrl } from './githubDownloadService';
 import { identifyAsset, getRelativeAssetPath } from './fs/assetIndex';
 import { readAssetTextFile } from './fs/assetTextFiles';
 import { walkDirectoryFiles, type AssetScanOptions } from './fs/assetLibrary';
+import { isNativeProjectMediaContentPath } from './nativeMediaContentPath';
 import { completeMediaRelocation, mediaFileAllocationKey, persistMediaRelocation, retiredMediaPaths, type MediaRelocation } from './indexedDb/mediaRelocations';
 import {
   decodeDataUrlBytesAsync,
@@ -34,6 +35,7 @@ import {
   getAssetUrlFromPath,
   getBaseDir,
   ensureProjectDataDir,
+  getNativeProjectOwner,
   getProjectDataDir,
   joinPath,
   resolveUniqueDestPath,
@@ -1270,7 +1272,7 @@ export async function downloadUrlAndSave(
 
 /**
  * 将项目数据目录内的文件重命名为与节点名一致（保留扩展名，冲突时加序号）。
- * 仅处理位于当前项目目录内的文件；外部引用文件、非 Tauri 环境、无变化时返回 null。
+ * 仅处理当前项目目录内的普通文件。按摘要引用的新项目产物只允许修改节点标题。
  * @returns 新的 { filePath, assetUrl, fileName }，或 null
  */
 export async function renameProjectFileToLabel(
@@ -1282,11 +1284,12 @@ export async function renameProjectFileToLabel(
   const projectDir = await getProjectDataDir(projectId);
   if (!projectDir) return null;
 
-  const normPath = stripVerbatimPrefix(filePath).replace(/\\/g, '/');
-  const normDir = projectDir.replace(/\\/g, '/').replace(/\/+$/, '');
-  // 只重命名项目目录内的文件，外部引用文件保持不动
-  if (!normPath.startsWith(`${normDir}/`)) return null;
+  const relativePath = getRelativeAssetPath(filePath, projectDir);
+  const native = Boolean(getNativeProjectOwner(projectId));
+  if (!relativePath || relativePath.split('/').some((part) => !part || part === '.' || part === '..')
+    || native && isNativeProjectMediaContentPath(relativePath)) return null;
 
+  const normPath = stripVerbatimPrefix(filePath).replace(/\\/g, '/');
   const oldName = normPath.split('/').pop() || '';
   const dotIndex = oldName.lastIndexOf('.');
   const ext = dotIndex > 0 ? oldName.slice(dotIndex) : '';
@@ -1302,6 +1305,7 @@ export async function renameProjectFileToLabel(
     // 就地改名：分组内的文件留在自己的子文件夹，否则会被搬回项目根目录
     const currentDir = normPath.slice(0, normPath.length - oldName.length - 1);
     const destPath = await resolveUniqueDestPath(currentDir, newName, true);
+    if (native && isNativeProjectMediaContentPath(getRelativeAssetPath(destPath, projectDir))) return null;
     await rename(filePath, destPath);
     notifyProjectDiskChanged();
     const convertFileSrc = await getConvertFileSrc();
@@ -1359,10 +1363,15 @@ export async function renameAssetFile(
       : source === 'global' ? await getGlobalFilesDir()
       : source === 'folder' ? roots.find((candidate) => getRelativeAssetPath(path, candidate) !== undefined) : undefined;
     const relativePath = root ? getRelativeAssetPath(newPath, root) : undefined;
-    if (!root || !relativePath || getRelativeAssetPath(path, root) === undefined) throw new Error('文件不在已登记的资产目录内');
+    const oldRelativePath = root ? getRelativeAssetPath(path, root) : undefined;
+    if (!root || !relativePath || oldRelativePath === undefined) throw new Error('文件不在已登记的资产目录内');
+    if (source === 'project' && ownerId && getNativeProjectOwner(ownerId)
+      && (isNativeProjectMediaContentPath(oldRelativePath) || isNativeProjectMediaContentPath(relativePath))) {
+      throw new Error('此文件由应用内部管理，需要保留原名；请先复制为普通素材再改名');
+    }
     // 内部 JSON 按固定路径和摘要引用，不能按普通素材的方式改名。
     if (file.category === 'text' && source === 'project'
-      && /^(?:(?:director\/previs|ai-apps)\/[a-f0-9]{64}|director\/scenes\/[^/]+\/(?:scene-r\d+|results\/manifest-r\d+)-[a-f0-9]{64})\.json$/i.test(getRelativeAssetPath(path, root)!)) {
+      && /^(?:(?:director\/previs|ai-apps)\/[a-f0-9]{64}|director\/scenes\/[^/]+\/(?:scene-r\d+|results\/manifest-r\d+)-[a-f0-9]{64})\.json$/i.test(oldRelativePath)) {
       throw new Error('此文件由应用内部管理，需要保留原名；请先复制为普通文本文件再改名');
     }
     const info = await lstat(path);

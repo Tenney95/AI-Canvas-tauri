@@ -9,6 +9,7 @@ import { relocateMediaReferences } from '../../src/services/indexedDb/mediaReloc
 
 const mocks = vi.hoisted(() => ({
   getProjectDataDir: vi.fn(),
+  getNativeProjectOwner: vi.fn(),
   rename: vi.fn(),
   resolveUniqueDestPath: vi.fn(),
   exists: vi.fn(), lstat: vi.fn(), identify: vi.fn(), index: vi.fn(), persist: vi.fn(), complete: vi.fn(),
@@ -42,6 +43,7 @@ vi.mock('../../src/services/fs/core', async (importOriginal) => {
     getFileCategory: vi.fn(),
     getMimeType: vi.fn(),
     getProjectDataDir: mocks.getProjectDataDir,
+    getNativeProjectOwner: mocks.getNativeProjectOwner,
     isTauriEnv: () => true,
     joinPath: (...parts: string[]) => parts.join('/'),
     notifyProjectDiskChanged: vi.fn(),
@@ -73,6 +75,8 @@ vi.mock('../../src/services/fs/assetLibrary', async (original) => ({
 import { renameAssetFile, renameProjectFileToLabel } from '../../src/services/fileService';
 
 const PROJECT_DIR = 'F:\\素材\\项目 3-45b922a1';
+const SHA = 'a'.repeat(64);
+const SUBROOT = 'roots/r2-12345678-1234-4123-8123-123456789abc';
 
 describe('stripVerbatimPrefix', () => {
   it('去掉 Windows canonicalize 留下的 \\\\?\\ 前缀，其它路径原样返回', () => {
@@ -137,6 +141,14 @@ describe('资源文件改名', () => {
     expect(mocks.rename).not.toHaveBeenCalled();
     expect(mocks.persist).not.toHaveBeenCalled();
   });
+  it.each([`media/${SHA}.png`, `${SUBROOT}/imports/retained-${SHA}/${SHA}.png`])('资源库保留原生摘要文件的名称：%s', async (relativePath) => {
+    mocks.getProjectDataDir.mockResolvedValue('D:/project');
+    mocks.getNativeProjectOwner.mockReturnValueOnce('native-project');
+    const file = { ...document(relativePath.split('/').pop()!), category: 'image' as const, source: 'project' as const, path: `D:/project/${relativePath}` };
+    await expect(renameAssetFile(file, '新图', 'native-canvas', [], vi.fn())).rejects.toThrow('保留原名');
+    expect(mocks.rename).not.toHaveBeenCalled();
+    expect(mocks.persist).not.toHaveBeenCalled();
+  });
   it('目标重名时保留原文件', async () => {
     mocks.exists.mockResolvedValue(true);
     await expect(renameAssetFile(document(), '新文档', undefined, [], vi.fn())).rejects.toThrow('已有同名文件');
@@ -197,5 +209,26 @@ describe('renameProjectFileToLabel', () => {
     const result = await renameProjectFileToLabel('D:\\别处\\a.png', 'b', 'project-1');
     expect(result).toBeNull();
     expect(mocks.rename).not.toHaveBeenCalled();
+  });
+
+  it.each([`media/${SHA}.png`, `imports/retained-${SHA}/${SHA}.mp4`, `${SUBROOT}/media/${SHA}.wav`])('原生节点改标题不改摘要文件名：%s', async (relativePath) => {
+    mocks.getNativeProjectOwner.mockReturnValueOnce('native-project');
+    const filePath = `\\\\?\\${PROJECT_DIR}\\${relativePath.replace(/\//g, '\\')}`;
+    await expect(renameProjectFileToLabel(filePath, '新标题', 'native-canvas')).resolves.toBeNull();
+    expect(mocks.resolveUniqueDestPath).not.toHaveBeenCalled();
+    expect(mocks.rename).not.toHaveBeenCalled();
+  });
+
+  it('保留原生项目中普通媒体的既有改名行为', async () => {
+    mocks.getNativeProjectOwner.mockReturnValueOnce('native-project');
+    const result = await renameProjectFileToLabel(`${PROJECT_DIR}\\media\\源视频.mp4`, '新标题', 'native-canvas');
+    expect(result?.fileName).toBe('新标题.mp4');
+    expect(mocks.rename).toHaveBeenCalledOnce();
+  });
+
+  it('旧项目中使用类似摘要命名的用户文件仍可改名', async () => {
+    const result = await renameProjectFileToLabel(`${PROJECT_DIR}\\media\\${SHA}.png`, '新标题', 'legacy-project');
+    expect(result?.fileName).toBe('新标题.png');
+    expect(mocks.rename).toHaveBeenCalledOnce();
   });
 });

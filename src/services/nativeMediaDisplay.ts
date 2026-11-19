@@ -5,6 +5,8 @@ import { getAssetUrlFromPath, getProjectDataDir, joinPath, stripVerbatimPrefix }
 import { isNativeMediaContentPath } from './nativeMediaContentPath';
 import { isTauriAssetUrl, localMediaUrlToPath } from '../utils/mediaUrl';
 
+export { nativeMediaContentDigest } from './nativeMediaContentPath';
+
 type DisplayProject = Pick<ProjectRecord, 'id' | 'storageRootRef' | 'storageBindings'>;
 export interface NativeMediaDisplayFile { relativePath: string; sha256: string; bytes?: number }
 export interface NativeMediaDisplay { filePath: string; url: string }
@@ -14,11 +16,6 @@ const rootId = /^r2-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0
 export const isNativeMediaResultArtifact = (value: unknown): boolean => typeof value === 'string'
   && /^native-media-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}(?:-[1-9][0-9]{0,2})?$/.test(value);
 
-export function nativeMediaContentDigest(path: unknown): string | undefined {
-  if (typeof path !== 'string') return undefined;
-  const digest = /(?:^media\/|^imports\/retained-)([a-f0-9]{64})/.exec(path)?.[1];
-  return digest && isNativeMediaContentPath(path, digest) ? digest : undefined;
-}
 function samePath(left: string, right: string): boolean {
   const normalize = (value: string) => {
     const path = stripVerbatimPrefix(value).replace(/\\/g, '/').replace(/\/+$/, '');
