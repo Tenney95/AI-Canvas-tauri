@@ -2102,6 +2102,7 @@ pub fn run() {
         .plugin(canvas_input::init())
         .invoke_handler(tauri::generate_handler![
             native_project_media::claim_native_project_media_root,
+            native_project_media::verify_native_project_storage_root,
             native_project_media::resolve_native_project_media_root,
             native_project_media::sync_native_asset_search_roots,
             native_project_media::resolve_asset_search_native_project_root,

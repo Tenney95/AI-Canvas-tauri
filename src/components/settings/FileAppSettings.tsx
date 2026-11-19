@@ -121,7 +121,7 @@ export default function FileAppSettings({ active }: { active: boolean }) {
       const selected = await openDialog({ directory: true, title });
       if (selected && typeof selected === 'string') {
         updateConfig(patch(selected));
-        await saveConfig();
+        await saveConfig().catch(() => { /* 设置 Store 已给出保存失败的具体原因。 */ });
       }
     } catch {
       useAppStore.getState().showToast(t('目录选择或保存失败，请重试'), 'error');

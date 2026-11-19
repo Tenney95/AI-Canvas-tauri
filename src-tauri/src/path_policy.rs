@@ -756,7 +756,7 @@ pub fn set_user_storage_root<R: Runtime>(app: &tauri::AppHandle<R>, raw: Option<
     }
 }
 
-fn resolve_user_storage_root<R: Runtime>(app: &tauri::AppHandle<R>, raw: &str) -> Option<PathBuf> {
+pub(crate) fn resolve_user_storage_root<R: Runtime>(app: &tauri::AppHandle<R>, raw: &str) -> Option<PathBuf> {
     let path = PathBuf::from(raw);
     if !path.is_absolute() {
         return None;

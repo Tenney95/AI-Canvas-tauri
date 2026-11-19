@@ -1383,3 +1383,9 @@ v4 导出与独立副本只收录已接受、仍被引用的共享同步文件�
 4. 在普通项目和剧集第一集放置可见节点，再打开项目库确认卡片封面。退出并重开应用，封面应能读回。清空对应画布、保存并返回项目库，重启后应回到默认占位。普通项目转剧集时第一集继续显示原封面。
 
 定向回归可在仓库根目录执行 `npm test -- tests/services/projectModelArchiveService.test.ts tests/services/nativeProjectUpdateVerification.test.ts tests/services/nativeProjectImportService.test.ts tests/services/nativeProjectRepository.test.ts tests/services/nativeCanvasPreview.test.ts tests/store/projects.test.ts`。
+
+### 22.21 保存根目录变更保护
+
+设置提交前按现有新项目的原生登记核验候选根目录。已绑定的作品仍能在该目录核对原标记时才提交。校验失败恢复已保存的目录，其他未保存设置留在表单。此入口保护现有作品，也可以重新选回已失联作品的原根目录。项目搬迁需要另行实施。
+
+本次未运行测试，待用户验收。在 Tauri 桌面版建一个含本地素材的新项目，将保存根改到另一个空目录，应明确提示并继续使用原根，重启后原素材仍可打开和导出。可再用已失联的隔离副本验证重新选择原根目录。空项目库选择新根后应可正常创建项目。

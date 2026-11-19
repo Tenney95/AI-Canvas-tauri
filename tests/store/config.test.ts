@@ -21,11 +21,20 @@ const fileMocks = vi.hoisted(() => {
     saveProject: vi.fn(async (record: { id: string }) => record.id),
     saveConfig: vi.fn<(config: unknown, options?: ConfigSaveOptions) => Promise<string[]>>(async () => []),
     setBaseDataDir: vi.fn(),
+    isTauriEnv: vi.fn(() => false),
     syncAuthorizedDirectories: vi.fn(async () => undefined),
   };
 });
 
 vi.mock('../../src/services/fileService', () => fileMocks);
+const storageMocks = vi.hoisted(() => ({ invoke: vi.fn(), listProjects: vi.fn() }));
+vi.mock('@tauri-apps/api/core', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@tauri-apps/api/core')>(), invoke: storageMocks.invoke,
+}));
+vi.mock('../../src/services/indexedDb/nativeProjectRepository', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/services/indexedDb/nativeProjectRepository')>(),
+  listNativeProjects: storageMocks.listProjects,
+}));
 
 import { useAppStore } from '../../src/store/useAppStore';
 
@@ -45,11 +54,33 @@ beforeEach(() => {
   fileMocks.loadProjectData.mockResolvedValue(null);
   fileMocks.saveProject.mockClear();
   fileMocks.setBaseDataDir.mockClear();
+  fileMocks.isTauriEnv.mockReset().mockReturnValue(false);
+  storageMocks.invoke.mockReset();
+  storageMocks.listProjects.mockReset().mockResolvedValue([]);
   fileMocks.syncAuthorizedDirectories.mockReset();
   fileMocks.syncAuthorizedDirectories.mockResolvedValue(undefined);
 });
 
 describe('config hydration guard', () => {
+  it('rejects a storage root that cannot resolve existing native projects before publishing settings', async () => {
+    const projectId = 'p2-11111111-1111-4111-8111-111111111111';
+    fileMocks.isTauriEnv.mockReturnValue(true);
+    fileMocks.loadConfig.mockResolvedValue({ providers: {}, baseDataDir: '/original' });
+    storageMocks.listProjects.mockResolvedValue([{ id: projectId }]);
+    storageMocks.invoke.mockRejectedValue(new Error('different storage root'));
+    await useAppStore.getState().loadConfig();
+    fileMocks.setBaseDataDir.mockClear();
+    fileMocks.syncAuthorizedDirectories.mockClear();
+
+    useAppStore.getState().updateConfig({ baseDataDir: '/other', language: 'en-US' });
+    await expect(useAppStore.getState().saveConfig()).rejects.toThrow('已保留原保存根目录');
+    expect(storageMocks.invoke).toHaveBeenCalledWith('verify_native_project_storage_root', { baseDataDir: '/other', projectIds: [projectId] });
+    expect(fileMocks.saveConfig).not.toHaveBeenCalled();
+    expect(fileMocks.setBaseDataDir).not.toHaveBeenCalled();
+    expect(fileMocks.syncAuthorizedDirectories).not.toHaveBeenCalled();
+    expect(useAppStore.getState().config).toMatchObject({ baseDataDir: '/original', language: 'en-US' });
+  });
+
   it.each(['custom-openai', 'cccapi', 'xai', 'google', 'sora2u', 'toapis', 'libapi'])(
     '%s 的声明式模型同步保留稳定身份、连接隔离及取消勾选语义', (catalogId) => {
       useAppStore.setState((state) => ({ config: { ...state.config,

@@ -2,6 +2,7 @@
  * Config slice — API provider configuration (keys, URLs) persistence
  */
 import type { StateCreator } from 'zustand';
+import { invoke } from '@tauri-apps/api/core';
 import type { AppState } from './useAppStore';
 import type {
   ApiProviderConfig,
@@ -60,6 +61,23 @@ const defaultConfig: AppConfig = {
 };
 
 const MODEL_PREF_KEY = 'canvas-model-prefs';
+
+class ProjectStorageRootError extends Error {
+  constructor(cause: unknown) {
+    super('所选目录无法打开现有新项目的素材，已保留原保存根目录。请重新选择项目原本所在的目录。', { cause });
+  }
+}
+
+async function verifyProjectStorageRoot(baseDataDir: string | undefined): Promise<void> {
+  if (!fileService.isTauriEnv()) return;
+  try {
+    const { listNativeProjects } = await import('../services/indexedDb/nativeProjectRepository');
+    const projectIds = (await listNativeProjects()).map((project) => project.id);
+    if (projectIds.length) await invoke('verify_native_project_storage_root', { baseDataDir, projectIds });
+  } catch (error) {
+    throw new ProjectStorageRootError(error);
+  }
+}
 
 function syncNodeToolbarMode(mode: AppConfig['nodeToolbarMode']): void {
   if (typeof document === 'undefined') return;
@@ -454,9 +472,6 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
       }
       return { config };
     });
-    if ('baseDataDir' in partial && partial.baseDataDir !== undefined) {
-      setBaseDataDir(partial.baseDataDir);
-    }
     if ('nodeToolbarMode' in partial) {
       syncNodeToolbarMode(partial.nodeToolbarMode);
     }
@@ -635,6 +650,7 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
         rawSet({ configSaveStatus: 'saving', configSaveError: null });
         const normalized = migrateLegacyGeneralModels(snapshot);
         const changes = createConfigPatch(get().configEditBaseline, configWithoutSecrets(normalized));
+        if (changes.some((change) => change.path[0] === 'baseDataDir')) await verifyProjectStorageRoot(normalized.baseDataDir);
         const baseline = get().configPersistedBaseline;
         try {
           unstored = await fileService.saveConfig(normalized, {
@@ -675,8 +691,8 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
         syncNodeLabelVisible(merged.nodeLabelVisible);
         syncPerformanceMode(merged.performanceMode);
         setLocale(merged.language);
-        setBaseDataDir(merged.baseDataDir);
-        await syncAuthorizedDirectories(merged);
+        await syncAuthorizedDirectories({ ...merged, baseDataDir: ordinary.baseDataDir as AppConfig['baseDataDir'] });
+        setBaseDataDir(ordinary.baseDataDir as AppConfig['baseDataDir']);
         directoriesSynced = true;
         try {
           await import('../services/billing/volcengineBillingService')
@@ -690,7 +706,11 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
         if (!options?.silent && get().configRevision === revision) get().showToast('设置已保存');
       } catch (error) {
         const conflict = error instanceof ConfigConflictError;
+        if (error instanceof ProjectStorageRootError && get().config.baseDataDir === snapshot.baseDataDir) {
+          set((state) => ({ config: { ...state.config, baseDataDir: state.configEditBaseline.baseDataDir as AppConfig['baseDataDir'] } }));
+        }
         const message = conflict ? error.message
+          : error instanceof ProjectStorageRootError ? error.message
           : error instanceof Error && error.name === 'ConfigCleanupError' ? error.message
           : !hydrated ? '配置尚未完成加载，不能保存设置'
             : committed !== undefined

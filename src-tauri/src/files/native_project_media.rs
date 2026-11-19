@@ -373,6 +373,25 @@ pub fn claim_native_project_media_root<R: Runtime>(webview: Webview<R>, project_
     media_root(&webview, &project_id, true, false, project_name.as_deref())
 }
 
+/// 可重新选择已有绑定的物理根。预检只读原生登记与原目录标记。
+#[tauri::command]
+pub fn verify_native_project_storage_root<R: Runtime>(webview: Webview<R>, base_data_dir: Option<String>, project_ids: Vec<String>) -> Result<(), String> {
+    if webview.label() != "main" || project_ids.len() > 200_000 { return Err(ERROR.into()); }
+    ensure_trusted_caller(&webview).map_err(|_| ERROR)?;
+    if project_ids.is_empty() { return Ok(()); }
+    let app = webview.app_handle();
+    let base = match base_data_dir.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        Some(path) => crate::path_policy::resolve_user_storage_root(app, path).ok_or(ERROR)?,
+        None => app.path().app_data_dir().map_err(|_| ERROR)?.join("data"),
+    };
+    plain_chain(&base)?;
+    let base = canonicalize_simplified(&base).map_err(|_| ERROR)?;
+    let registry = crate::project_model_safety::private_root(app)?.join(REGISTRY_DIR);
+    plain_chain(&registry)?;
+    for id in project_ids { bind_root(&base, &registry, &id, false, None)?; }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn resolve_native_project_media_root<R: Runtime>(webview: Webview<R>, project_id: String) -> Result<String, String> {
     media_root(&webview, &project_id, false, false, None)
