@@ -5,10 +5,13 @@ const driver = vi.hoisted(() => ({
   files: new Map<string, Uint8Array>(),
   directories: new Set<string>(), symlinks: new Set<string>(),
   exists: vi.fn(), mkdir: vi.fn(), lstat: vi.fn(), open: vi.fn(), close: vi.fn(), writeFile: vi.fn(),
+  retiredPaths: vi.fn(),
   ensureProjectDataDir: vi.fn(), resolveUniqueDestPath: vi.fn(), notifyProjectDiskChanged: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/plugin-fs', () => ({ exists: driver.exists, mkdir: driver.mkdir, lstat: driver.lstat, open: driver.open, writeFile: driver.writeFile }));
+vi.mock('../../src/services/indexedDb/mediaRelocations', () => ({ mediaFileAllocationKey: (path: string) => path,
+  retiredMediaPaths: driver.retiredPaths }));
 vi.mock('../../src/services/fs/core', () => ({
   ensureProjectDataDir: driver.ensureProjectDataDir,
   resolveUniqueDestPath: driver.resolveUniqueDestPath,
@@ -41,6 +44,7 @@ beforeEach(() => {
   driver.ensureProjectDataDir.mockReset().mockResolvedValue(directory);
   driver.resolveUniqueDestPath.mockReset().mockResolvedValue(path);
   driver.notifyProjectDiskChanged.mockReset();
+  driver.retiredPaths.mockReset().mockResolvedValue(new Set());
   driver.close.mockReset().mockResolvedValue(undefined);
   driver.writeFile.mockReset().mockImplementation(async (destination: string, bytes: Uint8Array, options?: { createNew?: boolean }) => {
     if (options?.createNew && driver.files.has(destination)) throw new Error('目标文件已存在');
@@ -121,6 +125,25 @@ describe('createAssetTextFile 首次保存原文', () => {
     expect(driver.resolveUniqueDestPath).not.toHaveBeenCalled();
     expect(driver.writeFile).not.toHaveBeenCalled();
     expect(driver.files.size).toBe(0);
+  });
+
+  it('复用同名同内容的剧本版本，冲突时新建而不覆盖该文件', async () => {
+    const manuscripts = `${directory}/manuscripts`, name = '第一集--v-0123456789abcdef01234567.txt';
+    const existing = `${manuscripts}/${name}`, fallback = `${manuscripts}/${name.replace(/\.txt$/, '_1.txt')}`;
+    const options = { projectSubdirectory: 'manuscripts', reuseMatchingName: true } as const;
+    driver.directories.add(manuscripts);
+    driver.files.set(existing, new TextEncoder().encode('已准备的稿件'));
+    const same = await createAssetTextFile('series-a', '已准备的稿件', name, options);
+    expect(same.filePath).toBe(existing);
+    expect(driver.writeFile).not.toHaveBeenCalled();
+    expect(driver.resolveUniqueDestPath).not.toHaveBeenCalled();
+
+    driver.resolveUniqueDestPath.mockResolvedValue(fallback);
+    const newer = await createAssetTextFile('series-a', '不同稿件', name, options);
+    expect(newer.filePath).toBe(fallback);
+    expect(new TextDecoder().decode(driver.files.get(existing))).toBe('已准备的稿件');
+    expect(new TextDecoder().decode(driver.files.get(fallback))).toBe('不同稿件');
+    expect(driver.writeFile).toHaveBeenCalledExactlyOnceWith(fallback, new TextEncoder().encode('不同稿件'), { createNew: true });
   });
 
   it('创建 manuscripts 目录期间项目范围变化时保留目录但不写入正文', async () => {

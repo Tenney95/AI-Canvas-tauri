@@ -164,4 +164,34 @@ describe('分集剧本 TXT 同步', () => {
     await expect(saved.rollback()).resolves.toBe(true);
     expect(mocks.files.get('/project/manuscripts/第一集.txt')?.content).toBe('旧剧本');
   });
+
+  it('新项目写出新版本后切集时原 TXT 不变，同稿重试使用同一版本名', async () => {
+    const bound = reference(), originalPath = '/project/manuscripts/第一集.txt';
+    mocks.files.set(originalPath, snapshot('旧剧本'));
+    let current = true;
+    const prepared = vi.fn();
+    mocks.create.mockImplementation(async (_projectId: string, content: string, fileName: string) => {
+      const relativePath = `manuscripts/${fileName}`, filePath = `/project/${relativePath}`;
+      const saved = mocks.files.get(filePath) ?? snapshot(content);
+      mocks.files.set(filePath, saved);
+      current = false;
+      mocks.listeners.forEach((listener) => listener());
+      return { fileName, relativePath, filePath, snapshot: saved };
+    });
+    const input = options({ preserveBoundFile: true, reference: bound, onPrepared: prepared,
+      assertCurrent: () => { if (!current) throw new Error('已切集'); } });
+    await expect(prepareEpisodeScriptFileWrite(input)).rejects.toThrow('剧本保存期间项目或稿件已变化');
+    const pending = prepared.mock.calls[0][0] as EpisodeScriptFileReceipt;
+    expect(pending.reference.fileName).toMatch(/^第一集--v-[a-f0-9]{24}\.txt$/);
+    expect(pending.reference.relativePath).not.toBe(bound.relativePath);
+    expect(mocks.files.get(originalPath)?.digest).toBe(bound.digest);
+    expect(mocks.files.get(`/project/${pending.reference.relativePath}`)?.content).toBe('新剧本');
+    expect(mocks.save).not.toHaveBeenCalled();
+
+    current = true;
+    const retried = receipt(await prepareEpisodeScriptFileWrite({ ...input, assertCurrent: vi.fn() }));
+    expect(retried.reference).toEqual(pending.reference);
+    expect(mocks.create).toHaveBeenLastCalledWith('series', '新剧本', pending.reference.fileName, expect.objectContaining({ reuseMatchingName: true }));
+    expect(mocks.files.size).toBe(2);
+  });
 });

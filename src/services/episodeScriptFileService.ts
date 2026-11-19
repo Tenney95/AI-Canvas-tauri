@@ -5,6 +5,7 @@ import type { ProjectTextFileReference } from '../types';
 import { buildEpisodeScriptFileName, needsEpisodeScriptFileSync, normalizeProjectTextFileReference } from '../utils/manuscriptFileReference';
 import { createAssetTextFile, getProjectDataDir, joinPath, readAssetTextFile, saveAssetTextFile, type AssetTextSnapshot } from './fileService';
 import { isTauriEnv } from './fs/core';
+import { sha256BytesHex } from './mediaDataUrl';
 
 export { buildEpisodeScriptFileName, needsEpisodeScriptFileSync } from '../utils/manuscriptFileReference';
 
@@ -17,6 +18,8 @@ export interface EpisodeScriptFileWriteOptions {
   previousText: string;
   text: string;
   reference?: ProjectTextFileReference;
+  /** 新项目先准备独立文件，正文与文件引用在同一个仓储事务中提交。 */
+  preserveBoundFile?: boolean;
   assertCurrent: () => void;
   subscribe?: (listener: () => void) => () => void;
   onPrepared?: (receipt: EpisodeScriptFileReceipt) => void;
@@ -48,7 +51,9 @@ async function assertPlainParents(directory: string, relativePath: string, check
     check();
     const info = await lstat(parent);
     check();
-    if (!info.isDirectory || info.isSymlink) throw new EpisodeScriptFileError('剧本 TXT 所在目录必须是普通文件夹');
+    if (!info.isDirectory || info.isSymlink || ((info.fileAttributes ?? 0) & 0x400) !== 0) {
+      throw new EpisodeScriptFileError('剧本 TXT 所在目录必须是普通文件夹');
+    }
   }
 }
 
@@ -93,7 +98,28 @@ export async function prepareEpisodeScriptFileWrite(options: EpisodeScriptFileWr
       // 上次 TXT 已写成而项目提交失败时，显式重试可以只补交项目记录。
       if (!expected && previous.content !== text) throw new EpisodeScriptFileError('本集 TXT 已被修改，未覆盖磁盘内容；请先核对文件与当前草稿');
     }
-    if (needsEpisodeScriptFileSync({ name: options.name, episodeScriptFile: reference })) {
+    const needsSync = needsEpisodeScriptFileSync({ name: options.name, episodeScriptFile: reference });
+    if (options.preserveBoundFile) {
+      let version: ProjectTextFileReference;
+      if (!needsSync && reference && previous?.content === text) {
+        version = { ...reference, digest: previous.digest, sourceName: desiredName };
+      } else {
+        const identity = JSON.stringify([options.projectId, options.episodeId, desiredName]);
+        const digest = await sha256BytesHex(new TextEncoder().encode(`${identity}\n${text}`));
+        // 48 个 Unicode 码点与版本后缀可放进 255 字节目录项，集名仍可直接辨认。
+        const label = [...desiredName.slice(0, -4)].slice(0, 48).join('');
+        const created = await createAssetTextFile(options.projectId, text, `${label}--v-${digest.slice(0, 24)}.txt`, {
+          projectSubdirectory: 'manuscripts', reuseMatchingName: true, signal: controller.signal, assertCurrent: check,
+        });
+        version = { fileName: created.fileName, relativePath: created.relativePath, digest: created.snapshot.digest, sourceName: desiredName };
+      }
+      // 仓储未提交时原引用及原文件均保留；校验过的新版本可以在重试时复用。
+      const receipt: EpisodeScriptFileReceipt = { reference: version, confirm: () => {}, rollback: async () => true };
+      options.onPrepared?.(receipt);
+      check();
+      return receipt;
+    }
+    if (needsSync) {
       let pending = pendingCreations.get(key);
       let pendingDirectory: string | undefined;
       if (pending && pending.desiredName === desiredName && pending.source === sourceKey(reference)) {

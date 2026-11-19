@@ -2439,17 +2439,17 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       if (!runtime || !activeId || nativeBinding(state.projects.find((item) => item.id === activeId))?.projectId !== native.projectId
         || activeId !== episodeId && !options?.allowSameSeries) return false;
       const sequence = projectSwitchSequence;
+      const baseDataDir = state.config.baseDataDir;
       const assertCurrent = () => {
         options?.assertCurrent?.(); options?.assertCommitCurrent?.();
         const latest = get();
         if (latest.currentProjectId !== activeId || projectSwitchSequence !== sequence || latest.projectLoadStatus !== 'ready'
-          || latest.switchingProjectName !== null || nativeRuntime.get(get) !== runtime) throw new Error('分集已切换，草稿已保留');
+          || latest.switchingProjectName !== null || nativeRuntime.get(get) !== runtime
+          || latest.config.baseDataDir !== baseDataDir) throw new Error('分集或存储目录已变化，草稿已保留');
       };
       const previous = runtime.tail;
       let release!: () => void;
       runtime.tail = new Promise<void>((resolve) => { release = resolve; });
-      let receipt: EpisodeScriptFileReceipt | undefined;
-      let committed = false;
       try {
         await previous;
         assertCurrent();
@@ -2487,18 +2487,16 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         if ('teamProfileOverride' in updates) metadata.teamProfileOverride = updates.teamProfileOverride ? normalizeTeamProfile(updates.teamProfileOverride) : null;
         if (!Object.keys(patch).length && !Object.keys(metadata).length) return true;
         if ('script' in updates) {
-          receipt = await prepareEpisodeScriptFileWrite({ episodeId, projectId: native.projectId,
+          const receipt = await prepareEpisodeScriptFileWrite({ episodeId: episode.id, projectId: native.projectId,
             exchangeEpoch: loaded.selection.project.epoch, episodeExchangeEpoch: episode.epoch, name: episode.name,
             previousText: body.script ?? '', text: updates.script ?? '', reference: body.scriptFile,
-            assertCurrent, subscribe: api.subscribe, onPrepared: (prepared) => { receipt = prepared; } });
+            preserveBoundFile: true, assertCurrent, subscribe: api.subscribe });
           if (receipt) patch.scriptFile = receipt.reference;
         }
         assertCurrent();
         const saved = await updateNativeEpisodeComposite({ projectId: native.projectId, expectedProjectEpoch: loaded.selection.project.epoch,
           episodeId: episode.id, expectedCanvasId: native.canvasId, expectedEpisodeRevision: episode.revision,
           expectedContentRevision: body.revision, ...(Object.keys(patch).length ? { contentPatch: patch } : {}), ...metadata });
-        committed = true;
-        receipt?.confirm();
         if (get().currentProjectId !== activeId || projectSwitchSequence !== sequence || nativeRuntime.get(get) !== runtime) return true;
         if (activeId === episodeId) runtime.loaded = { ...runtime.loaded, episodeContent: saved.content,
           selection: { ...runtime.loaded.selection, episode: saved.episode,
@@ -2508,7 +2506,6 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
             nativeView: { ...native, episodeRevision: saved.episode.revision } }, saved.content) : item) }));
         return true;
       } catch (error) {
-        if (receipt && !committed) await receipt.rollback(assertCurrent).catch(() => false);
         get().showToast(error instanceof Error ? error.message : '分集正文保存失败，草稿已保留', 'error');
         return false;
       } finally { release(); }

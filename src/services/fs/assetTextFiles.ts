@@ -2,6 +2,7 @@
  * assetTextFiles — 读取资产文本快照并保存文本修改。
  */
 import { exists, lstat, mkdir, open, writeFile } from '@tauri-apps/plugin-fs';
+import { mediaFileAllocationKey, retiredMediaPaths } from '../indexedDb/mediaRelocations';
 import { ensureProjectDataDir, getFileCategory, invalidateTextPreview, isTauriEnv, joinPath, notifyProjectDiskChanged, resolveUniqueDestPath, sanitizeFileName, stripVerbatimPrefix } from './core';
 
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
@@ -19,6 +20,8 @@ function checkAbort(signal?: AbortSignal) { signal?.throwIfAborted(); }
 /** 首次保存时在目标项目内创建唯一 UTF-8 文本文件，不覆盖同名文件。 */
 export async function createAssetTextFile(projectId: string, content: string, suggestedName: string, options: {
   signal?: AbortSignal; assertCurrent?: () => void; projectSubdirectory?: 'manuscripts' | 'outline-documents';
+  /** 调用方以项目、稿件身份和正文确定文件名时，可复用经过读回复核的同一版本。 */
+  reuseMatchingName?: boolean;
 } = {}): Promise<{ filePath: string; relativePath: string; fileName: string; snapshot: AssetTextSnapshot }> {
   if (!isTauriEnv()) throw new Error('请在桌面应用中保存原文');
   const check = () => { checkAbort(options.signal); options.assertCurrent?.(); };
@@ -48,6 +51,25 @@ export async function createAssetTextFile(projectId: string, content: string, su
     check();
     if (!info.isDirectory || info.isSymlink || ((info.fileAttributes ?? 0) & 0x400) !== 0) throw new Error('稿件目录必须是普通文件夹');
   }
+  const result = (filePath: string, snapshot: AssetTextSnapshot) => {
+    const actualName = filePath.split(/[\\/]/).pop()!;
+    const relativePath = options.projectSubdirectory ? `${options.projectSubdirectory}/${actualName}` : actualName;
+    return { filePath, relativePath, fileName: actualName, snapshot };
+  };
+  if (options.reuseMatchingName) {
+    const candidate = joinPath(directory, fileName);
+    if (await exists(candidate)) {
+      check();
+      const snapshot = await readAssetTextFile(candidate, options.signal).catch(() => undefined);
+      check();
+      if (snapshot?.content === normalized && !snapshot.bom && snapshot.size === bytes.byteLength
+        && !(await retiredMediaPaths()).has(mediaFileAllocationKey(candidate))) {
+        check();
+        return result(candidate, snapshot);
+      }
+    }
+  }
+  check();
   const filePath = await resolveUniqueDestPath(directory, fileName, true);
   check();
   try { await writeFile(filePath, bytes, { createNew: true }); }
@@ -57,10 +79,10 @@ export async function createAssetTextFile(projectId: string, content: string, su
   let snapshot: AssetTextSnapshot;
   try { snapshot = await readAssetTextFile(filePath); }
   catch (reason) { throw new Error('原文文件已创建，但无法读回确认；草稿已保留，请检查项目文件', { cause: reason }); }
-  if (snapshot.content !== normalized || snapshot.bom) throw new Error('新建原文读回复核失败，草稿已保留，请检查项目文件');
-  const actualName = filePath.split(/[\\/]/).pop()!;
-  const relativePath = options.projectSubdirectory ? `${options.projectSubdirectory}/${actualName}` : actualName;
-  return { filePath, relativePath, fileName: actualName, snapshot };
+  if (snapshot.content !== normalized || snapshot.bom || snapshot.size !== bytes.byteLength) {
+    throw new Error('新建原文读回复核失败，草稿已保留，请检查项目文件');
+  }
+  return result(filePath, snapshot);
 }
 
 /** 只接受已授权的普通文本文件；不把完整正文写入数据库、日志或元数据。 */
