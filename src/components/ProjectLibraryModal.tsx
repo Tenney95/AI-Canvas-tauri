@@ -21,6 +21,7 @@ import { useT } from '../i18n';
 const RecentAssetsSection = lazy(() => import('./assets/RecentAssetsSection'));
 const ProjectImportDialog = lazy(() => import('./projectImport/ProjectImportDialog'));
 const ProjectImportRecoveryDialog = lazy(() => import('./projectImport/ProjectImportRecoveryDialog'));
+const PendingProjectImports = lazy(() => import('./projectImport/PendingProjectImports'));
 
 type ProjectSort = 'updated' | 'created' | 'name';
 
@@ -510,6 +511,9 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
           aria-hidden={deleteTarget ? true : undefined}
           className={`min-h-0 flex-1 overflow-y-auto p-3${isStartPage ? ' bg-canvas-bg/60' : ''}`}
         >
+          {isTauri && isOpen && !resourcePageOpen && <Suspense fallback={null}>
+            <PendingProjectImports suspended={projectBusy || duplicatingId !== null} />
+          </Suspense>}
           <div ref={projectGridRef} style={isStartPage ? { maxHeight: projectGridMaxHeight } : undefined}
             className={`grid gap-3 ${isStartPage
             ? 'content-start overflow-y-auto [scrollbar-gutter:stable] grid-cols-[repeat(auto-fill,minmax(min(100%,240px),1fr))]'

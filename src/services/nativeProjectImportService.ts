@@ -11,8 +11,8 @@ import { createBoundProjectModelArchiveImportPort } from './projectModelArchiveN
 import { readProjectArchiveV4, serializeProjectArchiveV4 } from './projectArchiveV4';
 import { buildProjectExchangeBundleV2, createProjectExchangeRevisionV2 } from './projectExchangeV2Format';
 import { assertNativeArchiveHistoryCommitted, commitNativeArchiveHistory } from './nativeArchiveHistoryCommit';
-import { advanceNativeProjectImport, commitNativeProjectImport, prepareNativeProjectImport, readNativeProjectContent, readNativeProjectImport,
-  type NativeProjectImportJournal } from './indexedDb/nativeProjectRepository';
+import { advanceNativeProjectImport, commitNativeProjectImport, isNativeProjectId, openNativeProjectDatabase, prepareNativeProjectImport,
+  readNativeProjectContent, readNativeProjectImport, transact, TRANSFER, type NativeProjectImportJournal } from './indexedDb/nativeProjectRepository';
 import type { ProjectModelTransferExchange, ProjectModelTransferHistoryRow } from '../types/projectModelTransfer';
 import { safeExchangePath, type ArchiveAssetDigest } from './projectExchangeDomain';
 import type { ProjectImportResult } from './projectTransferService';
@@ -23,6 +23,50 @@ import { assertPlainArchiveSource, cleanupVerifiedArchiveSource, frozenArchiveSo
 
 const digest = (value: unknown) => sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(value)));
 const importSourceCleanups = new Map<string, Promise<void>>();
+const importRuns: Map<string, Promise<ProjectImportResult>> = import.meta.hot?.data.nativeProjectImportRuns ?? new Map();
+if (import.meta.hot) import.meta.hot.data.nativeProjectImportRuns = importRuns;
+
+type PendingImportPhase = 'prepared' | 'media_publishing' | 'media_ready' | 'db_committed';
+export interface PendingNativeProjectImport {
+  operationId: string;
+  projectId: string;
+  projectName: string;
+  phase: PendingImportPhase;
+  updatedAt: number;
+}
+
+function sameImportIdentity(row: NativeProjectImportJournal | null | undefined, operationId: unknown): row is NativeProjectImportJournal {
+  return !!row && typeof operationId === 'string' && /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(operationId)
+    && row.id === operationId && row.operationId === operationId
+    && row.schemaVersion === 1 && row.generation === 1 && row.sessionId === 'native-project' && row.kind === 'project-model-import'
+    && row.mode === 'import-new' && row.expected === null && isNativeProjectId(row.projectId)
+    && row.targetProjectId === row.projectId && row.next?.project?.id === row.projectId
+    && Number.isSafeInteger(row.sequence) && row.sequence >= 0;
+}
+
+/** 新作品提交前没有目录条目，从持久操作日志发现，读取结果不包含正文、文件或执行权限。 */
+export async function listPendingNativeProjectImports(signal?: AbortSignal): Promise<PendingNativeProjectImport[]> {
+  const database = await openNativeProjectDatabase(false, { signal });
+  if (!database) return [];
+  try {
+    return await transact(database, 'readonly', { signal }, (tx) => new Promise<PendingNativeProjectImport[]>((resolve, reject) => {
+      const rows: PendingNativeProjectImport[] = [];
+      const cursor = tx.objectStore(TRANSFER).openCursor();
+      cursor.onerror = () => reject(cursor.error ?? new Error('无法读取待处理导入'));
+      cursor.onsuccess = () => {
+        const item = cursor.result;
+        if (!item) { resolve(rows.sort((a, b) => b.updatedAt - a.updatedAt)); return; }
+        const row = item.value as NativeProjectImportJournal | undefined;
+        if (sameImportIdentity(row, item.primaryKey) && Number.isSafeInteger(row.updatedAt) && row.updatedAt >= 0
+          && (row.phase === 'prepared' || row.phase === 'media_publishing' || row.phase === 'media_ready' || row.phase === 'db_committed')) {
+          rows.push({ operationId: row.operationId, projectId: row.projectId, phase: row.phase, updatedAt: row.updatedAt,
+            projectName: typeof row.next.project.name === 'string' ? row.next.project.name.slice(0, 256) : '' });
+        }
+        item.continue();
+      };
+    }), [TRANSFER]);
+  } finally { database.close(); }
+}
 
 /** 只清理由已提交的新建导入回执证明的暂存。任何核对失败继续保留。 */
 function cleanupFinalizedImportSource(operation: NativeProjectImportJournal, scannedBase?: string): Promise<void> {
@@ -69,13 +113,26 @@ export async function cleanupFinalizedNativeProjectImportSources(): Promise<void
   } catch { /* 数据根暂不可用时，不影响启动。 */ }
 }
 
+async function finalizeNativeImport(operation: NativeProjectImportJournal): Promise<NativeProjectImportJournal> {
+  if (operation.phase === 'db_committed') {
+    if (operation.committedToken !== operation.operationId) throw new Error('原导入提交回执无效');
+    // 作品与提交回执已原子写入；收尾无需再访问隔离来源或重投历史。
+    operation = await advanceNativeProjectImport(operation.operationId, operation.sequence, 'finalized');
+  }
+  if (operation.phase !== 'finalized') throw new Error('原导入状态无效，请保留操作材料');
+  void cleanupFinalizedImportSource(operation);
+  return operation;
+}
+
 async function finishImport(operation: NativeProjectImportJournal, signal?: AbortSignal): Promise<NativeProjectImportJournal> {
   signal?.throwIfAborted();
-  if (operation.phase === 'finalized') {
-    void cleanupFinalizedImportSource(operation);
-    return operation;
+  if (operation.phase === 'db_committed' || operation.phase === 'finalized') return finalizeNativeImport(operation);
+  if (operation.phase !== 'prepared' && operation.phase !== 'media_publishing' && operation.phase !== 'media_ready') {
+    throw new Error('原导入状态无效，请保留操作材料');
   }
-  if (!operation.sourceRef) throw new Error('原导入的隔离来源缺失，请保留操作材料');
+  if (!operation.sourceRef || nativeImportSourceName.exec(operation.sourceRef)?.[1] !== operation.operationId) {
+    throw new Error('原导入的隔离来源缺失或身份不符，请保留操作材料');
+  }
   const port = createBoundProjectModelArchiveImportPort(operation.projectId, operation.sourceRef);
   if (operation.phase === 'prepared') {
     // claim 在原生登记已存在时校验并复用；未知目录不会被接管。
@@ -100,9 +157,7 @@ async function finishImport(operation: NativeProjectImportJournal, signal?: Abor
     signal?.throwIfAborted();
     operation = await commitNativeProjectImport(operation.operationId, operation.sequence);
   }
-  if (operation.phase === 'db_committed') operation = await advanceNativeProjectImport(operation.operationId, operation.sequence, 'finalized');
-  if (operation.phase === 'finalized') void cleanupFinalizedImportSource(operation);
-  return operation;
+  return finalizeNativeImport(operation);
 }
 
 function result(operation: NativeProjectImportJournal): ProjectImportResult {
@@ -111,6 +166,17 @@ function result(operation: NativeProjectImportJournal): ProjectImportResult {
     dataFolder: project.dataFolder, settings: project.defaultSettings, episodes: [], warnings: [], assetCount: operation.media.length,
     missingAssetCount: 0, conversationCount: operation.history.filter((item) => item.kind === 'conversation').length,
     memoryCount: operation.history.filter((item) => item.kind === 'memory').length };
+}
+
+function runImport(operationId: string, load: () => Promise<NativeProjectImportJournal>, signal?: AbortSignal): Promise<ProjectImportResult> {
+  const existing = importRuns.get(operationId);
+  if (existing) return existing;
+  const pending = Promise.resolve().then(async () => {
+    signal?.throwIfAborted();
+    return result(await finishImport(await load(), signal));
+  }).finally(() => importRuns.delete(operationId));
+  importRuns.set(operationId, pending);
+  return pending;
 }
 
 /** v1–v4 项目包均转换为全新 p2/e2/c2 身份，不写入旧项目表。 */
@@ -198,7 +264,7 @@ async function importSource(sourceValue: ValidatedProjectArchiveV4, originalDire
     throw error;
   });
   onOperation?.(operationId);
-  try { return result(await finishImport(operation, options.signal)); }
+  try { return await runImport(operationId, () => Promise.resolve(operation), options.signal); }
   catch (error) { throw new Error(`导入未完成，原操作 ${operationId} 已保留；${error instanceof Error ? error.message : '请核对后续接'}`, { cause: error }); }
 }
 
@@ -243,8 +309,10 @@ export async function importNativeProjectArchive(): Promise<ProjectImportResult 
 }
 
 /** 按原 journal 和原隔离来源继续，不重新分配身份或覆盖已有作品。 */
-export async function resumeNativeProjectImport(operationId: string, signal?: AbortSignal): Promise<ProjectImportResult> {
-  const operation = await readNativeProjectImport(operationId);
-  if (!operation) throw new Error('原导入操作不存在');
-  return result(await finishImport(operation, signal));
+export function resumeNativeProjectImport(operationId: string, signal?: AbortSignal): Promise<ProjectImportResult> {
+  return runImport(operationId, async () => {
+    const operation = await readNativeProjectImport(operationId);
+    if (!sameImportIdentity(operation, operationId)) throw new Error('原导入操作不存在或身份不符');
+    return operation;
+  }, signal);
 }

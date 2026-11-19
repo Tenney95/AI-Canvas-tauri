@@ -1,8 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { IDBFactory } from 'fake-indexeddb';
 import type { NativeProjectImportJournal } from '../../src/services/indexedDb/nativeProjectRepository';
 
 const io = vi.hoisted(() => ({
-  invoke: vi.fn(), getBaseDir: vi.fn(), readProject: vi.fn(), readImport: vi.fn(), readUpdate: vi.fn(), advanceImport: vi.fn(), verifyHistory: vi.fn(), verifyMedia: vi.fn(),
+  invoke: vi.fn(), getBaseDir: vi.fn(), readProject: vi.fn(), readImport: vi.fn(), readUpdate: vi.fn(), advanceImport: vi.fn(), commitImport: vi.fn(),
+  commitHistory: vi.fn(), verifyHistory: vi.fn(), verifyMedia: vi.fn(),
   exists: vi.fn(), lstat: vi.fn(), readDir: vi.fn(), remove: vi.fn(),
 }));
 
@@ -11,17 +13,20 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 vi.mock('@tauri-apps/plugin-fs', () => ({ copyFile: vi.fn(), mkdir: vi.fn(), exists: io.exists, lstat: io.lstat,
   readDir: io.readDir, remove: io.remove }));
 vi.mock('../../src/services/fileService', () => ({ getBaseDir: io.getBaseDir, joinPath: (...parts: string[]) => parts.join('/'), isTauriEnv: () => true }));
-vi.mock('../../src/services/nativeArchiveHistoryCommit', () => ({ assertNativeArchiveHistoryCommitted: io.verifyHistory, commitNativeArchiveHistory: vi.fn() }));
+vi.mock('../../src/services/nativeArchiveHistoryCommit', () => ({ assertNativeArchiveHistoryCommitted: io.verifyHistory, commitNativeArchiveHistory: io.commitHistory }));
 vi.mock('../../src/services/projectModelArchiveNativePort', () => ({ createBoundProjectModelArchiveImportPort: () => ({ verifyMediaPublication: io.verifyMedia }) }));
-vi.mock('../../src/services/indexedDb/nativeProjectRepository', () => ({
-  advanceNativeProjectImport: io.advanceImport, commitNativeProjectImport: vi.fn(), prepareNativeProjectImport: vi.fn(),
+vi.mock('../../src/services/indexedDb/nativeProjectRepository', async (original) => ({
+  ...await original<typeof import('../../src/services/indexedDb/nativeProjectRepository')>(),
+  advanceNativeProjectImport: io.advanceImport, commitNativeProjectImport: io.commitImport, prepareNativeProjectImport: vi.fn(),
   readNativeProjectContent: io.readProject, readNativeProjectImport: io.readImport, readNativeProjectUpdate: io.readUpdate,
 }));
 vi.mock('../../src/services/projectImportService', () => ({ withPreparedProjectImportRead: vi.fn() }));
 
-import { cleanupFinalizedNativeProjectImportSources, resumeNativeProjectImport } from '../../src/services/nativeProjectImportService';
+import { cleanupFinalizedNativeProjectImportSources, listPendingNativeProjectImports, resumeNativeProjectImport } from '../../src/services/nativeProjectImportService';
+import { openNativeProjectDatabase, transact, TRANSFER } from '../../src/services/indexedDb/nativeProjectRepository';
 
 const operationId = '11111111-1111-4111-8111-111111111111';
+const anotherOperationId = '33333333-3333-4333-8333-333333333333';
 const projectId = 'p2-22222222-2222-4222-8222-222222222222';
 const base = '/data', root = '/data/已导入作品';
 const sourceRef = `native-import-${operationId}`, stage = `${base}/${sourceRef}`;
@@ -64,6 +69,68 @@ beforeEach(() => {
   io.readProject.mockResolvedValue({ project: { id: projectId } });
   io.readImport.mockResolvedValue(importJournal());
   io.advanceImport.mockResolvedValue(importJournal());
+});
+
+describe('原新建导入耐久续接', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('没有现有作品或预览仍能列出提交前与待收尾操作，只返回自己的摘要', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory());
+    const wrongProjectId = 'p2-44444444-4444-4444-8444-444444444444';
+    const database = (await openNativeProjectDatabase(true, {}))!;
+    const add = (tx: IDBTransaction, id: string, value: Record<string, unknown>) => new Promise<void>((accept, reject) => {
+      const request = tx.objectStore(TRANSFER).add({ ...value, id, operationId: id });
+      request.onsuccess = () => accept(); request.onerror = () => reject(request.error);
+    });
+    try {
+      await transact(database, 'readwrite', {}, (tx) => Promise.all([
+        add(tx, operationId, { ...importJournal('media_publishing'), updatedAt: 1 }),
+        add(tx, anotherOperationId, { ...importJournal('db_committed'), updatedAt: 2, sourceRef: undefined,
+          committedToken: anotherOperationId, mediaPublicationRef: `media_v1_${anotherOperationId}` }),
+        add(tx, 'settled', { ...importJournal(), updatedAt: 3 }),
+        add(tx, 'update', { ...importJournal('prepared'), mode: 'update-existing', updatedAt: 4 }),
+        add(tx, 'invalid', { ...importJournal('prepared'), targetProjectId: wrongProjectId, updatedAt: 5 }),
+      ]), [TRANSFER]);
+    } finally { database.close(); }
+    await expect(listPendingNativeProjectImports()).resolves.toEqual([
+      { operationId: anotherOperationId, projectId, projectName: '已导入作品', phase: 'db_committed', updatedAt: 2 },
+      { operationId, projectId, projectName: '已导入作品', phase: 'media_publishing', updatedAt: 1 },
+    ]);
+  });
+
+  it('同一导入跨入口复用在途原回执，待收尾无暂存也不发布或新建', async () => {
+    const committed = { ...importJournal('db_committed'), sourceRef: undefined };
+    io.readImport.mockResolvedValue(committed);
+    io.advanceImport.mockResolvedValue({ ...committed, phase: 'finalized' });
+    const first = resumeNativeProjectImport(operationId);
+    const repeated = resumeNativeProjectImport(operationId);
+    expect(repeated).toBe(first);
+    await expect(Promise.all([first, repeated])).resolves.toMatchObject([{ projectId }, { projectId }]);
+    expect(io.readImport).toHaveBeenCalledExactlyOnceWith(operationId);
+    expect(io.advanceImport).toHaveBeenCalledExactlyOnceWith(operationId, 4, 'finalized');
+    expect(io.invoke).not.toHaveBeenCalled();
+    expect(io.verifyMedia).not.toHaveBeenCalled();
+  });
+
+  it('未提交操作不能冒用另一操作的隔离来源', async () => {
+    io.readImport.mockResolvedValue({ ...importJournal('media_publishing'), sourceRef: `native-import-${anotherOperationId}` });
+    await expect(resumeNativeProjectImport(operationId)).rejects.toThrow('隔离来源缺失或身份不符');
+    expect(io.invoke).not.toHaveBeenCalled();
+    expect(io.advanceImport).not.toHaveBeenCalled();
+  });
+
+  it('原素材已发布时只用耐久操作完成验证与提交', async () => {
+    const published = importJournal('media_ready');
+    io.readImport.mockResolvedValue(published);
+    io.commitImport.mockResolvedValue({ ...published, sequence: 5, phase: 'db_committed' });
+    io.advanceImport.mockResolvedValue({ ...published, phase: 'finalized', sourceRef: undefined });
+    await expect(resumeNativeProjectImport(operationId)).resolves.toMatchObject({ projectId });
+    expect(io.verifyMedia).toHaveBeenCalledExactlyOnceWith(published, `media_v1_${operationId}`);
+    expect(io.commitHistory).toHaveBeenCalledExactlyOnceWith(published);
+    expect(io.commitImport).toHaveBeenCalledExactlyOnceWith(operationId, 4);
+    expect(io.advanceImport).toHaveBeenCalledExactlyOnceWith(operationId, 5, 'finalized');
+    expect(io.invoke).not.toHaveBeenCalled();
+  });
 });
 
 describe('新项目导入暂存清理', () => {
