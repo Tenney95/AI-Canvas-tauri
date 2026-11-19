@@ -788,6 +788,39 @@ export async function readNativeProjectByCanvasId(canvasId: string, options: Nat
   } finally { database.close(); }
 }
 
+interface NativeOutputHistoryTarget {
+  project: Pick<ProjectRecord, 'id' | 'epoch' | 'storageRootRef' | 'storageBindings'>;
+  canvas: Pick<CanvasDocument, 'id' | 'epoch' | 'episodeId' | 'storageRootRef'>;
+}
+
+/** 生成记录只依赖当前画布身份及素材绑定，按主键核对其所属分集。 */
+export async function readNativeOutputHistoryTarget(canvasId: string, options: NativeProjectOptions = {}): Promise<NativeOutputHistoryTarget | null> {
+  if (!isNativeCanvasId(canvasId)) return fail('invalid-canvas-id');
+  const database = await openNativeProjectDatabase(false, options);
+  if (!database) return null;
+  try {
+    return await transact(database, 'readonly', options, async (tx) => {
+      const canvas = await request(tx.objectStore(CANVASES).get(canvasId)) as CanvasDocument | undefined;
+      if (!canvas) return null;
+      const { projectId, episodeId } = canvas;
+      if (canvas.id !== canvasId || !isNativeProjectId(projectId) || (episodeId !== null && !isNativeEpisodeId(episodeId))) return fail('invalid-membership');
+      const [project, episode] = await Promise.all([
+        request(tx.objectStore(ROOTS).get(projectId)) as Promise<ProjectRecord | undefined>,
+        episodeId === null ? null : request(tx.objectStore(EPISODES).get(episodeId)) as Promise<EpisodeRecord | undefined>,
+      ]);
+      if (!project || project.id !== projectId
+        || (project.kind === 'standalone' ? episodeId !== null : !episode || episode.id !== episodeId
+          || episode.projectId !== projectId || episode.canvasId !== canvasId)) return fail('invalid-membership');
+      assertNativeRoot(project);
+      validateCanvasTarget(project, episode ?? null, canvas);
+      return {
+        project: { id: project.id, epoch: project.epoch, storageRootRef: project.storageRootRef, storageBindings: project.storageBindings },
+        canvas: { id: canvasId, epoch: canvas.epoch, episodeId, storageRootRef: canvas.storageRootRef },
+      };
+    }, [CANVASES, ROOTS, EPISODES]);
+  } finally { database.close(); }
+}
+
 /** 列表只读取根记录；打开时仍须用 readNativeProject 核验完整聚合。 */
 export async function listNativeProjects(options: NativeProjectOptions = {}): Promise<ProjectRecord[]> {
   const database = await openNativeProjectDatabase(false, options);

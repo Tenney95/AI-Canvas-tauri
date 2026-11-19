@@ -5,13 +5,18 @@ import type { OutputHistoryEntry } from '../../src/types';
 const canvasId = 'c2-11111111-1111-4111-8111-111111111111';
 const ownerProjectId = 'p2-11111111-1111-4111-8111-111111111111';
 const rootRef = 'r2-11111111-1111-4111-8111-111111111111';
-const io = vi.hoisted(() => ({ read: vi.fn(), capture: vi.fn(), display: vi.fn() }));
+const io = vi.hoisted(() => ({ read: vi.fn(), target: vi.fn(), display: vi.fn(), directory: vi.fn() }));
 vi.mock('../../src/services/nativeOutputHistory', () => ({ readNativeOutputHistory: io.read }));
 vi.mock('../../src/services/nativeMediaDisplay', async (original) => ({
-  ...await original<typeof import('../../src/services/nativeMediaDisplay')>(), createNativeMediaDisplayResolver: () => io.display,
+  ...await original<typeof import('../../src/services/nativeMediaDisplay')>(),
+  createNativeMediaDisplayResolver: () => Object.assign(io.display, { directory: io.directory }),
+}));
+vi.mock('../../src/services/fs/core', async (original) => ({
+  ...await original<typeof import('../../src/services/fs/core')>(),
+  getAssetUrlFromPath: async (path: string) => `asset://${path}`,
 }));
 vi.mock('../../src/services/indexedDb/nativeProjectRepository', async (original) => ({
-  ...await original<typeof import('../../src/services/indexedDb/nativeProjectRepository')>(), readNativeProjectCapture: io.capture,
+  ...await original<typeof import('../../src/services/indexedDb/nativeProjectRepository')>(), readNativeOutputHistoryTarget: io.target,
 }));
 
 function candidate(ordinal = 0) {
@@ -28,8 +33,9 @@ beforeEach(() => {
   Object.defineProperty(globalThis, 'indexedDB', { configurable: true, value: new IDBFactory() });
   Object.defineProperty(globalThis, 'IDBKeyRange', { configurable: true, value: IDBKeyRange });
   io.read.mockReset().mockImplementation(async (id: string) => id === canvasId ? [candidate()] : []);
-  io.capture.mockReset().mockResolvedValue({ aggregate: { project: { id: ownerProjectId, epoch: 0, storageRootRef: rootRef,
-    storageBindings: [] }, canvases: [{ id: canvasId, epoch: 0 }] } });
+  io.target.mockReset().mockResolvedValue({ project: { id: ownerProjectId, epoch: 0, storageRootRef: rootRef, storageBindings: [] },
+    canvas: { id: canvasId, epoch: 0, episodeId: null, storageRootRef: rootRef } });
+  io.directory.mockReset().mockResolvedValue('/fixture');
   io.display.mockReset().mockImplementation(async (_root: string, file: { relativePath: string }) => ({
     filePath: `/fixture/${file.relativePath}`, url: `asset:///fixture/${file.relativePath}`,
   }));
@@ -45,6 +51,41 @@ it('面板与节点历史、筛选和导出共用确定性记录，另一画布�
   expect(await service.getHistoryEntriesForExport(canvasId, { search: '原稿' })).toEqual(page.records);
   expect((await service.getHistoryEntriesPage('c2-22222222-2222-4222-8222-222222222222', 16)).records).toEqual([]);
   expect(io.display).toHaveBeenCalledOnce();
+});
+
+it('别集缺正文时，当前集仍能投影生成记录和读取本机媒体', async () => {
+  const repo = await vi.importActual<typeof import('../../src/services/indexedDb/nativeProjectRepository')>('../../src/services/indexedDb/nativeProjectRepository');
+  io.target.mockImplementation(repo.readNativeOutputHistoryTarget);
+  const series = await repo.createNativeProject({ projectId: ownerProjectId, name: '测试剧集', kind: 'series' });
+  const first = await repo.createNativeEpisode({ projectId: ownerProjectId, expectedProjectEpoch: series.project.epoch, name: '第一集',
+    episodeId: 'e2-11111111-1111-4111-8111-111111111111', canvasId });
+  const siblingEpisodeId = 'e2-22222222-2222-4222-8222-222222222222';
+  await repo.createNativeEpisode({ projectId: ownerProjectId, expectedProjectEpoch: first.project.epoch, name: '第二集',
+    episodeId: siblingEpisodeId, canvasId: 'c2-22222222-2222-4222-8222-222222222222' });
+  const db = (await repo.openNativeProjectDatabase(false, {}))!;
+  try {
+    await repo.transact(db, 'readwrite', {}, (tx) => new Promise<void>((resolve, reject) => {
+      const deletion = tx.objectStore(repo.EPISODE_CONTENTS).delete(siblingEpisodeId);
+      deletion.onsuccess = () => resolve();
+      deletion.onerror = () => reject(deletion.error);
+    }), [repo.EPISODE_CONTENTS]);
+  } finally { db.close(); }
+  await expect(repo.readNativeProjectCapture(ownerProjectId)).rejects.toThrow('incomplete-project');
+  const service = await import('../../src/services/indexedDbService');
+  const page = await service.getHistoryEntriesPage(canvasId, 16);
+  expect(page.records).toMatchObject([{ id: candidate().entry.id, mediaUrl: `asset:///fixture/${candidate().relativePath}` }]);
+  expect(io.display).toHaveBeenCalledOnce();
+  expect(io.directory).toHaveBeenCalledWith(rootRef);
+});
+
+it('媒体核验期间素材根改绑时，保留未消费的记录供下次投影', async () => {
+  const before = await io.target();
+  io.target.mockResolvedValueOnce(before).mockResolvedValueOnce({ ...before,
+    canvas: { ...before.canvas, storageRootRef: 'r2-22222222-2222-4222-8222-222222222222' } });
+  const service = await import('../../src/services/indexedDbService');
+  expect((await service.getHistoryEntriesPage(canvasId, 16)).records).toEqual([]);
+  expect(await service.getHistoryEntryCount(canvasId)).toBe(1);
+  expect(io.display).toHaveBeenCalledTimes(2);
 });
 
 it.each(['entry', 'node', 'all'] as const)('删除或清空%s后重播原outbox不恢复记录', async (scope) => {

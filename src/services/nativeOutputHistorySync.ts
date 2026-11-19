@@ -1,6 +1,6 @@
 /** 新库耐久输出历史到既有历史视图的可重放投影，不修改媒体任务或生成权限。 */
 import { getUnprojectedNativeOutputHistory, putNativeOutputHistoryEntries } from './indexedDbService';
-import { readNativeProjectCapture, readNativeProjectByCanvasId, isNativeCanvasId } from './indexedDb/nativeProjectRepository';
+import { readNativeOutputHistoryTarget, isNativeCanvasId } from './indexedDb/nativeProjectRepository';
 import { readNativeOutputHistory } from './nativeOutputHistory';
 import { createNativeMediaDisplayResolver, nativeMediaContentDigest } from './nativeMediaDisplay';
 import { safeExchangePath } from './projectExchangeDomain';
@@ -23,9 +23,9 @@ export function syncNativeOutputHistory(canvasId: string): Promise<void> {
     const selected = candidates.filter((item) => ids.has(item.entry.id));
     const projectId = selected[0]?.ownerProjectId;
     if (!projectId || selected.some((item) => item.ownerProjectId !== projectId)) throw new Error('新项目输出历史归属异常');
-    const capture = await readNativeProjectCapture(projectId);
-    if (!capture || !capture.aggregate.canvases.some((canvas) => canvas.id === canvasId)) return;
-    const display = createNativeMediaDisplayResolver(capture.aggregate.project);
+    const target = await readNativeOutputHistoryTarget(canvasId);
+    if (!target || target.project.id !== projectId) return;
+    const display = createNativeMediaDisplayResolver(target.project);
     const records: HistoryRecord[] = [];
     for (const candidate of selected) {
       // 个别原文件暂不可读时保留outbox，下次读取重试，不把成功历史永久改成失败。
@@ -48,11 +48,8 @@ export function syncNativeOutputHistory(canvasId: string): Promise<void> {
           relativePath: candidate.relativePath, storageRootRef: candidate.rootRef });
       } catch { /* 不消费尚未核验的媒体身份。 */ }
     }
-    const latest = await readNativeProjectCapture(projectId);
-    if (!latest || latest.aggregate.project.epoch !== capture.aggregate.project.epoch
-      || !configValuesEqual(latest.aggregate.project.storageBindings, capture.aggregate.project.storageBindings)
-      || latest.aggregate.canvases.find((canvas) => canvas.id === canvasId)?.epoch
-        !== capture.aggregate.canvases.find((canvas) => canvas.id === canvasId)?.epoch) return;
+    const latest = await readNativeOutputHistoryTarget(canvasId);
+    if (!configValuesEqual(latest, target)) return;
     await putNativeOutputHistoryEntries(records);
   })().finally(() => { if (syncing.get(canvasId) === pending) syncing.delete(canvasId); });
   syncing.set(canvasId, pending);
@@ -62,9 +59,9 @@ export function syncNativeOutputHistory(canvasId: string): Promise<void> {
 /** 导入历史只持久化相对身份；读取时按当前本机绑定水化，不复制发送端绝对路径。 */
 export async function hydrateNativeOutputHistoryRecords(canvasId: string, records: HistoryRecord[]): Promise<HistoryRecord[]> {
   if (!isNativeCanvasId(canvasId) || !records.some((record) => record.relativePath && record.storageRootRef)) return records;
-  const aggregate = await readNativeProjectByCanvasId(canvasId);
-  if (!aggregate) return records;
-  const display = createNativeMediaDisplayResolver(aggregate.project);
+  const target = await readNativeOutputHistoryTarget(canvasId);
+  if (!target) return records;
+  const display = createNativeMediaDisplayResolver(target.project);
   return Promise.all(records.map(async (record) => {
     if (record.projectId !== canvasId || !record.relativePath || !record.storageRootRef) return record;
     if (safeExchangePath(record.relativePath) !== record.relativePath) throw new Error('输出历史文件身份无效');
