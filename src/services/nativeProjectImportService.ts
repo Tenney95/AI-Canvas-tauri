@@ -136,14 +136,17 @@ async function finishImport(operation: NativeProjectImportJournal, signal?: Abor
     signal?.throwIfAborted();
     operation = await advanceNativeProjectImport(operation.operationId, operation.sequence, 'media_publishing');
   }
+  let verifiedReference: string | undefined;
   if (operation.phase === 'media_publishing') {
-    const reference = await port.publishMedia(operation);
-    await port.verifyMediaPublication(operation, reference);
+    // 原生发布返回前已核对完整目的素材，只在本次调用内复用该证据。
+    verifiedReference = await port.publishMedia(operation);
     signal?.throwIfAborted();
-    operation = await advanceNativeProjectImport(operation.operationId, operation.sequence, 'media_ready', reference);
+    operation = await advanceNativeProjectImport(operation.operationId, operation.sequence, 'media_ready', verifiedReference);
   }
   if (operation.phase === 'media_ready') {
-    await port.verifyMediaPublication(operation, operation.mediaPublicationRef!);
+    if (verifiedReference === undefined || verifiedReference !== operation.mediaPublicationRef) {
+      await port.verifyMediaPublication(operation, operation.mediaPublicationRef!);
+    }
     signal?.throwIfAborted();
     await commitNativeArchiveHistory(operation);
     signal?.throwIfAborted();
@@ -207,10 +210,9 @@ async function importSource(sourceValue: ValidatedProjectArchiveV4, originalDire
       if (segments.length > 1) await mkdir(files.joinPath(directory, ...segments.slice(0, -1)), { recursive: true });
       await files.copyLocalFileStreamed(files.joinPath(originalDirectory, ...segments), files.joinPath(directory, ...segments), { signal: options.signal });
     }
-    const actual = await invoke<ArchiveAssetDigest[]>('inspect_project_archive_assets', { assetsDir: directory,
-      selectedPaths: source.assets.map((item) => item.path) });
-    if (actual.length !== source.assets.length || source.assets.some((item) => !actual.some((found) => found.path === item.path
-      && found.bytes === item.bytes && found.sha256 === item.sha256))) throw new Error('项目包素材在预览后变化，未导入');
+    const port = createBoundProjectModelArchiveImportPort(projectId, sourceRef);
+    const staged = await port.captureImportSource!(source);
+    options.signal?.throwIfAborted();
     const allocateId = (kind: 'episode' | 'canvas' | 'storage-root') => `${kind === 'episode' ? 'e2' : kind === 'canvas' ? 'c2' : 'r2'}-${crypto.randomUUID()}`;
     const material = await materializeProjectModelArchiveBusiness(source.payload, source.snapshot, null, projectId, operationId,
       undefined, { allocateId, folderName: `project-${projectId}` });
@@ -236,8 +238,6 @@ async function importSource(sourceValue: ValidatedProjectArchiveV4, originalDire
     const defaultCanvasId = material.aggregate.project.kind === 'standalone' ? material.aggregate.canvases[0]?.id : undefined;
     const history: ProjectModelTransferHistoryRow[] = await importProjectModelArchiveHistory(source, projectId, source.snapshot.lineageId, null,
       { appendChat: options.appendChat, appendMemories: options.appendMemories }, { identities: material.identities, episodes: material.aggregate.episodes, defaultCanvasId, fileBindings: material.fileBindings });
-    const port = createBoundProjectModelArchiveImportPort(projectId, sourceRef);
-    const staged = await port.captureImportSource!(source);
     const packageDigest = await digest([source.manifest, source.payload.exchange]), intentDigest = await digest([packageDigest, projectId, operationId]);
     options.signal?.throwIfAborted();
     registering = true;

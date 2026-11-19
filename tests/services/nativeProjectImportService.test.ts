@@ -4,7 +4,7 @@ import type { NativeProjectImportJournal } from '../../src/services/indexedDb/na
 
 const io = vi.hoisted(() => ({
   invoke: vi.fn(), getBaseDir: vi.fn(), readProject: vi.fn(), readImport: vi.fn(), readUpdate: vi.fn(), advanceImport: vi.fn(), commitImport: vi.fn(),
-  commitHistory: vi.fn(), verifyHistory: vi.fn(), verifyMedia: vi.fn(),
+  commitHistory: vi.fn(), verifyHistory: vi.fn(), publishMedia: vi.fn(), verifyMedia: vi.fn(),
   exists: vi.fn(), lstat: vi.fn(), readDir: vi.fn(), remove: vi.fn(),
 }));
 
@@ -14,7 +14,9 @@ vi.mock('@tauri-apps/plugin-fs', () => ({ copyFile: vi.fn(), mkdir: vi.fn(), exi
   readDir: io.readDir, remove: io.remove }));
 vi.mock('../../src/services/fileService', () => ({ getBaseDir: io.getBaseDir, joinPath: (...parts: string[]) => parts.join('/'), isTauriEnv: () => true }));
 vi.mock('../../src/services/nativeArchiveHistoryCommit', () => ({ assertNativeArchiveHistoryCommitted: io.verifyHistory, commitNativeArchiveHistory: io.commitHistory }));
-vi.mock('../../src/services/projectModelArchiveNativePort', () => ({ createBoundProjectModelArchiveImportPort: () => ({ verifyMediaPublication: io.verifyMedia }) }));
+vi.mock('../../src/services/projectModelArchiveNativePort', () => ({ createBoundProjectModelArchiveImportPort: () => ({
+  publishMedia: io.publishMedia, verifyMediaPublication: io.verifyMedia,
+}) }));
 vi.mock('../../src/services/indexedDb/nativeProjectRepository', async (original) => ({
   ...await original<typeof import('../../src/services/indexedDb/nativeProjectRepository')>(),
   advanceNativeProjectImport: io.advanceImport, commitNativeProjectImport: io.commitImport, prepareNativeProjectImport: vi.fn(),
@@ -117,6 +119,40 @@ describe('原新建导入耐久续接', () => {
     await expect(resumeNativeProjectImport(operationId)).rejects.toThrow('隔离来源缺失或身份不符');
     expect(io.invoke).not.toHaveBeenCalled();
     expect(io.advanceImport).not.toHaveBeenCalled();
+  });
+
+  it('本次发布通过核验后提交，提交前只核验一次目的素材', async () => {
+    const publishing = importJournal('media_publishing'), reference = `media_v1_${operationId}`;
+    const published = { ...importJournal('media_ready'), sequence: 5 };
+    const committed = { ...published, sequence: 6, phase: 'db_committed' };
+    io.readImport.mockResolvedValue(publishing);
+    io.publishMedia.mockImplementation(async (operation: NativeProjectImportJournal) => {
+      await io.verifyMedia(operation, reference);
+      return reference;
+    });
+    io.advanceImport.mockResolvedValueOnce(published).mockResolvedValueOnce({ ...committed, phase: 'finalized', sourceRef: undefined });
+    io.commitImport.mockResolvedValue(committed);
+
+    await expect(resumeNativeProjectImport(operationId)).resolves.toMatchObject({ projectId });
+    expect(io.publishMedia).toHaveBeenCalledExactlyOnceWith(publishing);
+    expect(io.verifyMedia).toHaveBeenCalledExactlyOnceWith(publishing, reference);
+    expect(io.advanceImport.mock.calls).toEqual([[operationId, 4, 'media_ready', reference], [operationId, 6, 'finalized']]);
+    expect(io.commitHistory).toHaveBeenCalledExactlyOnceWith(published);
+    expect(io.commitImport).toHaveBeenCalledExactlyOnceWith(operationId, 5);
+  });
+
+  it('发布后取消时保留原操作，停止推进日志和提交', async () => {
+    const controller = new AbortController();
+    io.readImport.mockResolvedValue(importJournal('media_publishing'));
+    io.publishMedia.mockImplementation(async () => {
+      controller.abort();
+      return `media_v1_${operationId}`;
+    });
+
+    await expect(resumeNativeProjectImport(operationId, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(io.advanceImport).not.toHaveBeenCalled();
+    expect(io.commitHistory).not.toHaveBeenCalled();
+    expect(io.commitImport).not.toHaveBeenCalled();
   });
 
   it('原素材已发布时只用耐久操作完成验证与提交', async () => {

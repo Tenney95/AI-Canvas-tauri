@@ -20,7 +20,19 @@ import { nativeChatImagePaths, parseChatImageReferences } from '../utils/chatIma
 
 interface SourceRoot { rootRef: string; directory: string }
 type NativeAsset = ArchiveAssetDigest & { sourceRootRef?: string; sourceRelativePath?: string; destinationPath?: string };
-const sameAsset = (a: ArchiveAssetDigest, b: ArchiveAssetDigest) => a.bytes === b.bytes && a.sha256 === b.sha256;
+type AssetContentDigest = Pick<ArchiveAssetDigest, 'bytes' | 'sha256'>;
+const sameAsset = (a: AssetContentDigest, b: AssetContentDigest) => a.bytes === b.bytes && a.sha256 === b.sha256;
+function matchesAssetInventory(expected: readonly ArchiveAssetDigest[], actual: readonly ArchiveAssetDigest[]): boolean {
+  if (expected.length !== actual.length) return false;
+  const byPath = new Map(expected.map((asset) => [asset.path, asset] as const));
+  if (byPath.size !== expected.length) return false;
+  for (const asset of actual) {
+    const match = byPath.get(asset.path);
+    if (!match || !sameAsset(match, asset)) return false;
+    byPath.delete(asset.path);
+  }
+  return true;
+}
 type FrozenArchivePaths = readonly Pick<ProjectModelArchiveAsset, 'rootRef' | 'path'>[];
 const sharedSyncPath = /^\.shared-sync(?:\/|$)/i;
 const sharedSyncMediaPath = /^\.shared-sync\/files\/[a-z\d][a-z\d_-]{0,127}\/[a-z\d][a-z\d_-]{0,127}\/[a-z\d][a-z\d_-]{0,127}\.[a-z\d]{1,8}$/i;
@@ -260,29 +272,40 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
   async function verifyMedia(operation: ProjectModelTransferImportJournal, reference: string): Promise<void> {
     if (reference !== `media_v1_${operation.operationId}`) throw new Error('媒体发布回执不属于原导入操作');
     const head = headFiles(operation.exchange);
+    const bindingsById = new Map(head.exchange.fileBindings.map((binding) => [binding.id, binding] as const));
+    const mediaById = new Map(head.snapshot.media.map((item) => [item.id, item] as const));
+    const filesByRoot = new Map<string, typeof head.files>();
+    for (const file of head.files) {
+      const group = filesByRoot.get(file.rootRef) ?? [];
+      group.push(file);
+      filesByRoot.set(file.rootRef, group);
+    }
     for (const root of operation.next.project.storageBindings) {
       const logicalRoot = operation.idMap.find((item) => item.kind === 'storage-root' && item.localId === root.rootRef)?.sourceId;
-      const required = head.files.filter((file) => file.rootRef === logicalRoot).map((file) => {
-        const binding = head.exchange.fileBindings.find((item) => item.id === file.id && item.rootRef === file.rootRef && item.relativePath === file.relativePath);
-        const descriptor = head.snapshot.media.find((item) => item.id === file.mediaId);
-        if (!binding || !descriptor) throw new Error('已发布媒体缺少冻结的文件绑定');
+      const files = logicalRoot ? filesByRoot.get(logicalRoot) : undefined;
+      if (!files?.length) continue;
+      const required = files.map((file) => {
+        const binding = bindingsById.get(file.id);
+        const descriptor = mediaById.get(file.mediaId);
+        if (!binding || binding.rootRef !== file.rootRef || binding.relativePath !== file.relativePath || !descriptor) {
+          throw new Error('已发布媒体缺少冻结的文件绑定');
+        }
         return { path: safeExchangePath(binding.localRelativePath), bytes: descriptor.bytes, sha256: descriptor.sha256 };
       });
-      if (!required.length) continue;
       const actual = await invoke<ArchiveAssetDigest[]>('inspect_project_archive_assets', {
         assetsDir: await directory(root.folderName), selectedPaths: required.map((item) => item.path),
       });
-      if (actual.length !== required.length || required.some((asset) => {
-        const found = actual.find((item) => item.path === asset.path); return !found || !sameAsset(found, asset);
-      })) throw new Error('已发布媒体不完整或摘要变化，未提交项目');
+      if (!matchesAssetInventory(required, actual)) throw new Error('已发布媒体不完整或摘要变化，未提交项目');
     }
   }
   const port: ProjectModelArchivePort = {
     async captureImportSource(source) {
+      const mediaById = new Map(source.snapshot.media.map((item) => [item.id, item] as const));
+      const archivePathByMediaId = new Map(source.payload.exchange.files.map((item) => [item.mediaId, item.archivePath] as const));
       const sourceFiles = source.files.map((file) => {
-        const descriptor = source.snapshot.media.find((item) => item.id === file.mediaId)!;
-        const archivePath = source.payload.exchange.files.find((item) => item.mediaId === file.mediaId)?.archivePath;
-        if (!archivePath?.startsWith('assets/')) throw new Error('原包缺少素材条目');
+        const descriptor = mediaById.get(file.mediaId);
+        const archivePath = archivePathByMediaId.get(file.mediaId);
+        if (!descriptor || !archivePath?.startsWith('assets/')) throw new Error('原包缺少素材条目');
         return { id: file.id, rootRef: file.rootRef, relativePath: file.relativePath, archivePath, bytes: descriptor.bytes, sha256: descriptor.sha256 };
       });
       if (!sourceFiles.length) return { sourceFiles };
@@ -292,9 +315,7 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
         path: safeExchangePath(item.archivePath.slice(7)), bytes: item.bytes, sha256: item.sha256,
       }])).values()];
       const actual = await invoke<ArchiveAssetDigest[]>('inspect_project_archive_assets', { assetsDir, selectedPaths: expected.map((item) => item.path) });
-      if (actual.length !== expected.length || expected.some((item) => {
-        const found = actual.find((row) => row.path === item.path); return !found || !sameAsset(found, item);
-      })) throw new Error('隔离来源素材不完整或摘要变化');
+      if (!matchesAssetInventory(expected, actual)) throw new Error('隔离来源素材不完整或摘要变化');
       return { sourceRef, sourceFiles };
     },
     async inspectAssets(capture, previewAssets = []) {
@@ -465,32 +486,41 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
     },
     async publishMedia(operation, _source) {
       const publicationPrefix = await projectModelArchiveMediaPrefix(operation.operationId);
+      const prefix = `imports/${publicationPrefix}-root-`;
       const sourceRoots: SourceRoot[] = [];
       if (operation.sourceRef) sourceRoots.push({ rootRef: 'incoming', directory: await directory(operation.sourceRef) });
+      const previousRoots = new Map<string, string>();
       for (const [index, root] of (operation.expected?.aggregate.project.storageBindings ?? []).entries()) {
-        sourceRoots.push({ rootRef: `local-${index}`, directory: await directory(root.folderName) });
+        const rootRef = `local-${index}`;
+        previousRoots.set(root.rootRef, rootRef);
+        sourceRoots.push({ rootRef, directory: await directory(root.folderName) });
       }
+      const logicalRoots = new Map(operation.idMap.filter((item) => item.kind === 'storage-root')
+        .map((item) => [item.localId, item.sourceId] as const));
+      const bindingsByPath = new Map(operation.exchange?.fileBindings
+        .map((item) => [storagePathKey(item.rootRef, item.localRelativePath), item] as const));
+      const sourceFilesById = new Map(operation.sourceFiles?.map((item) => [item.id, item] as const));
+      const previousBindingsById = new Map(operation.expected?.exchange?.fileBindings.map((item) => [item.id, item] as const));
       const groups = new Map<string, { rootRef: string; assets: NativeAsset[] }>();
       for (const asset of operation.media) {
-        const logicalRoot = operation.idMap.find((mapping) => mapping.kind === 'storage-root' && mapping.localId === asset.rootRef)?.sourceId;
-        const binding = operation.exchange?.fileBindings.find((item) => item.rootRef === logicalRoot && item.localRelativePath === asset.relativePath);
+        const logicalRoot = logicalRoots.get(asset.rootRef);
+        const binding = logicalRoot && bindingsByPath.get(storagePathKey(logicalRoot, asset.relativePath));
         if (!binding) throw new Error('媒体发布清单没有冻结的本机路径绑定');
-        const prefix = `imports/${publicationPrefix}-root-`;
         if (!asset.relativePath.startsWith(prefix)) throw new Error('媒体目的路径不属于原导入操作');
         const [, childOperationId, ...relative] = safeExchangePath(asset.relativePath).split('/');
         if (!/^\d+$/.test(childOperationId.slice(`${publicationPrefix}-root-`.length)) || !relative.length) throw new Error('媒体子操作身份无效');
         const destinationPath = relative.join('/');
-        const file = operation.sourceFiles?.find((item) => item.id === binding.id && item.rootRef === logicalRoot && item.relativePath === binding.relativePath);
+        const file = sourceFilesById.get(binding.id);
         let native: NativeAsset;
-        if (file && sameAsset({ ...asset, path: '' }, { ...file, path: '' })) {
+        if (file && file.rootRef === logicalRoot && file.relativePath === binding.relativePath && sameAsset(asset, file)) {
           if (!operation.sourceRef) throw new Error('原操作没有冻结的隔离解包目录');
           native = { bytes: asset.bytes, sha256: asset.sha256, path: safeExchangePath(file.archivePath.slice(7)), sourceRootRef: 'incoming', destinationPath };
         } else {
-          const previousIndex = operation.expected?.aggregate.project.storageBindings.findIndex((root) => root.rootRef === asset.rootRef) ?? -1;
-          const previousBinding = operation.expected?.exchange?.fileBindings.find((item) => item.id === binding.id && item.rootRef === binding.rootRef);
-          if (previousIndex < 0 || !previousBinding) throw new Error('合并素材没有可证明的原来源');
+          const previousRoot = previousRoots.get(asset.rootRef);
+          const previousBinding = previousBindingsById.get(binding.id);
+          if (!previousRoot || !previousBinding || previousBinding.rootRef !== binding.rootRef) throw new Error('合并素材没有可证明的原来源');
           native = { bytes: asset.bytes, sha256: asset.sha256, path: safeExchangePath(previousBinding.localRelativePath),
-            sourceRootRef: `local-${previousIndex}`, destinationPath };
+            sourceRootRef: previousRoot, destinationPath };
         }
         const group = groups.get(childOperationId) ?? { rootRef: asset.rootRef, assets: [] };
         if (group.rootRef !== asset.rootRef) throw new Error('同一媒体子操作不能跨本机根');
@@ -503,12 +533,11 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
         const finalDir = await directory(`${root.folderName}/imports/${operationId}`);
         if (await exists(finalDir)) {
           // 响应丢失后只核对同一 child 目录，缺项或不同字节均停止，绝不覆盖。
+          const expected = group.assets.map((item) => ({ path: item.destinationPath!, bytes: item.bytes, sha256: item.sha256 }));
           const actual = await invoke<ArchiveAssetDigest[]>('inspect_project_archive_assets', {
-            assetsDir: finalDir, selectedPaths: group.assets.map((item) => item.destinationPath!),
+            assetsDir: finalDir, selectedPaths: expected.map((item) => item.path),
           });
-          if (actual.length !== group.assets.length || group.assets.some((item) => {
-            const found = actual.find((row) => row.path === item.destinationPath); return !found || !sameAsset(found, item);
-          })) throw new Error('原媒体子操作已存在但无法核实，未重发');
+          if (!matchesAssetInventory(expected, actual)) throw new Error('原媒体子操作已存在但无法核实，未重发');
         } else {
           const needed = new Set(group.assets.map((item) => item.sourceRootRef));
           const selectedRoots = sourceRoots.filter((item) => needed.has(item.rootRef));
