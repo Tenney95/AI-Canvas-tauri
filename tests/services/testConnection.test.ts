@@ -141,9 +141,11 @@ describe('独立剩余额度查询', () => {
 
   it.each(['runninghub', 'runninghub-model'].flatMap((provider) => ['cn', 'ai'].map((site) => [provider, site] as const)))('RH %s 仅使用指定 %s 站点密钥', async (provider, site) => {
     transportMocks.corsSafeFetch.mockResolvedValueOnce(Response.json({ code: 0, data: { remainCoins: '120.5', currentTaskCounts: 3 } }));
-    await expect(queryProviderBalance(provider, 'rh-key', `https://www.runninghub.${site}/openapi/v2`)).resolves.toEqual({ amount: '120.5', unit: '积分', scope: 'account' });
+    const key = `${provider}-${site}-fixture`;
+    await expect(queryProviderBalance(provider, ` ${key} `, `https://www.runninghub.${site}/openapi/v2`)).resolves.toEqual({ amount: '120.5', unit: '积分', scope: 'account' });
     expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith(`https://www.runninghub.${site}/uc/openapi/accountStatus`, expect.objectContaining({
-      method: 'POST', body: JSON.stringify({ apikey: 'rh-key' }),
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ apikey: key }),
     }));
   });
 
@@ -199,8 +201,12 @@ describe('独立剩余额度查询', () => {
 describe('provider connection tests', () => {
   it.each(['runninghub', 'runninghub-model'].flatMap((provider) => ['cn', 'ai'].map((site) => [provider, site] as const)))('RunningHub %s 连接使用 %s 站点的只读账户接口', async (provider, site) => {
     transportMocks.corsSafeFetch.mockResolvedValueOnce(new Response(JSON.stringify({ code: 0, data: { remainCoins: '12', currentTaskCounts: '0' } })));
-    await expect(testProviderConnection(provider, 'secret', `https://www.runninghub.${site}/openapi/v2`)).resolves.toMatchObject({ success: true, balance: '12 积分' });
-    expect(transportMocks.corsSafeFetch).toHaveBeenCalledWith(`https://www.runninghub.${site}/uc/openapi/accountStatus`, expect.objectContaining({ method: 'POST', body: JSON.stringify({ apikey: 'secret' }) }));
+    const key = `${provider}-${site}-fixture`;
+    await expect(testProviderConnection(provider, ` ${key} `, `https://www.runninghub.${site}/openapi/v2`)).resolves.toMatchObject({ success: true, balance: '12 积分' });
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith(`https://www.runninghub.${site}/uc/openapi/accountStatus`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ apikey: key }),
+    });
   });
   it.each([
     ['apimart', 'https://api.example/v1/', 'https://api.example/v1/models'],

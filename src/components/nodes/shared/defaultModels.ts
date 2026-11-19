@@ -21,6 +21,7 @@ import { APIMART_OMNI_MODELS, APIMART_UPDATED_VIDEO_MODELS, isLegacyApimartOmni,
 import { GRSAI_ADDED_MODELS } from '../../../services/ai/grsaiModels';
 import { resolveAudioParameterCapability } from '../../../services/ai/mediaModelCapabilities';
 import { getProviderDefinition, isRetiredProviderConnection } from '../../../services/ai/providerCatalogService';
+import { resolveRelayonGroup } from '../../../services/ai/relayonProviderGroups';
 
 export type MediaModelKind = 'image' | 'video' | 'audio';
 
@@ -1097,7 +1098,7 @@ function generalModelLabel(model: GeneralModelConfig, config?: ProviderModelVisi
   const provider = config?.providers[model.providerConfigId];
   const catalogId = getProviderDefinition(model.providerConfigId, provider)?.id;
   const group = catalogId === 'cccapi' ? provider?.cccGroup?.trim()
-    : catalogId === 'relayonapi' ? provider?.relayonGroup?.trim() : undefined;
+    : catalogId === 'relayonapi' ? resolveRelayonGroup(provider?.relayonGroup) : undefined;
   return group ? `${model.name} · ${group}` : model.name;
 }
 

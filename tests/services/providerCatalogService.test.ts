@@ -193,16 +193,17 @@ describe('LibAPI 内置目录与连接身份', () => {
     expect(createConnectionId('libapi')).toBe('libapi');
   });
 
-  it('先校验目录凭据，再用公开技能目录排除退役和未适配型号，不加入认证目录未返回的型号', async () => {
+  it('先校验目录凭据，再与公开逻辑目录及本地合同求交并排除退役型号', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ data: [
-        { id: 'gt-6.1-sol' }, { id: 'gt-image-2.5-flare', category: 'text' },
-        { id: 'vo-3.1' }, { id: 'happyhorse-1-0' }, { id: 'future-video' },
+        { id: 'gt-6.1-sol' }, { id: 'gpt-image-2.5-flare', category: 'text' }, { id: 'vo-3.1' },
+        { id: 'happyhorse-1-1' }, { id: 'doubao-seedream-5-0' }, { id: 'future-video' },
       ] }))
       .mockResolvedValueOnce(jsonResponse({ models: [
-        { name: 'gpt-6.1-sol', type: 'text' }, { name: 'gpt-image-2.5-flare', type: 'image' },
-        { name: 'veo-3.1', type: 'video' }, { name: 'seedance-2-5', type: 'video' },
-        { name: 'future-video', type: 'video' },
+        { id: 'gpt-6.1-sol', public_id: 'gt-6.1-sol', type: 'chat' },
+        { id: 'gpt-image-2.5-flare', public_id: 'gt-image-2.5-flare', type: 'image', deprecated: false },
+        { id: 'veo-3.1', type: 'video' }, { id: 'happyhorse-1-1', type: 'video', deprecated: true },
+        { id: 'seedance-2-5', type: 'video' }, { id: 'future-video', type: 'video' },
       ] }));
     vi.stubGlobal('fetch', fetchMock);
     const result = await fetchProviderModelCatalog({ providerId: 'libapi',
@@ -210,46 +211,55 @@ describe('LibAPI 内置目录与连接身份', () => {
       fallbackModels: [...LIBAPI_MODEL_MANIFEST],
     });
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
-      'https://libapi.cc/v1/models', 'https://libapi.cc/v1/skills/models',
+      'https://libapi.cc/v1/models', 'https://libapi.cc/v1/logical-models',
     ]);
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'GET', headers: { Authorization: 'Bearer libapi-fixture' } });
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: 'GET', credentials: 'omit' });
     expect(fetchMock.mock.calls[1][1]).not.toHaveProperty('headers');
     expect(result).toMatchObject({ source: 'remote', resolvedBaseUrl: 'https://libapi.cc/v1' });
     expect(result.models.map(({ id, category, provider }) => ({ id, category, provider }))).toEqual([
       { id: 'gt-6.1-sol', category: 'text', provider: 'libapi' },
-      { id: 'gt-image-2.5-flare', category: 'image', provider: 'libapi' },
+      { id: 'gpt-image-2.5-flare', category: 'image', provider: 'libapi' },
       { id: 'vo-3.1', category: 'video', provider: 'libapi' },
     ]);
     expect(result.models.filter((model) => model.category !== 'text').every((model) => model.executionProfile)).toBe(true);
     expect(result.warning).toBeTruthy();
   });
 
-  it.each([401, 503])('目录 HTTP %s 失败不回退静态模型，也不访问公开技能目录', async (status) => {
+  it.each([401, 503])('认证目录 HTTP %s 失败不回退静态模型，也不访问公开逻辑目录', async (status) => {
     const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status }));
     vi.stubGlobal('fetch', fetchMock);
     await expect(fetchProviderModelCatalog({ providerId: 'libapi', config: { name: 'LibAPI', apiKey: 'fixture', catalogId: 'libapi' },
-      fallbackModels: [...LIBAPI_MODEL_MANIFEST] })).rejects.toThrow();
+      fallbackModels: [...LIBAPI_MODEL_MANIFEST] })).rejects.toThrow(`模型列表拉取失败 (HTTP ${status})`);
     expect(fetchMock.mock.calls.every(([url]) => url === 'https://libapi.cc/v1/models')).toBe(true);
   });
 
-  it('技能目录失败保留调用方旧选择，不用静态型号冒充已验证目录', async () => {
+  it('公开逻辑目录失败保留调用方旧选择，不用静态型号冒充已验证目录', async () => {
     const selected = LIBAPI_MODEL_MANIFEST.find((model) => model.id === 'gt-image-2.5-flare')!;
     const config: ApiProviderConfig = { name: 'LibAPI', apiKey: 'fixture', catalogId: 'libapi', selectedModels: [selected] };
     const original = JSON.stringify(config);
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(jsonResponse({ data: [{ id: selected.id }] }))
       .mockResolvedValueOnce(new Response('{}', { status: 503 })));
-    await expect(fetchProviderModelCatalog({ providerId: 'libapi', config, fallbackModels: [...LIBAPI_MODEL_MANIFEST] })).rejects.toThrow();
+    await expect(fetchProviderModelCatalog({ providerId: 'libapi', config, fallbackModels: [...LIBAPI_MODEL_MANIFEST] }))
+      .rejects.toThrow('模型列表拉取失败 (HTTP 503)');
     expect(JSON.stringify(config)).toBe(original);
   });
 
-  it('缺少 Key 不请求公开目录，认证目录没有已适配型号时不借用静态清单', async () => {
+  it('缺少 Key 时不请求目录', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     await expect(fetchProviderModelCatalog({ providerId: 'libapi', config: { name: 'LibAPI', apiKey: '', catalogId: 'libapi' },
       fallbackModels: [...LIBAPI_MODEL_MANIFEST] })).rejects.toThrow();
     expect(fetchMock).not.toHaveBeenCalled();
-    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [{ id: 'future-video' }] }))
-      .mockResolvedValueOnce(jsonResponse({ models: [{ name: 'future-video', type: 'video' }] }));
+  });
+
+  it.each([
+    { id: 'future-video', type: 'video' },
+    { id: 'happyhorse-1-1', type: 'video', deprecated: true },
+  ])('目录中的 $id 无适配或已退役时返回空的远端结果', async (model) => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: model.id }] }))
+      .mockResolvedValueOnce(jsonResponse({ models: [model] })));
     const result = await fetchProviderModelCatalog({ providerId: 'libapi', config: { name: 'LibAPI', apiKey: 'fixture', catalogId: 'libapi' },
       fallbackModels: [...LIBAPI_MODEL_MANIFEST] });
     expect(result).toMatchObject({ source: 'remote', models: [] });
@@ -294,7 +304,7 @@ describe('万象 API 内置目录与连接身份', () => {
       name: '万象 API（RelayOnAPI）', defaultBaseUrl: 'https://relayonapi.com/v1', modelsPath: '/models',
       catalogAdapter: 'openai-compatible', models: RELAYON_MODEL_MANIFEST,
       policy: { syncGeneralModels: true, catalog: {
-        initialModelsOnCreate: 'fallback', initialModelsOnEdit: 'fallback', refresh: 'replace',
+        initialModelsOnCreate: 'fallback', initialModelsOnEdit: 'fallback', refresh: 'replace-unselected',
         fallback: 'deny', invalidateOnKeyChange: true, connectionTest: 'catalog',
       } },
     });
@@ -312,7 +322,7 @@ describe('万象 API 内置目录与连接身份', () => {
 
   it('分组候选是精确型号的静态快照，并非密钥验证', () => {
     expect(RELAYON_PROVIDER_GROUPS.map(({ name }) => name)).toEqual([
-      'ClaudeMax号池', 'GPTpro号池', 'Gemini号池', 'default', 'image', 'video',
+      'Claudekiro号池', 'GPTpro号池', 'Gemini号池', 'default', 'image', 'video',
     ]);
     expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, 'Gemini号池').map(({ id }) => id)).toEqual([
       'gemini-3.8-flash', 'gemini-4-argon',
@@ -321,7 +331,7 @@ describe('万象 API 内置目录与连接身份', () => {
     expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, 'video')).toHaveLength(13);
     for (const id of ['minimax-h3', 'sd-2.0-c3', 'sd-2.5-c1', 'sd-2.5-c2', 'sd-2.5-c3']) {
       expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, 'video').some((model) => model.id === id)).toBe(true);
-      for (const group of ['image', 'default', 'GPTpro号池', 'Gemini号池', 'ClaudeMax号池']) {
+      for (const group of ['image', 'default', 'GPTpro号池', 'Gemini号池', 'Claudekiro号池']) {
         expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, group).some((model) => model.id === id)).toBe(false);
       }
     }
@@ -567,21 +577,22 @@ describe('即梦登录后的模型目录与选择', () => {
 });
 
 describe('providerCatalogService 模型分类推断', () => {
-  it.each(['https://toapis.cn/v1', 'https://toapis.com/v1'])('ToAPIs 只请求所选站点 %s，绑定渠道协议并筛选文本型号', async (baseUrl) => {
+  it.each(['https://toapis.cn/v1', 'https://toapis.com/v1'])('ToAPIs 只请求所选站点 %s 的全类型目录并绑定渠道协议', async (baseUrl) => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ data: [
-      { id: 'gemini-3.8-flash' }, { id: 'gpt-5.6-sol' }, { id: 'seedance-2-5' }, { id: 'suno' },
+      { id: 'gemini-3.8-flash' }, { id: 'gpt-5.6-sol' }, { id: 'gpt-image-2' }, { id: 'seedance-2-5' }, { id: 'suno' },
     ] }));
     vi.stubGlobal('fetch', fetchMock);
     const result = await fetchProviderModelCatalog({ providerId: 'toapis-user',
       config: { name: 'ToAPIs', apiKey: 'shared-fixture', catalogId: 'toapis', baseUrl },
       fallbackModels: [...getProviderDefinition('toapis')!.models!],
     });
-    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(`${baseUrl}/models`, expect.objectContaining({
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(`${baseUrl}/models?type=all`, expect.objectContaining({
       headers: expect.objectContaining({ Authorization: 'Bearer shared-fixture' }),
     }));
-    expect(result.models.map((item) => item.id)).toEqual(['gemini-3.8-flash', 'seedance-2-5', 'suno']);
-    expect(result.models[1]).toMatchObject({ category: 'video', provider: 'toapis-user', executionProfile: { preset: 'custom' } });
-    expect(result.models[2].category).toBe('audio');
+    expect(result.models.map(({ id, category }) => [id, category])).toEqual([
+      ['gemini-3.8-flash', 'text'], ['gpt-image-2', 'image'], ['seedance-2-5', 'video'], ['suno', 'audio'],
+    ]);
+    expect(result.models[2]).toMatchObject({ provider: 'toapis-user', executionProfile: { preset: 'custom' } });
   });
 
   it('ToAPIs 验证失败不能用预置清单假装 Key 或另一站点验证成功', async () => {

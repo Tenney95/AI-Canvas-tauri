@@ -46,6 +46,7 @@ function readBalance(value: unknown, unit: ProviderBalance['unit'], scope: Provi
 interface BalanceEndpoint {
   path: string;
   bodyKey?: 'apiKey' | 'apikey';
+  bearerWithBody?: boolean;
   /** 根接口只移除已知 API 后缀，保留用户代理地址中的路径前缀。 */
   root?: boolean;
   read: (payload: Record<string, unknown>) => ProviderBalance | undefined;
@@ -73,7 +74,7 @@ const BALANCE_ENDPOINTS: Readonly<Record<string, BalanceEndpoint>> = {
     ? readBalance(payload.balance, '积分', 'account') : undefined },
   grsai: { path: '/client/openapi/getAPIKeyCredits', root: true, bodyKey: 'apiKey', read: (payload) => payload.code === 0
     ? readBalance((payload.data as Record<string, unknown> | undefined)?.credits, '积分', 'key') : undefined },
-  'runninghub-model': { path: '/uc/openapi/accountStatus', root: true, bodyKey: 'apikey', read: (payload) => payload.code === 0
+  'runninghub-model': { path: '/uc/openapi/accountStatus', root: true, bodyKey: 'apikey', bearerWithBody: true, read: (payload) => payload.code === 0
     ? readBalance((payload.data as Record<string, unknown> | undefined)?.remainCoins, '积分', 'account') : undefined },
 };
 // 工作流和模型密钥分别查询，保持当前站点和凭据身份，不互相回退或相加。
@@ -86,6 +87,18 @@ function balanceEndpoint(provider: string): BalanceEndpoint | undefined {
 
 export function supportsProviderBalance(provider: string): boolean {
   return !!balanceEndpoint(provider);
+}
+
+function accountRequestInit(apiKey: string, { bodyKey, bearerWithBody }: BalanceEndpoint): RequestInit {
+  const key = apiKey.trim();
+  const headers: Record<string, string> = {};
+  if (bodyKey) headers['Content-Type'] = 'application/json';
+  if (!bodyKey || bearerWithBody) headers.Authorization = `Bearer ${key}`;
+  return {
+    method: bodyKey ? 'POST' : 'GET',
+    headers,
+    ...(bodyKey ? { body: JSON.stringify({ [bodyKey]: key }) } : {}),
+  };
 }
 
 /** 独立无计费查询；失败不影响连接状态，不调用模型、不获取网页账户令牌。 */
@@ -107,9 +120,7 @@ export async function queryProviderBalance(
     const url = new URL(`${endpoint.root ? root : apiBase}${endpoint.path}`);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return undefined;
     const response = await corsSafeFetch(url.toString(), {
-      method: endpoint.bodyKey ? 'POST' : 'GET',
-      headers: endpoint.bodyKey ? { 'Content-Type': 'application/json' } : { Authorization: `Bearer ${apiKey.trim()}` },
-      ...(endpoint.bodyKey ? { body: JSON.stringify({ [endpoint.bodyKey]: apiKey.trim() }) } : {}),
+      ...accountRequestInit(apiKey, endpoint),
       signal: controller.signal,
     });
     if (!response.ok) return undefined;
@@ -232,15 +243,11 @@ async function testApimart(apiKey: string, baseUrl = APIMART_BASE_URL): Promise<
   return result;
 }
 
-/** RunningHUB — 模型 API 密钥，有余额 */
+/** RunningHub 模型和工作流密钥共用账户信息接口。 */
 async function testRunninghubModel(apiKey: string, baseUrl?: string): Promise<TestResult> {
   const root = (baseUrl || 'https://www.runninghub.cn').replace(/\/openapi\/v2\/?$/, '').replace(/\/+$/, '');
-  const url = `${root}/uc/openapi/accountStatus`;
-  const res = await corsSafeFetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ apikey: apiKey }),
-  });
+  const url = `${root}${RUNNINGHUB_BALANCE_ENDPOINT.path}`;
+  const res = await corsSafeFetch(url, accountRequestInit(apiKey, RUNNINGHUB_BALANCE_ENDPOINT));
   const data = await res.json().catch(() => ({}));
   if (data.code === 0 && data.data) {
     const coins = data.data.remainCoins;

@@ -183,7 +183,7 @@ export default function ProviderConnectionDialog({
   const [workflowValid, setWorkflowValid] = useState(false);
   const [models, setModels] = useState<ProviderModelSelection[]>(
     () => {
-      const options = { preferIncomingConfiguration: initialDefinition?.id === 'relayonapi' };
+      const options = { preferIncomingConfiguration: initialDefinition?.policy.catalog.refresh === 'replace-unselected' };
       return mergeModels(mergeModels(initialLocalModels, initialCatalogModels, options), initialSelectedModels, options)
         .map((model) => applyKnownVideoTemplateDefaults(model, initialBaseUrl));
     },
@@ -191,6 +191,12 @@ export default function ProviderConnectionDialog({
   const [selectedIds, setSelectedIds] = useState(() =>
     new Set(initialSelectedModels.map((model) => model.id)),
   );
+  const selectedIdsRef = useRef(selectedIds);
+  const updateSelectedIds = (update: Set<string> | ((current: Set<string>) => Set<string>)) => {
+    const next = typeof update === 'function' ? update(selectedIdsRef.current) : update;
+    selectedIdsRef.current = next;
+    setSelectedIds(next);
+  };
   const [catalogStatus, setCatalogStatus] = useState<CatalogStatus>(
     initialSelectedModels.length > 0 || initialLocalModels.length > 0 ? 'ready' : 'idle',
   );
@@ -366,7 +372,7 @@ export default function ProviderConnectionDialog({
       if (nextDefinition.id === 'runninghub-model') setSiteKeys(runningHubSiteDrafts(providerConfigs));
       const localModels = nextDefinition.policy.catalog.initialModelsOnCreate === 'empty' ? [] : fallbackModels[nextDefinition.id] || [];
       setModels(localModels);
-      setSelectedIds(new Set());
+      updateSelectedIds(new Set());
       setCatalogStatus(localModels.length > 0 ? 'ready' : 'idle');
       setCatalogMessage('');
       setQuery('');
@@ -416,7 +422,9 @@ export default function ProviderConnectionDialog({
       abortRef.current?.abort();
       setCatalogStatus('idle');
       setCatalogMessage(t('站点已切换，请重新拉取当前站点的模型目录。'));
-      setModels((current) => mergeModels(fallbackModels.toapis || [], current.filter((model) => selectedIds.has(model.id))));
+      const checkedIds = selectedIdsRef.current;
+      setModels((current) => mergeModels(fallbackModels.toapis || [], current.filter((model) => checkedIds.has(model.id)),
+        { preferIncomingConfiguration: true }));
     }
     setBaseUrl(next);
   };
@@ -443,14 +451,16 @@ export default function ProviderConnectionDialog({
         const result = await testProviderConnection('runninghub-model', apiKey.trim(), baseUrl.trim() || undefined);
         if (!result.success) throw new Error(result.error || t('RunningHub API Key 验证失败'));
       }
+      const isRelay = definition.id === 'relayonapi';
       const result = await fetchProviderModelCatalog({
-        providerId: definition.id,
+        providerId: isRelay && connectionId ? connectionId : definition.id,
         config: {
           name: connectionName.trim() || definition.name,
           apiKey: apiKey.trim(),
           baseUrl: baseUrl.trim() || undefined,
           catalogId: definition.id,
           chatApiProtocol,
+          ...(isRelay ? { relayonGroup: initialConfig?.relayonGroup } : {}),
         },
         fallbackModels: fallbackModels[definition.id] || [],
         signal: controller.signal,
@@ -458,25 +468,29 @@ export default function ProviderConnectionDialog({
       if (controller.signal.aborted) return;
       const resolvedBaseUrl = result.resolvedBaseUrl || baseUrl;
       const remoteIds = new Set(result.models.map((model) => model.id));
+      const { refresh } = definition.policy.catalog;
+      const checkedIds = selectedIdsRef.current;
+      const retainedMissing = refresh === 'replace-unselected' && [...checkedIds].some((id) => !remoteIds.has(id));
+      const keepModel = (id: string) => remoteIds.has(id) || (refresh === 'replace-unselected' && checkedIds.has(id));
       setModels((current) => mergeModels(
-        definition.policy.catalog.refresh === 'replace' ? current.filter((model) => remoteIds.has(model.id)) : current,
+        refresh === 'merge' ? current : current.filter((model) => keepModel(model.id)),
         result.models,
       )
         .map((model) => applyKnownVideoTemplateDefaults(model, resolvedBaseUrl)));
-      if (definition.policy.catalog.refresh === 'replace') {
-        setSelectedIds((current) => new Set([...current].filter((id) => remoteIds.has(id))));
-        if (protocolModelId && !remoteIds.has(protocolModelId)) {
+      if (refresh === 'replace') updateSelectedIds(new Set([...checkedIds].filter(keepModel)));
+      if (refresh !== 'merge') {
+        if (protocolModelId && !keepModel(protocolModelId)) {
           setProtocolModelId(null);
           setProtocolValid(true);
         }
-        if (videoCapabilityModelId && !remoteIds.has(videoCapabilityModelId)) setVideoCapabilityModelId(null);
-        if (imageCapabilityModelId && !remoteIds.has(imageCapabilityModelId)) setImageCapabilityModelId(null);
-        if (categoryEditModelId && !remoteIds.has(categoryEditModelId)) setCategoryEditModelId(null);
+        if (videoCapabilityModelId && !keepModel(videoCapabilityModelId)) setVideoCapabilityModelId(null);
+        if (imageCapabilityModelId && !keepModel(imageCapabilityModelId)) setImageCapabilityModelId(null);
+        if (categoryEditModelId && !keepModel(categoryEditModelId)) setCategoryEditModelId(null);
       }
-      setCatalogStatus(result.warning ? 'warning' : 'ready');
+      setCatalogStatus(result.warning || retainedMissing ? 'warning' : 'ready');
       const corrected = adoptResolvedBaseUrl(result.resolvedBaseUrl);
       setCatalogMessage(
-        result.warning
+        (retainedMissing ? t('部分已选模型未出现在本次目录中，已保留原配置，请确认该 Key 和分组权限。') : result.warning)
         || (corrected
           ? t('已获取 {count} 个模型，接口地址已更正为 {url}', {
             count: result.models.length,
@@ -567,7 +581,7 @@ export default function ProviderConnectionDialog({
       if (removingProtocol) closeProtocolEditor();
       if (selectedIds.has(modelId) && videoCapabilityModelId === modelId) setVideoCapabilityModelId(null);
       if (selectedIds.has(modelId) && imageCapabilityModelId === modelId) setImageCapabilityModelId(null);
-      setSelectedIds((current) => {
+      updateSelectedIds((current) => {
         const next = new Set(current);
         if (next.has(modelId)) next.delete(modelId);
         else next.add(modelId);
@@ -595,7 +609,7 @@ export default function ProviderConnectionDialog({
       ) setVideoCapabilityModelId(null);
       if (allVisibleSelected && imageCapabilityModelId
         && filteredModels.some((model) => model.id === imageCapabilityModelId)) setImageCapabilityModelId(null);
-      setSelectedIds((current) => {
+      updateSelectedIds((current) => {
         const next = new Set(current);
         for (const model of filteredModels) {
           if (allVisibleSelected) next.delete(model.id);
@@ -641,7 +655,7 @@ export default function ProviderConnectionDialog({
     const add = () => {
       if (displacesProtocol) closeProtocolEditor();
       setModels((current) => mergeModels(current, [model]));
-      setSelectedIds((current) => new Set(current).add(id));
+      updateSelectedIds((current) => new Set(current).add(id));
       setManualModelId('');
       setManualModelName('');
       if (definition.id === 'custom-openai' && model.category === 'image') {

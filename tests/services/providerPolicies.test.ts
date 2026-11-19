@@ -39,14 +39,14 @@ describe('厂商接线策略', () => {
   });
 
   it.each([
-    ['cccapi', 'empty', 'fallback', 'ungrouped-only', false],
-    ['toapis', 'fallback', 'fallback', 'deny', true],
-    ['libapi', 'fallback', 'fallback', 'deny', true],
-    ['relayonapi', 'fallback', 'fallback', 'deny', true],
-    ['aigc-si', 'fallback', 'fallback', 'deny', true],
-  ] as const)('%s 分别声明初始目录、刷新和失败规则', (id, create, edit, fallback, keyChange) => {
+    ['cccapi', 'empty', 'fallback', 'replace', 'ungrouped-only', false],
+    ['toapis', 'fallback', 'fallback', 'replace-unselected', 'deny', true],
+    ['libapi', 'fallback', 'fallback', 'replace', 'deny', true],
+    ['relayonapi', 'fallback', 'fallback', 'replace-unselected', 'deny', true],
+    ['aigc-si', 'fallback', 'fallback', 'replace', 'deny', true],
+  ] as const)('%s 分别声明初始目录、刷新和失败规则', (id, create, edit, refresh, fallback, keyChange) => {
     expect(getProviderPolicy(id).catalog).toEqual({ initialModelsOnCreate: create,
-      initialModelsOnEdit: edit, refresh: 'replace', fallback,
+      initialModelsOnEdit: edit, refresh, fallback,
       invalidateOnKeyChange: keyChange, connectionTest: 'catalog' });
   });
 

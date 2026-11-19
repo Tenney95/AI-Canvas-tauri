@@ -334,6 +334,7 @@ const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = ([
     description: '国内站与国际站共用账号和 API Key，按所选站点拉取可用模型。',
     badgeText: 'T', authType: 'api-key', catalogAdapter: 'openai-compatible',
     defaultBaseUrl: TOAPIS_BASE_URL, modelsPath: '/models', allowCustomBaseUrl: false,
+    requestQuery: { type: 'all' },
     externalUrl: 'https://toapis.cn/login?aff=SnMr',
     credentials: [{ ...API_KEY_FIELD, placeholder: 'sk-...' }], models: TOAPIS_MODEL_MANIFEST,
   },
@@ -988,21 +989,26 @@ async function fetchOpenAiCompatibleCatalog(
   throw lastError instanceof Error ? lastError : new Error('模型列表拉取失败');
 }
 
-/** 先校验 Key 可访问目录；公开技能目录仅排退役，不保证生成或文件权限，也不携带凭据。 */
+/** 用公开逻辑目录筛选未退役型号；生成和文件权限仍以调用结果为准。 */
 async function matchActiveLibapiCatalog(
   models: ProviderModelSelection[],
   baseUrl: string,
   signal?: AbortSignal,
 ): Promise<ProviderModelSelection[]> {
-  const response = await corsSafeFetch(`${baseUrl}/skills/models`, { method: 'GET', signal });
+  const response = await corsSafeFetch(`${baseUrl}/logical-models`, { method: 'GET', credentials: 'omit', signal });
   if (!response.ok) throw new Error(`模型列表拉取失败 (HTTP ${response.status})`);
   const payload: unknown = await response.json().catch(() => null);
-  const activeIds = new Set(readCatalogItems(payload).flatMap((item) => {
+  const logicalModels = readCatalogItems(payload).flatMap((item) => {
     if (!item || typeof item !== 'object') return [];
-    const name = (item as Record<string, unknown>).name;
-    return typeof name === 'string' && name.trim() ? [name.trim()] : [];
-  }));
-  if (activeIds.size === 0) throw new Error('模型列表拉取失败 (HTTP 200)');
+    const { id, public_id: publicId, deprecated } = item as Record<string, unknown>;
+    if (typeof id !== 'string' || !id.trim()) return [];
+    const internalId = id.trim();
+    const knownId = resolveLibapiModelId(internalId)
+      ?? (typeof publicId === 'string' ? resolveLibapiModelId(publicId.trim()) : undefined);
+    return [{ id: knownId ?? internalId, deprecated: deprecated === true }];
+  });
+  if (logicalModels.length === 0) throw new Error('模型列表拉取失败 (HTTP 200)');
+  const activeIds = new Set(logicalModels.filter((model) => !model.deprecated).map((model) => model.id));
   return matchLibapiCatalog(models.filter((model) => {
     const id = resolveLibapiModelId(model.id);
     return id !== undefined && activeIds.has(id);
@@ -1073,7 +1079,7 @@ export async function fetchProviderModelCatalog(
         source: 'remote',
         resolvedBaseUrl: baseUrl,
         ...(models.some((model) => !matched.some((known) => known.id === model.id))
-          ? { warning: '已获取官方目录，仅展示仍在售且已适配的文本、图片、视频与音频型号；尚无完整调用合同的型号暂不展示。' }
+          ? { warning: '已获取官方目录，仅展示未退役且已适配的文本、图片、视频与音频型号。' }
           : {}),
       };
     }

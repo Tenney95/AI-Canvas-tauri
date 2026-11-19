@@ -76,6 +76,55 @@ beforeEach(() => {
 });
 
 describe('万象分组连接', () => {
+  it('旧 Claude 分组可在当前分组下拉取，保存时保留原连接 ID、Key 和已选配置', async () => {
+    const id = 'relayon-legacy-claude';
+    const selected = { id: 'claude-opus-5-5', name: '手工 Claude 名称', category: 'text' as const, provider: id,
+      executionProfile: { preset: 'openai-chat' as const } };
+    const original = { name: '我的旧 Claude 连接', apiKey: 'legacy-claude-fixture', catalogId: 'relayonapi',
+      relayonGroup: 'ClaudeMax号池', selectedModels: [selected] };
+    props.providerConfigs = { [id]: original };
+    render();
+    expect(field('ClaudeMax号池 API Key')).toBeUndefined();
+    expect(field('Claudekiro号池 API Key').props.value).toBe(original.apiKey);
+    expect(field(`所属分组 ${id}`).props.value).toBe('Claudekiro号池');
+    expect(field('启用 Claudekiro号池 claude-opus-5-5').props.checked).toBe(true);
+    expect(field(`编辑模型参数 ${id}`).props.disabled).toBe(false);
+    await save();
+    expect(props.onSave).toHaveBeenCalledExactlyOnceWith({});
+
+    driver.catalog.mockResolvedValue({ models: [], source: 'remote' });
+    await (field('拉取模型 Claudekiro号池').props.onClick as () => Promise<void>)(); render();
+    expect(driver.catalog).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      providerId: id, config: expect.objectContaining({ apiKey: original.apiKey }),
+    }));
+    expect(field('启用 Claudekiro号池 claude-opus-5-5').props.checked).toBe(true);
+    await save();
+    const changes = vi.mocked(props.onSave).mock.calls[1][0];
+    expect(Object.keys(changes)).toEqual([id]);
+    expect(changes[id]).toMatchObject({ ...original, catalogModels: [selected] });
+  });
+
+  it('同时存在新旧 Claude 分组连接时，各自保留 Key 和勾选', async () => {
+    const legacyId = 'relay-legacy-claude';
+    const currentId = 'relay-current-claude';
+    props.providerConfigs = {
+      [legacyId]: { name: '旧 Claude 连接', catalogId: 'relayonapi', relayonGroup: 'ClaudeMax号池', apiKey: 'legacy-fixture',
+        selectedModels: [{ id: 'claude-opus-5-5', name: 'Claude Opus 5.5', category: 'text', provider: legacyId }] },
+      [currentId]: { name: '当前 Claude 连接', catalogId: 'relayonapi', relayonGroup: 'Claudekiro号池', apiKey: 'current-fixture',
+        selectedModels: [{ id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', category: 'text', provider: currentId }] },
+    };
+    render();
+    const rows = elements(tree).filter((item) => item.type === 'section' && item.props['aria-label'] === 'Claudekiro号池');
+    expect(rows).toHaveLength(2);
+    for (const [id, connection] of Object.entries(props.providerConfigs)) {
+      const fields = elements(rows.find((row) => row.key === id));
+      expect(fields.find((item) => item.props['aria-label'] === 'Claudekiro号池 API Key')?.props.value).toBe(connection.apiKey);
+      expect(fields.find((item) => item.props['aria-label'] === `启用 Claudekiro号池 ${connection.selectedModels?.[0].id}`)?.props.checked).toBe(true);
+    }
+    await save();
+    expect(props.onSave).toHaveBeenCalledExactlyOnceWith({});
+  });
+
   it('shows six groups with independent preset models and saves separate keys and identities', async () => {
     render();
     for (const group of RELAYON_PROVIDER_GROUPS) expect(field(`${group.name} API Key`)).toBeDefined();

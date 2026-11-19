@@ -9,7 +9,7 @@
 ## 官方依据与接入边界
 
 - [官方文档](https://libapi.cc/zh-CN/api-docs)、[OpenAPI](https://libapi.cc/openapi.json)、[逻辑模型与参数目录](https://libapi.cc/v1/logical-models)于本日只读核对。目录包含 126 个活跃型号；官方目录原含 55 个文本型号；按用户要求，仅保留此前主流清单中该平台已公布的 8 个文本型号，另接入 22 个图片、31 个视频和 6 个音频型号，其他专用任务未加入。参数为本日合同快照，后续变化需复核，不对任意新模型自动生成合同。
-- 官方 `public_id` 与内部 `id` 均可调用；目录匹配去重并保留认证接口实际返回的请求 ID 与本地连接身份。公开模型列表仅排除退役，既不接收 Key，也不保证该 Key 的生成、上传权限或渠道供给。
+- 官方 `public_id` 与内部 `id` 均可调用。目录按型号去重，保留认证接口实际返回的请求 ID 与本地连接身份。当前目录请求与筛选规则见下方目录鉴权修复。
 - 文本白名单：`gemini-3.8-flash`、`gemini-4-argon`、`qwen3.8-flash`、`deepseek-v4.1-flash`、`gpt-6.1-sol`、`grok-4.7`、`claude-opus-5-5`、`glm-5.3-flash`，按平台实际内部 ID／公开别名匹配；原清单中的 `qwen3.8-27b` 未在该平台目录公布，不补造。缩减只影响本内置目录候选，不直接清理用户已保存的配置。
 - 标准文本使用 `/v1/chat/completions`；图片、视频和音频使用 `POST /api/v1/model-runtime/invoke`，请求为 `{model_id, modality, params}`，图片／音乐带 `operation:generate`，语音带 `operation:speech`；图片／视频／音乐提示词在 `params.prompt`，语音正文在 `params.input`。提交读取顶层 `task_id`，查询 `GET /v1/tasks/{{submit.task_id}}`；`completed` 读取 `output_url`，`failed` 读取 `error`，其他状态继续查询。
 - 每 3 秒查询，最长两小时，仅瞬时查询错误有限重试。生成 POST 不自动重试，不新增跨站重试；既有 PendingTask 保留原任务，保存和回填成功后清理。未拿到任务 ID 的中断仍显示提交状态未知，不能保证服务端未受理。
@@ -66,6 +66,12 @@
 定向桌面验收：使用包含本次代码的 Tauri 构建，在设置中准备名称不同、Key 不同的测试连接，选择其中一条的 LibAPI 视频模型并引用一张本地图片。分别核对无「文件」权限、Key 已停用、无效 Key 的错误提示；提示应对应权限、停用和认证，不能互相混淆。若平台返回请求 ID，应能用于官方调用日志定位，提示中不应出现密钥、素材地址或服务端网页正文。上传失败时，该次依赖参考图的生成不应继续提交；用户自行开启正确权限后再主动验收成功上传和生成。网页拒绝、超大／无效 JSON、未知原因和取消由现有测试夹具覆盖，回归源码未执行。
 
 本次定向回归命令（供用户执行，仓库根目录）：`npx vitest run tests/services/modelRequestTransport.test.ts`。仅凭本次文档与源码核对，尚未取得截图对应请求的服务端错误码，不能宣称已经修复该 Key 的实际 403。
+
+## 2026-11-19 目录鉴权修复
+
+「验证连接」和「拉取模型」共用目录请求。`GET /v1/models` 使用当前输入的 Bearer Key，成功后请求免鉴权的 `GET /v1/logical-models`。按目录的 `id`／`public_id` 匹配已适配型号并排除 `deprecated: true`，保留认证列表返回的调用 ID。任一步请求失败都保留已有选项。官方 `/v1/skills/models` 现要求鉴权，匿名请求实测返回 `401 missing_api_key`，公开 `/v1/logical-models` 实测返回 `200`。 [LibAPI OpenAPI](https://libapi.cc/openapi.json)
+
+代码和回归用例已更新，待用户验证。本次未运行测试。桌面验收时在同一条 LibAPI 连接里用有效 Key 分别点击两个按钮，预期均能刷新已适配的未退役型号；换成无效 Key 后重试，预期报错并保留已有勾选。定向回归可在仓库根目录运行 `npx vitest run tests/services/providerCatalogService.test.ts`。
 
 ## Tauri 桌面验收
 

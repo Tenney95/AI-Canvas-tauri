@@ -57,7 +57,16 @@ function click(text: string) {
 beforeEach(() => {
   driver.scope = { values: [], index: 0 }; driver.catalog.mockReset(); driver.external.mockReset();
   vi.stubGlobal('document', { body: {} });
-  const selected = getProviderDefinition('toapis')!.models!.find((model) => model.id === 'gpt-image-2')!;
+  const model = getProviderDefinition('toapis')!.models!.find((item) => item.id === 'gpt-image-2')!;
+  const selected: ProviderModelSelection = {
+    ...model,
+    imageCapability: { ...model.imageCapability, maxBatchCount: 2 },
+    executionProfile: { preset: 'custom', protocol: { version: 2, mode: 'sync',
+      submit: { method: 'POST', path: '/user/images', body: { model: '{{model}}', prompt: '{{prompt}}',
+        size: '{{aspectRatio}}', resolution: '{{imageSize}}', n: '{{n}}', reference_images: '{{imageUrls}}' } },
+      response: { type: 'json', result: { urlPath: 'data.*.url' } },
+    } },
+  };
   const config = { name: 'ToAPIs', catalogId: 'toapis', apiKey: 'shared-fixture', baseUrl: 'https://toapis.cn/v1', selectedModels: [selected] };
   props = { isOpen: true, connectionId: 'toapis-user', initialConfig: config,
     providerConfigs: { 'toapis-user': config }, connectedProviderIds: ['toapis'],
@@ -69,10 +78,17 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('ToAPIs 国内与国际站共用凭据', () => {
-  it('切换保留同一份 Key 和选择，保存所选站点，邀请链接随站点改变', () => {
-    render(); form().setBaseUrl('https://toapis.com/v1'); render();
+  it('打开和切换站点保留同一份 Key 与已选自定义模型，邀请链接随站点改变', () => {
+    render();
+    const selected = props.initialConfig!.selectedModels![0];
+    expect(section().selectedModels).toEqual([expect.objectContaining({
+      id: selected.id, executionProfile: selected.executionProfile, imageCapability: selected.imageCapability,
+    })]);
+    form().setBaseUrl('https://toapis.com/v1'); render();
     expect(form().apiKey).toBe('shared-fixture');
-    expect(section().selectedModels.map((model) => model.id)).toEqual(['gpt-image-2']);
+    expect(section().selectedModels).toEqual([expect.objectContaining({
+      id: selected.id, executionProfile: selected.executionProfile, imageCapability: selected.imageCapability,
+    })]);
     const content = ProviderConnectionForm(form());
     const external = elements(content).find((element) => element.props.className === 'provider-external-link')!;
     (external.props.onClick as () => void)();
@@ -80,6 +96,9 @@ describe('ToAPIs 国内与国际站共用凭据', () => {
     click('保存更改');
     expect(props.onSave).toHaveBeenCalledWith('toapis-user', expect.objectContaining({
       catalogId: 'toapis', baseUrl: 'https://toapis.com/v1', apiKey: 'shared-fixture',
+      selectedModels: [expect.objectContaining({
+        id: selected.id, provider: 'toapis-user', executionProfile: selected.executionProfile, imageCapability: selected.imageCapability,
+      })],
     }), undefined);
   });
 
@@ -90,7 +109,7 @@ describe('ToAPIs 国内与国际站共用凭据', () => {
     expect(props.initialConfig).toMatchObject({ baseUrl: 'https://toapis.cn/v1', apiKey: 'shared-fixture' });
   });
 
-  it('切换会取消旧站请求，迟到结果不能覆盖新站目录，旧站独有选择不残留', async () => {
+  it('切换会取消旧站请求，新站目录缺失已选模型时保留原勾选和配置', async () => {
     let finish!: (result: unknown) => void;
     driver.catalog.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
     render(); const old = section().onFetchModels(); render();
@@ -103,9 +122,32 @@ describe('ToAPIs 国内与国际站共用凭据', () => {
     await section().onFetchModels(); render();
     finish({ source: 'remote', models: [{ id: 'stale-image', name: 'Stale', provider: 'toapis', category: 'image' }] });
     await old; render();
-    expect(section().models.map((model) => model.id)).toEqual(['grok-4.7']);
-    expect(section().selectedModels).toEqual([]);
+    const selected = props.initialConfig!.selectedModels![0];
+    expect(section().models.map((model) => model.id)).toEqual(['gpt-image-2', 'grok-4.7']);
+    expect(section().selectedModels).toEqual([expect.objectContaining({
+      id: selected.id, executionProfile: selected.executionProfile, imageCapability: selected.imageCapability,
+    })]);
+    click('保存更改');
+    expect(props.onSave).toHaveBeenCalledWith('toapis-user', expect.objectContaining({
+      baseUrl: 'https://toapis.com/v1', apiKey: 'shared-fixture', selectedModels: [expect.objectContaining({
+        id: selected.id, provider: 'toapis-user', executionProfile: selected.executionProfile, imageCapability: selected.imageCapability,
+      })],
+    }), undefined);
     expect(driver.catalog.mock.calls[1][0].config).toMatchObject({ baseUrl: 'https://toapis.com/v1', apiKey: 'shared-fixture' });
+  });
+
+  it('目录刷新保留请求期间新勾选的模型', async () => {
+    let finish!: (result: unknown) => void;
+    driver.catalog.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    render();
+    const pending = section().onFetchModels();
+    render();
+    section().onToggleModel('seedance-2-5');
+    finish({ source: 'remote', models: [props.initialConfig!.selectedModels![0]] });
+    await pending;
+    render();
+    expect(section().selectedModels.map((model) => model.id)).toEqual(['gpt-image-2', 'seedance-2-5']);
+    expect(form().catalogStatus).toBe('warning');
   });
 
   it('修改 Key 会取消旧目录请求，旧 Key 的迟到结果不能标为验证成功', async () => {
@@ -198,10 +240,12 @@ describe('厂商目录策略保持已有交互', () => {
     driver.catalog.mockResolvedValueOnce({ source: 'remote', models: [fixtureModel('kept'), fixtureModel('new')] });
     await section().onFetchModels();
     render();
-    const replacing = catalogId !== 'custom-openai';
-    expect(section().models.map((model) => model.id)).toEqual(replacing ? ['kept', 'new'] : [...before, 'new']);
-    expect(section().selectedModels.map((model) => model.id)).toEqual(replacing ? ['kept'] : ['kept', 'retired']);
-    expect(form().catalogStatus).toBe('ready');
+    const expectedModels = {
+      toapis: ['kept', 'retired', 'new'], libapi: ['kept', 'new'], 'custom-openai': [...before, 'new'],
+    }[catalogId];
+    expect(section().models.map((model) => model.id)).toEqual(expectedModels);
+    expect(section().selectedModels.map((model) => model.id)).toEqual(catalogId === 'libapi' ? ['kept'] : ['kept', 'retired']);
+    expect(form().catalogStatus).toBe(catalogId === 'toapis' ? 'warning' : 'ready');
   });
 
   it.each(['toapis', 'libapi'] as const)('%s 的验证连接沿用目录拉取与权限刷新', async (catalogId) => {
@@ -213,8 +257,35 @@ describe('厂商目录策略保持已有交互', () => {
     expect(driver.catalog).toHaveBeenCalledOnce();
     expect(driver.catalog.mock.calls[0][0]).toMatchObject({ providerId: catalogId,
       config: { catalogId, apiKey: 'fixture' } });
-    expect(section().models.map((model) => model.id)).toEqual(['kept']);
-    expect(section().selectedModels.map((model) => model.id)).toEqual(['kept']);
+    const expected = catalogId === 'toapis' ? ['kept', 'retired'] : ['kept'];
+    expect(section().models.map((model) => model.id)).toEqual(expected);
+    expect(section().selectedModels.map((model) => model.id)).toEqual(expected);
+  });
+
+  it('万象编辑模型参数沿用原连接的分组和 Key，保留目录未返回的勾选', async () => {
+    const connectionId = 'my-claude-connection';
+    const selected = { ...fixtureModel('claude-opus-5-5'), provider: connectionId };
+    const config = { name: '旧 Claude 连接', catalogId: 'relayonapi', relayonGroup: 'ClaudeMax号池',
+      apiKey: 'legacy-relay-fixture', baseUrl: 'https://relayonapi.com/v1', selectedModels: [selected] };
+    props = { ...props, connectionId, initialConfig: config, providerConfigs: { [connectionId]: config },
+      forceSingleGroupEdit: true, fallbackModels: { relayonapi: [...getProviderDefinition('relayonapi')!.models!] } };
+    render();
+    driver.catalog.mockResolvedValue({ source: 'remote', models: [] });
+    await form().onTestConnection();
+    render();
+    await section().onFetchModels();
+    render();
+    expect(driver.catalog).toHaveBeenCalledTimes(2);
+    for (const [request] of driver.catalog.mock.calls) {
+      expect(request).toMatchObject({ providerId: connectionId,
+        config: { catalogId: config.catalogId, relayonGroup: config.relayonGroup, apiKey: config.apiKey, baseUrl: config.baseUrl } });
+    }
+    expect(form().catalogStatus).toBe('warning');
+    expect(section().selectedModels).toEqual([expect.objectContaining(selected)]);
+    await click('保存更改');
+    expect(props.onSave).toHaveBeenCalledWith(connectionId, expect.objectContaining({
+      relayonGroup: config.relayonGroup, apiKey: config.apiKey, selectedModels: [expect.objectContaining(selected)],
+    }), undefined);
   });
 
   it('LibAPI 修改 Key 同样取消旧请求，旧权限的迟到目录不能污染新 Key', async () => {

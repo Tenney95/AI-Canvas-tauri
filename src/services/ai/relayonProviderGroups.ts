@@ -26,9 +26,17 @@ export function isRelayonOfficialBaseUrl(value: string): boolean {
   }
 }
 
+const CLAUDE_GROUP = 'Claudekiro号池';
+
+/** 旧分组名继续对应当前目录，存储的连接身份与配置无需迁移。 */
+export function resolveRelayonGroup(group?: string): string | undefined {
+  const name = group?.trim();
+  return name === 'ClaudeMax号池' ? CLAUDE_GROUP : name || undefined;
+}
+
 /** 官网分组快照，候选不代表 Key 已验证或具有全部权限。 */
 export const RELAYON_PROVIDER_GROUPS = [
-  { name: 'ClaudeMax号池', description: 'Claude 文本模型分组' },
+  { name: CLAUDE_GROUP, description: 'Claude 文本模型分组' },
   { name: 'GPTpro号池', description: 'GPT 文本模型分组' },
   { name: 'Gemini号池', description: 'Gemini 文本模型分组' },
   { name: 'default', description: '默认分组' },
@@ -37,7 +45,7 @@ export const RELAYON_PROVIDER_GROUPS = [
 ] as const;
 
 const GROUP_PRESETS: Record<string, readonly string[]> = {
-  'ClaudeMax号池': ['claude-opus-5-5'],
+  [CLAUDE_GROUP]: ['claude-opus-5-5'],
   'GPTpro号池': ['gpt-6.1-sol'],
   'Gemini号池': ['gemini-3.8-flash', 'gemini-4-argon'],
   default: [],
@@ -46,13 +54,15 @@ const GROUP_PRESETS: Record<string, readonly string[]> = {
 };
 
 export function getRelayonGroupPresetModels(models: readonly ProviderModelSelection[], group?: string): ProviderModelSelection[] {
-  if (!group?.trim()) return [...models];
-  const ids = new Set(GROUP_PRESETS[group.trim()] ?? []);
+  const name = resolveRelayonGroup(group);
+  if (!name) return [...models];
+  const ids = new Set(GROUP_PRESETS[name] ?? []);
   return models.filter((model) => ids.has(model.id));
 }
 
 export function relayonConnectionName(config?: Pick<ApiProviderConfig, 'relayonGroup'>): string {
-  return config?.relayonGroup?.trim() ? `万象 API · ${config.relayonGroup.trim()}` : '万象 API（RelayOnAPI）';
+  const group = resolveRelayonGroup(config?.relayonGroup);
+  return group ? `万象 API · ${group}` : '万象 API（RelayOnAPI）';
 }
 
 /** 仅接受完整的公开定价目录，异常时交给调用方保留已保存目录。 */
@@ -64,6 +74,7 @@ export function filterRelayonGroupPricing(
   if (data.success !== true || !Array.isArray(data.data) || data.data.length === 0) {
     throw new Error('万象分组目录无效');
   }
+  const name = resolveRelayonGroup(group);
   const ids = new Set<string>();
   for (const item of data.data as unknown[]) {
     if (!item || typeof item !== 'object') throw new Error('万象分组目录无效');
@@ -72,7 +83,7 @@ export function filterRelayonGroupPricing(
       || !Array.isArray(entry.enable_groups) || !entry.enable_groups.every((value: unknown) => typeof value === 'string')) {
       throw new Error('万象分组目录无效');
     }
-    if (entry.enable_groups.includes(group)) ids.add(entry.model_name);
+    if (entry.enable_groups.includes(name)) ids.add(entry.model_name);
   }
   return models.filter((model) => ids.has(model.id));
 }

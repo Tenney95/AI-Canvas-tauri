@@ -12,7 +12,7 @@ import { CCCAPI_BASE_URL, RUNNINGHUB_API_SITES, TOAPIS_API_SITES } from '../../.
 import { normalizeBaseUrl } from '../../../services/ai/providerBaseUrl';
 import { runningHubSiteId } from '../../../services/runninghubSiteCredentials';
 import { CCC_PROVIDER_GROUPS, cccConnectionName, getCccGroupPresetModels, isCccBananaGroup, isCccBananaModelId } from '../../../services/ai/cccProviderGroups';
-import { RELAYON_PROVIDER_GROUPS, relayonConnectionName, getRelayonGroupPresetModels, relayonGroupBaseUrl } from '../../../services/ai/relayonProviderGroups';
+import { RELAYON_PROVIDER_GROUPS, relayonConnectionName, getRelayonGroupPresetModels, relayonGroupBaseUrl, resolveRelayonGroup } from '../../../services/ai/relayonProviderGroups';
 import { capCatalogModels, createConnectionId, fetchProviderModelCatalog, getProviderDefinition, type ProviderDefinition } from '../../../services/ai/providerCatalogService';
 import AnimatedButton from '../../shared/AnimatedButton';
 import MuseAccountControls from '../MuseAccountControls';
@@ -48,7 +48,7 @@ export function CccGroupConnectionsForm({ providerConfigs, presetModels, onSave,
   const isRelay = provider === 'relayonapi';
   const externalUrl = getProviderDefinition(provider)?.externalUrl;
   const groupDefinitions = isRelay ? RELAYON_PROVIDER_GROUPS : CCC_PROVIDER_GROUPS;
-  const groupOf = (config: ApiProviderConfig) => isRelay ? config.relayonGroup : config.cccGroup;
+  const groupOf = (config: ApiProviderConfig) => isRelay ? resolveRelayonGroup(config.relayonGroup) : config.cccGroup;
   const groupPresetModels = (group?: string) => isRelay ? getRelayonGroupPresetModels(presetModels, group) : getCccGroupPresetModels(presetModels, group);
   const newConfig = (group?: string): ApiProviderConfig => isRelay
     ? { name: relayonConnectionName({ relayonGroup: group }), apiKey: '', catalogId: provider, relayonGroup: group, baseUrl: relayonGroupBaseUrl(group) }
@@ -237,7 +237,8 @@ export function CccGroupConnectionsForm({ providerConfigs, presetModels, onSave,
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {rows.map((row) => {
-          const group = groupOf(row.config) || t('旧连接（未指定分组）');
+          const groupName = groupOf(row.config);
+          const group = groupName || t('旧连接（未指定分组）');
           const currentModelIds = row.currentModelIds;
           const currentModels = currentModelIds ? row.models.filter((model) => currentModelIds.has(model.id)) : row.models;
           const currentSelectedCount = currentModels.filter((model) => row.selectedIds.has(model.id)).length;
@@ -253,11 +254,11 @@ export function CccGroupConnectionsForm({ providerConfigs, presetModels, onSave,
               {isRelay && row.existing && <p className="ui-hint break-all">{row.config.name} · {row.id}</p>}
               {isRelay && row.existing && <label className="ui-field block">
                 <span className="ui-label">{t('所属分组')}</span>
-                <Select aria-label={`${t('所属分组')} ${row.id}`} value={row.config.relayonGroup || ''} disabled={busy}
+                <Select aria-label={`${t('所属分组')} ${row.id}`} value={groupName || ''} disabled={busy}
                   onChange={(value) => updateRelayGroup(row.id, value)} options={[
                     { value: '', label: t('旧连接（未指定分组）') },
-                    ...(row.config.relayonGroup && !groupDefinitions.some((item) => item.name === row.config.relayonGroup)
-                      ? [{ value: row.config.relayonGroup, label: row.config.relayonGroup }] : []),
+                    ...(groupName && !groupDefinitions.some((item) => item.name === groupName)
+                      ? [{ value: groupName, label: groupName }] : []),
                     ...groupDefinitions.map((item) => ({ value: item.name, label: item.name })),
                   ]} />
               </label>}

@@ -10,7 +10,7 @@ export interface ProviderPolicy {
   readonly catalog: {
     readonly initialModelsOnCreate: 'fallback' | 'empty';
     readonly initialModelsOnEdit: 'fallback' | 'empty';
-    readonly refresh: 'merge' | 'replace';
+    readonly refresh: 'merge' | 'replace' | 'replace-unselected';
     readonly fallback: 'allow' | 'deny' | 'ungrouped-only';
     readonly invalidateOnKeyChange: boolean;
     readonly connectionTest: 'default' | 'catalog';
@@ -51,7 +51,7 @@ const POLICY_OVERRIDES: Record<string, PolicyOverrides> = {
     catalog: { initialModelsOnCreate: 'empty', refresh: 'replace', fallback: 'ungrouped-only', connectionTest: 'catalog' } },
   toapis: { syncGeneralModels: true,
     modelMenuGroup: { scope: 'connection', description: '使用连接中选择的国内站或国际站' },
-    catalog: { refresh: 'replace', fallback: 'deny', invalidateOnKeyChange: true, connectionTest: 'catalog' },
+    catalog: { refresh: 'replace-unselected', fallback: 'deny', invalidateOnKeyChange: true, connectionTest: 'catalog' },
     upload: 'toapis', publicUploadFallback: 'deny' },
   libapi: { syncGeneralModels: true,
     modelMenuGroup: { scope: 'connection', description: '使用当前 LibAPI 连接中启用的模型' },
@@ -59,7 +59,7 @@ const POLICY_OVERRIDES: Record<string, PolicyOverrides> = {
     upload: 'libapi', publicUploadFallback: 'deny' },
   relayonapi: { syncGeneralModels: true,
     modelMenuGroup: { scope: 'catalog', description: '按模型所属分组使用对应的 API Key' },
-    catalog: { refresh: 'replace', fallback: 'deny', invalidateOnKeyChange: true, connectionTest: 'catalog' },
+    catalog: { refresh: 'replace-unselected', fallback: 'deny', invalidateOnKeyChange: true, connectionTest: 'catalog' },
     referenceTransport: 'request-files', publicUploadFallback: 'deny', submitIdempotency: true },
   'aigc-si': { syncGeneralModels: true,
     modelMenuGroup: { scope: 'connection', description: '使用当前 Amam 连接中启用的图片与视频模型' },

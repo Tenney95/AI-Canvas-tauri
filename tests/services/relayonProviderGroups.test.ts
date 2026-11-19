@@ -1,8 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { getRelayonGroupPresetModels, isRelayonOfficialBaseUrl, relayonGroupBaseUrl, resolveRelayonImageBaseUrl } from '../../src/services/ai/relayonProviderGroups';
+import { filterRelayonGroupPricing, getRelayonGroupPresetModels, isRelayonOfficialBaseUrl, relayonGroupBaseUrl, resolveRelayonImageBaseUrl } from '../../src/services/ai/relayonProviderGroups';
 import { RELAYON_MODEL_MANIFEST } from '../../src/services/ai/providers/relayonModelManifest';
 
 describe('万象媒体新地址与旧官方来源兼容', () => {
+  it.each(['Claudekiro号池', ' ClaudeMax号池 '])('Claude 分组 %s 匹配当前官方分组与已适配候选', (group) => {
+    const payload = { success: true, data: [
+      { model_name: 'claude-opus-5-5', enable_groups: ['Claudekiro号池'] },
+      { model_name: 'gpt-6.1-sol', enable_groups: ['GPTpro号池'] },
+      { model_name: 'claude-fable-5-1', enable_groups: ['Claudekiro号池'] },
+    ] };
+    expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, group).map((model) => model.id)).toEqual(['claude-opus-5-5']);
+    expect(filterRelayonGroupPricing(RELAYON_MODEL_MANIFEST, group, payload).map((model) => model.id)).toEqual(['claude-opus-5-5']);
+  });
+
   it('两款2.6格式变体只进入image分组，不扩大其他分组权限', () => {
     for (const id of ['image-2.6-flare-01', 'image-2.6-sunburst-01']) {
       expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, 'image').some((model) => model.id === id)).toBe(true);
