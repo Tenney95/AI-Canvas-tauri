@@ -57,6 +57,14 @@
       "identifier": "fs:scope",
       "allow": [
         { "path": "$APPDATA/**" }
+      ],
+      "deny": [
+        { "path": "$DATA/AI Canvas WSAGENT" },
+        { "path": "$DATA/AI Canvas WSAGENT/**" },
+        { "path": "$APPDATA/agent-private/wsagent-shared" },
+        { "path": "$APPDATA/agent-private/wsagent-shared/**" },
+        { "path": "$APPLOCALDATA/agent-private/wsagent-shared" },
+        { "path": "$APPLOCALDATA/agent-private/wsagent-shared/**" }
       ]
     },
     {

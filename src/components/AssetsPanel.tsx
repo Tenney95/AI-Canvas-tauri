@@ -24,7 +24,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from '@iconify/react';
-import { Cloud, RefreshCw } from 'lucide-react';
+import { Cloud, Link2, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence, MotionConfig, useReducedMotion } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
 import { cursorPosition, getCurrentWindow } from '@tauri-apps/api/window';
@@ -90,6 +90,7 @@ const GlobalCreativeAssetsPanel = lazy(() => import('./assets/GlobalCreativeAsse
 const GlobalCreativeAssetFileDialog = lazy(() => import('./assets/GlobalCreativeAssetsPanel').then((module) => ({ default: module.GlobalCreativeAssetFileDialog })));
 const AssetRepairDialog = lazy(() => import('./assets/AssetRepairDialog'));
 const SharedProjectBindingDialog = lazy(() => import('./assets/SharedProjectBindingDialog'));
+const WsagentSharedImagesDialog = lazy(() => import('./assets/WsagentSharedImagesDialog'));
 
 /** 仅磁盘真实文件可拖拽（排除节点引用的 node:// / virtual:// 虚拟路径）*/
 function isDraggableEntry(file: AssetFileEntry): boolean {
@@ -247,8 +248,10 @@ export default function AssetsPanel() {
   const canManageProjectSharing = sharingProjectReady && !!currentOwnerId && currentOwnerId === viewProjectId
     && (visibleTab === 'project' || visibleTab === 'drama');
   const [sharingOwner, setSharingOwner] = useState<{ id: string; name: string; sync?: boolean } | null>(null);
+  const [wsagentOwner, setWsagentOwner] = useState<string>();
   // 视图离开时撤销弹窗，返回旧视图也不能重新打开已取消的操作。
   if (sharingOwner && (!assetsPanelOpen || !canManageProjectSharing || sharingOwner.id !== sharingOwnerId)) setSharingOwner(null);
+  if (wsagentOwner && (!assetsPanelOpen || !canManageProjectSharing || wsagentOwner !== sharingOwnerId)) setWsagentOwner(undefined);
   const viewProjectIds = useAppStore(useShallow((state) => viewProjectId
     ? [viewProjectId, ...listEpisodes(state.projects, viewProjectId).map((project) => project.id)] : []));
   const nativeFileOwner = (projects.find((project) => project.id === viewProjectId) as Partial<NativeProjectViewItem> | undefined)
@@ -1463,13 +1466,17 @@ export default function AssetsPanel() {
                 {isPage && <button type="button" autoFocus className="ui-btn ui-btn--ghost ui-btn--sm" onClick={handleClose}>
                   <Icon icon="mdi:arrow-left" width="16" aria-hidden="true" /> {translate("返回启动页")}
                 </button>}
-                <h2 className="assets-panel-title">
+                <h2 className={`assets-panel-title${isDrawer ? ' shrink-0 whitespace-nowrap' : ''}`}>
                   {isPage ? translate('资源库') : isDrawer ? translate('资产库') : translate('资产管理')}
                   {!isDrawer && !isPage && <span className="assets-panel-subtitle">
                     {visibleTab === 'drama' ? translate('管理人物、场景和道具简介与绑图') : visibleTab === 'ark' ? translate('管理火山方舟虚拟人像素材') : visibleTab === 'refmods' ? translate('引用 ComfyUI 中的 H3 角色参考包') : isNodeList ? translate('查看当前画布中的全部节点') : translate('拖拽卡片到画布即可添加节点')}
                   </span>}
                 </h2>
-                {canManageProjectSharing && <div className="ml-auto flex shrink-0 items-center gap-1">
+                {canManageProjectSharing && <div className={`ml-auto flex shrink-0 items-center ${isDrawer ? 'gap-0' : 'gap-1'}`}>
+                  <button type="button" className={isDrawer ? 'ui-icon-btn ui-icon-btn--ghost ui-icon-btn--sm' : 'ui-btn ui-btn--ghost ui-btn--sm'} disabled={!isTauriEnv()}
+                    aria-label={translate('WSAGENT 共享图片')} title={translate('WSAGENT 共享图片')} onClick={() => {
+                    if (sharingOwnerId) setWsagentOwner(sharingOwnerId);
+                  }}><Link2 size={14} aria-hidden="true" />{!isDrawer && translate('WSAGENT 共享图片')}</button>
                   <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" disabled={!isTauriEnv()} onClick={() => {
                     if (sharingOwnerId) setSharingOwner({ id: sharingOwnerId, name: projects.find((project) => project.id === currentOwnerId)?.name ?? '' });
                   }}><Cloud size={14} aria-hidden="true" />{translate('项目共享')}</button>
@@ -1909,6 +1916,10 @@ export default function AssetsPanel() {
     if (loadControllerRef.current) void loadFiles().then(loadTags);
   };
   return <>{presentationPanel}
+    {assetsPanelOpen && wsagentOwner && canManageProjectSharing && wsagentOwner === sharingOwnerId && <Suspense fallback={null}>
+      <WsagentSharedImagesDialog key={wsagentOwner} ownerId={wsagentOwner}
+        ownerName={projects.find((project) => project.id === currentOwnerId)?.name ?? ''} onClose={() => setWsagentOwner(undefined)} />
+    </Suspense>}
     {assetsPanelOpen && sharingOwner && canManageProjectSharing && sharingOwner.id === sharingOwnerId && <Suspense fallback={null}>
       <SharedProjectBindingDialog key={sharingOwner.id} localOwnerId={sharingOwner.id} ownerName={sharingOwner.name} autoPreview={sharingOwner.sync} onClose={() => setSharingOwner(null)} />
     </Suspense>}
@@ -1928,6 +1939,15 @@ export default function AssetsPanel() {
         canFileActions={isLocalAssetFile(fileMenu.file) && isTauriEnv()}
         canCopyPrompt={fileMenu.file.category === 'image' || fileMenu.file.category === 'video'}
         onCopy={() => performFileAction('copy')} onCopyPrompt={() => performFileAction('prompt')}
+        onPublishShared={activeTab === 'project' && canManageProjectSharing && sharingOwnerId && isTauriEnv()
+          && fileMenu.file.category === 'image' && fileMenu.file.availability !== 'offline' && isLocalAssetFile(fileMenu.file) ? async () => {
+            const fileProjectId = projectIdForFile(fileMenu.file);
+            if (!fileProjectId || fileScopeRef.current !== fileMenu.scope) throw new Error('项目文件范围已切换');
+            const { publishWsagentProjectFile } = await import('../services/wsagentSharedImages');
+            if (fileScopeRef.current !== fileMenu.scope) throw new Error('项目文件范围已切换');
+            await publishWsagentProjectFile(sharingOwnerId, fileProjectId, fileMenu.file.path, fileMenu.file.name);
+            toast(translate('图片已发布到 WSAGENT 共享库'));
+          } : undefined}
         onCreateCreativeAsset={fileMenu.file.category === 'image' && fileMenu.file.availability !== 'offline' ? async (kind) => {
           const target = fileMenu;
           fileOperationRef.current?.abort();

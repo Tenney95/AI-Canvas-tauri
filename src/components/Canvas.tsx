@@ -86,6 +86,7 @@ import ViewportImage from './shared/ViewportImage';
 import { getCanvasLockedZoom, normalizeCanvasZoom } from '../utils/canvasViewportPreferences';
 import type { BaseNodeData } from '../types';
 import type { CanvasEdgeDisplayMode } from '../types/canvasEdges';
+import { isWsagentSharedImagesNode } from '../types/wsagentShared';
 import { isShotRowBlank, SHOTLIST_FRAME_SOURCE_TYPES, STORYBOARD_CELL_SOURCE_TYPES } from '../types';
 import type { Node as RFNode, NodeProps, NodeTypes, OnMove } from '@xyflow/react';
 import { useNodeSnap, ResizeSnapContext, type SnapLine } from '../hooks/useNodeSnap';
@@ -1240,7 +1241,8 @@ function CanvasInner({ onReady }: CanvasProps) {
       const isNeverDialogNode =
         liveNode.type === 'group' ||
         liveNode.type === 'canvas-note' ||
-        liveNode.data?.type === 'ai-markdown';
+        liveNode.data?.type === 'ai-markdown' ||
+        isWsagentSharedImagesNode(liveNode.data);
       if (isNeverDialogNode) {
         // 用户已经切换了选中节点，关闭可能仍停留在上一个节点上的对话框，避免浮层卡在错处。
         closeNodeDialog();

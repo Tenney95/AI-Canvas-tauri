@@ -5,7 +5,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { useReactFlow } from '@xyflow/react';
 import type { Node as RFNode, Edge, FinalConnectionState, Connection } from '@xyflow/react';
 import { useAppStore, generateId } from '../store/useAppStore';
-import { isCanvasConnectionValid } from '../store/store.nodes';
+import { getWsagentMediaOutputKind, isCanvasConnectionValid } from '../store/store.nodes';
 import type { BaseNodeData, NodeType } from '../types';
 import { getPreferredNodeModel } from '../services/modelPreferenceService';
 import { createUiNodeData } from '../services/uiNodeCreationData';
@@ -83,6 +83,10 @@ const CONNECTION_MENU_MAP: Record<string, ConnectionMenuOption[]> = {
     { label: '生成视频', type: 'ai-video' },
   ],
   'ai-audio': [
+    { label: '生成文本', type: 'ai-text' },
+    { label: '生成音频', type: 'ai-audio' },
+  ],
+  'source-audio': [
     { label: '生成文本', type: 'ai-text' },
     { label: '生成音频', type: 'ai-audio' },
   ],
@@ -230,6 +234,13 @@ export function useConnectionDropMenu(smoothLine: boolean) {
       const fromNode = connectionState.fromNode as RFNode;
       const sourceType = fromNode.type;
       const sourceHandleId = connectionState.fromHandle?.id ?? null;
+      const state = useAppStore.getState();
+      const wsagentKind = getWsagentMediaOutputKind(state.nodes, fromNode.id, sourceHandleId);
+      if (wsagentKind) {
+        const position = reactFlowInstance.screenToFlowPosition(clientPosition);
+        void state.takeWsagentMediaFromPort(fromNode.id, wsagentKind, undefined, { x: position.x, y: position.y - 80 });
+        return;
+      }
       const direction = sourceHandleId === 'left' ? 'input' : 'output';
       if (!sourceType || getConnectionMenuOptions(sourceType, direction).length === 0) return;
 

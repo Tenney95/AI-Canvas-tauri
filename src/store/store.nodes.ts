@@ -27,6 +27,7 @@ import type {
 import { createCanvasNoteData, STORYBOARD_CELL_SOURCE_TYPES } from '../types';
 import type { MediaGenerationIntent, MediaGenerationParameters, MediaGenerationResult, MediaKind } from '../types/media';
 import { parseShotlistRowMentionId, resolveShotVideoDuration } from '../types/shotlist';
+import { isWsagentSharedImagesNode, type WsagentProjectMediaTarget } from '../types/wsagentShared';
 import { generateId, getNextDisplayId } from './store.utils';
 import { BATCH_NODE_LIMIT } from './store.chat';
 import * as fileService from '../services/fileService';
@@ -96,6 +97,26 @@ export function isCanvasConnectionValid(connection: {
     return sourceHandle !== targetHandle;
   }
   return true;
+}
+
+/** 互联的媒体出口用于取回原件；同名自定义插件端口继续沿用普通连线。 */
+export function getWsagentMediaOutputKind(nodes: Node<BaseNodeData>[], nodeId: string, handle: string | null) {
+  const kind = handle?.startsWith('plugin-out-') ? handle.slice('plugin-out-'.length) : undefined;
+  if ((kind === 'image' || kind === 'video' || kind === 'audio')
+    && isWsagentSharedImagesNode(getCanvasNodeById(nodes, nodeId)?.data)) return kind;
+  return undefined;
+}
+
+function acceptsWsagentMedia(state: AppState, target: WsagentProjectMediaTarget, kind: MediaKind) {
+  const node = getCanvasNodeById(state.nodes, target.nodeId);
+  if (!node) return false;
+  if (node.data.type !== 'plugin-node') return target.targetHandle === 'left' && isBatchConnectableNode(node);
+  const handle = target.targetHandle;
+  if (!handle?.startsWith('plugin-in-')) return false;
+  const plugin = state.installedPlugins.find((item) => item.enabled && item.id === node.data.pluginId);
+  const contribution = plugin?.manifest.contributes.nodes?.find((item) => item.id === node.data.pluginNodeId);
+  const port = contribution?.inputs.find((item) => item.id === handle.slice('plugin-in-'.length));
+  return port?.type === kind || port?.type === 'resource';
 }
 
 const BATCH_CONNECTABLE_TYPES = new Set([
@@ -923,6 +944,8 @@ export interface NodeSlice {
   /** 手工删除完整选区（不限节点数，包含独立选边）；有目标时立即清选择。 */
   deleteSelectedCanvasElements: () => boolean;
   onConnect: (connection: Connection) => void;
+  takeWsagentMediaFromPort: (sourceNodeId: string, kind: MediaKind, target?: WsagentProjectMediaTarget,
+    position?: { x: number; y: number }) => Promise<void>;
   connectSelectedNodes: (sourceIds: string[], targetId: string, projectId: string | null) => number;
   addNodeFromSelection: (node: Node<BaseNodeData>, sourceIds: string[], projectId: string | null) => boolean;
   onNodesChange: (changes: NodeChange<Node<BaseNodeData>>[]) => void;
@@ -1788,6 +1811,19 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
   },
 
   onConnect: (connection) => {
+    const { nodes } = get();
+    const forwardKind = getWsagentMediaOutputKind(nodes, connection.source, connection.sourceHandle);
+    if (forwardKind) {
+      void get().takeWsagentMediaFromPort(connection.source, forwardKind,
+        { nodeId: connection.target, targetHandle: connection.targetHandle });
+      return;
+    }
+    const reverseKind = getWsagentMediaOutputKind(nodes, connection.target, connection.targetHandle);
+    if (reverseKind) {
+      void get().takeWsagentMediaFromPort(connection.target, reverseKind,
+        { nodeId: connection.source, targetHandle: connection.sourceHandle });
+      return;
+    }
     // Loose 模式允许从任一端开始拖拽；持久化前统一为「右侧输出 → 左侧输入」。
     const normalized = normalizeCanvasConnection(connection);
     if (!normalized) return;
@@ -1801,6 +1837,36 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
       const connected = appendConnectionMentions(state.nodes, [edge], state.config?.autoMentionOnConnect, state.activeNodeId);
       return { nodes: connected.nodes, edges: [...state.edges, ...connected.edges] };
     });
+  },
+
+  takeWsagentMediaFromPort: async (sourceNodeId, kind, target, position) => {
+    const initial = get();
+    const source = getCanvasNodeById(initial.nodes, sourceNodeId);
+    if (!source || !isWsagentSharedImagesNode(source.data)) return;
+    if (target && (target.nodeId === sourceNodeId || !acceptsWsagentMedia(initial, target, kind))) {
+      initial.showToast('请连接支持该素材类型的输入端口', 'info');
+      return;
+    }
+    const selected = source.data.wsagentMediaSelection?.[kind];
+    if (!selected?.assetId) {
+      initial.showToast('请先在 WSAGENT 互联节点选择这个端口的素材', 'info');
+      return;
+    }
+    try {
+      const [{ activeWsagentOwner }, { insertWsagentProjectMedia }] = await Promise.all([
+        import('../services/wsagentSharedImages'), import('../services/wsagentProjectMedia'),
+      ]);
+      const current = get();
+      const ownerId = activeWsagentOwner(initial);
+      if (!ownerId || current.currentProjectId !== initial.currentProjectId
+        || current.nodes !== initial.nodes || current.edges !== initial.edges) return;
+      await insertWsagentProjectMedia(ownerId, { id: selected.assetId, kind, name: selected.name },
+        sourceNodeId, new AbortController().signal, target, position);
+    } catch (error) {
+      if (get().currentProjectId === initial.currentProjectId) {
+        get().showToast(error instanceof Error ? error.message : 'WSAGENT 素材获取失败', 'error');
+      }
+    }
   },
 
   connectSelectedNodes: (sourceIds, targetId, projectId) => {

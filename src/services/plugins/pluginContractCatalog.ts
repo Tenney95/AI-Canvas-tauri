@@ -27,12 +27,15 @@ const EFFECT_FIELDS = {
   'video.inspectFrame': ['resourceId', 'time', 'direction', 'boundary?'],
   'video.extractFrames': ['resourceId', 'mode', 'count?', 'samples?', 'replaceDerived?'],
   'prompt.mentions': ['source', 'query?', 'offset?', 'preview?'],
+  'wsagent.sharedImages.list': ['offset?'], 'wsagent.sharedImages.preview': ['assetId'],
+  'wsagent.sharedImages.insert': ['assetId'], 'wsagent.sharedImages.publish': ['resourceId', 'name?'],
   'video.replicaJob.start': ['resourceId', 'modelId', 'controls', 'audioMode', 'transcribe', 'analysisModelId?',
     'character?', 'scene?', 'style?', 'cuts?', 'maxSegmentSeconds?', 'resolution?', 'aspectRatio?', 'downloadSpeech?'],
   'video.replicaJob.status': ['jobId'], 'video.replicaJob.cancel': ['jobId'], 'video.replicaJob.restart': ['jobId'],
 } satisfies Record<PluginNodeHostEffect['type'], readonly string[]>;
 
 const FIELD_SCHEMAS: Record<string, Record<string, unknown>> = {
+  assetId: { type: 'string' }, name: { type: 'string' },
   resourceId: { type: 'string' }, modelId: { type: 'string' }, analysisModelId: { type: 'string' }, prompt: { type: 'string' },
   url: { type: 'string' }, method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] },
   headers: { type: 'object', additionalProperties: { type: 'string' } }, body: { type: 'string' }, key: { type: 'string' }, value: {},
@@ -71,7 +74,7 @@ const PUBLIC_CONTRACTS: readonly PluginContractEntry[] = [
   } },
   { id: 'sdk.security', section: 'sdk', summary: '执行与宿主 effect 边界', contract: {
     identity: ['pluginId', 'sourceDigest', 'revisionDigest', 'toolId', 'invocationId'],
-    permissions: ['node.read', 'node.write', 'models.read', 'models.invoke', 'prompt.references.read', 'network.request',
+    permissions: ['node.read', 'node.write', 'models.read', 'models.invoke', 'prompt.references.read', 'wsagent.shared-images', 'network.request',
       'settings.read', 'settings.write', 'files.connected.read', 'files.output.create', 'plugin.resources.read', 'ui.custom'],
     resources: '调用级不透明句柄；不授予路径或内部服务',
     python: '可信本机代码，原生高风险确认；不是 OS 沙箱',

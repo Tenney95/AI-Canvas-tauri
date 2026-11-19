@@ -102,6 +102,18 @@ export default function App() {
   useAutoSave();
   useReferencedImageWatcher();
   useTooltipAutoPlacement();
+  useEffect(() => {
+    let mounted = true;
+    let unsubscribe: (() => void) | undefined;
+    let unsubscribeCreativeSync: (() => void) | undefined;
+    if (isTauri) void import('./services/wsagentSharedImages').then(({ observeWsagentOwner }) => {
+      if (mounted) unsubscribe = observeWsagentOwner();
+    });
+    if (isTauri) void import('./services/wsagentCreativeSync').then(({ observeWsagentCreativeSync }) => {
+      if (mounted) unsubscribeCreativeSync = observeWsagentCreativeSync();
+    });
+    return () => { mounted = false; unsubscribeCreativeSync?.(); unsubscribe?.(); };
+  }, []);
   // 记住窗口尺寸；勾了「固定窗口比例」时还会把比例锁住
   const lockedAspect = useAppStore((s) => (s.config.windowAspectLocked ? s.config.windowAspectRatio ?? '16:9' : null));
   useMainWindowSize(parseAspectRatio(lockedAspect));

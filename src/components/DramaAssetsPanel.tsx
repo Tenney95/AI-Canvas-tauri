@@ -68,6 +68,19 @@ function resolveThumb(
   return asset.imageUrl;
 }
 
+interface DramaAssetEditFields {
+  name: string;
+  summary: string;
+  visualNotes: string;
+  storyRole: string;
+  propType?: 'weapon';
+}
+
+function assetEditFields(asset: DramaAsset): DramaAssetEditFields {
+  return { name: asset.name.trim(), summary: asset.summary?.trim() ?? '', visualNotes: asset.visualNotes?.trim() ?? '',
+    storyRole: asset.storyRole?.trim() ?? '', ...(asset.kind === 'prop' ? { propType: asset.propType } : {}) };
+}
+
 export function DramaAssetCard({
   asset,
   thumb,
@@ -101,7 +114,7 @@ export function DramaAssetCard({
   editing: boolean;
   onToggleEdit: () => void;
   onDelete: () => void;
-  onSaveFields: (patch: { name: string; summary: string; visualNotes: string; storyRole: string; propType?: 'weapon' }) => void;
+  onSaveFields: (patch: DramaAssetEditFields, displayed: DramaAssetEditFields) => void;
   onBindImage: (nodeId: string) => void;
   onUnbindImage?: () => void;
   onCopyBrief: () => void;
@@ -128,6 +141,7 @@ export function DramaAssetCard({
   const [visualNotes, setVisualNotes] = useState(asset.visualNotes);
   const [storyRole, setStoryRole] = useState(asset.storyRole ?? '');
   const [propCategory, setPropCategory] = useState<'prop' | 'weapon'>(getDramaAssetCategory(asset) === 'weapon' ? 'weapon' : 'prop');
+  const editingBaseline = useRef(asset);
   const [bindOpen, setBindOpen] = useState(false);
   const avatarReference = asset.kind === 'character'
     ? asset.referenceImages?.find((reference) => reference.id === asset.avatarReferenceImageId)
@@ -143,6 +157,7 @@ export function DramaAssetCard({
 
   const handleToggleEdit = useCallback(() => {
     if (!editing) {
+      editingBaseline.current = asset;
       setName(asset.name);
       setSummary(asset.summary);
       setVisualNotes(asset.visualNotes);
@@ -277,7 +292,7 @@ export function DramaAssetCard({
                       visualNotes: visualNotes.trim(),
                       storyRole: storyRole.trim(),
                       ...(asset.kind === 'prop' ? { propType: propCategory === 'weapon' ? 'weapon' as const : undefined } : {}),
-                    })
+                    }, assetEditFields(editingBaseline.current))
                   }
                 >
                   {t('保存')}
@@ -921,13 +936,27 @@ export default function DramaAssetsPanel({ compact = false }: { compact?: boolea
                       setEditingId((cur) => (cur === dramaAssetIdentityKey(asset) ? null : dramaAssetIdentityKey(asset)))
                     }
                     onDelete={() => setUsage({ asset, deleting: true })}
-                    onSaveFields={(patch) => {
-                      const saved = updateDramaAssetFields(asset.kind, asset.id, {
-                        name: patch.name,
-                        summary: patch.summary,
-                        visualNotes: patch.visualNotes,
-                        storyRole: patch.storyRole || undefined,
-                        ...(asset.kind === 'prop' ? { propType: patch.propType } : {}),
+                    onSaveFields={(patch, displayed) => {
+                      const state = useAppStore.getState();
+                      const live = state.currentProjectId === projectId && state.projectLoadStatus === 'ready'
+                        ? findDramaAssetByKind(state.dramaAssets, asset.kind, asset.id) : undefined;
+                      if (!live) { showToast(t('资产已变化，请重新选择'), 'error'); return; }
+                      const current = assetEditFields(live);
+                      const fields = ['name', 'summary', 'visualNotes', 'storyRole', 'propType'] as const;
+                      if (fields.some((key) => patch[key] !== displayed[key]
+                        && current[key] !== displayed[key] && current[key] !== patch[key])) {
+                        // 同一字段并发变更时保留输入，避免整卡保存覆盖刚同步的内容。
+                        showToast(t('资产已变化，请重新选择'), 'error');
+                        return;
+                      }
+                      const choose = <K extends keyof DramaAssetEditFields,>(key: K) =>
+                        patch[key] === displayed[key] ? current[key] : patch[key];
+                      const saved = updateDramaAssetFields(live.kind, live.id, {
+                        name: choose('name'),
+                        summary: choose('summary'),
+                        visualNotes: choose('visualNotes'),
+                        storyRole: choose('storyRole') || undefined,
+                        ...(live.kind === 'prop' ? { propType: choose('propType') } : {}),
                       });
                       if (!saved) return;
                       setEditingId(null);

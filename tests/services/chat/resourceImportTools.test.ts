@@ -2,14 +2,20 @@
  * resourceImportTools — 回归测试：resource import tools。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Node } from '@xyflow/react';
 import { useAppStore } from '../../../src/store/useAppStore';
+import type { BaseNodeData } from '../../../src/types';
+import { WSAGENT_NODE_ID, WSAGENT_PLUGIN_ID } from '../../../src/types/wsagentShared';
 import { registerFileAgentTools } from '../../../src/services/chat/tools/fileTools';
 import { clearAgentToolRegistryForTests, getAgentTool, prepareAgentToolCall, type AgentToolContext } from '../../../src/services/chat/toolRegistry';
 import { evaluateAgentToolPolicy } from '../../../src/services/chat/policyEngine';
 import { cancelProjectCanvasDerivations } from '../../../src/services/canvasDerivationGuard';
-import { importCapturedImage } from '../../../src/services/canvasResourceImportService';
+import { importCapturedImage, importWsagentProjectMedia } from '../../../src/services/canvasResourceImportService';
 
-const mocks = vi.hoisted(() => ({ copy: vi.fn(), save: vi.fn(), read: vi.fn(), native: vi.fn(), reserve: vi.fn(), settle: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  copy: vi.fn(), save: vi.fn(), read: vi.fn(), native: vi.fn(), reserve: vi.fn(), settle: vi.fn(), insertWsagent: vi.fn(),
+}));
+vi.mock('../../../src/services/wsagentProjectMedia', () => ({ insertWsagentProjectMedia: mocks.insertWsagent }));
 vi.mock('../../../src/services/mediaUploadService', async (original) => ({
   ...await original<typeof import('../../../src/services/mediaUploadService')>(),
   reserveUploadedMedia: mocks.reserve, settleUploadedMedia: mocks.settle,
@@ -34,6 +40,18 @@ function context(signal = new AbortController().signal): AgentToolContext {
 function item(types: string[], value: string | Blob): ClipboardItem {
   return { types, getType: vi.fn(async () => typeof value === 'string'
     ? { size: value.length, text: async () => value } : value) } as unknown as ClipboardItem;
+}
+function wsagentNode(): Node<BaseNodeData> {
+  return {
+    id: 'wsagent', type: 'plugin-node', position: { x: 0, y: 0 }, data: {
+      type: 'plugin-node', label: 'WSAGENT 互联', pluginId: WSAGENT_PLUGIN_ID, pluginNodeId: WSAGENT_NODE_ID,
+    },
+  };
+}
+
+function managedMedia(fileName: string) {
+  const relativePath = `WSAGENT/${fileName}`;
+  return { label: fileName, relativePath, filePath: `/project/${relativePath}`, assetUrl: `asset://localhost/${relativePath}` };
 }
 const importTool = () => getAgentTool('file_import_media_to_canvas')!;
 const pasteTool = () => getAgentTool('canvas_paste_external')!;
@@ -62,6 +80,88 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); cancelProjectCanvasDerivations('p1'); });
 
 describe('resource import tools', () => {
+  it('keeps individually retrieved WSAGENT assets as durable media nodes with independent connections', async () => {
+    const target: Node<BaseNodeData> = {
+      id: 'target', type: 'ai-video', data: { type: 'ai-video', label: '生成视频', prompt: '参考素材' },
+      position: { x: 900, y: 0 },
+    };
+    useAppStore.setState({ nodes: [wsagentNode(), target] });
+    const commit = vi.spyOn(useAppStore.getState(), 'commitToHistory');
+    const created: string[] = [];
+    for (const [kind, fileName, urlKey] of [
+      ['image', 'first.png', 'imageUrl'], ['image', 'second.jpg', 'imageUrl'],
+      ['video', 'clip.mp4', 'videoUrl'], ['audio', 'voice.wav', 'audioUrl'],
+    ] as const) {
+      const file = managedMedia(fileName);
+      const result = await importWsagentProjectMedia(context(), async () => file, 'wsagent', kind,
+        { nodeId: 'target', targetHandle: 'left' });
+      const { nodeId } = result.nodes[0];
+      created.push(nodeId);
+      expect(result.nodes[0].type).toBe(`source-${kind}`);
+      expect(useAppStore.getState().nodes.find((node) => node.id === nodeId)?.data).toMatchObject({
+        filePath: file.filePath, relativePath: file.relativePath, [urlKey]: file.assetUrl,
+      });
+      expect(useAppStore.getState().edges).toEqual(expect.arrayContaining([
+        expect.objectContaining({ source: 'wsagent', sourceHandle: `plugin-out-${kind}`, target: nodeId, targetHandle: 'left' }),
+        expect.objectContaining({ source: nodeId, sourceHandle: 'right', target: 'target', targetHandle: 'left' }),
+      ]));
+      expect(JSON.stringify(result)).not.toContain(file.filePath);
+    }
+    expect(new Set(created).size).toBe(4);
+    expect(commit).toHaveBeenCalledTimes(4);
+    expect(useAppStore.getState().nodes.find((node) => node.id === 'target')?.data.prompt).toContain(`@{${created[3]}:`);
+    expect(mocks.copy).not.toHaveBeenCalled();
+    expect(mocks.save).not.toHaveBeenCalled();
+    await useAppStore.getState().undo();
+    expect(useAppStore.getState().nodes.some((node) => node.id === created[3])).toBe(false);
+    expect(useAppStore.getState().edges.some((edge) => edge.target === created[3] || edge.source === created[3])).toBe(false);
+  });
+
+  it('routes both drag directions through WSAGENT while preserving another plugin’s typed connections', () => {
+    const wsagent = wsagentNode();
+    const otherPlugin = { ...wsagent, id: 'other', data: { ...wsagent.data, pluginId: 'another.plugin' } };
+    useAppStore.setState({ nodes: [wsagent, otherPlugin] });
+    const take = vi.spyOn(useAppStore.getState(), 'takeWsagentMediaFromPort').mockResolvedValue();
+    useAppStore.getState().onConnect({ source: 'wsagent', sourceHandle: 'plugin-out-video', target: 'video', targetHandle: 'left' });
+    useAppStore.getState().onConnect({ source: 'audio', sourceHandle: 'left', target: 'wsagent', targetHandle: 'plugin-out-audio' });
+    expect(take).toHaveBeenNthCalledWith(1, 'wsagent', 'video', { nodeId: 'video', targetHandle: 'left' });
+    expect(take).toHaveBeenNthCalledWith(2, 'wsagent', 'audio', { nodeId: 'audio', targetHandle: 'left' });
+    expect(useAppStore.getState().edges).toHaveLength(0);
+    useAppStore.getState().onConnect({ source: 'other', sourceHandle: 'plugin-out-video', target: 'video', targetHandle: 'left' });
+    expect(take).toHaveBeenCalledTimes(2);
+    expect(useAppStore.getState().edges).toMatchObject([{ source: 'other', sourceHandle: 'plugin-out-video', target: 'video' }]);
+    take.mockRestore();
+  });
+
+  it('passes the asset selected for each outlet to the paired project and honours the blank drop position', async () => {
+    const source = wsagentNode();
+    source.data.wsagentMediaSelection = { image: { assetId: 'image-a', name: '图.png' }, audio: { assetId: 'audio-b', name: '声音.wav' } };
+    useAppStore.setState({ nodes: [source], projectInitialized: true });
+    mocks.insertWsagent.mockResolvedValue(undefined);
+    await useAppStore.getState().takeWsagentMediaFromPort('wsagent', 'image', undefined, { x: 320, y: 120 });
+    await useAppStore.getState().takeWsagentMediaFromPort('wsagent', 'audio', undefined, { x: 480, y: 240 });
+    await useAppStore.getState().takeWsagentMediaFromPort('wsagent', 'video');
+    expect(mocks.insertWsagent).toHaveBeenNthCalledWith(1, 'p1', { id: 'image-a', kind: 'image', name: '图.png' },
+      'wsagent', expect.any(AbortSignal), undefined, { x: 320, y: 120 });
+    expect(mocks.insertWsagent).toHaveBeenNthCalledWith(2, 'p1', { id: 'audio-b', kind: 'audio', name: '声音.wav' },
+      'wsagent', expect.any(AbortSignal), undefined, { x: 480, y: 240 });
+    expect(mocks.insertWsagent).toHaveBeenCalledTimes(2);
+  });
+
+  it('discards a WSAGENT transfer if its project lifecycle is cancelled while downloading', async () => {
+    useAppStore.setState({ nodes: [wsagentNode()] });
+    let finish!: (file: ReturnType<typeof managedMedia>) => void;
+    const load = vi.fn((_signal: AbortSignal) => new Promise<ReturnType<typeof managedMedia>>((resolve) => { finish = resolve; }));
+    const pending = importWsagentProjectMedia(context(), load, 'wsagent', 'video');
+    expect(load).toHaveBeenCalledOnce();
+    cancelProjectCanvasDerivations('p1');
+    await expect(pending).rejects.toMatchObject({ code: 'IMPORT_CANCELLED' });
+    expect(load.mock.calls[0][0].aborted).toBe(true);
+    finish(managedMedia('clip.mp4'));
+    expect(useAppStore.getState().nodes.map((node) => node.id)).toEqual(['wsagent']);
+    expect(useAppStore.getState().edges).toHaveLength(0);
+  });
+
   it('creates episode canvas nodes pointing to shared media without requesting independent file copies', async () => {
     mocks.copy.mockImplementation(async (path: string) => ({ filePath: path, assetUrl: `asset://${path}` }));
     const path = '/project/shared/角色.png';

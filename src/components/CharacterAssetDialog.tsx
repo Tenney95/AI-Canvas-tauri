@@ -20,6 +20,7 @@ import {
   saveBinaryToProjectData,
 } from '../services/fileService';
 import { isTauriEnv } from '../services/fs/core';
+import { MAX_CHARACTER_REFERENCE_IMAGES } from '../types/dramaAssets';
 import type {
   CharacterActionCategory,
   CharacterCropRect,
@@ -68,7 +69,6 @@ const VOICE_KINDS = Object.entries(CHARACTER_VOICE_KIND_LABELS) as Array<[
   string,
 ]>;
 
-const MAX_CHARACTER_REFERENCE_IMAGES = 16;
 const MAX_CHARACTER_VOICE_CLIPS = 16;
 
 const ACTION_CATEGORIES: Array<[CharacterActionCategory, string]> = [

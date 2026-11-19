@@ -26,7 +26,7 @@ import type {
   DramaProp,
   DramaScene,
 } from '../types/dramaAssets';
-import { assertDramaAssetWriteCurrent, emptyDramaAssetLibrary, normalizeDramaCharacter, normalizeDramaVisualAsset, syncDramaVisualAssetPrimary, MAX_DRAMA_REFERENCE_IMAGES, MAX_CHARACTER_WEAPONS, normalizeCharacterWeaponIds } from '../types/dramaAssets';
+import { assertDramaAssetWriteCurrent, emptyDramaAssetLibrary, normalizeDramaCharacter, normalizeDramaVisualAsset, syncDramaVisualAssetPrimary, MAX_CHARACTER_REFERENCE_IMAGES, MAX_DRAMA_REFERENCE_IMAGES, MAX_CHARACTER_WEAPONS, normalizeCharacterWeaponIds } from '../types/dramaAssets';
 import type { DramaExtractParseResult } from '../services/dramaAssetExtract';
 import { mergeDramaExtractIntoLibrary, normalizeAssetKey } from '../services/dramaAssetExtract';
 import {
@@ -61,11 +61,25 @@ import {
 import { reorderCharacterSubset, sortCharactersForLibrary } from '../services/characterOrder';
 import { putGlobalCharacterWeapons } from '../services/indexedDbService';
 import { configValuesEqual } from '../services/configPatch';
+import { assertSafeProjectRelativePath } from '../services/fs/projectFiles';
 
 const characterOrderSaves = new Set<string>();
 const dramaAssetImports = new Set<string>();
 
 export type CharacterLibraryScope = 'project' | 'global';
+
+export interface WsagentCreativeAssetFields {
+  name: string;
+  description: string;
+  /** undefined 保留本地参考，null 清除导入的主参考图。 */
+  image?: {
+    sourceId: string;
+    fileName: string;
+    filePath: string;
+    relativePath: string;
+    imageUrl: string;
+  } | null;
+}
 
 function findScopedCharacter(
   state: Pick<AppState, 'dramaAssets' | 'globalCharacters'>,
@@ -154,6 +168,9 @@ export interface DramaAssetsSlice {
   ) => void;
   /** 按 id 新增或整体覆盖一个资产；角色建议走 saveCharacterCard 以便归一化参考图。 */
   upsertDramaAsset: (asset: DramaAsset) => boolean;
+  /** 互联资料仅更新同一作品中已核对身份的资产和主参考图。 */
+  applyWsagentCreativeAsset: (projectId: string, id: string, kind: DramaAssetKind,
+    expected: DramaAsset | null, input: WsagentCreativeAssetFields, assertCurrent?: () => void) => Promise<DramaAsset>;
   /** 追加资产包生成的新身份，等待项目/剧集落盘；不按名称覆盖现有条目。 */
   importDramaAssets: (assets: readonly DramaAsset[], options?: DramaAssetWriteOptions) => Promise<number>;
   confirmDramaAsset: (kind: DramaAssetKind, id: string, confirmed?: boolean) => void;
@@ -445,6 +462,88 @@ function syncCharacterPrimaryImage(character: DramaCharacter): DramaCharacter {
   return synced;
 }
 
+const WSAGENT_REFERENCE_PREFIX = 'wsagent-image-';
+const WSAGENT_VISUAL_HEADING = '### 视觉说明';
+
+function wsagentAssetText(value: string | null | undefined): string {
+  return typeof value === 'string' ? value.replace(/\r\n?/g, '\n').trim() : '';
+}
+
+/** 只投影互通文本与主参考图来源，实际文件读取仍由配对服务验证。 */
+export function readWsagentCreativeAsset(asset: DramaAsset, nodes: readonly Node<BaseNodeData>[]) {
+  const summary = wsagentAssetText(asset.summary);
+  const visualNotes = wsagentAssetText(asset.visualNotes);
+  const description = [summary, visualNotes && `${WSAGENT_VISUAL_HEADING}\n\n${visualNotes}`].filter(Boolean).join('\n\n');
+  const reference = asset.referenceImages?.find((image) => image.id === asset.primaryReferenceImageId)
+    ?? asset.referenceImages?.[0];
+  const isGlobal = !!asset.imageAssetId || (reference && 'assetSource' in reference && reference.assetSource === 'global');
+  const sourceNodeId = isGlobal ? undefined : reference?.sourceNodeId ?? asset.imageNodeId;
+  const node = nodes.find((item) => item.id === sourceNodeId);
+  const linked = isEligibleCharacterReferenceNode(node) ? node?.data : undefined;
+  // 节点有新产物时，不混用库卡旧文件的路径。
+  const imageUrl = linked ? linked.imageUrl ?? linked.thumbnailUrl : reference?.imageUrl ?? asset.imageUrl;
+  const filePath = linked ? linked.filePath : reference?.filePath ?? (asset as DramaAsset & { filePath?: string }).filePath;
+  const assetId = linked ? linked.assetId : reference?.assetId ?? asset.imageAssetId ?? asset.assetId;
+  const relativePath = linked ? linked.relativePath : reference?.relativePath ?? asset.imageRelativePath ?? asset.relativePath;
+  const image = imageUrl || filePath || assetId || relativePath ? {
+    referenceId: reference?.id ?? null,
+    assetSource: isGlobal ? 'global' as const : undefined,
+    sourceNodeId, assetId, relativePath, filePath, imageUrl,
+  } : undefined;
+  return { name: wsagentAssetText(asset.name), description, image };
+}
+
+/** 同一张远端原图维持稳定引用 ID，设置新主图时保留旧引用。 */
+function wsagentPrimaryReference<T extends CharacterReferenceImage | DramaAssetReferenceImage>(
+  references: T[], currentId: string | undefined, image: NonNullable<WsagentCreativeAssetFields['image']> | null,
+  maxReferences: number, create: (id: string) => T,
+) {
+  if (!image) {
+    if (!currentId?.startsWith(WSAGENT_REFERENCE_PREFIX)) return null;
+    const remaining = references.filter((item) => item.id !== currentId);
+    return { referenceImages: remaining, primaryReferenceImageId: remaining[0]?.id };
+  }
+  const referenceId = `${WSAGENT_REFERENCE_PREFIX}${encodeURIComponent(image.sourceId)}`;
+  const existing = references.find((item) => item.id === referenceId
+    || (item.relativePath === image.relativePath && !('assetSource' in item && item.assetSource === 'global')));
+  if (existing) return existing.id === currentId ? null : { referenceImages: references, primaryReferenceImageId: existing.id };
+  if (references.length >= maxReferences) throw new Error('参考图已达上限，请留出一项后再同步');
+  return { referenceImages: [...references, create(referenceId)], primaryReferenceImageId: referenceId };
+}
+
+function projectWsagentAsset(
+  asset: DramaAsset, input: WsagentCreativeAssetFields, updatedAt: number,
+): DramaAsset {
+  const name = wsagentAssetText(input.name);
+  const description = wsagentAssetText(input.description);
+  const heading = /^### 视觉说明[ \t]*$/m.exec(description);
+  const summary = heading ? description.slice(0, heading.index).trim() : description;
+  const visualNotes = heading ? description.slice(heading.index + heading[0].length).trim() : '';
+  if (!name || name.includes('\n')) throw new Error('共享创作资产名称无效');
+  const textFields = { name, key: name !== asset.name ? normalizeAssetKey(name) : asset.key, summary, visualNotes, updatedAt };
+  const textChanged = name !== asset.name || summary !== asset.summary || visualNotes !== asset.visualNotes;
+  const image = input.image;
+  if (image === undefined) return textChanged ? { ...asset, ...textFields } : asset;
+  if (image) {
+    if (!image.sourceId || image.sourceId.length > 180 || !image.filePath || !image.imageUrl) throw new Error('共享参考图无效');
+    assertSafeProjectRelativePath(image.relativePath);
+  }
+  const mediaFields = { relativePath: image?.relativePath, filePath: image?.filePath, imageUrl: image?.imageUrl,
+    prompt: '', createdAt: updatedAt, updatedAt };
+  if (asset.kind === 'character') {
+    const current = normalizeDramaCharacter(asset);
+    const change = wsagentPrimaryReference(current.referenceImages ?? [], current.primaryReferenceImageId,
+      image, MAX_CHARACTER_REFERENCE_IMAGES, (id) => ({ ...mediaFields, id, kind: 'primary' }));
+    return change ? syncCharacterPrimaryImage(normalizeDramaCharacter({ ...current, ...textFields,
+      ...change, imageNodeId: undefined, imageUrl: undefined })) : textChanged ? { ...asset, ...textFields } : asset;
+  }
+  const current = normalizeDramaVisualAsset(asset);
+  const change = wsagentPrimaryReference(current.referenceImages ?? [], current.primaryReferenceImageId,
+    image, MAX_DRAMA_REFERENCE_IMAGES, (id) => ({ ...mediaFields, id, label: image?.fileName ?? '' }));
+  return change ? syncDramaVisualAssetPrimary({ ...current, ...textFields, ...change })
+    : textChanged ? { ...asset, ...textFields } : asset;
+}
+
 function sameImageIdentity(
   first: { assetId?: string; relativePath?: string; filePath?: string },
   second: { assetId?: string; relativePath?: string; filePath?: string },
@@ -678,6 +777,46 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
     });
     silentSave(get);
     return true;
+  },
+
+  applyWsagentCreativeAsset: async (projectId, id, kind, expected, input, assertCurrent) => {
+    const initial = get();
+    const runtimeEpoch = initial.projectExecutionContext?.runtimeEpoch;
+    const projectMatches = (state: AppState) => state.currentProjectId === projectId
+      && state.projectLoadStatus === 'ready' && state.projectExecutionContext?.runtimeEpoch === runtimeEpoch
+      && !state.switchingProjectName && !state.isReturningToStartPage;
+    const check = (currentAsset: DramaAsset | null) => {
+      assertCurrent?.();
+      const state = get();
+      if (!projectMatches(state) || (findDramaAssetByKind(state.dramaAssets, kind, id) ?? null) !== currentAsset) {
+        throw new Error('创作资产或项目已变化，请稍后重新同步');
+      }
+    };
+    if (!id || id.startsWith('global/') || !['character', 'scene', 'prop'].includes(kind)
+      || (expected && (expected.id !== id || expected.kind !== kind))) throw new Error('共享创作资产身份无效');
+    check(expected);
+    if (!expected && (['character', 'scene', 'prop'] as const)
+      .some((other) => other !== kind && findDramaAssetByKind(initial.dramaAssets, other, id))) {
+      throw new Error('共享创作资产身份与现有类别冲突');
+    }
+    const now = Math.max(Date.now(), (expected?.updatedAt ?? 0) + 1);
+    const base = { id, name: '', key: '', summary: '', visualNotes: '', importance: 'supporting' as const,
+      confirmed: true, source: 'manual' as const, createdAt: now, updatedAt: now };
+    const previous: DramaAsset = expected ?? (kind === 'character' ? { ...base, kind, identity: '' } : { ...base, kind });
+    const next = projectWsagentAsset(previous, input, now);
+    if (next === expected) return next;
+    set((state) => ({ dramaAssets: mapKindList(state.dramaAssets, kind, (list) => expected
+      ? list.map((item) => item === expected ? next : item) : [...list, next]) }));
+    try {
+      if (await get().saveCurrentProjectSilent(() => check(next)) !== projectId) throw new Error('同步资产保存失败');
+      return next;
+    } catch (error) {
+      if (projectMatches(get())) {
+        set((state) => ({ dramaAssets: mapKindList(state.dramaAssets, kind, (list) => expected
+          ? list.map((item) => item === next ? expected : item) : list.filter((item) => item !== next)) }));
+      }
+      throw error;
+    }
   },
 
   confirmDramaAsset: (kind, id, confirmed = true) => {

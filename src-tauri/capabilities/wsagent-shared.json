@@ -1,0 +1,6 @@
+{
+  "identifier": "wsagent-shared",
+  "description": "WSAGENT project pairing and media are controlled only by the main application window.",
+  "windows": ["main"],
+  "permissions": ["allow-wsagent-shared"]
+}

@@ -9,6 +9,7 @@ import { hasActiveTextSelection, isEditableTarget } from '../utils/textSelection
 import { getCanvasPointerPosition } from '../services/canvasPointerService';
 import type { Node as RFNode } from '@xyflow/react';
 import type { BaseNodeData, NodeType } from '../types';
+import { isWsagentSharedImagesNode } from '../types/wsagentShared';
 import { invoke } from '@tauri-apps/api/core';
 import { startNodeRename } from '../utils/nodeRename';
 import { getPreferredNodeModel } from '../services/modelPreferenceService';
@@ -168,7 +169,8 @@ export function useKeyboardShortcuts() {
               const data = node.data as BaseNodeData;
               const canOpen = !(
                 node.type === 'group' ||
-                data?.type === 'ai-markdown'
+                data?.type === 'ai-markdown' ||
+                isWsagentSharedImagesNode(data)
               );
               if (canOpen) {
                 e.preventDefault();

@@ -22,6 +22,7 @@ import type { ComfyRefmodAsset, ComfyRefmodSelection } from './comfyRefmod';
 import type { EpisodeAssetRoster } from './episodeAssets';
 import type { AgentTeamProfile } from './agentTeam';
 import type { CreationProfile, CreationProfileSelection } from './creationProfile';
+import type { WsagentProjectMediaSelections } from './wsagentShared';
 
 export type {
   CanvasDrawingTool,
@@ -221,6 +222,8 @@ export interface VideoFrameAnalysisData {
 
 // 节点数据接口
 export interface BaseNodeData {
+  /** 节点上的取用选择只记录 WSAGENT 素材身份。 */
+  wsagentMediaSelection?: WsagentProjectMediaSelections;
   label: string;
   type: NodeType;
   aiApp?: AiAppReference;

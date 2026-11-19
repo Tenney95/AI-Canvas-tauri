@@ -56,10 +56,16 @@
                 "scope": {
                     "allow": ["$APPDATA/**"],
                     "deny": [
+                        "$DATA/AI Canvas WSAGENT",
+                        "$DATA/AI Canvas WSAGENT/**",
                         "$APPDATA/secrets",
                         "$APPDATA/secrets/**",
                         "$APPLOCALDATA/secrets",
                         "$APPLOCALDATA/secrets/**",
+                        "$APPDATA/agent-private/wsagent-shared",
+                        "$APPDATA/agent-private/wsagent-shared/**",
+                        "$APPLOCALDATA/agent-private/wsagent-shared",
+                        "$APPLOCALDATA/agent-private/wsagent-shared/**",
                         "$APPDATA/project-model-backups",
                         "$APPDATA/project-model-backups/**",
                         "$APPDATA/project-model-maintenance",

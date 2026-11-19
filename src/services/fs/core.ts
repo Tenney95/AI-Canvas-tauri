@@ -92,10 +92,12 @@ export function getMimeType(ext: string): string {
     jpeg: 'image/jpeg',
     gif: 'image/gif',
     webp: 'image/webp',
+    avif: 'image/avif',
     bmp: 'image/bmp',
     svg: 'image/svg+xml',
     mp4: 'video/mp4',
     webm: 'video/webm',
+    weba: 'audio/webm',
     avi: 'video/x-msvideo',
     mov: 'video/quicktime',
     mkv: 'video/x-matroska',
@@ -906,9 +908,9 @@ export async function getAssetUrlFromPath(filePath: string): Promise<string> {
 export type FileCategory = 'image' | 'video' | 'audio' | 'text' | 'other';
 
 export const CATEGORY_EXTENSIONS: Record<FileCategory, string[]> = {
-  image: ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico', '.tiff', '.tif'],
+  image: ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.svg', '.bmp', '.ico', '.tiff', '.tif'],
   video: ['.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m4v'],
-  audio: ['.mp3', '.wav', '.ogg', '.aac', '.flac', '.wma', '.m4a', '.opus'],
+  audio: ['.mp3', '.wav', '.ogg', '.aac', '.flac', '.wma', '.m4a', '.opus', '.weba'],
   text: ['.txt', '.md', '.json', '.csv', '.xml', '.html', '.css', '.js', '.ts', '.jsx', '.tsx', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.log'],
   other: [],
 };

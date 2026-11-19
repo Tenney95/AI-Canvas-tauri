@@ -19,6 +19,7 @@
   const pending = new Map();
   const bundleExports = Object.create(null);
   let context = null;
+  let latestTheme = null;
   let latestLocale = null;
   let busy = false;
   let cleanup = null;
@@ -78,7 +79,9 @@
     }
     if (response.direction === 'event' && response.kind === 'theme') {
       if (response.value !== 'dark' && response.value !== 'light') return;
-      context = context ? { ...context, theme: response.value } : context;
+      latestTheme = response.value;
+      if (!context || context.theme === response.value) return;
+      context = { ...context, theme: response.value };
       document.documentElement.setAttribute('data-theme', response.value);
       window.dispatchEvent(new CustomEvent('ai-canvas-theme-change', { detail: response.value }));
       return;
@@ -181,7 +184,7 @@
     }
     showStatus('正在加载插件界面…');
     context = await request('context');
-    context = { ...context, locale: latestLocale ?? context.locale ?? 'zh-CN' };
+    context = { ...context, theme: latestTheme ?? context.theme, locale: latestLocale ?? context.locale ?? 'zh-CN' };
     document.documentElement.setAttribute('lang', context.locale);
     document.documentElement.setAttribute('data-theme', context.theme);
     await loadBundle(bundleUrl);

@@ -1,5 +1,5 @@
 /**
- * pluginUiFrameBootstrap — 回归测试：embedded plugin locale bridge。
+ * pluginUiFrameBootstrap — 回归测试：内嵌插件的主题与语言同步。
  */
 import { readFileSync } from 'node:fs';
 import { Script } from 'node:vm';
@@ -12,7 +12,7 @@ const channel = 'ai-canvas-plugin-ui-v1';
 function harness() {
   const listeners = new Map<string, (event: unknown) => void>();
   const attributes = new Map<string, string>();
-  const mount = vi.fn<(root: unknown, props: { locale: string; host: unknown }) => void>();
+  const mount = vi.fn<(root: unknown, props: { locale: string; theme: string; host: unknown }) => void>();
   const parent = { postMessage: vi.fn() };
   Object.defineProperty(parent, 'document', { get: () => { throw new Error('cross origin'); } });
   const windowStub: Record<string, unknown> = {
@@ -46,9 +46,9 @@ function harness() {
   const deliver = (data: Record<string, unknown>, sender: unknown = parent) => listeners.get('message')?.({
     source: sender, data: { channel, sessionId: 'test-session', ...data },
   });
-  const context = (locale: string | undefined = 'zh-CN') => deliver({
+  const context = (locale: string | undefined = 'zh-CN', theme = 'dark') => deliver({
     direction: 'response', requestId: 'context-request', ok: true,
-    value: { locale, host: { capabilities: ['javascript.async'] }, theme: 'dark', parameters: { prompt: 'draft' } },
+    value: { locale, host: { capabilities: ['javascript.async'] }, theme, parameters: { prompt: 'draft' } },
   });
   return { context, deliver, mount, attributes, windowStub };
 }
@@ -93,5 +93,33 @@ describe('embedded plugin locale bridge', () => {
     await flush();
     expect(host.mount.mock.calls[0][1].locale).toBe('ko-KR');
     expect(host.attributes.get('lang')).toBe('ko-KR');
+  });
+});
+
+describe('embedded plugin theme bridge', () => {
+  it('applies an early theme update over stale context and switches again without remounting', async () => {
+    const host = harness();
+    const dark = { direction: 'event', kind: 'theme', value: 'dark' };
+    host.deliver(dark);
+    host.context('zh-CN', 'light');
+    await flush();
+    const props = host.mount.mock.calls[0][1];
+    expect(props.theme).toBe('dark');
+    expect(host.attributes.get('data-theme')).toBe('dark');
+
+    const light = { ...dark, value: 'light' };
+    host.deliver(light, {});
+    host.deliver({ ...light, sessionId: 'wrong' });
+    host.deliver(dark);
+    expect(host.windowStub.dispatchEvent).not.toHaveBeenCalled();
+    host.deliver(light);
+    expect(props.theme).toBe('light');
+    expect(host.attributes.get('data-theme')).toBe('light');
+    expect(host.windowStub.dispatchEvent).toHaveBeenCalledOnce();
+    expect(host.windowStub.dispatchEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ai-canvas-theme-change', detail: 'light',
+    }));
+    expect(props).toMatchObject({ parameters: { prompt: 'draft' } });
+    expect(host.mount).toHaveBeenCalledOnce();
   });
 });

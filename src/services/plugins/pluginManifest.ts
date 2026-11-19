@@ -2,6 +2,7 @@
  * pluginManifest — 校验插件清单、安装包与安装记录。
  */
 import type { NodeType } from '../../types';
+import { WSAGENT_NODE_ID, WSAGENT_PLUGIN_ID, WSAGENT_SHARED_CAPABILITY, WSAGENT_SHARED_PERMISSION } from '../../types/wsagentShared';
 import { assertPluginCompatibility } from './pluginHost';
 import { parsePluginDependencies } from './pluginDependencyService';
 import type {
@@ -115,6 +116,7 @@ const PERMISSIONS = new Set<PluginPermission>([
   'models.read',
   'models.invoke',
   'prompt.references.read',
+  WSAGENT_SHARED_PERMISSION,
   'network.request',
   'settings.read',
   'settings.write',
@@ -593,6 +595,9 @@ function parseManifest(value: unknown): PluginManifest {
     && (apiVersion !== 2 || !requiredCapabilities?.includes('prompt.mentions'))) {
     throw new Error('prompt.references.read 要求 API 2 与 prompt.mentions 能力');
   }
+  const wsagentShared = id === WSAGENT_PLUGIN_ID && apiVersion === 2 && runtime === 'javascript'
+    && requiredCapabilities?.includes(WSAGENT_SHARED_CAPABILITY) && permissions.includes(WSAGENT_SHARED_PERMISSION);
+  if (permissions.includes(WSAGENT_SHARED_PERMISSION) && !wsagentShared) throw new Error('WSAGENT 互联权限要求专用 API 2 插件');
   let network: PluginManifest['network'];
   if (root.network !== undefined) {
     if (!permissions.includes('network.request')) throw new Error('声明 network 必须包含 network.request 权限');
@@ -643,7 +648,8 @@ function parseManifest(value: unknown): PluginManifest {
     seenToolIds.add(toolId);
 
     const nodeTypes = stringArray(tool.nodeTypes, `${toolId}.nodeTypes`, NODE_TYPES.size);
-    if (nodeTypes.some((nodeType) => !NODE_TYPES.has(nodeType as NodeType))) {
+    if (nodeTypes.some((nodeType) => !NODE_TYPES.has(nodeType as NodeType)
+      && !(wsagentShared && toolId === WSAGENT_NODE_ID && nodeType === 'plugin-node'))) {
       throw new Error(`${toolId} 包含不支持的节点类型`);
     }
     const inputFields = stringArray(tool.inputFields, `${toolId}.inputFields`, MAX_FIELDS);

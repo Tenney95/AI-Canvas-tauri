@@ -397,6 +397,23 @@ pub fn resolve_native_project_media_root<R: Runtime>(webview: Webview<R>, projec
     media_root(&webview, &project_id, false, false, None)
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) fn resolve_project_media_import_root<R: Runtime>(webview: &Webview<R>, owner_id: &str, raw: &str) -> Result<PathBuf, String> {
+    let app = webview.app_handle();
+    let target = crate::path_policy::authorize_existing_plain_directory(app, raw)?;
+    if target.parent() != Some(media_base(app, false)?.as_path()) { return Err(ERROR.into()); }
+    if owner_id.starts_with("p2-") {
+        if target != PathBuf::from(media_root(webview, owner_id, false, false, None)?) { return Err(ERROR.into()); }
+    } else if !matches!(fs::symlink_metadata(target.join(".ai-canvas-native-project.json")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound) {
+        return Err(ERROR.into());
+    }
+    Ok(target)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) use unix_io::publish_project_media_stream;
+
 fn check_recycle_root(target: &Path, authorized: &Path, expected_path: &str) -> Result<(), String> {
     if target != authorized || target.to_str() != Some(expected_path) { return Err(ERROR.into()); }
     plain_chain(target)
@@ -746,6 +763,8 @@ mod unix_io {
         fn mkdirat(directory: c_int, path: *const c_char, mode: Mode) -> c_int;
         #[cfg(target_os = "macos")]
         fn renameatx_np(from_dir: c_int, from: *const c_char, to_dir: c_int, to: *const c_char, flags: c_uint) -> c_int;
+        #[cfg(target_os = "macos")]
+        fn unlinkat(directory: c_int, path: *const c_char, flags: c_int) -> c_int;
         #[cfg(target_os = "linux")]
         fn renameat2(from_dir: c_int, from: *const c_char, to_dir: c_int, to: *const c_char, flags: c_uint) -> c_int;
     }
@@ -787,6 +806,99 @@ mod unix_io {
             chain.push(file);
         }
         Ok(chain)
+    }
+
+    fn verify_chain(path: &Path, original: &[File]) -> Result<(), String> {
+        let current = open_chain(path)?;
+        if current.len() != original.len() { return Err(ERROR.into()); }
+        for (expected, actual) in original.iter().zip(&current) {
+            if !same_file(expected, actual)? { return Err(ERROR.into()); }
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn publish_project_media_stream<G>(root: &Path, reader: &mut impl Read, bytes: u64,
+        stem: &str, extension: &str, mut check_current: impl FnMut() -> Result<(), String>,
+        acquire_commit: impl FnOnce() -> Result<G, String>) -> Result<String, String> {
+        use std::time::{Duration, Instant};
+
+        let failure = "未能写入作品素材，原有文件已保留";
+        let random = crate::secure_random::random_bytes::<32>().map_err(|_| failure)?;
+        let temporary = format!(".native-media-{:x}.pending", Sha256::digest(random));
+        let temporary = OsStr::new(&temporary);
+        let chain = open_chain(root)?;
+        let directory = chain.last().ok_or(failure)?;
+        crate::file_transfer::ensure_disk_space(root, Some(bytes))?;
+        check_current()?;
+        let mut file = open_at(directory, temporary, 2 | CREATE | EXCLUSIVE, true).map_err(|_| failure)?;
+        let mut owned_name = Some(temporary.to_owned());
+        let result = (|| {
+            let mut digest = Sha256::new();
+            let mut copied = 0_u64;
+            let mut buffer = vec![0; 256 * 1024];
+            let mut checked_at = Instant::now();
+            loop {
+                let read = reader.read(&mut buffer).map_err(|_| "WSAGENT 媒体下载中断，请重试")?;
+                if read == 0 { break; }
+                copied = copied.checked_add(read as u64).filter(|size| *size <= bytes).ok_or("WSAGENT 媒体大小不匹配")?;
+                if checked_at.elapsed() >= Duration::from_millis(250) {
+                    check_current()?;
+                    checked_at = Instant::now();
+                }
+                file.write_all(&buffer[..read]).map_err(|_| failure)?;
+                digest.update(&buffer[..read]);
+            }
+            if copied != bytes { return Err("WSAGENT 媒体下载不完整，请重试".into()); }
+            file.sync_all().map_err(|_| failure)?;
+            let digest = format!("{:x}", digest.finalize());
+            let file_name = format!("{stem}-{}.{extension}", &digest[..16]);
+            let target_name = OsStr::new(&file_name);
+
+            let existing = match open_at(directory, target_name, 0, false) {
+                Ok(mut target) => {
+                    if regular_metadata(&target, bytes)?.len() != bytes { return Err(failure.into()); }
+                    let mut target_digest = Sha256::new();
+                    let count = std::io::copy(&mut (&mut target).take(bytes + 1), &mut target_digest).map_err(|_| failure)?;
+                    if count != bytes || format!("{:x}", target_digest.finalize()) != digest { return Err(failure.into()); }
+                    Some(target)
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(_) => return Err(failure.into()),
+            };
+
+            let _lease = acquire_commit()?;
+            verify_chain(root, &chain)?;
+            if let Some(existing) = existing {
+                let current = open_at(directory, target_name, 0, false).map_err(|_| failure)?;
+                if !same_file(&existing, &current)? { return Err(failure.into()); }
+                return Ok(file_name);
+            }
+            let staged = open_at(directory, temporary, 0, false).map_err(|_| failure)?;
+            if !same_file(&file, &staged)? || regular_metadata(&staged, bytes)?.len() != bytes { return Err(failure.into()); }
+            let from = component(temporary)?;
+            let to = component(target_name)?;
+            // SAFETY: both names are validated components anchored to the same live directory.
+            if unsafe { renameatx_np(directory.as_raw_fd(), from.as_ptr(), directory.as_raw_fd(), to.as_ptr(), 0x4) } != 0 {
+                return Err(failure.into());
+            }
+            owned_name = Some(target_name.to_owned());
+            directory.sync_all().map_err(|_| failure)?;
+            let published = open_at(directory, target_name, 0, false).map_err(|_| failure)?;
+            if !same_file(&file, &published)? { return Err(failure.into()); }
+            verify_chain(root, &chain)?;
+            owned_name = None;
+            Ok(file_name)
+        })();
+
+        if let Some(name) = owned_name {
+            if open_at(directory, &name, 0, false).ok().and_then(|current| same_file(&file, &current).ok()) == Some(true) {
+                let name = component(&name)?;
+                // SAFETY: name is one component and the descriptor belongs to the anchored directory.
+                let _ = unsafe { unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) };
+            }
+        }
+        result
     }
 
     fn regular_metadata(file: &File, limit: u64) -> Result<fs::Metadata, String> {
@@ -834,11 +946,7 @@ mod unix_io {
         pub(super) fn verify(&self) -> Result<(), String> {
             // Unix directory descriptors do not lock names in place. Reopen every component
             // and fail closed if the authorized pathname no longer denotes the anchored objects.
-            let current = open_chain(&self.path)?;
-            if current.len() != self.chain.len() { return Err(ERROR.into()); }
-            for (expected, actual) in self.chain.iter().zip(&current) {
-                if !same_file(expected, actual)? { return Err(ERROR.into()); }
-            }
+            verify_chain(&self.path, &self.chain)?;
             let root = self.chain.last().ok_or(ERROR)?;
             let current_media = open_at(root, OsStr::new("media"), DIRECTORY, false).map_err(|_| ERROR)?;
             if !same_file(&self.media, &current_media)? { return Err(ERROR.into()); }

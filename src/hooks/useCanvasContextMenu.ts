@@ -15,11 +15,13 @@ import type { AvailablePluginNode } from '../types/plugin';
 import { getPreferredNodeModel } from '../services/modelPreferenceService';
 import { createUiNodeData } from '../services/uiNodeCreationData';
 
+export type CanvasContextSubmenu = 'addNode' | 'addPluginNode';
+
 interface ContextMenuState {
   visible: boolean;
   position: { x: number; y: number };
   flowPosition: { x: number; y: number };
-  hoverMenu: 'addNode' | null;
+  hoverMenu: CanvasContextSubmenu | null;
 }
 
 export function useCanvasContextMenu() {

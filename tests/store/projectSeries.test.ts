@@ -482,6 +482,18 @@ describe('剧集原著的条件保存', () => {
     expect(assertCurrent.mock.calls.length).toBeGreaterThan(2);
   });
 
+  it('作品剧本的两个条件写入排队时只保存使用原稿基线的一次', async () => {
+    prepare();
+    const expected = { expectedSeriesId: 'series', expectedExchangeEpoch: 4, expectedScript: '原剧本' };
+    const save = useAppStore.getState().updateSeriesInfo;
+    const first = save({ script: '第一份保存稿' }, expected);
+    const stale = save({ script: '第二份过期稿' }, expected);
+    await expect(first).resolves.toBe(true);
+    await expect(stale).rejects.toThrow('剧本已变化');
+    expect(owner().series?.script).toBe('第一份保存稿');
+    expect(fileMocks.saveProject.mock.calls.map(([record]) => record.series?.script)).not.toContain('第二份过期稿');
+  });
+
   it('明确指定原剧集后，导航到其他普通项目不能触发项目升级或保存', async () => {
     prepare();
     const plain = { id: 'plain', name: '其他普通项目', createdAt: 1, updatedAt: 1 };

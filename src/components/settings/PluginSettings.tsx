@@ -226,6 +226,7 @@ const PLUGIN_PERMISSION_LABELS: Record<string, string> = {
   'settings.read': '读取插件自己的非敏感设置',
   'settings.write': '保存或删除插件自己的非敏感设置',
   'files.connected.read': '读取当前节点及直接输入连线的项目资源',
+  'wsagent.shared-images': '浏览当前作品的 WSAGENT 共享图片，插入画布或发布指定的连线图片',
   'files.output.create': '在当前项目目录创建新的文本输出',
   'plugin.resources.read': '读取当前插件 revision 声明的包资源',
   'ui.custom': '在主窗口隔离弹窗中运行自定义界面代码（可能影响界面响应）',

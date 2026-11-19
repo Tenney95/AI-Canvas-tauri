@@ -25,11 +25,12 @@ export interface AssetFileContextMenuProps {
   onCreateCreativeAsset?: (kind: DramaAssetKind) => Promise<void>;
   usageTarget?: AssetUsageTarget;
   onRepair?: () => void;
+  onPublishShared?: () => Promise<void>;
 }
 
 /** 资产文件菜单只管理交互；路径、提示词查询及删除由资产面板编排。 */
 export default function AssetFileContextMenu({ name, x, y, canFileActions, canCopyPrompt,
-  confirmDelete = false, onCopy, onCopyPrompt, onReveal, onDelete, onClose, onCreateCreativeAsset, usageTarget, onRepair }: AssetFileContextMenuProps) {
+  confirmDelete = false, onCopy, onCopyPrompt, onReveal, onDelete, onClose, onCreateCreativeAsset, usageTarget, onRepair, onPublishShared }: AssetFileContextMenuProps) {
   useT();
   const menuRef = useRef<HTMLDivElement>(null);
   const [confirming, setConfirming] = useState(confirmDelete);
@@ -80,11 +81,15 @@ export default function AssetFileContextMenu({ name, x, y, canFileActions, canCo
   }, [close, confirming, showUsage]);
 
   // 同步租约阻止快速连点；确认失败保留对话框，用户可以检查权限后重试。
-  const run = async (action: () => Promise<void>) => {
+  const run = async (action: () => Promise<void>, share = false) => {
     if (pendingRef.current) return;
     pendingRef.current = true; setPending(true); setError(null);
     try { await action(); if (mountedRef.current) onClose(); }
-    catch { if (mountedRef.current) setError(confirming ? '删除失败，文件仍保留。请检查文件是否被占用或权限不足。' : '操作失败，请重试。'); }
+    catch (cause) {
+      if (mountedRef.current) setError(share && (typeof cause === 'string' || cause instanceof Error)
+        ? (typeof cause === 'string' ? cause : cause.message)
+        : confirming ? '删除失败，文件仍保留。请检查文件是否被占用或权限不足。' : '操作失败，请重试。');
+    }
     finally { pendingRef.current = false; if (mountedRef.current) setPending(false); }
   };
 
@@ -103,7 +108,7 @@ export default function AssetFileContextMenu({ name, x, y, canFileActions, canCo
   </ModalOverlay>;
 
   const left = Math.max(8, Math.min(x, (window.innerWidth || 1024) - 216));
-  const top = Math.max(8, Math.min(y, (window.innerHeight || 768) - (onCreateCreativeAsset ? 292 : 172)));
+  const top = Math.max(8, Math.min(y, (window.innerHeight || 768) - (onCreateCreativeAsset ? 292 : 172) - (onPublishShared ? 32 : 0)));
   return createPortal(<div ref={menuRef} role="menu" aria-label={t('{name}的文件操作', { name })} className="ui-menu w-52"
     style={{ position: 'fixed', left, top, zIndex: 340 }} onContextMenu={(event) => event.preventDefault()}>
     <button type="button" role="menuitem" className="ui-menu__item" disabled={!canFileActions || pending} onClick={() => void run(onCopy)}>
@@ -116,6 +121,8 @@ export default function AssetFileContextMenu({ name, x, y, canFileActions, canCo
       <Icon icon="lucide:link" className="w-4 h-4" />{t('查看使用位置')}</button>}
     {onRepair && <button type="button" role="menuitem" className="ui-menu__item" disabled={pending} onClick={() => { onRepair(); onClose(); }}>
       <Icon icon="lucide:folder-search" className="w-4 h-4" />{t('重新定位文件')}</button>}
+    {onPublishShared && <button type="button" role="menuitem" className="ui-menu__item" disabled={pending} onClick={() => void run(onPublishShared, true)}>
+      <Icon icon="lucide:link-2" className="w-4 h-4" aria-hidden="true" />{t('发布到 WSAGENT 共享库')}</button>}
     {onCreateCreativeAsset && <>
       <div className="ui-menu__sep" />
       {([{ kind: 'character', label: t('添加到全局人物'), icon: 'lucide:contact-round' },

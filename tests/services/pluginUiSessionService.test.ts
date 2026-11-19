@@ -182,6 +182,21 @@ describe('pluginUiSessionService', () => {
     session.dispose();
   });
 
+  it('uses the applied window theme for context when the stored theme differs', async () => {
+    const session = await native();
+    const dataset = { theme: 'dark' };
+    vi.stubGlobal('document', { documentElement: { dataset } });
+    try {
+      expect(mocks.getState().config.theme).toBe('light');
+      expect(await session.request('context', null)).toMatchObject({ ok: true, value: { theme: 'dark' } });
+      dataset.theme = 'light';
+      expect(await session.request('context', null)).toMatchObject({ ok: true, value: { theme: 'light' } });
+    } finally {
+      session.dispose();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('keeps native sessions inaccessible to iframe messages and retains the v1 context', async () => {
     const frame = await createPluginUiFrameSession({ plugin, tool, nodeId: 'target', exportName: 'dialog', onClose: vi.fn() });
     frame.dispose();

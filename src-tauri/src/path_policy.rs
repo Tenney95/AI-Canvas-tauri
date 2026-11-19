@@ -220,6 +220,7 @@ fn is_secret_path<R: Runtime>(app: &tauri::AppHandle<R>, resolved: &Path) -> boo
 /// 除凭据外，智能体来源映射与插件信任快照也只能由 Rust 专用命令读取。
 fn is_private_app_path<R: Runtime>(app: &tauri::AppHandle<R>, resolved: &Path) -> bool {
     is_secret_path(app, resolved)
+        || is_private_wsagent_rendezvous(app, resolved, false)
         || crate::agent_package::is_agent_private_path(app, resolved)
         || crate::plugin_registry::is_plugin_private_path(app, resolved)
         || crate::comfyui::installation::is_private_path(app, resolved)
@@ -244,11 +245,22 @@ fn overlaps_private_app_path<R: Runtime>(
         })
         .unwrap_or(false);
     overlaps_secret
+        || is_private_wsagent_rendezvous(app, resolved, true)
         || crate::agent_package::is_agent_private_path_overlap(app, resolved)
         || crate::plugin_registry::is_plugin_private_path_overlap(app, resolved)
         || crate::blender_runtime::is_blender_private_path_overlap(app, resolved)
         || crate::comfyui::installation::overlaps_private_path(app, resolved)
         || crate::project_model_safety::is_private_path(app, resolved, true)
+}
+
+/// WSAGENT keeps the native discovery credential outside either application bundle.
+fn is_private_wsagent_rendezvous<R: Runtime>(app: &tauri::AppHandle<R>, resolved: &Path, include_ancestors: bool) -> bool {
+    app.path().data_dir().is_ok_and(|base| {
+        let root = crate::wsagent_shared::RENDEZVOUS_DIRECTORY;
+        let matches = |directory: &Path| is_within(resolved, directory) || (include_ancestors && is_within(directory, resolved));
+        matches(&base.join(root))
+            || canonicalize_simplified(&base).is_ok_and(|canonical| matches(&canonical.join(root)))
+    })
 }
 
 /// 凭据目录可能尚未创建（无法 canonicalize），因此同时按原始路径与解析后路径比对。

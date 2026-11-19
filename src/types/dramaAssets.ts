@@ -95,6 +95,8 @@ export interface CharacterReferenceImage {
   updatedAt: number;
 }
 
+export const MAX_CHARACTER_REFERENCE_IMAGES = 16;
+
 /** 场景 / 道具的独立参考图；标题可标注时段、角度或细节。 */
 export interface DramaAssetReferenceImage {
   id: string;

@@ -6,6 +6,7 @@ import { isLocalMediaUrl as isLocalMediaReference, isRemoteMediaUrl } from '../.
 import { getLocale } from '../../i18n';
 import { getNodeBounds } from '../../utils/nodeBounds';
 import type { Edge, Node } from '@xyflow/react';
+import { isWsagentPluginTool } from './pluginWsagentSharedImages';
 import type { BaseNodeData, NodeType } from '../../types';
 import type {
   AvailablePluginNode,
@@ -315,12 +316,14 @@ export function getAvailableNodePluginTools(
   plugins: InstalledPlugin[],
   nodeType: NodeType | undefined,
   placement: PluginPlacement = 'node-context-menu',
+  wsagentDialogOnly = false,
 ): AvailableNodePluginTool[] {
   if (!nodeType) return [];
   return plugins.flatMap((plugin) => {
     if (!plugin.enabled) return [];
     return (plugin.manifest.contributes.nodeTools ?? [])
-      .filter((tool) => tool.nodeTypes.includes(nodeType) && tool.placements.includes(placement))
+      .filter((tool) => tool.nodeTypes.includes(nodeType) && tool.placements.includes(placement)
+        && isWsagentPluginTool(plugin.id, tool.id) === wsagentDialogOnly)
       .map((tool) => ({
         pluginId: plugin.id,
         pluginName: plugin.manifest.name,

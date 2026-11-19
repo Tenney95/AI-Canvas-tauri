@@ -2,18 +2,28 @@
  * PluginNode — 提供插件节点界面与交互。
  */
 import Select from '../shared/Select';
+import AnimatedButton from '../shared/AnimatedButton';
 import { useT } from '../../i18n';
 import { Icon } from '@iconify/react';
-import { Handle, Position } from '@xyflow/react';
-import { memo, useMemo, useState } from 'react';
+import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { useAppStore } from '../../store/useAppStore';
 import type { BaseNodeData } from '../../types';
 import type { PluginJsonValue } from '../../types/plugin';
+import { isWsagentSharedImagesNode, WSAGENT_MEDIA_CAPABILITY } from '../../types/wsagentShared';
+import WsagentConnectControl from '../assets/WsagentConnectControl';
+import WsagentProjectMediaPanel from './WsagentProjectMediaPanel';
+import NodePluginToolDialog from './shared/toolbar/NodePluginToolDialog';
 import { buildPluginModelCatalog } from '../../services/plugins/pluginModelCatalog';
 import {
   executePluginNode,
+  getAvailableNodePluginTools,
   getAvailablePluginNodes,
 } from '../../services/plugins/pluginRuntime';
+import { openWsagentDesktop } from '../../services/wsagentProjectMedia';
+import { activeWsagentOwner } from '../../services/wsagentSharedImages';
+
+const wsagentHeaderButtonClass = 'nodrag ui-btn ui-btn--secondary ui-btn--sm ui-btn--block';
 
 function jsonRecord(value: unknown): Record<string, PluginJsonValue> {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -28,6 +38,8 @@ function PluginNode({ id, data, selected }: { id: string; data: BaseNodeData; se
   const updateNodeData = useAppStore((state) => state.updateNodeData);
   const showToast = useAppStore((state) => state.showToast);
   const [busy, setBusy] = useState(false);
+  const [openingWsagent, setOpeningWsagent] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
   const available = useMemo(
     () => getAvailablePluginNodes(plugins).find((item) => (
       item.pluginId === data.pluginId && item.node.id === data.pluginNodeId
@@ -35,6 +47,15 @@ function PluginNode({ id, data, selected }: { id: string; data: BaseNodeData; se
     [data.pluginId, data.pluginNodeId, plugins],
   );
   const values = jsonRecord(data.pluginValues);
+  const isWsagentNode = isWsagentSharedImagesNode(data);
+  const ownerId = useAppStore((state) => isWsagentNode ? activeWsagentOwner(state) : null);
+  const mediaEnabled = isWsagentNode && plugins.some((plugin) => plugin.id === data.pluginId && plugin.enabled
+    && plugin.manifest?.requiredCapabilities?.includes(WSAGENT_MEDIA_CAPABILITY));
+  const updateNodeInternals = useUpdateNodeInternals();
+  useEffect(() => { updateNodeInternals(id); }, [id, updateNodeInternals, available?.node]);
+  const wsagentTool = useMemo(() => isWsagentNode
+    ? getAvailableNodePluginTools(plugins, 'plugin-node', 'node-context-menu', true)[0] : undefined,
+  [isWsagentNode, plugins]);
   const outputs = jsonRecord(data.pluginOutputs);
   const categories = useMemo(
     () => available
@@ -63,6 +84,18 @@ function PluginNode({ id, data, selected }: { id: string; data: BaseNodeData; se
     }
   };
 
+  const openWsagent = async () => {
+    if (!ownerId || openingWsagent) return;
+    setOpeningWsagent(true);
+    try {
+      await openWsagentDesktop(ownerId);
+    } catch (cause: unknown) {
+      showToast(typeof cause === 'string' ? cause : cause instanceof Error ? cause.message : t('无法打开 WSAGENT'), 'error');
+    } finally {
+      setOpeningWsagent(false);
+    }
+  };
+
   if (!available) {
     return (
       <div className="w-80 rounded-xl border border-red-500/30 bg-canvas-card p-4 text-xs text-canvas-text-secondary">
@@ -73,7 +106,10 @@ function PluginNode({ id, data, selected }: { id: string; data: BaseNodeData; se
   }
 
   return (
-    <div className={`w-80 rounded-xl border bg-canvas-card shadow-xl transition-colors ${selected ? 'border-indigo-400/70' : 'border-canvas-border'}`}>
+    <>
+    <div className={isWsagentNode
+      ? `ui-card ${mediaEnabled ? 'w-96' : 'w-80'} [&.ui-card]:overflow-visible${selected ? ' is-selected' : ''}`
+      : `w-80 rounded-xl border bg-canvas-card shadow-xl transition-colors ${selected ? 'border-indigo-400/70' : 'border-canvas-border'}`}>
       {available.node.inputs.map((port, index) => (
         <Handle
           key={port.id}
@@ -91,31 +127,46 @@ function PluginNode({ id, data, selected }: { id: string; data: BaseNodeData; se
           type="source"
           position={Position.Right}
           style={{ top: `${((index + 1) / (available.node.outputs.length + 1)) * 100}%` }}
-          title={`${port.label} · ${port.type}`}
+          title={`${port.label} · ${mediaEnabled && (port.type === 'image' || port.type === 'video' || port.type === 'audio')
+            ? data.wsagentMediaSelection?.[port.type]?.name ?? t('请先选择素材') : port.type}`}
         />
       ))}
 
-      <header className="flex items-center gap-2 border-b border-canvas-border px-3 py-2.5">
-        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-500/15 text-indigo-400">
-          <Icon icon={available.node.icon} width={17} height={17} />
+      <header className={isWsagentNode ? 'ui-card__header' : 'flex items-center gap-2 border-b border-canvas-border px-3 py-2.5'}>
+        <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${isWsagentNode
+          ? 'bg-[var(--brand-alpha-15)] text-[var(--brand-light)]'
+          : 'bg-indigo-500/15 text-indigo-400'}`}>
+          <Icon icon={available.node.icon} width={17} height={17} aria-hidden="true" />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-xs font-semibold text-canvas-text">{available.node.title}</div>
-          <div className="truncate text-[10px] text-canvas-text-muted">{available.pluginName}</div>
+          <div className={isWsagentNode ? 'ui-card__title truncate' : 'truncate text-xs font-semibold text-canvas-text'}>{available.node.title}</div>
+          {!isWsagentNode && <div className="truncate text-[10px] text-canvas-text-muted">{available.pluginName}</div>}
         </div>
-        <button
+        {isWsagentNode ? <div className="ui-card__header-actions shrink-0 [&.ui-card__header-actions]:grid grid-flow-col auto-cols-fr">
+          {mediaEnabled && <AnimatedButton type="button" className={wsagentHeaderButtonClass}
+            disabled={!ownerId || openingWsagent} onClick={() => void openWsagent()}>
+            {t('打开 WSAGENT')}
+          </AnimatedButton>}
+          <AnimatedButton type="button" className={wsagentHeaderButtonClass}
+            disabled={!wsagentTool} onClick={() => setDialogOpen(true)}>
+            {t('打开共享素材')}
+          </AnimatedButton>
+        </div> : <button
           type="button"
-          className="nodrag rounded-md bg-indigo-500 px-2.5 py-1.5 text-[11px] font-medium text-white hover:bg-indigo-400 disabled:opacity-50"
+          className="nodrag shrink-0 whitespace-nowrap rounded-md bg-indigo-500 px-2.5 py-1.5 text-[11px] font-medium text-white hover:bg-indigo-400 disabled:opacity-50"
           disabled={busy}
           onClick={() => void run()}
         >
-          {t(busy ? '运行中…' : '运行')}
-        </button>
+          {busy ? t('运行中…') : t('运行')}
+        </button>}
       </header>
 
-      <div className="nodrag nowheel max-h-96 space-y-3 overflow-y-auto p-3">
+      <div className={`nodrag nowheel max-h-96 space-y-3 overflow-y-auto ${isWsagentNode ? 'ui-card__body' : 'p-3'}`}>
+        {isWsagentNode && wsagentTool && <WsagentConnectControl />}
+        {mediaEnabled && ownerId && <WsagentProjectMediaPanel key={ownerId} ownerId={ownerId} nodeId={id}
+          selections={data.wsagentMediaSelection} />}
         {available.node.description && (
-          <p className="text-[11px] leading-4 text-canvas-text-muted">{available.node.description}</p>
+          <p className={isWsagentNode ? 'ui-hint' : 'text-[11px] leading-4 text-canvas-text-muted'}>{available.node.description}</p>
         )}
         {available.node.fields.map((field) => {
           const value = values[field.id];
@@ -183,6 +234,8 @@ function PluginNode({ id, data, selected }: { id: string; data: BaseNodeData; se
         )}
       </div>
     </div>
+    {dialogOpen && wsagentTool && <NodePluginToolDialog nodeId={id} pluginTool={wsagentTool} onClose={() => setDialogOpen(false)} />}
+    </>
   );
 }
 

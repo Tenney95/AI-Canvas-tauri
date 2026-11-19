@@ -53,6 +53,8 @@ mod file_transfer;
 mod registry_write;
 #[path = "files/native_project_media.rs"]
 mod native_project_media;
+#[path = "files/wsagent_shared.rs"]
+mod wsagent_shared;
 #[path = "files/object_storage/mod.rs"]
 mod project_asset_storage;
 #[path = "files/github_fallback.rs"]
@@ -2077,6 +2079,7 @@ pub fn run() {
         .manage(blender_runtime::ProjectGrantState::default())
         .manage(blender_runtime::production_blender_job_core())
         .manage(mcp_bridge::McpBridgeState::default())
+        .manage(wsagent_shared::WsagentSharedState::default())
         .manage(mcp_client::McpClientState::default())
         .manage(codex_runtime::CodexRuntimeState::default())
         .manage(project_asset_storage::ObjectStorageState::default())
@@ -2288,6 +2291,23 @@ pub fn run() {
             mcp_bridge::mcp_bridge_stop,
             mcp_bridge::mcp_bridge_status,
             mcp_bridge::mcp_bridge_respond,
+            wsagent_shared::wsagent_shared_activate,
+            wsagent_shared::wsagent_shared_status,
+            wsagent_shared::wsagent_shared_connect,
+            wsagent_shared::media::wsagent_shared_open,
+            wsagent_shared::media::wsagent_shared_media_list,
+            wsagent_shared::media::wsagent_shared_media_preview,
+            wsagent_shared::media::wsagent_shared_media_import,
+            wsagent_shared::entities::wsagent_shared_entities_list,
+            wsagent_shared::entities::wsagent_shared_entities_apply,
+            wsagent_shared::scripts::wsagent_shared_scripts_list,
+            wsagent_shared::scripts::wsagent_shared_scripts_read,
+            wsagent_shared::scripts::wsagent_shared_scripts_apply,
+            wsagent_shared::wsagent_shared_revoke,
+            wsagent_shared::wsagent_shared_list,
+            wsagent_shared::wsagent_shared_read,
+            wsagent_shared::wsagent_shared_preview,
+            wsagent_shared::wsagent_shared_publish,
             mcp_client::mcp_client_configure,
             mcp_client::mcp_client_fetch,
             mcp_client::mcp_client_cancel,
@@ -2325,6 +2345,7 @@ pub fn run() {
             plugin_runtime::get_python_plugin_runtime_status,
         ])
         .on_window_event(|window, event| {
+            wsagent_shared::on_window_event(window, event);
             project_model_safety::on_window_event(window, event);
             plugin_window::on_window_event(window, event);
             comfyui::progress::on_window_event(window, event);

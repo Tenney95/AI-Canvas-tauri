@@ -8,6 +8,7 @@ import {
   countUnreadDramaAssets,
   isEligibleCharacterReferenceNode,
   isEligibleCharacterVoiceNode,
+  readWsagentCreativeAsset,
 } from '../../src/store/store.dramaAssets';
 import { filterHiddenCanvasElements } from '../../src/store/store.nodes';
 import type { CharacterActionMedia, DramaAsset, DramaCharacter, DramaProp, DramaScene } from '../../src/types/dramaAssets';
@@ -75,6 +76,59 @@ function deferred<T>() {
   const promise = new Promise<T>((next) => { resolve = next; });
   return { promise, resolve };
 }
+
+describe('WSAGENT 创作资产投影', () => {
+  it.each(['character', 'scene', 'prop'] as const)('按身份同步 %s 文本而不吞并同名卡片', async (kind) => {
+    const original = sampleCharacter({ name: '同名卡片' });
+    useAppStore.setState({ dramaAssets: { ...emptyDramaAssetLibrary(), characters: [original] } });
+    const store = useAppStore.getState();
+    const remote = await store.applyWsagentCreativeAsset('p1', 'wsagent-card-1', kind, null,
+      { name: ' 同名卡片 ', description: '项目简介\r\n\r\n### 视觉说明\r\n\r\n外观细节 ' });
+    expect(remote).toMatchObject({ id: 'wsagent-card-1', kind, summary: '项目简介', visualNotes: '外观细节' });
+    expect(readWsagentCreativeAsset(remote, [])).toMatchObject({ name: '同名卡片', description: '项目简介\n\n### 视觉说明\n\n外观细节' });
+    expect(useAppStore.getState().dramaAssets.characters[0]).toBe(original);
+    const repeated = await store.applyWsagentCreativeAsset('p1', remote.id, kind, remote,
+      { name: remote.name, description: '项目简介\n\n### 视觉说明\n\n外观细节' });
+    expect(repeated).toBe(remote);
+    expect(store.saveCurrentProjectSilent).toHaveBeenCalledOnce();
+  });
+
+  it('变更同步主图时保留本地参考，清空时回到现有本地图', async () => {
+    const reference = { id: 'local', kind: 'primary' as const, imageUrl: 'asset://local.png',
+      relativePath: 'local.png', prompt: '本地参考', createdAt: 1, updatedAt: 1 };
+    const original = sampleCharacter({ referenceImages: [reference], primaryReferenceImageId: reference.id,
+      voiceNotes: '本地音色', imageUrl: reference.imageUrl });
+    useAppStore.setState({ dramaAssets: { ...emptyDramaAssetLibrary(), characters: [original] } });
+    const { applyWsagentCreativeAsset } = useAppStore.getState();
+    const payload = { name: '跨端编辑', description: '新简介\n\n### 视觉说明\n\n新外观' };
+    const remote = await applyWsagentCreativeAsset('p1', original.id, 'character', original, { ...payload, image: {
+      sourceId: 'peer-123', fileName: 'imported.png', filePath: '/project/imported.png', relativePath: 'imported.png',
+      imageUrl: 'asset://imported.png',
+    } });
+    expect(remote).toMatchObject({ voiceNotes: '本地音色', primaryReferenceImageId: 'wsagent-image-peer-123',
+      imageUrl: 'asset://imported.png', referenceImages: [reference, expect.objectContaining({ id: 'wsagent-image-peer-123' })] });
+    expect(readWsagentCreativeAsset(remote, []).image?.relativePath).toBe('imported.png');
+    const cleared = await applyWsagentCreativeAsset('p1', original.id, 'character', remote, { ...payload, image: null });
+    expect(cleared).toMatchObject({ voiceNotes: '本地音色', primaryReferenceImageId: 'local',
+      imageUrl: reference.imageUrl, referenceImages: [reference] });
+  });
+
+  it('保留保存期间的新编辑，并拒绝把旧回执覆盖到当前卡片', async () => {
+    const original = sampleCharacter();
+    const wait = deferred<void>();
+    useAppStore.setState({ dramaAssets: { ...emptyDramaAssetLibrary(), characters: [original] },
+      saveCurrentProjectSilent: async (assertCurrent) => { await wait.promise; assertCurrent?.(); return 'p1'; } });
+    const { applyWsagentCreativeAsset } = useAppStore.getState();
+    const promise = applyWsagentCreativeAsset('p1', original.id, 'character', original, { name: '远端编辑', description: '' });
+    const local = sampleCharacter({ name: '保存期间的最新本地编辑' });
+    useAppStore.setState({ dramaAssets: { ...emptyDramaAssetLibrary(), characters: [local] } });
+    wait.resolve();
+    await expect(promise).rejects.toThrow('已变化');
+    expect(useAppStore.getState().dramaAssets.characters[0]).toBe(local);
+    await expect(applyWsagentCreativeAsset('p2', original.id, 'character', local, { name: '旧项目', description: '' }))
+      .rejects.toThrow('已变化');
+  });
+});
 
 it('does not commit a project character save cancelled before the queued write', async () => {
   const original = sampleCharacter();

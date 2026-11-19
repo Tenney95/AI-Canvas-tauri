@@ -53,12 +53,13 @@ const MAX_UI_EXPORTS: usize = 32;
 const MAX_PACKAGE_RESOURCES: usize = 64;
 const MAX_PACKAGE_RESOURCE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PACKAGE_TOTAL_BYTES: usize = 64 * 1024 * 1024;
-const SUPPORTED_PERMISSIONS: [&str; 12] = [
+const SUPPORTED_PERMISSIONS: [&str; 13] = [
     "node.read",
     "node.write",
     "models.read",
     "models.invoke",
     "prompt.references.read",
+    "wsagent.shared-images",
     "network.request",
     "settings.read",
     "settings.write",
@@ -904,6 +905,12 @@ fn parse_revision_with_resources(
     {
         return Err("prompt.references.read 要求 API 2 与 prompt.mentions 能力声明".to_string());
     }
+    if permissions.iter().any(|item| item == "wsagent.shared-images")
+        && (plugin_id != "ai-canvas.wsagent" || api_version != 2 || runtime != "javascript"
+            || !required_capabilities.iter().any(|item| item == "wsagent.sharedImages"))
+    {
+        return Err("WSAGENT 互联权限要求专用 API 2 插件".to_string());
+    }
     let contributes = object(
         root.get("contributes")
             .ok_or_else(|| "插件缺少 contributes".to_string())?,
@@ -1051,7 +1058,7 @@ fn build_python_approval_prompt(
         String::new()
     };
     let host_risk = format!(
-        "\n\n完整 revision SHA-256：{}{}{}",
+        "\n\n完整 revision SHA-256：{}{}{}{}",
         revision.revision_digest,
         if revision.network_origins.is_empty() {
             String::new()
@@ -1069,6 +1076,11 @@ fn build_python_approval_prompt(
             "\n插件可按声明权限读取或保存自己的非敏感偏好；设置不用于保存凭据。".to_string()
         } else {
             String::new()
+        },
+        if revision.permissions.iter().any(|value| value == "wsagent.shared-images") {
+            "\n插件可浏览当前作品的 WSAGENT 共享图片、插入画布或发布指定的连线图片。"
+        } else {
+            ""
         },
     );
     NativeApprovalPrompt {
@@ -1088,13 +1100,13 @@ fn build_python_approval_prompt(
     }
 }
 
-/// 新的联网和设置授权也绑定到当前版本，不能沿用旧版本的确认。
+/// 联网、设置及项目互联授权绑定到当前版本。
 fn revision_requests_native_approval(revision: &PluginRevision) -> bool {
     revision.runtime == "python"
         || revision.permissions.iter().any(|item| {
             matches!(
                 item.as_str(),
-                "ui.custom" | "network.request" | "settings.read" | "settings.write"
+                "ui.custom" | "network.request" | "settings.read" | "settings.write" | "wsagent.shared-images"
             )
         })
 }
@@ -1774,6 +1786,11 @@ fn validate_stored_revision(revision: &PluginRevision) -> Result<(), String> {
         && !revision.required_capabilities.iter().any(|item| item == "prompt.mentions")
     {
         return Err("提示词引用权限缺少 prompt.mentions 能力声明".to_string());
+    }
+    if revision.permissions.iter().any(|item| item == "wsagent.shared-images")
+        && (revision.runtime != "javascript" || !revision.required_capabilities.iter().any(|item| item == "wsagent.sharedImages"))
+    {
+        return Err("WSAGENT 互联权限缺少宿主能力声明".to_string());
     }
     validate_model_protocols(&revision.model_protocols)?;
     if revision.model_protocols.windows(2).any(|pair| pair[0].id >= pair[1].id) {
@@ -3566,6 +3583,20 @@ mod tests {
         let mut forged = revision.clone();
         forged.required_capabilities.clear();
         assert!(validate_stored_revision(&forged).is_err());
+    }
+
+    #[test]
+    fn wsagent_shared_plugin_permission_requires_the_designated_api2_bundle() {
+        let mut value = manifest("javascript");
+        value["apiVersion"] = json!(2);
+        value["permissions"] = json!(["node.read", "node.write", "wsagent.shared-images"]);
+        value["requiredCapabilities"] = json!(["wsagent.sharedImages"]);
+        assert!(parse_revision(&value, "source", None).is_err());
+        value["id"] = json!("ai-canvas.wsagent");
+        let (_, revision) = parse_revision(&value, "source", None).unwrap();
+        assert!(revision_requests_native_approval(&revision));
+        value["requiredCapabilities"] = json!([]);
+        assert!(parse_revision(&value, "source", None).is_err());
     }
 
     #[test]

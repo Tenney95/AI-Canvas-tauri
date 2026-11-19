@@ -484,6 +484,11 @@ export function subscribeManualProjectSaveSuccess(listener: (projectId: string) 
 const episodeCreativeWrites: Map<string, Promise<unknown>> = import.meta.hot?.data.episodeCreativeWrites ?? new Map();
 if (import.meta.hot) import.meta.hot.data.episodeCreativeWrites = episodeCreativeWrites;
 
+/** 旧项目的内存补丁可能先于落盘。对端只能读取已结清的创作内容。 */
+export function pendingProjectCreativeWrite(projectId: string): Promise<unknown> | undefined {
+  return episodeCreativeWrites.get(projectId);
+}
+
 export interface EpisodeCreativeWriteOptions {
   expected?: TeamEpisodeTarget;
   /** 仅可信工作台宿主可在已加载的同一剧集中保存明确目标，不代表画布写权限。 */
@@ -2255,6 +2260,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     const navigationSequence = projectSwitchSequence;
     const requestedSeriesId = options?.expectedSeriesId;
     const expectedEpoch = options?.expectedExchangeEpoch;
+    const expectedScript = options?.expectedScript;
     const expectedOriginal = options?.expectedOriginalWork === undefined ? undefined
       : options.expectedOriginalWork === null ? null : { ...options.expectedOriginalWork };
     const changes = { ...info, ...(info.originalWork ? { originalWork: { ...info.originalWork } } : {}) };
@@ -2285,7 +2291,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     if (!seriesId) return false;
     const initialSeries = get().projects.find((project) => project.id === seriesId);
     const epoch = expectedEpoch ?? initialSeries?.exchangeEpoch ?? 0;
-    const assertSeriesCurrent = (allowOwnOriginal = false) => {
+    const assertSeriesCurrent = (allowOwnPatch = false) => {
       assertNavigationCurrent();
       const latest = get();
       const owner = latest.projects.find((project) => project.id === seriesId);
@@ -2294,8 +2300,12 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         throw new Error('原著所属剧集或编辑会话已变化，请重新打开');
       }
       if (expectedOriginal !== undefined && !sameOriginal(owner.series?.originalWork, expectedOriginal)
-        && !(allowOwnOriginal && 'originalWork' in changes && sameOriginal(owner.series?.originalWork, changes.originalWork))) {
+        && !(allowOwnPatch && 'originalWork' in changes && sameOriginal(owner.series?.originalWork, changes.originalWork))) {
         throw new Error('原著引用已变化，请保留草稿并重新载入');
+      }
+      if (expectedScript !== undefined && (owner.series?.script ?? '') !== expectedScript
+        && !(allowOwnPatch && 'script' in changes && (owner.series?.script ?? '') === (changes.script ?? ''))) {
+        throw new Error('剧本已变化，已保留草稿');
       }
     };
     assertSeriesCurrent();

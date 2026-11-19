@@ -9,6 +9,7 @@ import type { AssetImageRecord, AssetImageSaveInput } from '../types/assetImage'
 import type { AppUpdateProgress } from '../services/updateService';
 import type { ComfyNodeProgress } from '../types/comfyProgress';
 import type { CharacterLibraryOpenRequest } from '../types/dramaAssets';
+import { isWsagentSharedImagesNode } from '../types/wsagentShared';
 
 export type { ComfyNodeProgress, ComfyNodeProgressStage } from '../types/comfyProgress';
 
@@ -209,8 +210,8 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
   setCanvasGuideOpen: (open) => set({ canvasGuideOpen: open }),
   openNodeDialog: (nodeId, position) => set((state) => {
     const node = state.nodes.find((item) => item.id === nodeId);
-    // 点击、空格和其他入口共用此边界：宫格只使用自身的分格/取图交互。
-    if (node?.type === 'ai-storyboard' || node?.data.type === 'ai-storyboard') {
+    // 宫格与 WSAGENT 互联节点各自处理节点操作，所有入口共用此边界。
+    if (node?.type === 'ai-storyboard' || node?.data.type === 'ai-storyboard' || isWsagentSharedImagesNode(node?.data)) {
       return { activeNodeId: null, dialogPosition: null, pendingPresetAction: null };
     }
     return { activeNodeId: nodeId, dialogPosition: position ?? null };

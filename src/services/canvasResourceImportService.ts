@@ -1,13 +1,19 @@
 /** 外部资源先准备、再一次提交画布；路径与剪贴板正文不进入工具结果。 */
-import type { Node } from '@xyflow/react';
+import type { Edge, Node } from '@xyflow/react';
 import type { BaseNodeData } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { blobToDataUrl, computeImageNodeDimensions, generateId } from '../store/store.utils';
+import { getNodeBounds } from '../utils/nodeBounds';
 import { getCanvasPointerPosition } from './canvasPointerService';
 import { copyFileToProjectData, saveDataUrlToProjectData } from './fileService';
+import { sanitizeFileName } from './fs/core';
 import { readNativeClipboard } from './clipboardService';
 import { MediaUploadError, reserveUploadedMedia, settleUploadedMedia } from './mediaUploadService';
 import type { MediaResourceInput } from '../types/mediaUpload';
+import {
+  isWsagentSharedImagesNode, WSAGENT_IMAGE_EXTENSIONS, WSAGENT_MAX_IMAGE_BYTES, type WsagentSharedImage,
+  type WsagentProjectMediaTarget,
+} from '../types/wsagentShared';
 import {
   completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasImport,
 } from './canvasDerivationGuard';
@@ -22,10 +28,24 @@ export interface ResourceImportContext {
 export interface ResourcePosition { x?: number; y?: number }
 export interface LocalResourceInput extends ResourcePosition { path: string; label?: string }
 type MediaKind = 'image' | 'video' | 'audio';
+interface SavedMedia {
+  filePath: string;
+  assetUrl: string;
+  fileName?: string;
+  relativePath?: string;
+  assetId?: string;
+}
+interface WsagentMediaImportLink {
+  sourceNodeId: string;
+  kind: MediaKind;
+  target?: WsagentProjectMediaTarget;
+  assertCurrent?: () => void;
+}
 type Resource = ResourcePosition & { label: string } & (
   | { kind: MediaKind; path: string }
   | { kind: MediaKind; blob: Blob; extension: string }
-  | { kind: 'image'; saved: { filePath: string; assetUrl: string; fileName: string } }
+  | { kind: 'image'; dataUrl: string; fileName: string }
+  | { kind: MediaKind; saved: SavedMedia }
   | { kind: 'text'; text: string }
 );
 
@@ -123,8 +143,9 @@ function cancellable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 
 async function importResources(
   context: ResourceImportContext,
-  load: () => Promise<Resource[]>,
+  load: (signal: AbortSignal) => Promise<Resource[]>,
   position: ResourcePosition,
+  link?: WsagentMediaImportLink,
 ) {
   const initial = useAppStore.getState();
   if (context.signal.aborted) reject('IMPORT_CANCELLED', '资源导入已取消');
@@ -132,6 +153,7 @@ async function importResources(
     || (context.baseRevision !== undefined && initial.getCurrentRevision() !== context.baseRevision)) {
     reject('IMPORT_STALE', '项目或画布已变更，请重新读取画布后导入');
   }
+  const linkedPosition = link ? wsagentLinkedMediaPosition(initial.nodes, initial.edges, link) : undefined;
   const controller = new AbortController();
   const abort = () => controller.abort();
   context.signal.addEventListener('abort', abort, { once: true });
@@ -148,13 +170,15 @@ async function importResources(
       || current.nodes !== initial.nodes || current.edges !== initial.edges || current.groups !== initial.groups) {
       reject('IMPORT_STALE', '导入期间项目或画布已变更，未添加节点；请重新读取画布');
     }
+    link?.assertCurrent?.();
   };
   const origin = getCanvasPointerPosition();
-  const x = position.x ?? origin.x;
-  const y = position.y ?? origin.y;
+  const x = position.x ?? linkedPosition?.x ?? origin.x;
+  const y = position.y ?? linkedPosition?.y ?? origin.y;
   const nodes: Node<BaseNodeData>[] = [];
   try {
-    const resources = await cancellable(load(), controller.signal);
+    check();
+    const resources = await cancellable(load(controller.signal), controller.signal);
     check();
     for (const [index, resource] of resources.entries()) {
       check();
@@ -165,9 +189,12 @@ async function importResources(
       if (resource.kind === 'text') {
         data.output = resource.text;
       } else {
-        let saved: { assetUrl: string; filePath: string; fileName?: string } | null;
+        let saved: SavedMedia | null;
         if ('saved' in resource) {
           saved = resource.saved;
+        } else if ('dataUrl' in resource) {
+          saved = await cancellable(saveDataUrlToProjectData(resource.dataUrl, context.projectId, resource.fileName,
+            { deduplicateByContent: true, throwOnError: true, assertCurrent: check }), controller.signal);
         } else if ('path' in resource) {
           saved = await cancellable(copyFileToProjectData(resource.path, context.projectId, {
             signal: controller.signal, redactErrors: true, reuseExistingProjectFile: true,
@@ -182,6 +209,8 @@ async function importResources(
         if (!saved?.assetUrl) reject('IMPORT_COPY_FAILED', `第 ${index + 1} 项导入失败，请检查文件及目录授权；本批未添加节点`);
         data.filePath = saved.filePath;
         data.fileName = saved.fileName || saved.filePath.split(/[\\/]/).pop();
+        if (saved.relativePath) data.relativePath = saved.relativePath;
+        if (saved.assetId) data.assetId = saved.assetId;
         if (resource.kind === 'image') {
           data.imageUrl = saved.assetUrl;
           Object.assign(data, await cancellable(computeImageNodeDimensions(saved.assetUrl), controller.signal));
@@ -195,7 +224,17 @@ async function importResources(
       } });
     }
     check();
-    useAppStore.getState().addNodesWithEdges(nodes, []);
+    const edges: Edge[] = [];
+    if (link) {
+      const mediaNodeId = nodes[0].id;
+      edges.push({ id: `edge-${generateId()}`, source: link.sourceNodeId,
+        sourceHandle: `plugin-out-${link.kind}`, target: mediaNodeId, targetHandle: 'left' });
+      if (link.target) {
+        edges.push({ id: `edge-${generateId()}`, source: mediaNodeId, sourceHandle: 'right',
+          target: link.target.nodeId, targetHandle: link.target.targetHandle });
+      }
+    }
+    useAppStore.getState().addNodesWithEdges(nodes, edges);
     useAppStore.getState().incrementRevision();
     return {
       nodes: nodes.map((node) => ({ nodeId: node.id, type: node.type, position: node.position })),
@@ -209,6 +248,27 @@ async function importResources(
     context.signal.removeEventListener('abort', abort);
     completeCanvasDerivation(guard);
   }
+}
+
+function wsagentLinkedMediaPosition(nodes: Node<BaseNodeData>[], edges: Edge[], link: WsagentMediaImportLink) {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const source = byId.get(link.sourceNodeId);
+  if (!source || !isWsagentSharedImagesNode(source.data)) reject('IMPORT_STALE', 'WSAGENT 互联节点已变更');
+  if (link.target && (link.target.nodeId === link.sourceNodeId || !byId.has(link.target.nodeId))) {
+    reject('IMPORT_STALE', '目标节点已变更，请重新拖线');
+  }
+  const linked = new Set(edges.filter((edge) => edge.source === link.sourceNodeId).map((edge) => edge.target));
+  if (link.target) linked.add(link.target.nodeId);
+  const sourceBounds = getNodeBounds(source, byId);
+  const x = sourceBounds.right + 40;
+  let y = sourceBounds.top;
+  for (const id of linked) {
+    const node = byId.get(id);
+    if (!node) continue;
+    const bounds = getNodeBounds(node, byId);
+    if (bounds.right > x && bounds.left < x + 280) y = Math.max(y, bounds.bottom + 24);
+  }
+  return { x, y };
 }
 
 export async function importLocalResources(context: ResourceImportContext, files: MediaResourceInput[], position: ResourcePosition = {}) {
@@ -261,4 +321,36 @@ export function importCapturedImage(
     const blob = await (await fetch(`data:image/jpeg;base64,${result.data}`)).blob();
     return [{ kind: 'image', blob, extension: 'jpg', label }];
   }, position);
+}
+
+/** 互联库的原件先落为本项目受管文件；旧节点继续指向插入时的文件。 */
+export function importSharedProjectImage(
+  context: ResourceImportContext,
+  read: () => Promise<{ asset: WsagentSharedImage; base64: string }>,
+) {
+  return importResources(context, async () => {
+    const { asset, base64 } = await read();
+    const extension = WSAGENT_IMAGE_EXTENSIONS[asset.mime];
+    if (!extension || !/^[a-f0-9]{64}$/u.test(asset.sha256) || asset.bytes <= 0 || asset.bytes > WSAGENT_MAX_IMAGE_BYTES
+      || base64.length !== 4 * Math.ceil(asset.bytes / 3)) reject('IMPORT_LIMIT', '共享图片格式或大小无效');
+    const stem = Array.from(asset.name.replace(/\.(?:png|jpe?g|webp)$/iu, '')).slice(0, 56).join('').trim() || '共享图片';
+    return [{ kind: 'image', dataUrl: `data:${asset.mime};base64,${base64}`, label: asset.name,
+      fileName: sanitizeFileName(`${stem}.${extension}`) }];
+  }, {});
+}
+
+/** 从已配对作品取回受管原件，同一次历史写入创建素材节点及其连线。 */
+export function importWsagentProjectMedia(
+  context: ResourceImportContext,
+  read: (signal: AbortSignal) => Promise<SavedMedia & { label: string; relativePath: string }>,
+  sourceNodeId: string,
+  kind: MediaKind,
+  target?: WsagentProjectMediaTarget,
+  assertCurrent?: () => void,
+  position: ResourcePosition = {},
+) {
+  return importResources(context, async (signal) => {
+    const { label, ...saved } = await read(signal);
+    return [{ kind, saved, label }];
+  }, position, { sourceNodeId, kind, target, assertCurrent });
 }

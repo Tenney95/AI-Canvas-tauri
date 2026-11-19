@@ -13,6 +13,7 @@ export type PluginPermission =
   | 'models.invoke'
   /** 枚举当前画布、人物/场景与资源库的安全引用；正文与媒体仍仅由宿主解析。 */
   | 'prompt.references.read'
+  | 'wsagent.shared-images'
   /** 由宿主请求 Manifest 中列出的公共 HTTPS 来源。 */
   | 'network.request'
   | 'settings.read'
@@ -611,8 +612,15 @@ export interface PluginPromptMentionPage {
   nextOffset?: number;
 }
 
+export type WsagentPluginEffect =
+  | { type: 'wsagent.sharedImages.list'; offset?: number }
+  | { type: 'wsagent.sharedImages.preview'; assetId: string }
+  | { type: 'wsagent.sharedImages.insert'; assetId: string }
+  | { type: 'wsagent.sharedImages.publish'; resourceId: string; name?: string };
+
 export type PluginNodeHostEffect =
   | PluginVideoReplicaStart
+  | WsagentPluginEffect
   | { type: 'video.replicaJob.status' | 'video.replicaJob.cancel' | 'video.replicaJob.restart'; jobId: string }
   | { type: 'prompt.mentions'; source: PluginPromptMentionSource; query?: string; offset?: number; preview?: boolean }
   | { type: 'network.request'; url: string; method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; headers?: Record<string, string>; body?: string }

@@ -7,6 +7,7 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { isLocalMediaUrl as isLocalReference } from '../../utils/mediaUrl';
 import { getLocale, type Locale } from '../../i18n';
 import type { NodeType } from '../../types';
+import { WSAGENT_IMAGE_PORT } from '../../types/wsagentShared';
 import type {
   InstalledPlugin,
   PluginInvocationResources,
@@ -18,6 +19,7 @@ import type {
   PluginVideoReplicaJobSummary,
 } from '../../types/plugin';
 import { useAppStore } from '../../store/useAppStore';
+import { resolveAppearanceMode } from '../appearance/appearanceRuntime';
 import { resolvePluginDependencies } from './pluginDependencyService';
 import { createPluginLifecycleScope } from './pluginLifecycleScope';
 import {
@@ -40,6 +42,7 @@ import {
   mintPluginInvocationResources,
   type PluginResourceReadContext,
 } from './pluginResourceService';
+import { executeWsagentPluginEffect, getWsagentPluginNode, isWsagentPluginEffect, isWsagentPluginTool } from './pluginWsagentSharedImages';
 
 const MESSAGE_CHANNEL = 'ai-canvas-plugin-ui-v1';
 const MAX_UI_EFFECTS = PLUGIN_HOST.limits.ui.ordinary;
@@ -367,12 +370,14 @@ async function dispatchRequest(
         const node = state.nodes.find((item) => item.id === session.nodeId);
         if (!node) throw new Error('源节点已不存在');
         const data = safeNodeData(session.tool, node.data);
+        const appliedTheme = typeof document === 'undefined' ? undefined : document.documentElement.dataset.theme;
         return {
           ok: true,
           value: {
             host: PLUGIN_HOST,
             surface: session.surface,
-            theme: state.config.theme,
+            theme: appliedTheme === 'light' || appliedTheme === 'dark' ? appliedTheme
+              : resolveAppearanceMode(state.appearancePreview?.mode ?? state.config.appearance?.mode ?? state.config.theme),
             locale: getLocale(),
             node: { id: session.nodeId, type: node.data.type as NodeType, data },
             models: modelCatalog(plugin, session.tool),
@@ -382,6 +387,31 @@ async function dispatchRequest(
         };
       }
       case 'effect': {
+        if (isWsagentPluginEffect(effectType)) {
+          const target = useAppStore.getState().nodes.find((node) => node.id === session.nodeId);
+          if (!target || !getWsagentPluginNode(plugin, session.tool.id, target.data)) throw new Error('共享素材操作只对 WSAGENT 互联节点开放');
+          const controller = new AbortController();
+          session.effectAbortController = controller;
+          const inserting = effectType === 'wsagent.sharedImages.insert';
+          if (inserting) session.submitting = true;
+          try {
+            const value = await executeWsagentPluginEffect({
+              type: effectType, payload: request.payload, resources: session.resources,
+              context: resourceReadContext(session, plugin), signal: controller.signal,
+              assertFresh: () => { resolveLivePlugin(session); },
+            });
+            // 成功插入与普通提交一样推进画布 revision，并结束本次界面会话。
+            resolveLivePlugin(session, !inserting);
+            if (inserting) {
+              session.completed = true;
+              useAppStore.getState().showToast('共享图片已插入画布');
+            }
+            return { ok: true, value: { type: effectType, ok: true, value: normalizeJson(value) } };
+          } finally {
+            if (inserting) session.submitting = false;
+            if (session.effectAbortController === controller) session.effectAbortController = undefined;
+          }
+        }
         if (effectType === 'video.replicaJob.start' || effectType === 'video.replicaJob.status' || effectType === 'video.replicaJob.cancel' || effectType === 'video.replicaJob.restart') {
           if (!supportsReplicaJobs(plugin)) throw new Error('插件未声明完整视频任务能力');
           const effect = parsePluginVideoReplicaEffect(request.payload);
@@ -615,6 +645,9 @@ async function createSession(
     delete parameters.replicaRestart;
     const targetNode = state.nodes.find((node) => node.id === options.nodeId);
     if (!targetNode || !tool.nodeTypes.includes(targetNode.data.type as NodeType)) throw new Error('插件目标节点无效');
+    const wsagentTool = isWsagentPluginTool(plugin.id, tool.id);
+    const wsagentNode = wsagentTool ? getWsagentPluginNode(plugin, tool.id, targetNode.data) : undefined;
+    if (wsagentTool && !wsagentNode) throw new Error('WSAGENT 互联节点声明不匹配');
     const session: PluginUiSession = {
       lifecycle: createPluginLifecycleScope(),
       sessionId, surface: 'tool-dialog', pluginId: plugin.id, sourceDigest, revisionDigest, uiDigest,
@@ -674,7 +707,12 @@ async function createSession(
       baseRevision: guard.baseRevision,
       expectedContext: guard.expectedContext,
       getState: useAppStore.getState,
-      access: tool.resourceAccess,
+      access: wsagentNode
+        ? wsagentNode.resourceAccess?.incoming && tool.resourceAccess?.incoming
+          && wsagentNode.resourceAccess.portIds?.includes(WSAGENT_IMAGE_PORT) && plugin.manifest.permissions.includes('files.connected.read')
+          ? { incoming: true, portIds: [WSAGENT_IMAGE_PORT] } : undefined
+        : tool.resourceAccess,
+      inputPorts: wsagentNode?.inputs,
       packageResources: plugin.manifest.resources,
       state,
     });

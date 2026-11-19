@@ -32,6 +32,18 @@ const common = {
 
   // ── 节点菜单 / 节点选择器 ──
   '添加节点': 'Add node',
+  '添加插件节点': 'Add plugin node',
+  '暂无可添加的插件节点': 'No plugin nodes available',
+  '正在同步创作资产…': 'Syncing creative assets…',
+  '角色、道具、场景已同步': 'Characters, props, and scenes synced',
+  '创作资产暂未同步，稍后重试': 'Some creative assets are pending. Retrying shortly.',
+  '创作资产有并发修改，已保留两端内容': 'Conflicting creative asset edits. Both versions were kept.',
+  '正在同步剧本…': 'Syncing scripts…',
+  '剧本已同步': 'Scripts synced',
+  '剧本暂未同步，稍后重试': 'Script sync is pending. Retrying shortly.',
+  '剧本版本有冲突，已保留两端原稿': 'Script versions conflict. Both originals were kept.',
+  '有多份未对应的 WSAGENT 剧本，已保留原稿': 'Several WSAGENT scripts are unlinked. Their originals were kept.',
+  '剧本有正在编辑的草稿，保存或关闭后再同步': 'A script draft is open. Save or discard it to resume sync.',
   '添加资源': 'Add resource',
   '画布自由生成': 'Generate on canvas',
   '上传文件': 'Upload file',

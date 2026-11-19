@@ -5,6 +5,7 @@
 import { memo, useLayoutEffect, useRef, useState } from 'react';
 import type { NodeType } from '../../types';
 import type { AvailablePluginNode } from '../../types/plugin';
+import type { CanvasContextSubmenu } from '../../hooks/useCanvasContextMenu';
 import { calcFixedPosition, calcSubmenuPosition } from '../../utils/popupPosition';
 import { useT } from '../../i18n';
 
@@ -53,13 +54,11 @@ const NODE_ITEMS: MergedNodeItem[] = [
 const ROW_HEIGHT = 28;
 /** 菜单 padding + border 估算 */
 const MENU_PADDING = 10;
-/** 根菜单项数（添加节点 + [复制] + 粘贴 + [复制文件] + 撤销 + 重做 + 打开项目文件夹 + [删除]）
- *  hasSelection 为真时最多 8 个 .menu-row + 3 个 .menu-sep；未选中时 5 个 .menu-row + 2 个 .menu-sep。
- *  以选中态最大项数估算高度，避免溢出。 */
-const L1_ITEM_COUNT = 9;
+/** 根菜单以选中态的最大项数估算高度。 */
+const L1_ITEM_COUNT = 10;
 const L1_SEP_COUNT = 3;
-/** 子菜单项数（7 个内容节点 + 1 条分割线 + 7 个源节点） */
-const SUB_ITEM_COUNT = 14;
+/** 内置子菜单额外包含一行宫格分镜入口。 */
+const SUB_ITEM_COUNT = NODE_ITEMS.length + 1;
 const SUB_SEP_COUNT = 1;
 const GRID_PICKER_ROWS = 8;
 const GRID_PICKER_COLS = 12;
@@ -79,7 +78,7 @@ function estMenuWidth(itemCount: number): number {
 interface CanvasContextMenuProps {
   visible: boolean;
   position: { x: number; y: number };
-  hoverMenu: 'addNode' | null;
+  hoverMenu: CanvasContextSubmenu | null;
   menuRef: React.RefObject<HTMLDivElement | null>;
   submenuRef: React.RefObject<HTMLDivElement | null>;
   onAddNode: (type: NodeType, label: string, role: 'generator' | 'source', grid?: { rows: number; cols: number }) => void;
@@ -94,8 +93,8 @@ interface CanvasContextMenuProps {
   onCopyFiles?: () => void;
   hasSelection: boolean;
   onOpenProjectDir: () => void;
-  onShowSubmenu: (menu: 'addNode' | null) => void;
-  onHideSubmenu: (backTo: 'addNode' | null) => void;
+  onShowSubmenu: (menu: CanvasContextSubmenu | null) => void;
+  onHideSubmenu: (backTo: CanvasContextSubmenu | null) => void;
 }
 
 function GridPicker({
@@ -210,6 +209,8 @@ function CanvasContextMenu({
   const [subPos, setSubPos] = useState<{ left: number; top: number } | null>(null);
   const [gridPickerOpen, setGridPickerOpen] = useState(false);
   const gridRowRef = useRef<HTMLDivElement>(null);
+  const pluginRowRef = useRef<HTMLButtonElement>(null);
+  const showPluginNodes = hoverMenu === 'addPluginNode';
 
   const l1Height = estMenuHeight(L1_ITEM_COUNT, L1_SEP_COUNT);
   const l1Width = estMenuWidth(L1_ITEM_COUNT);
@@ -241,12 +242,16 @@ function CanvasContextMenu({
     ));
 
     const l1Rect = l1El.getBoundingClientRect();
+    const pluginRow = showPluginNodes ? pluginRowRef.current?.getBoundingClientRect() : undefined;
+    const anchor = pluginRow
+      ? new DOMRect(l1Rect.left, pluginRow.top, l1Rect.width, pluginRow.height)
+      : l1Rect;
     const subEl = submenuRef.current;
-    const subItemCount = SUB_ITEM_COUNT + pluginNodes.length;
-    const subSepCount = SUB_SEP_COUNT + (pluginNodes.length > 0 ? 1 : 0);
+    const subItemCount = showPluginNodes ? Math.max(1, pluginNodes.length) : SUB_ITEM_COUNT;
+    const subSepCount = showPluginNodes ? 0 : SUB_SEP_COUNT;
     const subH = subEl?.offsetHeight ?? estMenuHeight(subItemCount, subSepCount);
     const subW = subEl?.offsetWidth ?? estMenuWidth(subItemCount);
-    const sub = calcSubmenuPosition(l1Rect, subW, subH, 'right');
+    const sub = calcSubmenuPosition(anchor, subW, subH);
     const nextSubPos = {
       left: sub.left - (fixedContainerRect?.left ?? 0),
       top: sub.top - (fixedContainerRect?.top ?? 0),
@@ -256,7 +261,7 @@ function CanvasContextMenu({
         ? current
         : nextSubPos
     ));
-  }, [visible, position.x, position.y, hoverMenu, hasSelection, pluginNodes.length, l1Pos, menuRef, submenuRef]);
+  }, [visible, position.x, position.y, hoverMenu, showPluginNodes, hasSelection, pluginNodes.length, l1Pos, menuRef, submenuRef]);
 
   if (!visible) return null;
 
@@ -277,6 +282,18 @@ function CanvasContextMenu({
           <span className="menu-rowlabel">{t('添加节点')}</span>
           <span className="menu-arrow menu-arrow-ml8">▶</span>
         </div>
+        <button
+          ref={pluginRowRef}
+          type="button"
+          className={`menu-row menu-row-split${showPluginNodes ? ' highlight' : ''}`}
+          aria-expanded={showPluginNodes}
+          onMouseEnter={() => { setGridPickerOpen(false); onShowSubmenu('addPluginNode'); }}
+          onMouseLeave={() => onHideSubmenu(null)}
+          onClick={() => { setGridPickerOpen(false); onShowSubmenu('addPluginNode'); }}
+        >
+          <span className="menu-rowlabel">{t('添加插件节点')}</span>
+          <span className="menu-arrow menu-arrow-ml8" aria-hidden="true">▶</span>
+        </button>
         <div className="menu-row" onClick={onCreateFolder}>
           <span>{t('创建文件夹')}</span>
         </div>
@@ -319,53 +336,54 @@ function CanvasContextMenu({
         )}
       </div>
 
-      {/* 合并子菜单：生成节点 + 分割线 + 源节点 */}
-      {hoverMenu === 'addNode' && subPos && (
+      {hoverMenu && subPos && (
         <div
           ref={submenuRef}
           className="canvas-ctx-menu submenu max-h-[calc(100vh-16px)] overflow-y-auto"
           style={{ left: subPos.left, top: subPos.top }}
-          onMouseEnter={() => onShowSubmenu('addNode')}
+          onMouseEnter={() => onShowSubmenu(hoverMenu)}
           onMouseLeave={() => onHideSubmenu(null)}
         >
-          {NODE_ITEMS.map((item, i) => (
-            <div key={`${item.role}-${item.type}`}>
-              {/* 第 7 项后插入分割线（内容节点 → 源节点） */}
-              {i === 7 && <div className="menu-sep" />}
-              <div
-                className="menu-row menu-row-split"
-                onMouseEnter={() => setGridPickerOpen(false)}
-                onClick={() => onAddNode(item.type, item.label, item.role)}
-              >
-                <span>{t(item.label)}</span>
-                <span className="menu-kbd">{nodeShortcutLabel(item)}</span>
-              </div>
-            </div>
-          ))}
-          <div
-            ref={gridRowRef}
-            className={`menu-row menu-row-split${gridPickerOpen ? ' highlight' : ''}`}
-            onMouseEnter={() => setGridPickerOpen(true)}
-            onClick={() => setGridPickerOpen(true)}
-          >
-            <span>{t('宫格分镜')}</span>
-            <span className="menu-arrow">▶</span>
-          </div>
-          {pluginNodes.length > 0 && (
+          {showPluginNodes ? (
             <>
-              <div className="menu-sep" />
+              {pluginNodes.length === 0 && <div className="ui-hint px-2.5 py-2">{t('暂无可添加的插件节点')}</div>}
               {pluginNodes.map((pluginNode) => (
-                <div
+                <button
                   key={`${pluginNode.pluginId}-${pluginNode.node.id}`}
+                  type="button"
                   className="menu-row menu-row-split"
-                  onMouseEnter={() => setGridPickerOpen(false)}
-                  title={pluginNode.pluginName}
+                  title={`${pluginNode.node.title} · ${pluginNode.pluginName}`}
                   onClick={() => onAddPluginNode(pluginNode)}
                 >
-                  <span>{pluginNode.node.title}</span>
-                  <span className="menu-kbd">{pluginNode.pluginName}</span>
+                  <span className="max-w-56 truncate">{pluginNode.node.title}</span>
+                  <span className="menu-kbd max-w-40 truncate">{pluginNode.pluginName}</span>
+                </button>
+              ))}
+            </>
+          ) : (
+            <>
+              {NODE_ITEMS.map((item, i) => (
+                <div key={`${item.role}-${item.type}`}>
+                  {i === 7 && <div className="menu-sep" />}
+                  <div
+                    className="menu-row menu-row-split"
+                    onMouseEnter={() => setGridPickerOpen(false)}
+                    onClick={() => onAddNode(item.type, item.label, item.role)}
+                  >
+                    <span>{t(item.label)}</span>
+                    <span className="menu-kbd">{nodeShortcutLabel(item)}</span>
+                  </div>
                 </div>
               ))}
+              <div
+                ref={gridRowRef}
+                className={`menu-row menu-row-split${gridPickerOpen ? ' highlight' : ''}`}
+                onMouseEnter={() => setGridPickerOpen(true)}
+                onClick={() => setGridPickerOpen(true)}
+              >
+                <span>{t('宫格分镜')}</span>
+                <span className="menu-arrow">▶</span>
+              </div>
             </>
           )}
         </div>

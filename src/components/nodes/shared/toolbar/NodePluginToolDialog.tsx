@@ -26,7 +26,6 @@ import { useAppStore } from '../../../../store/useAppStore';
 import AnimatedButton from '../../../shared/AnimatedButton';
 import ModalOverlay from '../../../shared/ModalOverlay';
 import PopupCloseButton from '../../../shared/PopupCloseButton';
-import { resolveAppearanceMode } from '../../../../services/appearance/appearanceRuntime';
 
 interface NodePluginToolDialogProps {
   pluginTool: AvailableNodePluginTool;
@@ -102,8 +101,17 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
   }, [onClose]);
 
   useEffect(() => {
-    frameSession?.updateTheme(resolveAppearanceMode(config.appearance?.mode ?? config.theme));
-  }, [config.appearance?.mode, config.theme, frameSession]);
+    if (!frameSession) return;
+    const root = document.documentElement;
+    const updateTheme = () => {
+      const theme = root.dataset.theme;
+      if (theme === 'dark' || theme === 'light') frameSession.updateTheme(theme);
+    };
+    const observer = new MutationObserver(updateTheme);
+    observer.observe(root, { attributes: true, attributeFilter: ['data-theme'] });
+    updateTheme();
+    return () => observer.disconnect();
+  }, [frameSession]);
 
   useEffect(() => {
     frameSession?.updateLocale(getLocale());

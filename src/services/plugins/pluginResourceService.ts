@@ -27,7 +27,7 @@ import {
   getProjectDataDir,
   joinPath,
 } from '../fs/core';
-import { assertSafeProjectRelativePath } from '../fs/projectFiles';
+import { assertSafeProjectRelativePath, readBoundedProjectFile } from '../fs/projectFiles';
 import type { PluginLineArtImage } from './pluginImageService';
 import { clearPluginPromptReferences, clearPluginPromptReferencesForPlugin } from './pluginPromptReferenceService';
 
@@ -747,6 +747,21 @@ export async function resolvePluginResourceHostUrl(
   if (!convert) throw new Error('当前环境不能解析本地媒体资源');
   requireLease(context, resourceId);
   return convert(identity.path);
+}
+
+/** 有界原件只交给主窗口业务服务，插件仍只持有输入端口的短期句柄。 */
+export async function readConnectedPluginResourceForHost(
+  context: PluginResourceReadContext, resourceId: string, maxBytes: number,
+): Promise<Uint8Array> {
+  const lease = requireLease(context, resourceId);
+  if (lease.ref.origin !== 'connection' || lease.ref.size <= 0 || lease.ref.size > maxBytes) {
+    throw new Error('连线资源超出授权范围');
+  }
+  const identity = await revalidateProjectLease(context, lease);
+  const data = await readBoundedProjectFile({ projectId: context.projectId, relativePath: identity.relativePath, maxBytes });
+  requireLease(context, resourceId);
+  await revalidateProjectLease(context, lease);
+  return data;
 }
 
 /** 最终节点集写回使用；只返回宿主登记的派生字节副本。 */

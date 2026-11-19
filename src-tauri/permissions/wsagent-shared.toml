@@ -1,0 +1,22 @@
+[[permission]]
+identifier = "allow-wsagent-shared"
+description = "Allows the main window to manage project-scoped WSAGENT pairing, shared media, workbench assets and scripts."
+commands.allow = [
+  "wsagent_shared_activate",
+  "wsagent_shared_status",
+  "wsagent_shared_connect",
+  "wsagent_shared_open",
+  "wsagent_shared_media_list",
+  "wsagent_shared_media_preview",
+  "wsagent_shared_media_import",
+  "wsagent_shared_entities_list",
+  "wsagent_shared_entities_apply",
+  "wsagent_shared_scripts_list",
+  "wsagent_shared_scripts_read",
+  "wsagent_shared_scripts_apply",
+  "wsagent_shared_revoke",
+  "wsagent_shared_list",
+  "wsagent_shared_read",
+  "wsagent_shared_preview",
+  "wsagent_shared_publish",
+]
