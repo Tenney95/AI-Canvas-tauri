@@ -15,6 +15,7 @@ import { createProjectArchiveFixturePreviewDirectory } from './fs/projectArchive
 import { sha256BytesHex } from './mediaDataUrl';
 import { assertNativeFileMissing, type NativeMissingAssetProof } from './nativeMissingAssetBackup';
 import { configValuesEqual } from './configPatch';
+import { nativeChatImagePaths, parseChatImageReferences } from '../utils/chatImageReference';
 
 interface SourceRoot { rootRef: string; directory: string }
 type NativeAsset = ArchiveAssetDigest & { sourceRootRef?: string; sourceRelativePath?: string; destinationPath?: string };
@@ -307,6 +308,12 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
       const accepted = options.nativeProjectId ? await acceptedSharedSyncAssets(options.nativeProjectId) : [];
       const primary = capture.aggregate.project.storageRootRef;
       const primaryPaths = current.get(primary);
+      const chatBindings = nativeChatImagePaths(primary, capture.exchange);
+      const chatPaths = new Set<string>();
+      if (options.nativeProjectId && capture.includesHistory) for (const row of capture.history) {
+        if (row.kind !== 'message' || typeof row.value.content !== 'string') continue;
+        for (const { fileName } of parseChatImageReferences(row.value.content)) chatPaths.add(chatBindings.get(fileName) ?? fileName);
+      }
       if (accepted.length && !primaryPaths) throw new Error('已接受共享素材的项目根不存在');
       for (const asset of accepted) {
         primaryPaths?.add(asset.path);
@@ -370,6 +377,9 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
           return path;
         }).filter((path) => {
           if (current.get(root.rootRef)?.has(path)) return true;
+          // 已失效的只读聊天附件保留原消息；已有冻结归档继续要求相同文件。
+          if (root.rootRef === primary && chatPaths.has(path)
+            && !options.frozenPaths?.some((item) => item.rootRef === primary && item.path === path)) return false;
           // 旧版 head 曾自动收录共享缓存，单独的文件绑定不能证明它仍在使用。
           if (options.currentFilesOnly || options.nativeProjectId && sharedSyncPath.test(path)) return false;
           const [folder, fileName, nested] = path.split('/');
@@ -387,7 +397,8 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
         const nativeReferences = referencePaths.filter((path) => !virtual?.has(path)
           && !(options.nativeProjectId && sharedSyncPath.test(path) && !sharedSyncMediaPath.test(path))
           && !(options.missingFiles ?? []).some((proof) => proof.rootRef === root.rootRef && proof.path === path));
-        const includeImportPaths = nativeReferences.filter((path) => /^imports\//i.test(path));
+        const includeImportPaths = [...new Set([...nativeReferences, ...(root.rootRef === primary ? chatPaths : [])]
+          .filter((path) => /^imports\//i.test(path)))];
         const sharedReferences = new Set(nativeReferences.filter((path) => sharedSyncMediaPath.test(path)));
         const assets = await invoke<Array<ArchiveAssetDigest & { aliases?: string[] }>>('inspect_project_archive_assets', {
           assetsDir, includeImportPaths, resolveImportAliases: true, referencePaths: nativeReferences,

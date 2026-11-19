@@ -5,8 +5,9 @@ import { useAppStore } from '../../store/useAppStore';
 import { isTauriEnv, revealFileInFolder } from '../../services/fileService';
 import {
   scanStorageHealth, prepareTrashCleanup, clearTrashDir, deleteOrphanFile, deleteDuplicateFile, verifyStorageCleanupFile, collectStorageLiveFilePaths, StorageHealthScanError,
-  type StorageHealthReport, type TrashInfo, type OrphanFileInfo, type DuplicateFileGroup, type CleanupResult,
+  type StorageHealthReport, type TrashInfo, type OrphanFileInfo, type DuplicateFileGroup, type CleanupResult, type StorageLiveReferences,
 } from '../../services/fs/storageHealth';
+import { parseChatImageReferences } from '../../utils/chatImageReference';
 import { estimateBrowserStorage, formatBytes, STORAGE_PRESSURE_RATIO, type StorageEstimate } from '../../services/storageQuota';
 import { useT } from '../../i18n';
 import AssetRepairDialog from '../assets/AssetRepairDialog';
@@ -105,7 +106,7 @@ function StackedBar({ projects }: { projects: StorageHealthReport['projects'] })
   </div>;
 }
 
-async function collectLiveReferences(projectId = useAppStore.getState().currentProjectId): Promise<Set<string>> {
+async function collectLiveReferences(projectId = useAppStore.getState().currentProjectId): Promise<StorageLiveReferences> {
   const state = useAppStore.getState();
   if (state.currentProjectId !== projectId) {
     throw new Error('当前项目的实时文件引用无法确认，请重新扫描');
@@ -116,8 +117,14 @@ async function collectLiveReferences(projectId = useAppStore.getState().currentP
   if (current.currentProjectId !== projectId || current.nodes !== state.nodes || current.history !== state.history
     || current.messages !== state.messages || current.dramaAssets !== state.dramaAssets
     || current.globalCharacters !== state.globalCharacters || current.globalScenes !== state.globalScenes
-    || current.globalProps !== state.globalProps) throw new Error('当前项目的实时文件引用已变化，请重新扫描');
-  return paths;
+    || current.globalProps !== state.globalProps || current.chatImageDrafts !== state.chatImageDrafts
+    || current.chatComposerDrafts !== state.chatComposerDrafts || current.chatComposerLiveDraft !== state.chatComposerLiveDraft
+    || current.chatComposerDraft !== state.chatComposerDraft) throw new Error('当前项目的实时文件引用已变化，请重新扫描');
+  const chatImageNames = new Set(Object.values(state.chatImageDrafts).flatMap((images) => images.map((image) => image.fileName)));
+  for (const draft of [...Object.values(state.chatComposerDrafts), state.chatComposerLiveDraft, state.chatComposerDraft ?? '']) {
+    for (const { fileName } of parseChatImageReferences(draft)) chatImageNames.add(fileName);
+  }
+  return { paths, chatImageNames };
 }
 
 export default function StorageHealthCenter() {

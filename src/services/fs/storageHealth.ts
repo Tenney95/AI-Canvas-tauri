@@ -19,6 +19,7 @@ import { assertLegacyProjectWritesAllowed } from '../indexedDb/legacyProjectWrit
 import { safeExchangePath } from '../projectExchangeDomain';
 import { getRelativeAssetPath } from './assetIndex';
 import { configValuesEqual } from '../configPatch';
+import { isChatImageFileName, parseChatImageReferences, nativeChatImagePaths } from '../../utils/chatImageReference';
 import { collectLegacyCharacterVisualPaths, isLegacyCharacterVisualCandidatePath } from '../characterVisualHistory';
 import type { ProjectCatalogEntry } from '../projectModelRouter';
 import type { readNativeProjectCapture } from '../indexedDb/nativeProjectRepository';
@@ -31,6 +32,19 @@ import {
 
 type NativeStorageScope = { entry: Extract<ProjectCatalogEntry, { dataModel: 'native' }>;
   capture: NonNullable<Awaited<ReturnType<typeof readNativeProjectCapture>>>; roots: Map<string, string> };
+
+export type StorageLiveReferences = Set<string> | { paths: Set<string>; chatImageNames: ReadonlySet<string> };
+type StorageReferenceSource = Set<string> | (() => StorageLiveReferences | Promise<StorageLiveReferences>);
+
+function addLiveReferences(references: Set<string>, live: StorageLiveReferences, roots: Iterable<string | null>): void {
+  for (const path of live instanceof Set ? live : live.paths) references.add(pathKey(path));
+  if (live instanceof Set) return;
+  // 未打开的会话草稿也可以保留附件；用完整附件身份保护各作品主根中的同名文件。
+  const names = [...live.chatImageNames].filter(isChatImageFileName);
+  for (const root of new Set(roots)) if (root) {
+    for (const name of names) references.add(pathKey(joinPath(root, name)));
+  }
+}
 
 /** 只使用目录与新库共同证明的素材根；扫描不认领、创建或迁移目录。 */
 async function readNativeStorageScopes(catalog: readonly ProjectCatalogEntry[], signal?: AbortSignal): Promise<NativeStorageScope[]> {
@@ -162,6 +176,7 @@ function pathKey(value: string): string {
 function collectReferences(value: unknown, paths: Set<string>, root?: string): void {
   if (typeof value === 'string') {
     if (/^(?:[a-z]:[/\\]|[/\\])/i.test(value) || localMediaUrlToPath(value)) paths.add(pathKey(value));
+    if (root) collectChatImageReferences(value, paths, root);
   } else if (Array.isArray(value)) {
     value.forEach((item) => collectReferences(item, paths, root));
   } else if (value && typeof value === 'object') {
@@ -189,6 +204,13 @@ function collectReferences(value: unknown, paths: Set<string>, root?: string): v
   }
 }
 
+function collectChatImageReferences(text: string, paths: Set<string>, root: string): void {
+  if (!text.includes('@image{')) return;
+  for (const { fileName } of parseChatImageReferences(text)) {
+    paths.add(pathKey(joinPath(root, fileName)));
+  }
+}
+
 function isReferenced(path: string, paths: Set<string>): boolean {
   const key = pathKey(path);
   if (paths.has(key)) return true;
@@ -204,8 +226,9 @@ function isReferenced(path: string, paths: Set<string>): boolean {
 async function collectNativeScopeReferences(scope: NativeStorageScope, snapshot: NativeStorageSnapshot, signal?: AbortSignal): Promise<Set<string>> {
   const { project } = scope.capture.aggregate;
   const paths = new Set<string>();
+  const chatImages = { rootRef: project.storageRootRef, paths: nativeChatImagePaths(project.storageRootRef, scope.capture.exchange) };
   const collect = (value: unknown, rootRef = project.storageRootRef) => {
-    for (const path of collectNativeStorageReferences(value, scope.roots, rootRef)) paths.add(pathKey(path));
+    for (const path of collectNativeStorageReferences(value, scope.roots, rootRef, chatImages)) paths.add(pathKey(path));
   };
   collect(scope.capture.aggregate);
   const rows = nativeStorageProjectRows(snapshot, project.id);
@@ -224,7 +247,7 @@ async function collectNativeScopeReferences(scope: NativeStorageScope, snapshot:
       if (!page.nextCursor) throw new Error('历史引用读取不完整');
       cursor = page.nextCursor;
     } while (cursor);
-    for (const conversation of await getProjectConversations(id)) {
+    for (const conversation of await getProjectConversations(id, { includeDeleted: true })) {
       let offset = 0;
       while (true) {
         checkAbort(signal);
@@ -254,8 +277,9 @@ export async function collectStorageLiveFilePaths(projectId: string | null, valu
   if (entry?.dataModel === 'native') {
     const [scope] = await readNativeStorageScopes([entry]);
     const canvas = scope.capture.aggregate.canvases.find((canvas) => canvas.id === projectId);
+    const primary = scope.capture.aggregate.project.storageRootRef;
     return new Set([...collectNativeStorageReferences(value, scope.roots,
-      canvas?.storageRootRef ?? scope.capture.aggregate.project.storageRootRef)].map(pathKey));
+      canvas?.storageRootRef ?? primary, { rootRef: primary, paths: nativeChatImagePaths(primary, scope.capture.exchange) })].map(pathKey));
   }
   const root = await getProjectDataDir(projectId);
   if (!root) throw new Error('当前项目的实时文件引用无法确认');
@@ -554,7 +578,7 @@ type StorageIssueHandler = (area: StorageHealthIssue['area'], projectName: strin
 
 /** 引用核对与目录盘点分开，删除单个文件时不用重新列出所有素材。 */
 async function readStorageReferences(
-  projects: CanvasProject[], nodeFilePaths: Set<string> | (() => Set<string> | Promise<Set<string>>),
+  projects: CanvasProject[], nodeFilePaths: StorageReferenceSource,
   signal: AbortSignal | undefined, onIssue: StorageIssueHandler,
 ) {
   // 项目列表只有摘要；必须读取所有完整项目，不能用当前画布推断其他项目无引用。
@@ -612,7 +636,7 @@ async function readStorageReferences(
         if (!page.nextCursor) throw new Error('历史引用读取不完整');
         cursor = page.nextCursor;
       } while (cursor);
-      for (const conversation of await getProjectConversations(project.id)) {
+      for (const conversation of await getProjectConversations(project.id, { includeDeleted: true })) {
         checkAbort(signal);
         let offset = 0;
         while (true) {
@@ -642,9 +666,9 @@ async function readStorageReferences(
       }
     }
     checkAbort(signal);
-    const livePaths = typeof nodeFilePaths === 'function' ? await nodeFilePaths() : nodeFilePaths;
+    const live = typeof nodeFilePaths === 'function' ? await nodeFilePaths() : nodeFilePaths;
     checkAbort(signal);
-    for (const path of livePaths) references.add(pathKey(path));
+    addLiveReferences(references, live, roots.values());
   } catch (error) {
     checkAbort(signal);
     throw new StorageHealthScanError(issueReason(error));
@@ -697,7 +721,7 @@ async function assertStorageReferencesCurrent(
  */
 export async function scanStorageHealth(
   projects: CanvasProject[],
-  nodeFilePaths: Set<string> | (() => Set<string> | Promise<Set<string>>),
+  nodeFilePaths: StorageReferenceSource,
   assetFolders: { path: string; label: string }[] = [],
   options: StorageHealthScanOptions = {},
 ): Promise<StorageHealthReport> {
@@ -858,7 +882,7 @@ export async function scanStorageHealth(
 
 /** 每次删除仍读取当前引用，但只检查目标文件；重复删除另外核对保留副本。 */
 export async function verifyStorageCleanupFile(
-  projects: CanvasProject[], nodeFilePaths: Set<string> | (() => Set<string> | Promise<Set<string>>),
+  projects: CanvasProject[], nodeFilePaths: StorageReferenceSource,
   expected: Pick<OrphanFileInfo, 'path' | 'name' | 'size'>,
   options: { signal?: AbortSignal; trashDir?: string;
     duplicate?: { key: string; keeper: Pick<OrphanFileInfo, 'path' | 'name' | 'size'> } } = {},
@@ -920,7 +944,7 @@ export async function verifyStorageCleanupFile(
     await assertStorageReferencesCurrent(snapshot, signal, fail);
     const live = typeof nodeFilePaths === 'function' ? await nodeFilePaths() : nodeFilePaths;
     const currentReferences = snapshot.references;
-    for (const path of live) currentReferences.add(pathKey(path));
+    addLiveReferences(currentReferences, live, snapshot.roots.values());
     if (isReferenced(expected.path, currentReferences)) return false;
     if (trashDir && isUndoTrashPathProtected(expected.path, trashDir, await readUndoTrashEntries(trashDir), currentReferences)) return false;
     const { isNodeMediaCopySource } = await import('../nodeMediaCopy');

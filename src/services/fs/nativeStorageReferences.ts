@@ -5,6 +5,7 @@ import {
 } from '../indexedDb/nativeProjectRepository';
 import { safeExchangePath } from '../projectExchangeDomain';
 import { localMediaUrlToPath } from '../../utils/mediaUrl';
+import { parseChatImageReferences } from '../../utils/chatImageReference';
 
 export interface NativeStorageRetiredIdentity { id: string; projectId: string; kind: string }
 export interface NativeStorageSnapshot {
@@ -178,7 +179,8 @@ const textNodeTypes = new Set(['ai-text', 'source-text', 'ai-markdown']);
  * 本机字段按显式根继承，外部来源及 canonical bundle 不当成本机路径。
  * 素材索引本体保守保留，覆盖只用 assetId 的引用；没有登记的普通废弃原件仍可清理。
  */
-export function collectNativeStorageReferences(value: unknown, roots: ReadonlyMap<string, string>, defaultRootRef: string): Set<string> {
+export function collectNativeStorageReferences(value: unknown, roots: ReadonlyMap<string, string>, defaultRootRef: string,
+  chatImages?: { rootRef: string; paths: ReadonlyMap<string, string> }): Set<string> {
   assertBoundedMaterial(value);
   if (!roots.has(defaultRootRef)) return unavailable();
   const paths = new Set<string>();
@@ -198,6 +200,9 @@ export function collectNativeStorageReferences(value: unknown, roots: ReadonlyMa
   };
   const walk = (item: unknown, inheritedRoot: string, field = '', textOutput = false): void => {
     if (typeof item === 'string') {
+      if (chatImages && item.includes('@image{')) for (const { fileName } of parseChatImageReferences(item)) {
+        add(chatImages.paths.get(fileName) ?? fileName, chatImages.rootRef);
+      }
       if (pathFields.has(field) && !(field === 'output' && textOutput)) add(item, inheritedRoot);
       else if (localMediaUrlToPath(item) || /^(?:[a-z]:[/\\]|[/\\])/i.test(item)) add(item, inheritedRoot);
       return;

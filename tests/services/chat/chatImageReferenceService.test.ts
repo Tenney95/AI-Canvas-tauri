@@ -12,6 +12,10 @@ import { clearConversationFileGrants, listConversationFileGrants } from '../../.
 import { resolvePromptToChatContent, resolvePromptWithImageRefs } from '../../../src/services/ai/promptResolver';
 import { prepareAssistantVisualMessages } from '../../../src/services/chat/assistantVisualContext';
 import { GENERAL_ASSISTANT_SCOPE_ID } from '../../../src/services/chat/assistantScope';
+import * as core from '../../../src/services/fs/core';
+import * as nativeProjects from '../../../src/services/indexedDb/nativeProjectRepository';
+import { nativeChatImagePaths } from '../../../src/utils/chatImageReference';
+import type { ProjectModelTransferExchange } from '../../../src/types/projectModelTransfer';
 
 const fileName = 'chat-ref-11111111-1111-4111-8111-111111111111.png';
 const dataUrl = 'data:image/png;base64,QUJDRA==';
@@ -114,5 +118,27 @@ describe('chat image references', () => {
     await expect(readChatImageReference('project-1', fileName)).rejects.toThrow('不可用');
     const controller = new AbortController(); controller.abort();
     await expect(readChatImageReference('project-1', fileName, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('uses the destination project binding for a copied chat image without rewriting the message', async () => {
+    const localRelativePath = `imports/archive-copy-root-0/${fileName}`;
+    const exchange = {
+      identities: [{ kind: 'storage-root', localId: 'primary-root', sourceId: 'logical-root' }],
+      fileBindings: [{ rootRef: 'logical-root', relativePath: fileName, localRelativePath }],
+    } as ProjectModelTransferExchange;
+    const bindings = nativeChatImagePaths('primary-root', exchange);
+    expect(bindings.get(fileName)).toBe(localRelativePath);
+    expect(nativeChatImagePaths('other-root', exchange)).toEqual(new Map());
+    expect(nativeChatImagePaths('primary-root', { ...exchange,
+      fileBindings: [{ ...exchange.fileBindings[0], localRelativePath: 'imports/copy-root-0/unrelated.png' }],
+    })).toEqual(new Map());
+    vi.spyOn(core, 'getNativeProjectOwner').mockReturnValue('copied-owner');
+    vi.spyOn(files, 'getProjectDataDir').mockResolvedValue('copied-root');
+    const readBindings = vi.spyOn(nativeProjects, 'readNativeProjectChatImagePaths').mockResolvedValue(bindings);
+    const read = vi.spyOn(files, 'readFileToDataUrl').mockResolvedValue(dataUrl);
+
+    expect(await readChatImageReference('copied-canvas', fileName)).toBe(dataUrl);
+    expect(readBindings).toHaveBeenCalledWith('copied-owner', { signal: undefined });
+    expect(read).toHaveBeenCalledWith(`copied-root/${localRelativePath}`, expect.objectContaining({ kind: 'image' }));
   });
 });

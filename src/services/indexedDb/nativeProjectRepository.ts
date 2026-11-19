@@ -17,6 +17,7 @@ import { hasControlCharacters } from '../../utils/controlCharacters';
 import { validateNativeArchiveOutputRows } from '../projectOutputHistoryArchive';
 import { isProjectSnapshotDataUrl } from '../projectSnapshotValidation';
 import { withProjectTextModel } from '../projectModelSettings';
+import { nativeChatImagePaths } from '../../utils/chatImageReference';
 
 export const NATIVE_PROJECT_DATABASE_NAME = 'ai-canvas-native-projects-v2' as const;
 export const NATIVE_PROJECT_DATABASE_VERSION = 3 as const;
@@ -428,6 +429,25 @@ Promise<{ aggregate: NativeProjectAggregate; changeRevision: number; exchange: P
       return { aggregate, changeRevision: revision.changeRevision,
         exchange: readNativeProjectExchange(exchange === undefined ? null : (exchange as { exchange: ProjectModelTransferExchange }).exchange), includesHistory: false };
     });
+  } finally { database.close(); }
+}
+
+/** 助手附件展示只读取主根与归档文件绑定，无需加载整剧画布和正文。 */
+export async function readNativeProjectChatImagePaths(projectId: string, options: NativeProjectOptions = {}): Promise<Map<string, string>> {
+  if (!isNativeProjectId(projectId)) return fail('invalid-project-id');
+  const database = await openNativeProjectDatabase(false, options);
+  if (!database) return fail('project-not-found');
+  try {
+    return await transact(database, 'readonly', options, async (tx) => {
+      const [project, row] = await Promise.all([
+        request(tx.objectStore(ROOTS).get(projectId)) as Promise<ProjectRecord | undefined>,
+        request(tx.objectStore(EXCHANGE).get(projectId)) as Promise<{ projectId: string; exchange: ProjectModelTransferExchange } | undefined>,
+      ]);
+      if (!project || project.id !== projectId) return fail('project-not-found');
+      assertNativeRoot(project);
+      if (row !== undefined && (row?.projectId !== projectId || !row.exchange)) return fail('invalid-exchange-record');
+      return nativeChatImagePaths(project.storageRootRef, readNativeProjectExchange(row?.exchange ?? null));
+    }, [ROOTS, EXCHANGE]);
   } finally { database.close(); }
 }
 

@@ -1,5 +1,4 @@
 /** 助手参考图：项目文件持久化，消息只保存不含路径的引用；预览 URL 仅驻留内存。 */
-import type { ChatImageReference } from '../../types/chat';
 import {
   getAssetUrlFromPath, getProjectDataDir, joinPath, readAgentSelectedImage,
   readFileToDataUrl, saveBinaryToProjectData, selectAgentTextFiles,
@@ -8,10 +7,12 @@ import { useAppStore } from '../../store/useAppStore';
 import { isConversationInProjectScope } from './conversationProjectScope';
 import { GENERAL_ASSISTANT_SCOPE_ID } from './assistantScope';
 import { authorizeConversationFiles } from './fileGrantService';
+import { getNativeProjectOwner } from '../fs/core';
+import { isChatImageFileName } from '../../utils/chatImageReference';
+
+export { formatChatImageReference, parseChatImageReferences, stripChatImageReferences } from '../../utils/chatImageReference';
 
 export const MAX_CHAT_IMAGES = 6;
-const FILE_NAME = /^chat-ref-[a-f0-9-]{36}\.(png|jpg|webp)$/;
-const IMAGE_REFERENCE = /@image\{(chat-ref-[a-f0-9-]{36}\.(?:png|jpg|webp))\|([^}\r\n]*)\}/g;
 const previews = new Map<string, string>();
 const previewListeners = new Set<() => void>();
 const attachmentUploads = new Set<string>();
@@ -22,33 +23,19 @@ export function subscribeChatImagePreviews(listener: () => void) {
   return () => { previewListeners.delete(listener); };
 }
 
-export function formatChatImageReference(image: Pick<ChatImageReference, 'fileName' | 'label'>): string {
-  if (!FILE_NAME.test(image.fileName)) throw new Error('参考图引用无效');
-  return `@image{${image.fileName}|${encodeURIComponent(Array.from(image.label).slice(0, 120).join(''))}}`;
-}
-
-export function parseChatImageReferences(text: string): Array<ChatImageReference & { raw: string }> {
-  return [...text.matchAll(IMAGE_REFERENCE)].map((match) => {
-    let label = match[2];
-    try { label = decodeURIComponent(label); } catch { /* 保留可显示文本 */ }
-    return { fileName: match[1], label: Array.from(label).slice(0, 120).join('') || '参考图', size: 0, raw: match[0] };
-  });
-}
-
-export function stripChatImageReferences(text: string): string {
-  return text.replace(IMAGE_REFERENCE, '').trim();
-}
-
-async function imagePath(projectId: string, fileName: string): Promise<string> {
-  if (!projectId || !FILE_NAME.test(fileName)) throw new Error('参考图所属项目或引用无效');
+async function resolveImagePaths(projectId: string, signal?: AbortSignal): Promise<(fileName: string) => string> {
   const root = await getProjectDataDir(projectId);
   if (!root) throw new Error('参考图项目目录不可用');
-  return joinPath(root, fileName);
+  const owner = getNativeProjectOwner(projectId);
+  const bindings = owner ? await (await import('../indexedDb/nativeProjectRepository')).readNativeProjectChatImagePaths(owner, { signal }) : undefined;
+  return (fileName) => joinPath(root, bindings?.get(fileName) ?? fileName);
 }
 
 export async function readChatImageReference(projectId: string, fileName: string, signal?: AbortSignal): Promise<string> {
   if (signal?.aborted) throw new DOMException('参考图读取已取消', 'AbortError');
-  const data = await readFileToDataUrl(await imagePath(projectId, fileName), { kind: 'image', signal, label: '助手参考图' });
+  if (!projectId || !isChatImageFileName(fileName)) throw new Error('参考图所属项目或引用无效');
+  const pathFor = await resolveImagePaths(projectId, signal);
+  const data = await readFileToDataUrl(pathFor(fileName), { kind: 'image', signal, label: '助手参考图' });
   if (signal?.aborted) throw new DOMException('参考图读取已取消', 'AbortError');
   if (!data) throw new Error('参考图已不可用，请重新上传');
   return data;
@@ -63,12 +50,17 @@ export function getChatImagePreviews(projectId: string | null, fileNames?: strin
 
 export async function prepareChatImagePreviews(projectId: string | null, fileNames: string[]): Promise<void> {
   if (!projectId) return;
+  const missing = [...new Set(fileNames)].slice(-200)
+    .filter((name) => isChatImageFileName(name) && !previews.has(`${projectId}/${name}`));
+  if (!missing.length) return;
+  const pathFor = await resolveImagePaths(projectId).catch(() => undefined);
+  if (!pathFor) return;
   let changed = false;
-  for (const fileName of [...new Set(fileNames)].slice(-200)) {
+  for (const fileName of missing) {
     const key = `${projectId}/${fileName}`;
     if (previews.has(key)) continue;
     try {
-      const url = await getAssetUrlFromPath(await imagePath(projectId, fileName));
+      const url = await getAssetUrlFromPath(pathFor(fileName));
       if (!url) continue;
       previews.set(key, url);
       changed = true;

@@ -176,6 +176,37 @@ describe('P5 native file projection', () => {
     expect(native.invoke).toHaveBeenCalledWith('inspect_project_archive_assets', { assetsDir: physicalRoot, selectedPaths: [old, temp] });
   });
 
+  it('重新归档已导入的助手参考图，缺图时仍保留历史消息', async () => {
+    const { capture } = await setup();
+    const id = 'p2-00000000-0000-4000-8000-000000000001', root = 'r2-00000000-0000-4000-8000-000000000002';
+    const child = 'r2-00000000-0000-4000-8000-000000000003', folder = `project-${id}`;
+    capture.aggregate.project = { ...capture.aggregate.project, id, dataFolder: folder, storageRootRef: root,
+      storageBindings: [{ rootRef: root, folderName: folder, sourceRecordIds: [], source: 'project-managed' },
+        { rootRef: child, folderName: `${folder}/roots/${child}`, sourceRecordIds: [], source: 'project-managed' }] };
+    capture.aggregate.content.projectId = id;
+    const exchange = capture.exchange!;
+    exchange.identities.find((item) => item.sourceId === 'A')!.localId = root;
+    exchange.identities.find((item) => item.sourceId === 'B')!.localId = child;
+    const name = 'chat-ref-11111111-1111-4111-8111-111111111111.png';
+    const attachment = `imports/copied-root-0/${name}`;
+    exchange.fileBindings.push({ id: 'chat-image', rootRef: 'A', relativePath: name, localRelativePath: attachment });
+    capture.history.push({ kind: 'message', sourceNamespace: 'native', archiveOriginId: '',
+      value: { id: 'message', projectId: id, content: `@image{${name}|参考图}` } });
+    native.existing.add('authorized/native'); native.existing.add(`authorized/native/roots/${child}`);
+    let present = true;
+    native.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+      if (command === 'resolve_native_project_media_root') return 'authorized/native';
+      if (command === 'resolve_native_project_media_subroot') return `authorized/native/roots/${child}`;
+      if (command === 'inspect_project_archive_assets') return (args.includeImportPaths as string[]).filter((path) => path !== attachment || present)
+        .map((path) => ({ path, bytes: 3, sha256: hash }));
+      throw new Error('unexpected command');
+    });
+    const port = createBoundProjectModelArchiveExportPort(id, '');
+    expect((await port.inspectAssets(capture)).map((entry) => entry.path)).toContain(attachment);
+    present = false;
+    expect((await port.inspectAssets(capture)).map((entry) => entry.path)).not.toContain(attachment);
+  });
+
   it('已回收的工作台资料不阻塞新归档，当前引用和冻结清单仍须核对', async () => {
     const { capture } = await setup();
     const projectId = 'p2-00000000-0000-4000-8000-000000000001';

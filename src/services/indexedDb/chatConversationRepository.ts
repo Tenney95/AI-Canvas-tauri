@@ -109,7 +109,7 @@ export async function setConversationCreationProfileCAS(
 }
 
 /** 获取指定项目的全部会话（不含已删除） */
-export async function getProjectConversations(projectId: string): Promise<ChatConversationRecord[]> {
+export async function getProjectConversations(projectId: string, options?: { includeDeleted?: boolean }): Promise<ChatConversationRecord[]> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_CHAT_CONVERSATIONS, 'readonly');
@@ -119,8 +119,7 @@ export async function getProjectConversations(projectId: string): Promise<ChatCo
     const request = index.getAll(range);
     request.onsuccess = () => {
       const all = request.result as ChatConversationRecord[];
-      // 过滤掉已删除的
-      resolve(all.filter((c) => !c.deletedAt));
+      resolve(options?.includeDeleted ? all : all.filter((c) => !c.deletedAt));
     };
     request.onerror = () => reject(request.error);
   });

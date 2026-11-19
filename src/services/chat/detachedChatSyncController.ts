@@ -959,7 +959,7 @@ export function createDetachedChatSyncController(
       let conversation = current;
       if (!conversation) {
         const { getProjectConversations } = await import('../indexedDbService');
-        const groups = await Promise.all([...scope.projectIds].map(getProjectConversations));
+        const groups = await Promise.all([...scope.projectIds].map((id) => getProjectConversations(id)));
         conversation = groups.flat().find((item) => item.id === draft.conversationId);
       }
       if (!conversation || conversation.deletedAt || !scope.projectIds.has(conversation.projectId)) return false;

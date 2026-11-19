@@ -335,6 +335,24 @@ describe('storage health accounting and cleanup', () => {
     expect(mocks.remove.mock.calls.map(([path]) => path)).toEqual(['/native/unused.png']);
   });
 
+  it('从作品主根保护回收站会话和未发送草稿引用的助手参考图', async () => {
+    const native = nativeProject();
+    const sent = 'chat-ref-11111111-1111-4111-8111-111111111111.png';
+    const draft = 'chat-ref-22222222-2222-4222-8222-222222222222.png';
+    addFiles('/native', { [sent]: 10, [draft]: 20, 'unused.png': 30 });
+    addFiles(native.secondaryPath, {});
+    mocks.getProjectConversations.mockImplementation(async (id: string, options?: { includeDeleted?: boolean }) =>
+      id === native.canvasId && options?.includeDeleted ? [{ id: 'trash-chat', deletedAt: 1 }] : []);
+    mocks.getConversationMessages.mockResolvedValue({ messages: [{ content: `参考 @image{${sent}|人物}` }], total: 1 });
+    const live = () => ({ paths: new Set<string>(), chatImageNames: new Set([draft]) });
+
+    const report = await scanStorageHealth([native.view], live);
+    expect(report.orphans.map((file) => file.path)).toEqual(['/native/unused.png']);
+    expect(await deleteOrphanFile(`/native/${sent}`, async () => true)).toBe(false);
+    expect(await verifyStorageCleanupFile([native.view], live, { path: `/native/${draft}`, name: draft, size: 20 })).toBe(false);
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
+
   it.each(['task', 'transfer'])('新作品有未完成 %s 时只保护自身，旧项目仍可清理', async (pending) => {
     const native = nativeProject();
     mocks.listProjectCatalog.mockResolvedValue([{ dataModel: 'legacy', project: project('legacy') }, {

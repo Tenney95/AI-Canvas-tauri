@@ -186,7 +186,7 @@ export async function saveConversation(conversation: ChatConversation): Promise<
 
 /** 获取项目的全部会话（不含回收站） */
 export async function loadProjectConversations(projectId: string, compatibleIds: readonly string[] = []): Promise<ChatConversation[]> {
-  const records = (await Promise.all([projectId, ...compatibleIds].map(getProjectConversations))).flat();
+  const records = (await Promise.all([projectId, ...compatibleIds].map((id) => getProjectConversations(id)))).flat();
   return records
     .map(fromConversationRecord)
     .sort((a, b) => {
