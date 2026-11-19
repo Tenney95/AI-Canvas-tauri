@@ -2623,18 +2623,60 @@ export async function getAssetIndexesByPaths(paths: readonly string[]): Promise<
     return matches[0] ?? legacy[i];
   });
 }
-async function availableNativeAssetIndexes(paths?: readonly string[]): Promise<AssetIndexRecord[]> {
+/** 单次作品扫描只取该作品的恢复索引，各批次再查询旧表的精确路径。 */
+export async function loadProjectAssetPathLookup(projectId: string, projectDirectory: string, signal?: AbortSignal) {
+  const byPath = new Map<string, AssetIndexRecord | null>();
+  const unresolved = new Set<string>();
+  const pathKey = (value: string) => {
+    const path = value.replace(/\\/g, '/').replace(/\/+$/, '');
+    return /^(?:[a-z]:\/|\/\/)/i.test(path) ? path.toLowerCase() : path;
+  };
+  const directory = pathKey(projectDirectory);
+  const scoped = { projectId, signal, onUnavailable: (row: import('./indexedDb/nativeAssetRepository').NativeAssetRecord) => {
+    unresolved.add(pathKey(`${directory}/roots/${row.rootRef}/${row.relativePath}`));
+  } };
+  for (const row of await availableNativeAssetIndexes(undefined, scoped)) {
+    const key = pathKey(row.path);
+    byPath.set(key, byPath.has(key) ? null : row);
+  }
+  return async (paths: readonly string[]): Promise<Array<AssetIndexRecord | undefined>> => {
+    signal?.throwIfAborted();
+    const legacy = await legacy_getAssetIndexesByPaths(paths);
+    signal?.throwIfAborted();
+    return paths.map((path, index) => {
+      const key = pathKey(path);
+      if (unresolved.has(key)) throw new Error('此文件所属的恢复素材根不可用，请先核对素材目录');
+      const native = byPath.get(key);
+      if (native === null) throw new Error('同一文件存在多个恢复素材身份，请按原ID核对');
+      return native ?? legacy[index];
+    });
+  };
+}
+
+async function availableNativeAssetIndexes(paths?: readonly string[], scope?: {
+  projectId: string; signal?: AbortSignal;
+  onUnavailable: (record: import('./indexedDb/nativeAssetRepository').NativeAssetRecord) => void;
+}): Promise<AssetIndexRecord[]> {
   const native = await import('./indexedDb/nativeAssetRepository');
   const roots = new Map<string, string | null>(), indexes: AssetIndexRecord[] = [];
-  for (const row of await native.readNativeAssets()) {
+  const signal = scope?.signal;
+  const records = scope ? await native.readNativeAssetsForProject(scope.projectId, { signal }) : await native.readNativeAssets();
+  for (const row of records) {
+    signal?.throwIfAborted();
     if (paths && !paths.some((path) => path.replace(/\\/g, '/').toLowerCase().endsWith('/' + row.relativePath.toLowerCase()))) continue;
     const rootKey = JSON.stringify([row.projectId, row.rootRef]);
-    if (roots.get(rootKey) === null) continue;
+    if (roots.get(rootKey) === null) { scope?.onUnavailable(row); continue; }
     try {
       const index = await native.resolveNativeAssetIndex(row, roots.get(rootKey) ?? undefined);
       roots.set(rootKey, index.rootPath!); indexes.push(index);
-    } catch { roots.set(rootKey, null); /* 不可用的新项目根不能阻断旧项目目录；显式按ID读取仍会报告错误。 */ }
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (scope && row.primary) throw error;
+      roots.set(rootKey, null); /* 全局查询允许其他作品根暂不可用。 */
+      scope?.onUnavailable(row);
+    }
   }
+  signal?.throwIfAborted();
   return indexes;
 }
 export async function getAllAssetMeta(): Promise<AssetMetaRecord[]> {

@@ -30,6 +30,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { cursorPosition, getCurrentWindow } from '@tauri-apps/api/window';
 import { useAppStore } from '../store/useAppStore';
 import { listTopLevelProjects, listEpisodes, projectMemoryOwnerId, seriesOwnerId } from '../store/store.utils';
+import type { NativeProjectViewItem } from '../store/nativeProjectView';
 import {
   getProjectDataDir,
   listGlobalFolderContents,
@@ -248,8 +249,10 @@ export default function AssetsPanel() {
   const [sharingOwner, setSharingOwner] = useState<{ id: string; name: string; sync?: boolean } | null>(null);
   // 视图离开时撤销弹窗，返回旧视图也不能重新打开已取消的操作。
   if (sharingOwner && (!assetsPanelOpen || !canManageProjectSharing || sharingOwner.id !== sharingOwnerId)) setSharingOwner(null);
-  const viewProjectIds = useMemo(() => viewProjectId
-    ? [viewProjectId, ...listEpisodes(projects, viewProjectId).map((project) => project.id)] : [], [projects, viewProjectId]);
+  const viewProjectIds = useAppStore(useShallow((state) => viewProjectId
+    ? [viewProjectId, ...listEpisodes(state.projects, viewProjectId).map((project) => project.id)] : []));
+  const nativeFileOwner = (projects.find((project) => project.id === viewProjectId) as Partial<NativeProjectViewItem> | undefined)
+    ?.nativeView?.projectId;
   const [projectFileOwners, setProjectFileOwners] = useState(new Map<string, string>());
   const projectIdForFile = useCallback((file: AssetFileEntry) => activeTab === 'project'
     ? projectFileOwners.get(file.path) ?? selectedProjectId ?? currentProjectId ?? undefined
@@ -445,13 +448,16 @@ export default function AssetsPanel() {
         if (!viewProjectIds.length) { setProjectFiles([]); setProjectFileOwners(new Map()); return; }
         const { projectAssetSyncService } = await import('../services/fs/sharedAssetSync');
         if (!isCurrentRequest()) return;
-        // 父目录的首批文件也可能属于分集；展示前解析真实归属，避免详情写入父项目。
-        const projectRoots = viewProjectIds.length > 1 ? await Promise.all(viewProjectIds.map(async (projectId) => {
+        const scanIds = nativeFileOwner ? [viewProjectIds[0]] : viewProjectIds;
+        const viewIds = new Set(viewProjectIds);
+        // 新作品共用同一磁盘根。旧项目继续按实际目录定位所属分集。
+        const projectRoots = !nativeFileOwner && viewProjectIds.length > 1 ? await Promise.all(viewProjectIds.map(async (projectId) => {
           const directory = await getProjectDataDir(projectId).catch(() => null);
           return { projectId, prefix: directory ? `${imageHistoryReferenceKey(directory) ?? directory}/` : null };
         })) : [];
         if (!isCurrentRequest()) return;
         const fileOwner = (file: AssetFileEntry, fallbackProjectId: string) => {
+          if (nativeFileOwner) return file.ownerProjectId && viewIds.has(file.ownerProjectId) ? file.ownerProjectId : fallbackProjectId;
           const path = imageHistoryReferenceKey(file.path) ?? file.path;
           let owner = fallbackProjectId;
           let prefixLength = 0;
@@ -486,7 +492,7 @@ export default function AssetsPanel() {
         };
         const failures: NonNullable<FileLoadError['failures']> = [];
         // 父项目后读取分集，重叠目录中的文件沿用具体分集的身份和历史归属。
-        for (const projectId of viewProjectIds) {
+        for (const projectId of scanIds) {
           const previousEntries = new Map(diskEntries);
           const previousOwners = new Map(owners);
           let entries: AssetFileEntry[] | null = null;
@@ -523,7 +529,7 @@ export default function AssetsPanel() {
         const nodeEntries: AssetFileEntry[] = [];
         // 仅当查看的是「当前项目」时，才并入画布上尚未落盘的节点文件
         // （store.nodes 始终是当前项目的画布，其他项目无法从内存取节点）
-        if (currentProjectId && viewProjectIds.includes(currentProjectId)) {
+        if (currentProjectId && viewIds.has(currentProjectId)) {
           for (const node of useAppStore.getState().nodes) {
             const entry = extractFilesFromNodeData(node.data as Record<string, unknown>);
             if (!entry) continue;
@@ -535,15 +541,19 @@ export default function AssetsPanel() {
             }
           }
         }
-        if (failures.length < viewProjectIds.length || nodeEntries.length || diskFiles.length) {
+        if (failures.length < scanIds.length || nodeEntries.length || diskFiles.length) {
           const combined = [...diskFiles, ...nodeEntries];
           const projected: AssetFileEntry[] = [];
           // 节点补充条目也经同一适配口过滤，旧版本不会因节点仍引用它而回到当前资产列表。
-          for (const projectId of viewProjectIds) {
-            const entries = await projectAssetSyncService.projectFileView(projectId,
-              combined.filter((file) => owners.get(file.path) === projectId), { signal: controller.signal });
+          for (const projectId of scanIds) {
+            const entries = nativeFileOwner && nodeEntries.length === 0 ? diskFiles
+              : await projectAssetSyncService.projectFileView(projectId,
+                nativeFileOwner ? combined : combined.filter((file) => owners.get(file.path) === projectId), { signal: controller.signal });
             if (!isCurrentRequest()) return;
-            for (const file of entries) { projected.push(file); owners.set(file.path, projectId); }
+            for (const file of entries) {
+              projected.push(file);
+              owners.set(file.path, nativeFileOwner ? fileOwner(file, owners.get(file.path) ?? projectId) : projectId);
+            }
           }
           setProjectFileOwners(owners);
           setProjectFiles(projected);
@@ -609,7 +619,7 @@ export default function AssetsPanel() {
       controller.abort();
       if (loadControllerRef.current === controller) loadControllerRef.current = null;
     }
-  }, [activeTab, currentProjectId, baseDataDir, viewProjectIds, folders]);
+  }, [activeTab, currentProjectId, baseDataDir, viewProjectIds, nativeFileOwner, folders]);
 
   useEffect(() => {
     if (assetsPanelOpen && isFileTab) {

@@ -67,8 +67,9 @@ describe('project asset scans with committed group relocations', () => {
   });
 
   it('按原生绑定精确修复路径已被外部扫描重新登记的记录', async () => {
+    const projectId = 'p2-11111111-1111-4111-8111-111111111111';
     const core = await import('../../src/services/fs/core');
-    vi.spyOn(core, 'getNativeProjectOwner').mockReturnValue('project');
+    vi.spyOn(core, 'getNativeProjectOwner').mockReturnValue(projectId);
     vi.spyOn(core, 'getProjectDataDir').mockResolvedValue(root);
     const db = await import('../../src/services/indexedDbService');
     const external: AssetIndexRecord = { ...record('project-media'), source: 'folder', projectId: undefined,
@@ -76,9 +77,9 @@ describe('project asset scans with committed group relocations', () => {
     await db.putAssetIndex(external);
     files(['current.png']);
     const { scanDirectoryFiles } = await import('../../src/services/fs/assetLibrary');
-    const result = await scanDirectoryFiles(root, { source: 'project', projectId: 'project', projectIdentityScope: ['project'] });
+    const result = await scanDirectoryFiles(root, { source: 'project', projectId, projectIdentityScope: [projectId] });
     expect(result.files.map(({ assetId }) => assetId)).toEqual([external.assetId]);
-    expect(await db.getAssetIndexById(external.assetId)).toMatchObject({ source: 'project', projectId: 'project', rootPath: root,
+    expect(await db.getAssetIndexById(external.assetId)).toMatchObject({ source: 'project', projectId, rootPath: root,
       relativePath: 'current.png', lastUsedAt: 123 });
   });
 

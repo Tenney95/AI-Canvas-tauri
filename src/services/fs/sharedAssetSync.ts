@@ -21,6 +21,7 @@ import { localMediaUrlToPath } from '../../utils/mediaUrl';
 import { preferDramaLibraryReferences } from '../dramaAssetPrompt';
 import { copyAssetFileToFolder, listProjectFiles } from '../fileService';
 import { isProjectAgentInternalFile } from '../../utils/agentProjectWorkspace';
+import { isNativeProjectBindingFile } from '../../utils/nativeProjectBindingFile';
 import { isNativeMediaPendingFile } from '../../utils/nativeMediaPendingFile';
 import { getAssetUrlFromPath, getFileCategory, getNativeProjectOwner, getProjectDataDir, joinPath, stripVerbatimPrefix,
   type AssetFileEntry } from './core';
@@ -220,10 +221,15 @@ async function ownerState(projectId: string) {
 export async function sharedAssetSyncExcludedPaths(projectId: string): Promise<string[]> {
   const { state } = await ownerState(projectId);
   const root = await getProjectDataDir(projectId);
+  return sharedFileHistoryPaths(state.mappings, root);
+}
+
+async function sharedFileHistoryPaths(mappings: readonly SharedAssetMapping[], root: string | null, signal?: AbortSignal): Promise<string[]> {
   if (!root) return [];
-  const ids = new Set(state.mappings.flatMap((mapping) => mapping.previousFileAssetIds ?? []));
+  const ids = new Set(mappings.flatMap((mapping) => mapping.previousFileAssetIds ?? []));
   const paths: string[] = [];
   for (const assetId of ids) {
+    signal?.throwIfAborted();
     const indexed = await getAssetIndexById(assetId);
     if (indexed?.source === 'project' && getRelativeAssetPath(indexed.path, root)) paths.push(indexed.path);
   }
@@ -233,24 +239,33 @@ export async function sharedAssetSyncExcludedPaths(projectId: string): Promise<s
 /** 原生下载目录不参加扫描；只有已原子接受的当前文件版本进入资源列表。 */
 export async function projectSharedFileView(projectId: string, files: AssetFileEntry[], options: AssetScanOptions = {}): Promise<AssetFileEntry[]> {
   options.signal?.throwIfAborted();
-  const { state, projectIds } = await ownerState(projectId);
-  const root = await getProjectDataDir(projectId);
+  const [{ state, projectIds }, root] = await Promise.all([ownerState(projectId), getProjectDataDir(projectId)]);
+  const historyPaths = await sharedFileHistoryPaths(state.mappings, root, options.signal);
+  return projectFileViewFromScope(projectId, files, { projectIds, root, mappings: state.mappings, historyPaths }, options);
+}
+
+async function projectFileViewFromScope(projectId: string, files: AssetFileEntry[], scope: {
+  projectIds: readonly string[]; root: string | null; mappings: readonly SharedAssetMapping[]; historyPaths: readonly string[];
+}, options: AssetScanOptions): Promise<AssetFileEntry[]> {
   options.signal?.throwIfAborted();
+  const { projectIds, root, mappings } = scope;
   const userFiles = files.filter((file) => {
     const relativePath = root ? getRelativeAssetPath(file.path, root) : file.relativePath;
-    return !isNativeMediaPendingFile(file.path) && (!relativePath || !isProjectAgentInternalFile(relativePath));
+    return !isNativeMediaPendingFile(file.path) && !isNativeProjectBindingFile(file.path)
+      && (!relativePath || !isProjectAgentInternalFile(relativePath));
   });
   if (!root) return userFiles;
-  const history = new Set(state.mappings.flatMap((mapping) => mapping.previousFileAssetIds ?? []));
-  const historyPaths = new Set((await sharedAssetSyncExcludedPaths(projectId)).map(pathKey));
-  const current = state.mappings.filter((mapping) => mapping.kind === 'file' && mapping.currentFileAssetId);
+  const history = new Set(mappings.flatMap((mapping) => mapping.previousFileAssetIds ?? []));
+  const historyPaths = new Set(scope.historyPaths.map(pathKey));
+  const current = mappings.filter((mapping) => mapping.kind === 'file' && mapping.currentFileAssetId);
   const visible = (file: AssetFileEntry) => (!file.assetId || !history.has(file.assetId)) && !historyPaths.has(pathKey(file.path));
   const projected = new Map(userFiles.filter(visible).map((file) => [pathKey(file.path), file]));
   for (const mapping of current) {
     options.signal?.throwIfAborted();
     const index = await getAssetIndexById(mapping.currentFileAssetId!);
     const projectRelativePath = index ? getRelativeAssetPath(index.path, root) : undefined;
-    if (!index || isNativeMediaPendingFile(index.path) || index.source !== 'project' || (getNativeProjectOwner(projectId)
+    if (!index || isNativeMediaPendingFile(index.path) || isNativeProjectBindingFile(index.path)
+      || index.source !== 'project' || (getNativeProjectOwner(projectId)
       ? !index.projectId || !projectIds.includes(index.projectId) : index.projectId !== projectId) || index.status !== 'online'
       || !projectRelativePath || isProjectAgentInternalFile(projectRelativePath)) continue;
     try {
@@ -258,7 +273,7 @@ export async function projectSharedFileView(projectId: string, files: AssetFileE
       if (!info.isFile || info.isSymlink || info.size !== index.size) continue;
       const relativePath = fileDisplayPath(mapping, index);
       const name = relativePath?.split('/').at(-1) ?? index.path.split(/[\\/]/).at(-1)!;
-      projected.set(pathKey(index.path), { assetId: index.assetId, name, path: index.path, relativePath,
+      projected.set(pathKey(index.path), { assetId: index.assetId, ownerProjectId: index.projectId, name, path: index.path, relativePath,
         assetUrl: await getAssetUrlFromPath(index.path), size: info.size, modifiedAt: info.mtime?.getTime(),
         category: getFileCategory(name), availability: 'online', source: 'project' });
     } catch { options.signal?.throwIfAborted(); /* 缺失文件不能投影为可用。 */ }
@@ -269,18 +284,23 @@ export async function projectSharedFileView(projectId: string, files: AssetFileE
 /** 通用流式目录枚举保持原接口；共享版本只在这个适配点过滤和投影。 */
 export async function readProjectFiles(projectId: string, options: AssetScanOptions = {}): Promise<AssetFileEntry[]> {
   options.signal?.throwIfAborted();
-  const { projectIds } = await ownerState(projectId);
-  const excludedFilePaths = [...(options.excludedFilePaths ?? []), ...await sharedAssetSyncExcludedPaths(projectId)];
+  const [{ projectIds, ownerId, state }, root] = await Promise.all([ownerState(projectId), getProjectDataDir(projectId)]);
+  const historyPaths = await sharedFileHistoryPaths(state.mappings, root, options.signal);
+  const excludedFilePaths = [...(options.excludedFilePaths ?? []), ...historyPaths];
   const excluded = new Set(excludedFilePaths.map(pathKey));
   options.signal?.throwIfAborted();
   const files = await listProjectFiles(projectId, { ...options, excludedFilePaths, projectIdentityScope: projectIds,
+    ...(getNativeProjectOwner(projectId) ? { preserveProjectIdentity: true } : {}),
     ...(options.onFiles ? { onFiles: (batch: AssetFileEntry[]) => {
       options.signal?.throwIfAborted();
       const visible = batch.filter((file) => !excluded.has(pathKey(file.path)));
       if (visible.length) options.onFiles?.(visible);
     } } : {}) });
   options.signal?.throwIfAborted();
-  return projectSharedFileView(projectId, files, options);
+  const { mappings } = await loadSharedAssetSyncState(ownerId);
+  return projectFileViewFromScope(projectId, files, { projectIds, root, mappings,
+    historyPaths: configValuesEqual(mappings, state.mappings) ? historyPaths : await sharedFileHistoryPaths(mappings, root, options.signal),
+  }, options);
 }
 
 /** 同步的完整性扫描属于调度内部，不增加通用文件服务的云专用入口。 */

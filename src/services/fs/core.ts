@@ -931,6 +931,7 @@ export const CATEGORY_LABELS: Record<FileCategory, string> = {
 
 export interface AssetFileEntry {
   assetId?: string;                                 // 稳定身份；旧/虚拟条目可能暂缺
+  ownerProjectId?: string;                          // 项目素材的已登记作品或分集画布身份
   name: string;
   path: string;
   relativePath?: string;                            // 相对 source root 的位置

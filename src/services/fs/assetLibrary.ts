@@ -19,7 +19,7 @@ import {
 } from './core';
 import { moveToTrash } from './trash';
 import { getRelativeAssetPath, identifyAsset, identifyAssetBatch } from './assetIndex';
-import { getAllAssetIndexes, getAssetIndexByPath, putAssetIndex, putAssetIndexes, type AssetIndexRecord } from '../indexedDbService';
+import { getAllAssetIndexes, getAssetIndexByPath, loadProjectAssetPathLookup, putAssetIndex, putAssetIndexes, type AssetIndexRecord } from '../indexedDbService';
 import { mediaFileAllocationKey, retiredMediaPaths } from '../indexedDb/mediaRelocations';
 import { decodeDataUrlBytesAsync } from '../mediaDataUrl';
 import { isProjectAgentInternalFile, isProjectAgentWorkspaceDirectory } from '../../utils/agentProjectWorkspace';
@@ -188,6 +188,7 @@ export async function scanDirectoryFiles(
   const excludedFiles = new Set((opts.excludedFilePaths ?? []).map(comparablePath));
   const retiredPaths = projectScan ? await retiredMediaPaths() : undefined;
   const nativeOwner = projectScan && opts.projectId ? getNativeProjectOwner(opts.projectId) : undefined;
+  let scopedLookup: ReturnType<typeof loadProjectAssetPathLookup> | undefined;
   let confirmedOwnerRoot: Promise<boolean> | undefined;
   throwIfScanAborted(opts.signal);
   const indexedFilePaths = new Map<string, string>();
@@ -301,6 +302,12 @@ export async function scanDirectoryFiles(
       // 首批仍逐项发布首个结果；后续普通扫描合并已知身份刷新，精确项目扫描保留原隔离流程。
       const validResults = statResults.filter((entry): entry is NonNullable<typeof entry> => entry !== null)
         .slice(0, maxFiles - out.length);
+      let exactByPath: Map<string, AssetIndexRecord | undefined> | undefined;
+      if (nativeOwner && opts.projectIdentityScope && validResults.length) {
+        const lookup = await (scopedLookup ??= loadProjectAssetPathLookup(nativeOwner, stripVerbatimPrefix(rootDir), opts.signal));
+        const indexed = await lookup(validResults.map((entry) => entry.filePath));
+        exactByPath = new Map(validResults.map((entry, index) => [entry.filePath, indexed[index]]));
+      }
       const batchIdentities = out.length > 0 && !opts.projectIdentityScope
         ? await identifyAssetBatch(validResults.map((entry) => ({ path: entry.filePath, options: {
             rootPath: rootDir, source: opts.source ?? 'folder', projectId: opts.projectId,
@@ -323,7 +330,7 @@ export async function scanDirectoryFiles(
           if (opts.source !== 'project' || !opts.projectId || !opts.projectIdentityScope.includes(opts.projectId) || !relativePath) {
             throw new Error('项目文件身份范围无效，请重新预览');
           }
-          let indexed = await getAssetIndexByPath(r.filePath);
+          let indexed = exactByPath ? exactByPath.get(r.filePath) : await getAssetIndexByPath(r.filePath);
           if (indexed?.source === 'folder' && indexed.projectId === undefined && !indexed.assetId.startsWith('na2-')
             && indexed.rootPath && indexed.relativePath && !retiredPaths?.has(mediaFileAllocationKey(indexed.path))
             && getRelativeAssetPath(indexed.path, indexed.rootPath) === indexed.relativePath
@@ -372,6 +379,7 @@ export async function scanDirectoryFiles(
         if (!projectScan && identity.source === 'project') continue;
         const file: AssetFileEntry = {
           assetId: identity.assetId,
+          ...(projectScan && identity.projectId ? { ownerProjectId: identity.projectId } : {}),
           name: r.name,
           path: r.filePath,
           relativePath: identity.relativePath,

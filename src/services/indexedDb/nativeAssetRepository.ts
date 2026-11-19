@@ -6,7 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { safeExchangePath } from '../projectExchangeDomain';
 import { configValuesEqual } from '../configPatch';
 import { stripVerbatimPrefix } from '../fs/core';
-import { EXCHANGE, ROOTS, REVISIONS, openNativeProjectDatabase, transact, assertNoPendingNativeSharedSync, type NativeProjectOptions } from './nativeProjectRepository';
+import { EXCHANGE, ROOTS, REVISIONS, NATIVE_ASSET_BY_PROJECT, isNativeProjectId, openNativeProjectDatabase, transact, assertNoPendingNativeSharedSync, type NativeProjectOptions } from './nativeProjectRepository';
 
 export interface NativeAssetRecord {
   assetId: string; projectId: string; ownerId: string; rootRef: string; primary: boolean; relativePath: string;
@@ -105,6 +105,24 @@ export async function readNativeAssets(options: NativeProjectOptions = {}): Prom
     const roots = new Map<string, boolean>();
     for (const record of records) if (!roots.has(record.projectId)) roots.set(record.projectId, !!await get(tx.objectStore(ROOTS).get(record.projectId)));
     return records.filter((record) => roots.get(record.projectId));
+  }, [EXCHANGE, ROOTS]); } finally { db.close(); }
+}
+
+export async function readNativeAssetsForProject(projectId: string, options: NativeProjectOptions = {}): Promise<NativeAssetRecord[]> {
+  if (!isNativeProjectId(projectId)) throw new Error('恢复素材作品身份无效');
+  const db = await openNativeProjectDatabase(false, options); if (!db) return [];
+  try { return await transact(db, 'readonly', options, async (tx) => {
+    const [projectKey, rows] = await Promise.all([
+      get(tx.objectStore(ROOTS).getKey(projectId)),
+      get(tx.objectStore(EXCHANGE).index(NATIVE_ASSET_BY_PROJECT).getAll(['native-asset-v1', projectId], 100_001)),
+    ]);
+    if (projectKey !== projectId) return [];
+    if (rows.length > 100_000) throw new Error('新项目素材索引过多');
+    return rows.map((row) => {
+      const record = unwrap(row);
+      if (record?.projectId !== projectId) throw new Error('恢复素材索引作品归属不一致');
+      return record;
+    });
   }, [EXCHANGE, ROOTS]); } finally { db.close(); }
 }
 

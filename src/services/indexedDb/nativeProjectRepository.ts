@@ -19,7 +19,7 @@ import { isProjectSnapshotDataUrl } from '../projectSnapshotValidation';
 import { withProjectTextModel } from '../projectModelSettings';
 
 export const NATIVE_PROJECT_DATABASE_NAME = 'ai-canvas-native-projects-v2' as const;
-export const NATIVE_PROJECT_DATABASE_VERSION = 2 as const;
+export const NATIVE_PROJECT_DATABASE_VERSION = 3 as const;
 export const ROOTS = 'projectRoots', CONTENTS = 'projectContents', CANVASES = 'canvasDocuments';
 export const EPISODES = 'episodes', EPISODE_CONTENTS = 'episodeContents';
 export const RETIRED = 'retiredIds';
@@ -28,11 +28,13 @@ export const EXCHANGE = 'nativeProjectExchange', TRANSFER = 'nativeTransferJourn
 export const MEDIA_TASK_STATUS_INDEX = 'mediaTaskStatus';
 export const MEDIA_TASK_NODE_INDEX = 'mediaTaskNode';
 export const MEDIA_TASK_MESSAGE_INDEX = 'mediaTaskMessage';
+export const NATIVE_ASSET_BY_PROJECT = 'nativeAssetByProject';
 const MEDIA_TASK_INDEXES = {
   [MEDIA_TASK_STATUS_INDEX]: ['kind', 'ownerProjectId', 'status', 'canvasId'],
   [MEDIA_TASK_NODE_INDEX]: ['kind', 'ownerProjectId', 'canvasId', 'nodeId'],
   [MEDIA_TASK_MESSAGE_INDEX]: ['kind', 'ownerProjectId', 'canvasId', 'origin.conversationId', 'origin.messageId'],
 };
+const EXCHANGE_INDEXES = { ...MEDIA_TASK_INDEXES, [NATIVE_ASSET_BY_PROJECT]: ['kind', 'record.projectId'] };
 const canvasPreviewKey = (canvasId: string) => `canvas-preview:${canvasId}`;
 const STORES = [ROOTS, CONTENTS, CANVASES, EPISODES, EPISODE_CONTENTS, RETIRED, REVISIONS, EXCHANGE, TRANSFER] as const;
 const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
@@ -108,13 +110,13 @@ export async function assertNoPendingNativeMediaTasks(tx: IDBTransaction, projec
   if (keys.some((key) => key !== undefined)) return fail('project-media-task-pending');
 }
 
-function assertNativeProjectSchema(database: IDBDatabase, tx: IDBTransaction, mediaIndexes: boolean): void {
+function assertNativeProjectSchema(database: IDBDatabase, tx: IDBTransaction, version: number): void {
   if (database.name !== NATIVE_PROJECT_DATABASE_NAME
     || Array.from(database.objectStoreNames).sort().join('\0') !== [...STORES].sort().join('\0')) fail('unsupported-schema');
   for (const [name, keyPath] of [[ROOTS, 'id'], [CONTENTS, 'projectId'], [CANVASES, 'id'], [EPISODES, 'id'], [EPISODE_CONTENTS, 'episodeId'], [RETIRED, 'id'], [REVISIONS, 'projectId'], [EXCHANGE, 'projectId'], [TRANSFER, 'operationId']] as const) {
     const store = tx.objectStore(name);
     const expectedIndexes: Record<string, string | string[]> = name === CANVASES || name === EPISODES || name === TRANSFER
-      ? { projectId: 'projectId' } : name === EXCHANGE && mediaIndexes ? MEDIA_TASK_INDEXES : {};
+      ? { projectId: 'projectId' } : name === EXCHANGE && version > 1 ? (version === 2 ? MEDIA_TASK_INDEXES : EXCHANGE_INDEXES) : {};
     if (store.keyPath !== keyPath || store.autoIncrement
       || Array.from(store.indexNames).join('\0') !== Object.keys(expectedIndexes).sort().join('\0')) fail('unsupported-schema');
     for (const [indexName, indexPath] of Object.entries(expectedIndexes)) {
@@ -168,9 +170,12 @@ export async function openNativeProjectDatabase(create: boolean, options: Native
           db.createObjectStore(REVISIONS, { keyPath: 'projectId' });
           db.createObjectStore(EXCHANGE, { keyPath: 'projectId' });
           db.createObjectStore(TRANSFER, { keyPath: 'operationId' }).createIndex('projectId', 'projectId', { unique: false });
-        } else if (event.oldVersion !== 1) return fail('unsupported-schema');
-        assertNativeProjectSchema(db, transaction, false);
-        for (const [name, keyPath] of Object.entries(MEDIA_TASK_INDEXES)) transaction.objectStore(EXCHANGE).createIndex(name, keyPath);
+        } else if (event.oldVersion !== 1 && event.oldVersion !== 2) return fail('unsupported-schema');
+        assertNativeProjectSchema(db, transaction, event.oldVersion || 1);
+        const exchange = transaction.objectStore(EXCHANGE);
+        for (const [name, keyPath] of Object.entries(EXCHANGE_INDEXES)) {
+          if (!exchange.indexNames.contains(name)) exchange.createIndex(name, keyPath);
+        }
       } catch (error) {
         upgradeFailure = error;
         transaction.abort();
@@ -185,7 +190,7 @@ export async function openNativeProjectDatabase(create: boolean, options: Native
   if (!database) return null;
   try {
     if (database.version !== NATIVE_PROJECT_DATABASE_VERSION) fail('unsupported-schema');
-    assertNativeProjectSchema(database, database.transaction([...STORES], 'readonly'), true);
+    assertNativeProjectSchema(database, database.transaction([...STORES], 'readonly'), database.version);
     database.onversionchange = () => database.close();
     return database;
   } catch (error) { database.close(); throw error; }

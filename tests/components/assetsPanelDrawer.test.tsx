@@ -1731,6 +1731,24 @@ describe('资产库 Tab 抽屉', () => {
     finishParent([entry]); await vi.advanceTimersByTimeAsync(0); render();
   });
 
+  it('新剧集只扫描共享目录一次，按已登记的画布身份显示文件', async () => {
+    const projectId = 'p2-11111111-1111-4111-8111-111111111111';
+    const canvasId = 'c2-11111111-1111-4111-8111-111111111112';
+    const secondCanvasId = 'c2-11111111-1111-4111-8111-111111111113';
+    const projects = [
+      { id: projectId, name: '新剧集', createdAt: 1, updatedAt: 1, nativeView: { projectId, episodeId: null, canvasId: null } },
+      { id: canvasId, name: '第一集', parentId: projectId, episodeNo: 1, createdAt: 1, updatedAt: 1,
+        nativeView: { projectId, episodeId: 'e2-11111111-1111-4111-8111-111111111112', canvasId, orderRank: 0 } },
+      { id: secondCanvasId, name: '第二集', parentId: projectId, episodeNo: 2, createdAt: 1, updatedAt: 1,
+        nativeView: { projectId, episodeId: 'e2-11111111-1111-4111-8111-111111111113', canvasId: secondCanvasId, orderRank: 1 } },
+    ];
+    driver.store!.setState({ currentProjectId: canvasId, projects });
+    driver.listProject.mockResolvedValue([{ ...file('第一集图片'), path: '/series/hero.png', ownerProjectId: canvasId }]);
+    key(); render(); await settle(); render();
+    expect(driver.listProject.mock.calls.map(([id]) => id)).toEqual([projectId]);
+    expect(cards()[0].props.videoProjectId).toBe(canvasId);
+  });
+
   it.each(['drawer', 'modal'] as const)('首次打开 %s 读取短暂失败时自动恢复，不必关闭重开', async (mode) => {
     vi.useFakeTimers();
     driver.listProject.mockRejectedValueOnce(new Error('temporary index failure'));

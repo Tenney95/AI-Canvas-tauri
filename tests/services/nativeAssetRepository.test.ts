@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
-import { addNativeAssetsInTransaction, readNativeAsset, validateNativeAsset, type NativeAssetRecord } from '../../src/services/indexedDb/nativeAssetRepository';
+import { addNativeAssetsInTransaction, readNativeAsset, readNativeAssetsForProject, validateNativeAsset, type NativeAssetRecord } from '../../src/services/indexedDb/nativeAssetRepository';
 import { createNativeProject, EXCHANGE, openNativeProjectDatabase, transact } from '../../src/services/indexedDb/nativeProjectRepository';
 
 const asset = (): NativeAssetRecord => ({ assetId: 'na2-11111111-1111-4111-8111-111111111111',
@@ -9,6 +9,24 @@ const asset = (): NativeAssetRecord => ({ assetId: 'na2-11111111-1111-4111-8111-
   bytes: 3, sha256: 'a'.repeat(64), createdAt: 1 });
 
 describe('同库恢复素材身份', () => {
+  it('按作品读取恢复素材，其他作品的记录不进入查询', async () => {
+    const factory = new IDBFactory();
+    const first = await createNativeProject({ name: '甲' }, { factory });
+    const second = await createNativeProject({ name: '乙' }, { factory });
+    const row = { ...asset(), projectId: first.project.id, ownerId: first.project.id, rootRef: first.project.storageRootRef };
+    const other = { ...asset(), assetId: 'na2-11111111-1111-4111-8111-111111111112', projectId: second.project.id,
+      ownerId: second.project.id, rootRef: second.project.storageRootRef };
+    const db = (await openNativeProjectDatabase(false, { factory }))!;
+    try {
+      await transact(db, 'readwrite', { factory }, async (tx) => {
+        await addNativeAssetsInTransaction(tx, [row], first);
+        await addNativeAssetsInTransaction(tx, [other], second);
+      }, [EXCHANGE]);
+      expect(await readNativeAssetsForProject(first.project.id, { factory })).toEqual([row]);
+      expect(await readNativeAssetsForProject(second.project.id, { factory })).toEqual([other]);
+    } finally { db.close(); }
+  });
+
   it('拒绝路径越界、额外持久字段、访问器及错误图片元数据', () => {
     expect(() => validateNativeAsset(asset())).not.toThrow();
     for (const patch of [{ relativePath: '../a.png' }, { relativePath: 'C:/a.png' }, { path: 'C:/private/a.png' },
