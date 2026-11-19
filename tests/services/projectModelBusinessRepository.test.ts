@@ -75,6 +75,12 @@ describe('P3 隔离新模型业务仓储', () => {
     };
     expect(validateProjectModelTransferAggregate(input).content.standaloneCreative?.teamProfileOverride).toEqual(oldTeam);
     expect(input.content.standaloneCreative?.teamProfileOverride?.roles).not.toHaveProperty('director');
+    const reader = { id: 'outline-reader', type: 'continuity', scope: 'outline', modelId: 'general/reader' } as const;
+    const withReader = structuredClone(input);
+    withReader.content.standaloneCreative!.teamProfileOverride = {
+      ...oldTeam, roles: { ...oldTeam.roles, director: '', storyboard: '' }, readers: [reader],
+    };
+    expect(validateProjectModelTransferAggregate(withReader).content.standaloneCreative?.teamProfileOverride?.readers).toEqual([reader]);
     const missingWriter: Record<string, unknown> = { ...oldTeam.roles };
     delete missingWriter.writer;
     for (const invalid of [
@@ -84,6 +90,8 @@ describe('P3 隔离新模型业务仓储', () => {
       { ...oldTeam, roles: { ...oldTeam.roles, storyboard: 42 } },
       { ...oldTeam, roles: { ...oldTeam.roles, unknown: '' } },
       { ...oldTeam, roles: missingWriter },
+      { ...oldTeam, readers: [reader, reader] },
+      { ...oldTeam, readers: [{ ...reader, modelId: 'https://example.invalid' }] },
     ]) {
       const damaged = structuredClone(input);
       damaged.content.standaloneCreative!.teamProfileOverride = invalid as never;

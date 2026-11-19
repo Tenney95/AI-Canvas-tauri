@@ -1,9 +1,16 @@
 import { lazy, memo, Suspense, useId, useMemo, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import type { GeneralModelConfig, ModelGroup } from '../../../types';
-import type { AgentTeamProfile, AssistantExecutionSelection, TeamExecutionTarget, TeamTemplateId } from '../../../types/agentTeam';
+import type {
+  AgentTeamProfile, AssistantExecutionSelection, TeamExecutionTarget, TeamReaderConfig,
+  TeamReaderScope, TeamReaderType, TeamTemplateId,
+} from '../../../types/agentTeam';
 import type { ExternalAgentDescriptor } from '../../../types/externalAgent';
-import { TEAM_ROLE_DESCRIPTIONS, TEAM_ROLE_LABELS, TEAM_ROLES, TEAM_TEMPLATE_LABELS } from '../../../services/chat/teams/teamProfileService';
+import {
+  getTeamReadersForTemplate, MAX_TEAM_READERS, TEAM_READER_SCOPE_LABELS, TEAM_READER_SCOPES,
+  TEAM_READER_TYPE_LABELS, TEAM_READER_TYPES, TEAM_ROLE_DESCRIPTIONS, TEAM_ROLE_LABELS, TEAM_ROLES,
+  TEAM_TEMPLATE_LABELS, validateTeamReaders,
+} from '../../../services/chat/teams/teamProfileService';
 import { createTemplateTeamGraph, validateTeamGraph } from '../../../services/chat/teams/teamGraphService';
 import { useT } from '../../../i18n';
 import ModelSelector from '../../nodes/shared/ModelSelector';
@@ -47,6 +54,10 @@ function TeamExecutionPicker({
   const [error, setError] = useState('');
   const saveInFlight = useRef(false);
   const configuredCount = useMemo(() => TEAM_ROLES.filter((role) => (profile.roleExecutors?.[role]?.modelId ?? profile.roles[role])?.trim()).length, [profile.roles, profile.roleExecutors]);
+  const draftGraph = useMemo(() => draft.graph ?? createTemplateTeamGraph(templateId), [draft.graph, templateId]);
+  const readers = draft.readers ?? [];
+  const activeReaderIds = new Set(getTeamReadersForTemplate(draft, templateId).filter((reader) => reader.id).map((reader) => reader.id));
+  const plannedCalls = draftGraph.nodes.length + activeReaderIds.size;
 
   const openConfiguration = () => {
     setDraft(structuredClone(profile));
@@ -66,8 +77,18 @@ function TeamExecutionPicker({
         || !Number.isSafeInteger(draft.maxOutputChars) || draft.maxOutputChars < 2000 || draft.maxOutputChars > 64000) {
         throw new Error(t('团队预算数值超出允许范围'));
       }
-      const graph = validateTeamGraph(draft.graph ?? createTemplateTeamGraph(templateId));
-      if (draft.maxCalls < graph.nodes.length) throw new Error(t('调用预算不能少于任务数量'));
+      const graph = validateTeamGraph(draftGraph);
+      const checkedReaders = validateTeamReaders(draft.readers);
+      if (modelGroups) {
+        const availableModels = new Set(modelGroups.flatMap((group) => group.models.map((model) => model.value)));
+        if (checkedReaders.some((reader) => activeReaderIds.has(reader.id)
+          && !availableModels.has(reader.modelId) && !availableModels.has(`general/${reader.modelId}`))) {
+          throw new Error(t('请为每位读者选择可用的决策模型'));
+        }
+      }
+      if (draft.maxCalls < plannedCalls) {
+        throw new Error(t(activeReaderIds.size ? '调用预算不能少于任务与读者的总调用数' : '调用预算不能少于任务数量'));
+      }
       for (const node of graph.nodes) {
         const executor = draft.roleExecutors?.[node.roleId];
         if (executor?.kind === 'external-agent') {
@@ -76,11 +97,11 @@ function TeamExecutionPicker({
           if (node.modelId && node.modelId !== executor.modelId) throw new Error(t('外部成员的单任务模型覆盖与角色模型不一致，请先使用角色模型'));
         } else if (!(node.modelId ?? executor?.modelId ?? draft.roles[node.roleId])?.trim()) throw new Error(t('请为任务负责人选择文本模型'));
       }
-      await onProfileChange({ ...draft, graph });
+      await onProfileChange({ ...draft, graph, ...(draft.readers ? { readers: checkedReaders } : {}) });
       onChange({ kind: 'team', templateId });
       setOpen(false);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : t('保存团队配置失败'));
+      setError(t(reason instanceof Error ? reason.message : '保存团队配置失败'));
     } finally {
       saveInFlight.current = false;
       setSaving(false);
@@ -92,6 +113,22 @@ function TeamExecutionPicker({
     try { await onRefreshExternalAgents(); }
     catch (reason) { setError(reason instanceof Error ? reason.message : t('刷新外部执行器失败')); }
     finally { setRefreshing(false); }
+  };
+  const addReader = () => {
+    const id = crypto.randomUUID().replaceAll('-', '').slice(0, 24);
+    const scope = templateId === 'outline' ? 'outline' : 'key-scenes';
+    setDraft((current) => {
+      const currentReaders = current.readers ?? [];
+      if (currentReaders.length >= MAX_TEAM_READERS) return current;
+      const type = TEAM_READER_TYPES.find((option) => !currentReaders.some((reader) => reader.type === option)) ?? 'causality';
+      return { ...current, readers: [...currentReaders, { id, type, scope, modelId: '' }] };
+    });
+  };
+  const updateReader = (id: string, changes: Partial<Omit<TeamReaderConfig, 'id'>>) => {
+    setDraft((current) => ({ ...current, readers: current.readers?.map((reader) => reader.id === id ? { ...reader, ...changes } : reader) }));
+  };
+  const removeReader = (id: string) => {
+    setDraft((current) => ({ ...current, readers: current.readers?.filter((reader) => reader.id !== id) }));
   };
 
   return (
@@ -179,8 +216,61 @@ function TeamExecutionPicker({
               );
             })}
           </div>
+          <section className="space-y-2" aria-label={t('读者')}>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="ui-label">{t('读者')}</h3>
+              <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary"
+                disabled={saving || readers.length >= MAX_TEAM_READERS} onClick={addReader}>
+                {t('添加读者')}
+              </button>
+            </div>
+            {readers.length > 0 && <p className="ui-hint">{t('读者只回答“是”或“否”。同一范围的所有读者都投出有效票后，赞成过半才通过，平票也不通过。')}</p>}
+            {readers.map((reader, index) => {
+              const fieldId = `${templateInputId}-reader-${reader.id}`;
+              const isGeneral = generalModels?.some((model) => model.id === reader.modelId && model.category === 'text')
+                || modelGroups?.some((group) => group.models.some((model) => model.value === `general/${reader.modelId}`));
+              const invalidReader = !reader.id;
+              return (
+                <div className="ui-card min-w-0 gap-2 p-2" key={reader.id}>
+                  <div className="flex min-w-0 items-center gap-1">
+                    <div className="grid min-w-0 flex-1 grid-cols-1 gap-2 sm:grid-cols-3">
+                      <div className="ui-field min-w-0">
+                        <label className="ui-label" htmlFor={`${fieldId}-type`}>{t('读者类型')}</label>
+                        <Select<TeamReaderType> id={`${fieldId}-type`} size="sm" className="w-full" disabled={saving || invalidReader} value={reader.type}
+                          options={TEAM_READER_TYPES.map((type) => ({ value: type, label: t(TEAM_READER_TYPE_LABELS[type]) }))}
+                          onChange={(type) => updateReader(reader.id, { type })} />
+                      </div>
+                      <div className="ui-field min-w-0">
+                        <label className="ui-label" htmlFor={`${fieldId}-scope`}>{t('判定范围')}</label>
+                        <Select<TeamReaderScope> id={`${fieldId}-scope`} size="sm" className="w-full" disabled={saving || invalidReader} value={reader.scope}
+                          options={TEAM_READER_SCOPES.map((scope) => ({ value: scope, label: t(TEAM_READER_SCOPE_LABELS[scope]) }))}
+                          onChange={(scope) => updateReader(reader.id, { scope })} />
+                      </div>
+                      <div className="ui-field min-w-0" role="group" aria-labelledby={`${fieldId}-model`}>
+                        <span className="ui-label" id={`${fieldId}-model`}>{t('决策模型')}</span>
+                        <ModelSelector size="sm" nodeType="ai-text" persistPreference={false} theme={theme}
+                          selectedModel={isGeneral ? `general/${reader.modelId}` : reader.modelId}
+                          configuredGroupsOverride={modelGroups} generalModelsOverride={modelGroups ? [] : generalModels}
+                          groupAvailability={groupAvailability} disabled={saving || invalidReader}
+                          onSelect={(model) => updateReader(reader.id, { modelId: model.value })} />
+                      </div>
+                    </div>
+                    <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost mt-3 shrink-0" disabled={saving}
+                      aria-label={t('移除读者 {number}', { number: index + 1 })} onClick={() => removeReader(reader.id)}>
+                      <Icon icon="mdi:delete-outline" width="16" />
+                    </button>
+                  </div>
+                  {invalidReader ? <p className="ui-error">{t('这位读者的配置无效，请移除后重新添加')}</p>
+                    : !activeReaderIds.has(reader.id) && <p className="ui-hint">{t('当前模板不使用此判定范围')}</p>}
+                </div>
+              );
+            })}
+            {activeReaderIds.size > 0 && <p className={plannedCalls > draft.maxCalls ? 'ui-hint text-warning-light' : 'ui-hint'}>
+              {t('当前任务图与读者至少需要 {count} 次调用', { count: plannedCalls })}
+            </p>}
+          </section>
           <Suspense fallback={<p role="status">{t('正在加载任务图…')}</p>}>
-            <TeamGraphEditor value={draft.graph ?? createTemplateTeamGraph(templateId)} onChange={(graph) => setDraft((current) => ({ ...current, graph }))} disabled={saving} />
+            <TeamGraphEditor value={draftGraph} onChange={(graph) => setDraft((current) => ({ ...current, graph }))} disabled={saving} />
           </Suspense>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             {([

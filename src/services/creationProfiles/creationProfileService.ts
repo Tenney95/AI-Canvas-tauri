@@ -8,7 +8,7 @@ import { captureExplicitSkillBindings, isSkillUserInvocable } from '../skillProm
 import { inspectPluginHealth } from '../plugins/pluginHealthService';
 import { getExternalAgentStatus } from '../chat/externalAgents/externalAgentRegistry';
 import { createTemplateTeamGraph, getTeamNodeTarget } from '../chat/teams/teamGraphService';
-import { normalizeTeamProfile } from '../chat/teams/teamProfileService';
+import { getTeamReadersForTemplate, normalizeTeamProfile } from '../chat/teams/teamProfileService';
 import { creationProfileSelection, normalizeCreationProfileSelection, parseCreationProfile } from './creationProfileManifest';
 import { configValuesEqual } from '../configPatch';
 
@@ -67,8 +67,10 @@ export async function previewCreationProfile(value: unknown, projectId: string):
   }
   if (profile.teamProfile) {
     const team = normalizeTeamProfile(profile.teamProfile);
-    const graph = team.graph ?? createTemplateTeamGraph(profile.teamTemplateId ?? 'general');
-    const targets = graph.nodes.map((node) => getTeamNodeTarget(team, node));
+    const templateId = profile.teamTemplateId ?? 'general';
+    const graph = team.graph ?? createTemplateTeamGraph(templateId);
+    const targets = [...graph.nodes.map((node) => getTeamNodeTarget(team, node)),
+      ...getTeamReadersForTemplate(team, templateId).map((reader) => ({ kind: 'text-model' as const, modelId: reader.modelId }))];
     let external: Awaited<ReturnType<typeof getExternalAgentStatus>> | undefined;
     if (targets.some((target) => target.kind === 'external-agent')) {
       try { external = await getExternalAgentStatus(); } catch { /* 目录不可用以缺项显示，不泄露原生错误。 */ }

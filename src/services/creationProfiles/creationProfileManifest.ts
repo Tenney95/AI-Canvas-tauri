@@ -1,6 +1,6 @@
 /** 可分享组合包的严格白名单合同，校验不安装、不启用、不执行。 */
 import type { CreationProfile, CreationProfileSelection } from '../../types/creationProfile';
-import { normalizeTeamProfile, TEAM_ROLES, TEAM_TEMPLATES } from '../chat/teams/teamProfileService';
+import { normalizeTeamProfile, TEAM_ROLES, TEAM_TEMPLATES, validateTeamReaders } from '../chat/teams/teamProfileService';
 import { validateTeamGraph } from '../chat/teams/teamGraphService';
 
 const HASH = /^[a-f0-9]{64}$/;
@@ -48,7 +48,7 @@ export function parseCreationProfile(raw: unknown): CreationProfile {
   }
   if (raw.teamProfile !== undefined) {
     if (!record(raw.teamProfile) || raw.teamProfile.version !== 1 || !profile.teamTemplateId || !record(raw.teamProfile.roles)) throw new Error('组合包团队配置无效');
-    keys(raw.teamProfile, ['version', 'name', 'roles', 'roleExecutors', 'graph', 'maxCalls', 'maxTotalTokens', 'maxOutputChars']);
+    keys(raw.teamProfile, ['version', 'name', 'roles', 'roleExecutors', 'readers', 'graph', 'maxCalls', 'maxTotalTokens', 'maxOutputChars']);
     text(raw.teamProfile.name, 60);
     keys(raw.teamProfile.roles, TEAM_ROLES);
     for (const role of TEAM_ROLES) {
@@ -72,6 +72,7 @@ export function parseCreationProfile(raw: unknown): CreationProfile {
       const graph = validateTeamGraph(raw.teamProfile.graph);
       for (const node of graph.nodes) { text(node.title, 180); if (node.modelId) text(node.modelId, 200, true); }
     }
+    validateTeamReaders(raw.teamProfile.readers);
     const normalized = normalizeTeamProfile(raw.teamProfile);
     const budgetFields = ['maxCalls', 'maxTotalTokens', 'maxOutputChars'] as const;
     if (budgetFields.some((key) => (raw.teamProfile as Record<string, unknown>)[key] !== normalized[key])) throw new Error('组合包团队预算无效');

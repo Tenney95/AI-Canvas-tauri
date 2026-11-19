@@ -15,7 +15,7 @@ import { extractMentionedNodeIds, sanitizeDomainText } from '../subAgentMaterial
 import { MAX_INTERJECTION_CHARS } from '../agentInterjection';
 import { isWorkbenchTeamTaskInScope, readEpisodeWorkspaceScope } from '../../episodeWorkspaceScope';
 import { hashTeamText, readTeamArtifactText } from './teamArtifactService';
-import { normalizeTeamProfile, TEAM_TEMPLATE_LABELS } from './teamProfileService';
+import { getTeamReadersForTemplate, normalizeTeamProfile, TEAM_TEMPLATE_LABELS } from './teamProfileService';
 import { amendTeamRun, captureTeamModelFingerprints, executeTeamRun, MAX_TEAM_INPUT_CHARS, prepareTeamRun, waitForTeamRunIdle } from './teamRuntime';
 import { captureCreationProfile, intersectCreationTools, resolveCreationTeamProfile } from '../../creationProfiles/creationProfileService';
 import { buildStoryGraphWritingContext } from '../../storyGraphWritingContext';
@@ -31,6 +31,8 @@ export interface TeamInvocationInput {
   context?: TeamInvocationContext;
   materials?: string;
   originalText?: string;
+  /** 仅传给本次冻结的输入产物，用于按纲写正文前的大纲判定。 */
+  outlineForReaders?: string;
   requestId?: string;
   profile?: AgentTeamProfile;
   /** 文章改写显式沿用已校验来源会话的组合包；其他工作台入口仍读取分集配置。 */
@@ -87,6 +89,7 @@ function explicitNodeMaterials(content: string, projectId: string): string {
 
 function summarizeTask(task: AgentTask): string {
   if (task.status === 'completed') return '团队已完成本轮协作，请在任务详情查看候选、审阅和裁决。候选尚未自动应用。';
+  if (task.status === 'paused' && task.errorCode === 'TEAM_READER_REJECTED') return '读者判定未通过，请查看团队详情中的票决与候选。';
   if (task.status === 'paused') return '团队已暂停，已完成成果保留。请查看任务详情中的原因后继续。';
   if (task.status === 'stopped') return '团队任务已停止，已完成成果保留。';
   if (task.status === 'failed') return '团队本轮未完成，已完成成果保留。请在任务详情查看原因。';
@@ -171,11 +174,14 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
   const creationSelection = creationOwner?.creationProfile ? structuredClone(creationOwner.creationProfile) : undefined;
   const profile = normalizeTeamProfile(structuredClone(input.profile
     ?? resolveCreationTeamProfile(creationSelection, creationOwner?.teamProfileOverride)));
+  const needsOutlineForReaders = input.templateId === 'script'
+    && getTeamReadersForTemplate(profile, input.templateId).some((reader) => reader.scope === 'outline');
+  const outlineForReaders = needsOutlineForReaders ? input.outlineForReaders : undefined;
   const materials = input.materials ?? explicitNodeMaterials(content, projectId);
   if (content.length + materials.length > MAX_TEAM_INPUT_CHARS) throw new Error('团队目标与材料超过总上限，请按场景或章节拆分，不会截断原稿');
   const signature = JSON.stringify({ projectId, conversationId: input.conversationId, content,
     profile, creationSelection, creationProfileSource: input.creationProfileSource,
-    templateId: input.templateId, context, materials, originalText: input.originalText, mode: input.mode });
+    templateId: input.templateId, context, materials, originalText: input.originalText, outlineForReaders, mode: input.mode });
   const previous = invocations.get(requestId);
   if (previous) {
     if (previous.signature !== signature) throw new Error('同一请求身份不能用于不同的团队任务');
@@ -218,6 +224,7 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
     let runContext = context;
     let runMaterials = materials;
     let originalText = frozen.originalText;
+    let runOutlineForReaders = outlineForReaders;
     const episode = state.projects.find((item) => item.id === projectId && !!item.parentId);
     if (!context.target && context.source === 'assistant' && input.templateId !== 'general' && episode) {
       const { captureEpisodeTeamContext } = await import('./teamResultApplyService');
@@ -225,10 +232,12 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
       runContext = { ...captured.context, source: 'assistant' };
       runMaterials = [captured.materials, materials].filter(Boolean).join('\n\n');
       originalText = captured.originalText;
+      if (needsOutlineForReaders) runOutlineForReaders = captured.outlineForReaders;
     }
     if (skillBindings.length) runMaterials = [runMaterials, expandSkillBindings(content, skillBindings)].filter(Boolean).join('\n\n');
     if (content.length + runMaterials.length > MAX_TEAM_INPUT_CHARS) throw new Error('材料超过团队总上限，请按场景拆分任务');
-    const digest = await hashTeamText(JSON.stringify({ signature, context: runContext, materials: runMaterials, originalText }));
+    const digest = await hashTeamText(JSON.stringify({ signature, context: runContext, materials: runMaterials,
+      originalText, outlineForReaders: runOutlineForReaders }));
     const existing = useAppStore.getState().agentTasks.find((item) => item.id === taskId) ?? await loadAgentTask(taskId);
     if (!sourceAvailable()) return;
     if (existing) {
@@ -280,7 +289,7 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
     await saveAgentTask(task);
     const teamRun = await prepareTeamRun({ taskId, projectId, conversationId: frozen.conversationId,
       prompt: content, profile, templateId: frozen.templateId, context: runContext, materials: runMaterials,
-      originalText, modelFingerprints, assertCurrent,
+      originalText, outlineForReaders: runOutlineForReaders, modelFingerprints, assertCurrent,
     });
     const current = useAppStore.getState().agentTasks.find((item) => item.id === taskId);
     if (!current) return;

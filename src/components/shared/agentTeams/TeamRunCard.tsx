@@ -2,8 +2,12 @@ import { lazy, memo, Suspense, useId, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import type { AgentTask } from '../../../types/agent';
 import type { TeamArtifactReference, TeamGraphDefinition, TeamStageRun } from '../../../types/agentTeam';
-import { TEAM_ROLE_LABELS, TEAM_TEMPLATE_LABELS } from '../../../services/chat/teams/teamProfileService';
+import {
+  getTeamReaderStageId, getTeamReadersForTemplate, TEAM_READER_SCOPE_LABELS, TEAM_READER_TYPE_LABELS,
+  TEAM_ROLE_LABELS, TEAM_TEMPLATE_LABELS,
+} from '../../../services/chat/teams/teamProfileService';
 import { validateTeamGraph } from '../../../services/chat/teams/teamGraphService';
+import { checkTeamReaderGate } from '../../../services/chat/teams/teamValidation';
 import { useT } from '../../../i18n';
 import TeamResultReview from './TeamResultReview';
 import ModalOverlay from '../ModalOverlay';
@@ -128,6 +132,9 @@ function TeamRunCard({ task, onPause, onResume, onStop, onView, onReadArtifact, 
   const active = ['queued', 'planning', 'running', 'waiting_tool'].includes(task.status);
   const hasArtifacts = run.artifacts.some((artifact) => artifact.kind !== 'input');
   const completedCount = run.stages.filter((stage) => stage.status === 'completed').length;
+  const readers = run.version === 2 ? getTeamReadersForTemplate(run.profile, run.templateId) : [];
+  const readerByStageId = new Map(readers.map((reader) => [getTeamReaderStageId(reader), reader]));
+  const readerScopes = [...new Set(readers.map((reader) => reader.scope))];
   const unknownDispatches = (task.dispatches ?? []).filter((record) => !record.recovery
     && (record.phase === 'outcome_unknown' || (!active && record.phase === 'dispatched')));
   const idle = ['paused', 'failed', 'stopped'].includes(task.status) && run.stages.every((stage) => stage.status !== 'running');
@@ -158,23 +165,37 @@ function TeamRunCard({ task, onPause, onResume, onStop, onView, onReadArtifact, 
           : run.usageReportedCalls > 0 ? t('部分调用用量未知') : t('实际用量待核对')}</span>
         <span>{t('费用以服务商账单为准')}</span>
       </p>
+      {readerScopes.map((scope) => {
+        const gate = checkTeamReaderGate(run, scope);
+        const hasFailure = run.stages.some((stage) => readerByStageId.get(stage.id)?.scope === scope && stage.status === 'failed');
+        const label = gate === 'passed' ? '读者判定通过' : gate === 'rejected' ? '读者判定未通过'
+          : hasFailure ? '读者判定异常' : '等待读者判定';
+        return <p key={scope} className={gate === 'rejected' || hasFailure ? 'text-warning-light' : 'text-canvas-text-secondary'}>
+          {t(TEAM_READER_SCOPE_LABELS[scope])} · {t(label)}
+        </p>;
+      })}
       {expanded && <ol className="space-y-1">
         {run.stages.map((stage) => {
           const definition = run.graph?.nodes.find((node) => node.id === stage.id);
           const blocked = definition?.dependsOn.filter((id) => !run.stages.some((entry) => entry.id === id && entry.status === 'completed' && entry.artifactId)) ?? [];
+          const reader = readerByStageId.get(stage.id);
+          const title = reader ? `${t(TEAM_READER_TYPE_LABELS[reader.type])} · ${t(TEAM_READER_SCOPE_LABELS[reader.scope])}` : t(stage.title);
+          const vote = reader && stage.roleId === 'reader' && stage.status === 'completed' && stage.artifactId
+            ? stage.readerVerdict : undefined;
           return <li key={stage.id} className="ui-card p-2">
-          <div className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-canvas-text">{t(stage.title)}</span>
-            <span className={stage.status === 'failed' ? 'text-danger-light' : 'text-canvas-text-secondary'}>{t(STAGE_LABELS[stage.status])}</span></div>
-          <p className="mt-1 break-words text-[11px] text-canvas-text-muted">{t('负责人：{role}', { role: t(TEAM_ROLE_LABELS[stage.roleId]) })}
+          <div className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-canvas-text">{title}</span>
+            {typeof vote === 'boolean' ? <span className={`ui-badge ${vote ? 'ui-badge--success' : 'ui-badge--warning'}`}>{t(vote ? '是' : '否')}</span>
+              : <span className={stage.status === 'failed' ? 'text-danger-light' : 'text-canvas-text-secondary'}>{t(STAGE_LABELS[stage.status])}</span>}</div>
+          <p className="mt-1 break-words text-[11px] text-canvas-text-muted">{t('负责人：{role}', { role: t(stage.roleId === 'reader' ? '读者' : TEAM_ROLE_LABELS[stage.roleId]) })}
             {' · '}{stage.executionTarget?.kind === 'external-agent' ? 'Codex App Server · ' : ''}{stage.modelId}</p>
           {blocked.length > 0 && stage.status !== 'completed' && <p className="mt-1 break-words text-[11px] text-warning-light">{t('等待依赖：{names}', {
             names: blocked.map((id) => run.stages.find((entry) => entry.id === id)?.title ?? id).join('、'),
           })}</p>}
-          {stage.errorMessage && <p className="mt-1 break-words text-[11px] text-danger-light">{stage.errorMessage}</p>}
+          {stage.errorMessage && <p className="mt-1 break-words text-[11px] text-danger-light">{t(stage.errorMessage)}</p>}
         </li>; })}
       </ol>}
-      {(task.errorMessage || task.pausedReason) && <p role="status" className="break-words text-warning-light">{task.errorMessage
-        || t(PAUSE_REASON_LABELS[task.pausedReason ?? ''] ?? '团队已暂停，请检查任务后继续')}</p>}
+      {(task.errorMessage || task.pausedReason) && <p role="status" className="break-words text-warning-light">{t(task.errorMessage
+        || PAUSE_REASON_LABELS[task.pausedReason ?? ''] || '团队已暂停，请检查任务后继续')}</p>}
       <p className="text-[11px] text-canvas-text-secondary">{run.application && !['applied', 'restored'].includes(run.application.status) ? t('保存结果待核对') : run.application?.status === 'applied' ? t('已应用、已保存') : run.application?.status === 'restored' ? t('已恢复原稿') : t('候选成果，尚未应用')}</p>
       <div className="flex flex-wrap gap-1">
         {active && onPause && <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" onClick={() => onPause(task.id)}>{t('暂停')}</button>}

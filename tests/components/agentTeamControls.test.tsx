@@ -2,8 +2,8 @@ import type { ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_AGENT_TASK_BUDGET, type AgentTask } from '../../src/types/agent';
-import type { TeamApplicationReceipt, TeamArtifactReference, TeamStageRun } from '../../src/types/agentTeam';
-import { createDefaultTeamProfile } from '../../src/services/chat/teams/teamProfileService';
+import type { TeamApplicationReceipt, TeamArtifactReference, TeamReaderConfig, TeamStageRun } from '../../src/types/agentTeam';
+import { createDefaultTeamProfile, getTeamReaderStageId } from '../../src/services/chat/teams/teamProfileService';
 import TeamRunCard from '../../src/components/shared/agentTeams/TeamRunCard';
 import TeamResultReview from '../../src/components/shared/agentTeams/TeamResultReview';
 import AgentTaskCenter from '../../src/components/chat/AgentTaskCenter';
@@ -76,6 +76,36 @@ describe('team result controls', () => {
     expect(html).toContain('候选成果，尚未应用');
     expect(html).not.toContain('0 token');
     expect(html).not.toContain('team-private');
+  });
+
+  it('shows each reader vote separately and blocks the candidate when the readers are tied', () => {
+    const completed = task();
+    const run = completed.teamRun!;
+    const readers: TeamReaderConfig[] = [
+      { id: 'plot', type: 'causality', scope: 'key-scenes', modelId: 'general/model-a' },
+      { id: 'cast', type: 'motivation', scope: 'key-scenes', modelId: 'general/model-b' },
+    ];
+    const votes = readers.map((reader, index): TeamArtifactReference => ({
+      ...run.inputArtifact, id: `vote-${index}`, kind: 'reader-verdict', label: reader.type, stageId: getTeamReaderStageId(reader),
+      roleId: 'reader', parentArtifactIds: [run.inputArtifact.id],
+    }));
+    completed.teamRun = {
+      ...run, version: 2, profile: { ...run.profile, readers }, artifacts: [...run.artifacts, ...votes],
+      stages: readers.map((reader, index): TeamStageRun => ({
+        id: getTeamReaderStageId(reader), title: reader.type, roleId: 'reader', reader, readerVerdict: index === 0,
+        status: 'completed', modelId: reader.modelId, attempts: 1, usageKnown: false, artifactId: votes[index].id,
+      })),
+    };
+    const card = renderToStaticMarkup(<TeamRunCard task={completed} />);
+    expect(card).toContain('剧情因果 · 关键场景');
+    expect(card).toContain('人物动机 · 关键场景');
+    expect(card).toContain('>是</span>');
+    expect(card).toContain('>否</span>');
+    expect(card).toContain('关键场景 · 读者判定未通过');
+    const review = renderToStaticMarkup(<TeamResultReview task={completed} isOpen onClose={vi.fn()}
+      onReadArtifact={vi.fn(async () => '')} onApply={vi.fn()} />);
+    expect(review).toContain('读者判定尚未通过，不能应用候选');
+    expect(review).not.toContain('应用到原位置');
   });
 
   it('does not offer applying a result in Plan mode', () => {

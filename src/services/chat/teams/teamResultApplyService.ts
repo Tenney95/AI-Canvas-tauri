@@ -1,6 +1,6 @@
 /** 团队候选的分集应用：工具策略、字段条件保存与局部编辑会话共用一条链路。 */
 import type { AgentTask } from '../../../types/agent';
-import type { TeamApplicationReceipt, TeamEpisodeTarget, TeamInvocationContext } from '../../../types/agentTeam';
+import type { AgentTeamRun, TeamApplicationReceipt, TeamEpisodeTarget, TeamInvocationContext } from '../../../types/agentTeam';
 import { useAppStore } from '../../../store/useAppStore';
 import { isWorkbenchTeamTaskInScope, readEpisodeWorkspaceScope } from '../../episodeWorkspaceScope';
 import { loadProjectData } from '../../fileService';
@@ -16,6 +16,8 @@ import { registerAgentTool } from '../toolRegistry';
 import { sanitizeDomainText } from '../subAgentMaterials';
 import { hashTeamText, readTeamArtifactText } from './teamArtifactService';
 import { validateTeamGraph } from './teamGraphService';
+import { getTeamReadersForTemplate, getTeamReaderStageId, validateTeamReaders } from './teamProfileService';
+import { checkTeamReaderGate, parseTeamReaderVerdict } from './teamValidation';
 import { assertAgentProjectContext, captureAgentProjectScope } from '../agentProjectContext';
 import { captureProjectWindowContext, isProjectWindowContextCurrent } from '../../projectWindowContext';
 
@@ -24,20 +26,45 @@ const TEXT_FIELDS = new Set(['outline', 'script']);
 
 function readTask(taskId: string): AgentTask {
   const task = useAppStore.getState().agentTasks.find((item) => item.id === taskId);
-  if (task?.executionKind !== 'team' || task.teamRun?.id !== taskId || ![1, 2].includes(task.teamRun.version) || !task.teamRun.resultArtifactId) {
+  const run = task?.teamRun;
+  if (task?.executionKind !== 'team' || run?.id !== taskId || ![1, 2].includes(run.version) || !run.resultArtifactId) {
     throw new Error('团队任务尚无可应用的最终候选');
   }
-  if (task.teamRun.version === 2) {
-    const graph = validateTeamGraph(task.teamRun.graph);
-    const final = task.teamRun.stages.find((stage) => stage.id === graph.finalTaskId);
-    if (final?.status !== 'completed' || final.artifactId !== task.teamRun.resultArtifactId
-      || task.teamRun.stages.length !== graph.nodes.length || graph.nodes.some((node) => {
-        const stage = task.teamRun!.stages.find((item) => item.id === node.id && item.roleId === node.roleId);
-        return stage?.status !== 'completed' || !task.teamRun!.artifacts.some((item) => item.id === stage.artifactId
+  if (run.version === 2) {
+    const graph = validateTeamGraph(run.graph);
+    const final = run.stages.find((stage) => stage.id === graph.finalTaskId);
+    validateTeamReaders(run.profile.readers);
+    const readers = getTeamReadersForTemplate(run.profile, run.templateId);
+    if (final?.status !== 'completed' || final.artifactId !== run.resultArtifactId
+      || run.stages.length !== graph.nodes.length + readers.length || graph.nodes.some((node) => {
+        const stage = run.stages.find((item) => item.id === node.id && item.roleId === node.roleId);
+        return stage?.status !== 'completed' || !run.artifacts.some((item) => item.id === stage.artifactId
           && item.stageId === node.id && item.roleId === node.roleId && item.kind === node.kind);
       })) throw new Error('任务图尚未完整完成，不能应用候选');
+    const scopes = new Set(readers.map((reader) => reader.scope));
+    if ([...scopes].some((scope) => checkTeamReaderGate(run, scope) !== 'passed')) {
+      throw new Error('读者判定尚未通过，不能应用候选');
+    }
   }
   return task;
+}
+
+/** 应用时复核已冻结材料的实际票据，避免旧稿的判定用于新候选。 */
+async function verifyTeamReaderArtifacts(projectId: string, run: AgentTeamRun): Promise<void> {
+  const readers = getTeamReadersForTemplate(run.profile, run.templateId);
+  await Promise.all(readers.map(async (reader) => {
+    const stageId = getTeamReaderStageId(reader);
+    const stage = run.stages.find((item) => item.id === stageId);
+    const reference = run.artifacts.find((item) => item.id === stage?.artifactId && item.stageId === stageId
+      && item.kind === 'reader-verdict' && item.roleId === 'reader');
+    const isSavedOutline = run.templateId === 'script' && reader.scope === 'outline';
+    const expectedParents = isSavedOutline ? [run.inputArtifact.id] : [run.inputArtifact.id, run.resultArtifactId];
+    if (!reference || reference.parentArtifactIds.length !== expectedParents.length
+      || expectedParents.some((id) => !id || !reference.parentArtifactIds.includes(id))
+      || parseTeamReaderVerdict(await readTeamArtifactText(projectId, reference)) !== stage?.readerVerdict) {
+      throw new Error('读者判定与当前稿件版本不一致，不能应用候选');
+    }
+  }));
 }
 
 function readTargetValue(target: TeamEpisodeTarget, allowSameSeries = false): string {
@@ -60,7 +87,7 @@ async function loadTargetEpisode(episodeId: string): Promise<void> {
 export async function captureEpisodeTeamContext(
   episodeId: string,
   field: TeamEpisodeTarget['field'],
-): Promise<{ context: TeamInvocationContext; materials: string; originalText: string }> {
+): Promise<{ context: TeamInvocationContext; materials: string; originalText: string; outlineForReaders?: string }> {
   const state = useAppStore.getState();
   const expected = captureProjectWindowContext(state, episodeId);
   await loadTargetEpisode(episodeId);
@@ -84,6 +111,7 @@ export async function captureEpisodeTeamContext(
   assertEpisodeEditorReady(episodeId);
   return {
     context: { source: 'script-workbench', target }, originalText,
+    ...(field === 'script' ? { outlineForReaders: episode.episodeOutline ?? '' } : {}),
     materials: JSON.stringify({ version: 1, untrusted: true, seriesName: series.name, episodeName: episode.name,
       outline: episode.episodeOutline ?? '', script: episode.episodeScript ?? '', creative: episode.episodeCreative ?? {} }),
   };
@@ -134,6 +162,7 @@ async function executeResultWrite(taskId: string, restore: boolean, signal: Abor
   if (!original) throw new Error('任务缺少原稿恢复点，已阻止覆盖');
   const [resultText, originalText] = await Promise.all([
     readTeamArtifactText(initial.projectId, result), readTeamArtifactText(initial.projectId, original),
+    restore ? undefined : verifyTeamReaderArtifacts(initial.projectId, run),
   ]);
   const [resultHash, originalHash] = await Promise.all([hashTeamText(resultText), hashTeamText(originalText)]);
   assertProject();

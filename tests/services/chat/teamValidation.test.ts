@@ -1,14 +1,61 @@
 import { describe, expect, it } from 'vitest';
-import { getTeamAmendmentStageIds, getTeamSourceArtifact, validateTeamDecision, validateTeamReview } from '../../../src/services/chat/teams/teamValidation';
-import { createDefaultTeamProfile, normalizeExecutionSelection, normalizeTeamProfile } from '../../../src/services/chat/teams/teamProfileService';
+import { checkTeamReaderGate, getTeamAmendmentStageIds, getTeamSourceArtifact, parseTeamReaderVerdict, validateTeamDecision, validateTeamReview } from '../../../src/services/chat/teams/teamValidation';
+import { createDefaultTeamProfile, getTeamReaderStageId, getTeamReadersForTemplate, normalizeExecutionSelection, normalizeTeamProfile, validateTeamReaders } from '../../../src/services/chat/teams/teamProfileService';
 import { createTemplateTeamGraph } from '../../../src/services/chat/teams/teamGraphService';
-import type { TeamArtifactReference, TeamDecisionReport, TeamReviewReport, TeamRoleId, TeamStageRun } from '../../../src/types/agentTeam';
+import type { TeamArtifactReference, TeamDecisionReport, TeamReaderConfig, TeamReviewReport, TeamRoleId, TeamStageRun } from '../../../src/types/agentTeam';
 
 const expected = { artifactId: 'draft-1', artifactHash: 'a'.repeat(64), source: '场景一：林舟推开门。\n他把钥匙递给妹妹。',
   requirements: '必须保留妹妹。', stageId: 'continuity' };
 const report = () => ({ version: 1, artifactId: expected.artifactId, artifactHash: expected.artifactHash,
   findings: [{ id: 'continuity-1', severity: 'minor', location: '场景一第二句', evidence: '他把钥匙递给妹妹。',
     constraint: '质量建议', suggestion: '补充交出钥匙的动机。' }] });
+
+const outlineReader: TeamReaderConfig = { id: 'first-reader', type: 'causality', scope: 'outline', modelId: 'general/reader' };
+
+function readerRun(votes: Array<boolean | undefined>) {
+  const inputArtifact: TeamArtifactReference = { id: 'input', kind: 'input', label: '材料', relativePath: 'input.json',
+    sha256: 'a'.repeat(64), bytes: 1, createdAt: 1, parentArtifactIds: [] };
+  const readers = votes.map((_, index) => ({ ...outlineReader, id: `voter-${index}` }));
+  const artifacts = readers.map<TeamArtifactReference>((reader) => ({ ...inputArtifact, id: `vote-${reader.id}`,
+    kind: 'reader-verdict', roleId: 'reader', stageId: getTeamReaderStageId(reader), parentArtifactIds: [inputArtifact.id] }));
+  const stages = readers.map<TeamStageRun>((reader, index) => ({ id: getTeamReaderStageId(reader), roleId: 'reader', title: '读者',
+    modelId: reader.modelId, reader, readerVerdict: votes[index], status: votes[index] === undefined ? 'pending' : 'completed',
+    attempts: 1, usageKnown: false, artifactId: artifacts[index]!.id }));
+  return { profile: { ...createDefaultTeamProfile(), readers }, templateId: 'outline' as const, inputArtifact, stages, artifacts };
+}
+
+describe('团队读者严格判定', () => {
+  it('只接受单个原始布尔值', () => {
+    expect(parseTeamReaderVerdict(' true\n')).toBe(true);
+    expect(parseTeamReaderVerdict('false')).toBe(false);
+    for (const invalid of ['False', '是', '"true"', '{"passed":true}', '```json\nfalse\n```', 'true，因为逻辑通顺']) {
+      expect(() => parseTeamReaderVerdict(invalid)).toThrow('判定格式无效');
+    }
+  });
+
+  it('所有有效票齐备后严格过半，平票不通过', () => {
+    expect(checkTeamReaderGate(readerRun([true, true, undefined]), 'outline')).toBe('pending');
+    expect(checkTeamReaderGate(readerRun([true, true, false]), 'outline')).toBe('passed');
+    expect(checkTeamReaderGate(readerRun([true, false]), 'outline')).toBe('rejected');
+  });
+
+  it('缺少绑定材料的票据时不发布结论', () => {
+    const run = readerRun([true]);
+    run.artifacts[0].parentArtifactIds = [];
+    expect(checkTeamReaderGate(run, 'outline')).toBe('pending');
+  });
+
+  it('按模板范围启用读者，损坏的已存读者可编辑但不能静默执行', () => {
+    const sceneReader = { ...outlineReader, id: 'second-reader', scope: 'key-scenes' as const };
+    const profile = normalizeTeamProfile({ readers: [outlineReader, sceneReader] });
+    expect(getTeamReadersForTemplate(profile, 'outline')).toEqual([outlineReader]);
+    expect(getTeamReadersForTemplate(profile, 'script')).toEqual([outlineReader, sceneReader]);
+    expect(getTeamReadersForTemplate(profile, 'review')).toEqual([sceneReader]);
+    expect(getTeamReadersForTemplate(profile, 'general')).toEqual([]);
+    expect(() => validateTeamReaders(normalizeTeamProfile({ readers: [outlineReader, outlineReader] }).readers)).toThrow();
+    expect(normalizeTeamProfile(createDefaultTeamProfile())).not.toHaveProperty('readers');
+  });
+});
 
 describe('团队评审的版本和证据合同', () => {
   it('接纳原稿证据和逐字约束，允许无问题的独立报告', () => {

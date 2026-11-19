@@ -2,7 +2,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { Icon } from '@iconify/react';
 import type { AgentTask } from '../../../types/agent';
 import type { TeamArtifactReference } from '../../../types/agentTeam';
-import { TEAM_ROLE_LABELS } from '../../../services/chat/teams/teamProfileService';
+import {
+  getTeamReaderStageId, getTeamReadersForTemplate, TEAM_READER_SCOPE_LABELS, TEAM_READER_TYPE_LABELS, TEAM_ROLE_LABELS,
+} from '../../../services/chat/teams/teamProfileService';
+import { checkTeamReaderGate } from '../../../services/chat/teams/teamValidation';
 import { useT } from '../../../i18n';
 import ModalOverlay from '../ModalOverlay';
 import Select from '../Select';
@@ -28,6 +31,12 @@ function TeamArtifactContent({ text, kind }: { text: string; kind: TeamArtifactR
     try { const value: unknown = JSON.parse(text); return isRecord(value) ? value : null; }
     catch { return null; }
   }, [kind, text]);
+  if (kind === 'reader-verdict') {
+    const vote = text.trim();
+    return vote === 'true' || vote === 'false'
+      ? <span className={`ui-badge ${vote === 'true' ? 'ui-badge--success' : 'ui-badge--warning'}`}>{t(vote === 'true' ? '是' : '否')}</span>
+      : <p role="alert" className="text-danger-light">{t('无法读取读者判定')}</p>;
+  }
   if (kind === 'review' && report && Array.isArray(report.findings)) return (
     <div className="space-y-2">
       {report.findings.length === 0 && <p className="text-canvas-text-muted">{t('本轮未提出具体问题，仍需人工验收。')}</p>}
@@ -62,8 +71,11 @@ export default function TeamResultReview({ task, isOpen, onClose, onReadArtifact
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const resultArtifactId = run?.resultArtifactId;
+  const finalTaskId = run?.graph?.finalTaskId;
+  const candidateArtifactId = run?.stages.find((stage) => stage.id === finalTaskId && stage.status === 'completed')?.artifactId;
   const selected = run?.artifacts.find((artifact) => artifact.id === artifactId)
     ?? run?.artifacts.find((artifact) => artifact.id === resultArtifactId)
+    ?? run?.artifacts.find((artifact) => artifact.id === candidateArtifactId)
     ?? run?.artifacts.filter((artifact) => artifact.kind !== 'input').at(-1);
   const originalArtifactId = run?.application?.originalArtifactId;
   const originalRef = run?.artifacts.find((artifact) => artifact.id === originalArtifactId)
@@ -94,12 +106,25 @@ export default function TeamResultReview({ task, isOpen, onClose, onReadArtifact
   }, [isOpen, loaded.key, loadKey, onReadArtifact, originalRef, selected, t, task.id]);
 
   if (!run) return null;
+  const readers = run.version === 2 ? getTeamReadersForTemplate(run.profile, run.templateId) : [];
+  const readerByStageId = new Map(readers.map((reader) => [getTeamReaderStageId(reader), reader]));
+  const currentReaderArtifactIds = new Set(run.stages.filter((stage) => stage.roleId === 'reader'
+    && stage.status === 'completed').map((stage) => stage.artifactId));
+  const readerBlocked = [...new Set(readers.map((reader) => reader.scope))]
+    .some((scope) => checkTeamReaderGate(run, scope) !== 'passed');
+  const artifactLabel = (artifact: TeamArtifactReference) => {
+    const reader = artifact.stageId && readerByStageId.get(artifact.stageId);
+    const label = reader ? `${t(TEAM_READER_TYPE_LABELS[reader.type])} · ${t(TEAM_READER_SCOPE_LABELS[reader.scope])}` : t(artifact.label);
+    return artifact.kind === 'reader-verdict' && !currentReaderArtifactIds.has(artifact.id)
+      ? `${label} · ${t('历史判定')}` : label;
+  };
   const applied = run.application?.status === 'applied';
   const selectedStage = run.stages.find((stage) => stage.id === selected?.stageId);
   const hasUnknownDispatch = task.dispatches?.some((record) => !record.recovery && ['outcome_unknown', 'dispatched'].includes(record.phase)) ?? false;
   const pendingApplication = !!run.application && !['applied', 'restored'].includes(run.application.status);
   const canApply = !!onApply && !!run.target && !!run.resultArtifactId && run.templateId !== 'review'
-    && selected?.id === run.resultArtifactId && task.status === 'completed' && task.mode !== 'plan' && !applied && !pendingApplication && !hasUnknownDispatch;
+    && selected?.id === run.resultArtifactId && task.status === 'completed' && task.mode !== 'plan'
+    && !applied && !pendingApplication && !hasUnknownDispatch && !readerBlocked;
   const mutate = async (action: (taskId: string) => void | Promise<void>) => {
     if (busy) return;
     setBusy(true);
@@ -122,24 +147,25 @@ export default function TeamResultReview({ task, isOpen, onClose, onReadArtifact
           <Select className="min-w-0 max-w-full flex-1" aria-label={t('查看团队产物')} value={selected?.id ?? ''}
             disabled={loading || busy} onChange={setArtifactId}
             options={run.artifacts.filter((artifact) => artifact.kind !== 'input')
-              .map((artifact) => ({ value: artifact.id, label: t(artifact.label) }))} />
+              .map((artifact) => ({ value: artifact.id, label: artifactLabel(artifact) }))} />
           <span className="text-canvas-text-secondary">{pendingApplication ? t('保存结果待核对') : applied ? t('已应用、已保存') : run.application?.status === 'restored' ? t('已恢复原稿') : t('候选成果，尚未应用')}</span>
         </div>
         {run.target && <p className="break-words text-canvas-text-muted">{t('原目标：{name}', { name: run.target.label })}</p>}
         {run.version === 2 && <p className="text-canvas-text-muted">{t('任务图版本 {version}', { version: run.boardRevision ?? 0 })}</p>}
-        {selectedStage && <p className="break-words text-canvas-text-secondary">{t('负责人：{role}', { role: t(TEAM_ROLE_LABELS[selectedStage.roleId]) })}
+        {selectedStage && <p className="break-words text-canvas-text-secondary">{t('负责人：{role}', { role: t(selectedStage.roleId === 'reader' ? '读者' : TEAM_ROLE_LABELS[selectedStage.roleId]) })}
           {' · '}{selectedStage.executionTarget?.kind === 'external-agent' ? 'Codex App Server · ' : ''}{selectedStage.modelId}</p>}
         {loading ? <p role="status" className="p-3 text-canvas-text-muted">{t('正在读取团队成果…')}</p> : selected ? (
           <div className={`grid min-w-0 gap-3 ${hasOriginal ? 'md:grid-cols-2' : 'grid-cols-1'}`}>
             {hasOriginal && <section className="min-w-0 space-y-1"><h3 className="font-medium text-canvas-text-secondary">{t('应用前原稿')}</h3>
               <pre className="max-h-[55vh] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-canvas-border bg-canvas-card p-3 font-sans text-xs leading-relaxed">{original || t('（空白原稿）')}</pre>
             </section>}
-            <section className="min-w-0 space-y-1"><h3 className="font-medium text-canvas-text-secondary">{t(selected.label)}</h3>
+            <section className="min-w-0 space-y-1"><h3 className="font-medium text-canvas-text-secondary">{artifactLabel(selected)}</h3>
               <div className="max-h-[55vh] overflow-auto rounded-lg border border-canvas-border bg-canvas-card p-3"><TeamArtifactContent text={text} kind={selected.kind} /></div>
             </section>
           </div>
         ) : <p className="text-canvas-text-muted">{t('当前阶段尚无可查看的成果。')}</p>}
         {task.mode === 'plan' && <p className="text-canvas-text-muted">{t('规划模式只查看成果，不应用到项目。')}</p>}
+        {readerBlocked && run.templateId !== 'review' && !applied && <p role="status" className="text-warning-light">{t('读者判定尚未通过，不能应用候选')}</p>}
         {hasUnknownDispatch && <p role="status" className="ui-alert ui-alert--warning">{t('原调用结果待核实，请先在任务卡核对，再决定是否应用候选。')}</p>}
         {pendingApplication && <p role="status" className="text-warning-light">{t('上次保存的状态尚未确认，请先比较原稿与目标内容，不要重复应用。')}</p>}
         {loadError && <div role="alert" className="flex flex-wrap items-center gap-2 text-danger-light"><span className="break-words">{loadError}</span>

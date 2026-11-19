@@ -26,6 +26,16 @@ describe('creation profile import contract', () => {
     expect(teamProfile.roles).not.toHaveProperty('storyboard');
   });
 
+  it('preserves reader configuration and refuses extra data or a connection address on import', () => {
+    const reader = { id: 'plot-reader', type: 'causality', scope: 'outline', modelId: 'general/reader' };
+    const teamProfile = createDefaultTeamProfile('general/text');
+    const read = (value: unknown) => parseCreationProfile({ ...fixture(), teamTemplateId: 'script',
+      teamProfile: { ...teamProfile, readers: [value] } });
+    expect(read(reader).teamProfile?.readers).toEqual([reader]);
+    expect(() => read({ ...reader, apiKey: 'extra' })).toThrow();
+    expect(() => read({ ...reader, modelId: 'https://example.invalid' })).toThrow();
+  });
+
   it('allows only missing new roles, rejecting invalid explicit values and missing original roles', () => {
     const teamProfile = createDefaultTeamProfile('general/text');
     for (const role of ['director', 'storyboard'] as const) {

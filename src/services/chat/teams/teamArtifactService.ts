@@ -1,11 +1,17 @@
-import type { TeamArtifactKind, TeamArtifactReference, TeamRoleId } from '../../../types/agentTeam';
+import type { TeamArtifactKind, TeamArtifactReference, TeamStageRoleId } from '../../../types/agentTeam';
 import { readVerifiedProjectFile, sha256Hex, writeImmutableProjectFile } from '../../fs/projectFiles';
 import { sanitizeDomainText } from '../subAgentMaterials';
 import { AGENT_PROJECT_WORKSPACE_DIRECTORY, AGENT_TEAM_DIRECTORY, agentWorkspaceArtifactRelativePath } from '../../../utils/agentProjectWorkspace';
+import { parseTeamReaderVerdict } from './teamValidation';
 
 const MAX_ARTIFACT_BYTES = 1024 * 1024;
-const ARTIFACT_PATH = /^agent-teams\/[A-Za-z0-9_-]{1,160}\/(?:input|outline|draft|review|decision|revision|original)-[a-f0-9]{64}\.json$/;
-const ARTIFACT_KINDS: readonly TeamArtifactKind[] = ['input', 'outline', 'draft', 'review', 'decision', 'revision', 'original'];
+const ARTIFACT_PATH = /^agent-teams\/[A-Za-z0-9_-]{1,160}\/(?:input|outline|draft|review|decision|revision|original|reader-verdict)-[a-f0-9]{64}\.json$/;
+const ARTIFACT_KINDS: readonly TeamArtifactKind[] = ['input', 'outline', 'draft', 'review', 'decision', 'revision', 'original', 'reader-verdict'];
+
+function hasValidReaderIdentity(kind: TeamArtifactKind, roleId?: TeamStageRoleId, stageId?: string): boolean {
+  if (kind !== 'reader-verdict') return roleId !== 'reader';
+  return roleId === 'reader' && typeof stageId === 'string' && /^reader-[A-Za-z0-9][A-Za-z0-9_-]{0,29}$/.test(stageId);
+}
 
 function sanitizeJsonText(text: string): string {
   const sanitize = (value: unknown, depth = 0): unknown => {
@@ -29,17 +35,19 @@ export async function saveTeamArtifact(input: {
   text: string;
   label: string;
   stageId?: string;
-  roleId?: TeamRoleId;
+  roleId?: TeamStageRoleId;
   parentArtifactIds?: string[];
   /** 主窗口捕获的项目/分集租约；仅运行时使用。 */
   assertCurrent?: () => void;
 }): Promise<TeamArtifactReference> {
   input.assertCurrent?.();
-  if (!/^[A-Za-z0-9_-]{1,160}$/.test(input.runId) || !ARTIFACT_KINDS.includes(input.kind)) {
+  if (!/^[A-Za-z0-9_-]{1,160}$/.test(input.runId) || !ARTIFACT_KINDS.includes(input.kind)
+    || !hasValidReaderIdentity(input.kind, input.roleId, input.stageId)) {
     throw new Error('团队产物身份无效');
   }
   // 恢复点是用户项目原稿，必须逐字保留（包括空正文），只写项目内容文件。
-  const text = input.kind === 'original' ? input.text
+  const text = input.kind === 'reader-verdict' ? String(parseTeamReaderVerdict(input.text))
+    : input.kind === 'original' ? input.text
     : ['input', 'review', 'decision'].includes(input.kind) ? sanitizeJsonText(input.text) : sanitizeDomainText(input.text);
   if (input.kind !== 'original' && !text.trim()) throw new Error('团队产物为空');
   const parentArtifactIds = [...new Set(input.parentArtifactIds ?? [])];
@@ -65,7 +73,7 @@ export async function saveTeamArtifact(input: {
 export async function readTeamArtifactText(projectId: string, reference: TeamArtifactReference): Promise<string> {
   const artifactPath = typeof reference?.relativePath === 'string' ? agentWorkspaceArtifactRelativePath(reference.relativePath) : '';
   if (!reference || !ARTIFACT_PATH.test(artifactPath)
-    || !ARTIFACT_KINDS.includes(reference.kind)
+    || !ARTIFACT_KINDS.includes(reference.kind) || !hasValidReaderIdentity(reference.kind, reference.roleId, reference.stageId)
     || reference.id !== `${reference.kind}-${reference.sha256}`
     || !reference.relativePath.endsWith(`/${reference.kind}-${reference.sha256}.json`)) {
     throw new Error('团队产物引用无效');
@@ -86,5 +94,5 @@ export async function readTeamArtifactText(projectId: string, reference: TeamArt
     || JSON.stringify(raw.parentArtifactIds) !== JSON.stringify(reference.parentArtifactIds)) {
     throw new Error('团队产物内容与任务引用不一致');
   }
-  return raw.text;
+  return raw.kind === 'reader-verdict' ? String(parseTeamReaderVerdict(raw.text)) : raw.text;
 }

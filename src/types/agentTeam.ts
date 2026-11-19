@@ -1,6 +1,16 @@
 /** 多模型团队的可持久化合同。正文只存在于不可变项目产物文件中。 */
 export type TeamTemplateId = 'outline' | 'script' | 'review' | 'general';
 export type TeamRoleId = 'architect' | 'writer' | 'continuity' | 'dialogue' | 'director' | 'storyboard' | 'editor';
+export type TeamStageRoleId = TeamRoleId | 'reader';
+export type TeamReaderType = 'causality' | 'motivation' | 'continuity' | 'pacing' | 'audience';
+export type TeamReaderScope = 'outline' | 'key-scenes';
+
+export interface TeamReaderConfig {
+  id: string;
+  type: TeamReaderType;
+  scope: TeamReaderScope;
+  modelId: string;
+}
 
 export type TeamExecutionTarget =
   | { kind: 'text-model'; modelId: string }
@@ -33,6 +43,7 @@ export interface AgentTeamProfile {
   name: string;
   roles: Record<TeamRoleId, string>;
   roleExecutors?: Partial<Record<TeamRoleId, TeamExecutionTarget>>;
+  readers?: TeamReaderConfig[];
   graph?: TeamGraphDefinition;
   maxCalls: number;
   /** 含未知 usage 时的保守预算估算，不代表官方账单上限。 */
@@ -56,7 +67,7 @@ export interface TeamInvocationContext {
   target?: TeamEpisodeTarget;
 }
 
-export type TeamArtifactKind = 'input' | 'outline' | 'draft' | 'review' | 'decision' | 'revision' | 'original';
+export type TeamArtifactKind = 'input' | 'outline' | 'draft' | 'review' | 'decision' | 'revision' | 'original' | 'reader-verdict';
 
 export interface TeamArtifactReference {
   id: string;
@@ -67,7 +78,7 @@ export interface TeamArtifactReference {
   bytes: number;
   createdAt: number;
   stageId?: string;
-  roleId?: TeamRoleId;
+  roleId?: TeamStageRoleId;
   parentArtifactIds: string[];
 }
 
@@ -101,7 +112,7 @@ export interface TeamDecisionReport {
 
 export interface TeamStageRun {
   id: string;
-  roleId: TeamRoleId;
+  roleId: TeamStageRoleId;
   title: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   modelId: string;
@@ -111,6 +122,8 @@ export interface TeamStageRun {
   attemptId?: string;
   attempts: number;
   artifactId?: string;
+  reader?: TeamReaderConfig;
+  readerVerdict?: boolean;
   errorMessage?: string;
   inputTokens?: number;
   outputTokens?: number;

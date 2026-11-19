@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentTeamProfile, AgentTeamRun, TeamArtifactReference, TeamGraphDefinition } from '../../../src/types/agentTeam';
+import type { AgentTeamProfile, AgentTeamRun, TeamArtifactReference, TeamGraphDefinition, TeamReaderConfig } from '../../../src/types/agentTeam';
 import type { TeamModelResult } from '../../../src/services/chat/teams/teamModelExecutor';
 
 const model = vi.hoisted(() => ({ execute: vi.fn(), fingerprint: vi.fn(), saveArtifact: vi.fn(), readArtifact: vi.fn() }));
@@ -19,7 +19,7 @@ vi.mock('../../../src/services/chat/contextManager', async (original) => ({
 import { useAppStore } from '../../../src/store/useAppStore';
 import { captureAgentProjectScope } from '../../../src/services/chat/agentProjectContext';
 import { createDefaultTeamProfile } from '../../../src/services/chat/teams/teamProfileService';
-import { captureTeamModelFingerprints, executeTeamRun } from '../../../src/services/chat/teams/teamRuntime';
+import { captureTeamModelFingerprints, executeTeamRun, prepareTeamRun } from '../../../src/services/chat/teams/teamRuntime';
 import { unmaterializedTeamDispatches } from '../../../src/services/chat/agentDurabilityService';
 import { TeamModelReturnedError } from '../../../src/services/chat/teams/teamModelExecutor';
 
@@ -57,6 +57,83 @@ beforeEach(() => {
   model.readArtifact.mockReset().mockResolvedValue(JSON.stringify({ version: 1, prompt: '整理本集', materials: '' }));
   model.saveArtifact.mockReset().mockImplementation(async (input: { kind: string; stageId: string; assertCurrent?: () => void }) => {
     input.assertCurrent?.(); return artifact(`${input.kind}-result`, input.stageId);
+  });
+});
+
+async function arrangeReaderRun(templateId: 'outline' | 'script', voteCount: number): Promise<string> {
+  const taskId = arrangeTeam();
+  const task = useAppStore.getState().agentTasks.find((item) => item.id === taskId)!;
+  const bodies = new Map<string, string>();
+  model.saveArtifact.mockImplementation(async (input: { kind: TeamArtifactReference['kind']; label: string; text: string;
+    stageId?: string; roleId?: TeamArtifactReference['roleId']; parentArtifactIds?: string[]; assertCurrent?: () => void }) => {
+    input.assertCurrent?.();
+    const id = `${input.kind}-${input.stageId ?? 'source'}`;
+    bodies.set(id, input.text);
+    return { ...artifact(id), kind: input.kind, label: input.label, stageId: input.stageId, roleId: input.roleId,
+      parentArtifactIds: input.parentArtifactIds ?? [] } satisfies TeamArtifactReference;
+  });
+  model.readArtifact.mockImplementation(async (_projectId, reference: TeamArtifactReference) => {
+    const text = bodies.get(reference.id);
+    if (text === undefined) throw new Error('Missing artifact source');
+    return text;
+  });
+  const readers = Array.from({ length: voteCount }, (_, index): TeamReaderConfig => ({
+    id: `r${index}`, type: index === 0 ? 'causality' : 'continuity', scope: 'outline', modelId: `reader-model-${index}`,
+  }));
+  const graph: TeamGraphDefinition = templateId === 'outline' ? task.teamRun!.graph! : {
+    version: 1, finalTaskId: 'draft', nodes: [{ id: 'draft', roleId: 'writer', title: '主笔', kind: 'draft', dependsOn: [] }],
+  };
+  const teamRun = await prepareTeamRun({ taskId, projectId: task.projectId, conversationId: task.conversationId,
+    profile: { ...task.teamRun!.profile, graph, readers }, templateId, prompt: '整理本集', originalText: '原稿',
+    context: { source: 'script-workbench', target: { ...task.teamRun!.target!, field: templateId === 'outline' ? 'outline' : 'script' } },
+    ...(templateId === 'script' ? { outlineForReaders: '保存时已确认的集纲' } : {}),
+  });
+  useAppStore.getState().updateAgentTask(taskId, { teamRun });
+  return taskId;
+}
+
+describe('团队读者判定与交付', () => {
+  it('实际执行所有读者后依严格多数发布通过的最终大纲', async () => {
+    const taskId = await arrangeReaderRun('outline', 3);
+    model.execute.mockImplementation(async ({ stageId, userPrompt }: { stageId: string; userPrompt: string }) => {
+      if (stageId.startsWith('reader-')) {
+        expect(userPrompt).toContain('最终大纲');
+        expect(useAppStore.getState().agentTasks.find((item) => item.id === taskId)?.teamRun?.resultArtifactId).toBeUndefined();
+      }
+      const text = stageId === 'structure' ? '最终大纲' : stageId === 'reader-r2' ? 'false' : 'true';
+      return { text, usageKnown: true, inputTokens: 10, outputTokens: 1 };
+    });
+
+    await expect(executeTeamRun(taskId, new AbortController().signal)).resolves.toBe('completed');
+    const run = useAppStore.getState().agentTasks.find((item) => item.id === taskId)!.teamRun!;
+    expect(run.resultArtifactId).toBe('outline-structure');
+    expect(run.callsUsed).toBe(4);
+    expect(run.stages.filter((stage) => stage.roleId === 'reader').map((stage) => stage.readerVerdict)).toEqual([true, true, false]);
+    expect(model.saveArtifact.mock.calls.filter(([input]) => input.kind === 'reader-verdict').map(([input]) => input.parentArtifactIds))
+      .toEqual(Array.from({ length: 3 }, () => ['input-source', 'outline-structure']));
+  });
+
+  it.each([
+    { output: 'false', errorCode: 'TEAM_READER_REJECTED', status: 'completed' },
+    { output: '不通过。另有解释', errorCode: 'TEAM_PAUSED', status: 'failed' },
+  ])('在主笔前处理最后一票 $output，保留已完成的独立判定', async ({ output, errorCode, status }) => {
+    const taskId = await arrangeReaderRun('script', 2);
+    model.execute.mockImplementation(async ({ stageId, userPrompt }: { stageId: string; userPrompt: string }) => {
+      expect(userPrompt).toContain('保存时已确认的集纲');
+      return { text: stageId === 'reader-r0' ? 'true' : output, usageKnown: true, inputTokens: 10, outputTokens: 1 };
+    });
+
+    await expect(executeTeamRun(taskId, new AbortController().signal)).resolves.toBe('paused');
+    const task = useAppStore.getState().agentTasks.find((item) => item.id === taskId)!;
+    expect(task.errorCode).toBe(errorCode);
+    expect(task.teamRun?.resultArtifactId).toBeUndefined();
+    expect(task.teamRun?.stages).toMatchObject([{ id: 'draft', status: 'pending' },
+      { id: 'reader-r0', status: 'completed', readerVerdict: true }, { id: 'reader-r1', status }]);
+    expect(model.execute.mock.calls.map(([input]) => input.stageId).sort()).toEqual(['reader-r0', 'reader-r1']);
+    if (output === 'false') {
+      await expect(executeTeamRun(taskId, new AbortController().signal)).resolves.toBe('paused');
+      expect(model.execute).toHaveBeenCalledTimes(2);
+    }
   });
 });
 

@@ -1,4 +1,35 @@
-import type { AgentTeamRun, ReviewDecision, ReviewFinding, TeamArtifactReference, TeamDecisionReport, TeamReviewReport } from '../../../types/agentTeam';
+import type { AgentTeamRun, ReviewDecision, ReviewFinding, TeamArtifactReference, TeamDecisionReport, TeamReaderScope, TeamReviewReport } from '../../../types/agentTeam';
+import { getTeamReadersForTemplate, getTeamReaderStageId, validateTeamReaders } from './teamProfileService';
+
+export function parseTeamReaderVerdict(value: string): boolean {
+  const verdict = value.trim();
+  if (verdict === 'true') return true;
+  if (verdict === 'false') return false;
+  throw new Error('读者判定格式无效，决策模型须只返回 true 或 false');
+}
+
+/** 每个适用读者须有已完成的真实判定产物；有效赞成票严格过半才通过。 */
+export function checkTeamReaderGate(
+  run: Pick<AgentTeamRun, 'profile' | 'templateId' | 'stages' | 'artifacts' | 'inputArtifact'>,
+  scope: TeamReaderScope,
+): 'passed' | 'rejected' | 'pending' {
+  const readers = getTeamReadersForTemplate({ ...run.profile, readers: validateTeamReaders(run.profile.readers) }, run.templateId)
+    .filter((reader) => reader.scope === scope);
+  let yes = 0;
+  for (const reader of readers) {
+    const stageId = getTeamReaderStageId(reader);
+    const stage = run.stages.find((entry) => entry.id === stageId);
+    if (!stage || stage.roleId !== 'reader' || stage.modelId !== reader.modelId || stage.status !== 'completed'
+      || typeof stage.readerVerdict !== 'boolean' || !stage.artifactId
+      || !stage.reader || stage.reader.id !== reader.id || stage.reader.type !== reader.type
+      || stage.reader.scope !== reader.scope || stage.reader.modelId !== reader.modelId) return 'pending';
+    const artifact = run.artifacts.find((entry) => entry.id === stage.artifactId);
+    if (!artifact || artifact.kind !== 'reader-verdict' || artifact.roleId !== 'reader' || artifact.stageId !== stageId
+      || !Array.isArray(artifact.parentArtifactIds) || !artifact.parentArtifactIds.includes(run.inputArtifact.id)) return 'pending';
+    if (stage.readerVerdict) yes++;
+  }
+  return readers.length === 0 || yes * 2 > readers.length ? 'passed' : 'rejected';
+}
 
 /** 只消费已完成的上游，不能因为下游 pending 节点存在就绕过结构产物。 */
 export function getTeamSourceArtifact(

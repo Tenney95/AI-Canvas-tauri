@@ -79,6 +79,16 @@ describe('团队产物文件与恢复原稿', () => {
     await expect(readTeamArtifactText('p', { ...first, roleId: 'dialogue' })).rejects.toThrow('不一致');
   });
 
+  it('读者判定仅保存绑定到读者阶段的布尔值', async () => {
+    const input = { projectId: 'p', runId: 'reader-run', kind: 'reader-verdict' as const, roleId: 'reader' as const,
+      stageId: 'reader-one', parentArtifactIds: ['input', 'draft'], label: '读者' };
+    const reference = await saveTeamArtifact({ ...input, text: ' false\n' });
+    expect(await readTeamArtifactText('p', reference)).toBe('false');
+    expect(reference).toMatchObject({ kind: 'reader-verdict', roleId: 'reader', stageId: 'reader-one' });
+    await expect(saveTeamArtifact({ ...input, text: 'false because ...' })).rejects.toThrow('判定格式无效');
+    await expect(saveTeamArtifact({ ...input, roleId: 'editor', text: 'true' })).rejects.toThrow('身份无效');
+  });
+
   it('拒绝绝对路径与目录穿越引用，不把它交给文件读取器', async () => {
     const reference = await saveTeamArtifact({ projectId: 'p', runId: 'safe-run', kind: 'draft', text: '正文', label: '正文' });
     await expect(readTeamArtifactText('p', { ...reference, relativePath: '../outside.json' })).rejects.toThrow('引用无效');
