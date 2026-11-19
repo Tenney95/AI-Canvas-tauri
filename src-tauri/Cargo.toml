@@ -80,11 +80,12 @@ symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4"] }
 [target.'cfg(not(all(target_os = "macos", target_arch = "x86_64")))'.dependencies]
 ort = { version = "2.0.0-rc.12", features = ["download-binaries", "directml"], optional = true }
 
-# Mac：仅为主画布普通滚轮分流启用原生绑定，复用锁文件中的版本。
+# Mac：主画布原生交互和 Uguu 系统代理查询复用锁文件中的绑定版本。
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "=0.6.4"
 block2 = "=0.6.2"
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "block2", "NSEvent", "NSApplication", "NSResponder", "NSView", "NSWindow", "objc2-core-foundation"] }
+objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std", "CFArray", "CFBase", "CFDictionary", "CFNumber", "CFString", "CFURL"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSError", "NSGeometry", "NSObject", "NSProcessInfo", "NSString", "NSValue"] }
 objc2-web-kit = { version = "=0.3.2", default-features = false, features = ["std", "block2", "WKWebView", "objc2-app-kit"] }
 

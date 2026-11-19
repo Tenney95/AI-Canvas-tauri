@@ -68,6 +68,9 @@ mod theme_assets;
 mod local_fonts;
 #[path = "media/reference_image_upload.rs"]
 mod reference_image_upload;
+#[cfg(target_os = "macos")]
+#[path = "media/uguu_system_proxy.rs"]
+mod uguu_system_proxy;
 #[path = "media/volcengine_tos.rs"]
 mod volcengine_tos;
 #[path = "mcp/bridge.rs"]
@@ -548,7 +551,12 @@ fn sanitized_upload_response_url(url: &Url) -> String {
     final_url.to_string()
 }
 
-fn upload_response_diagnostics(response: &reqwest::Response, snapshot: &UploadProxySnapshot, user_agent: String) -> UploadDiagnostics {
+fn upload_response_diagnostics(
+    response: &reqwest::Response,
+    snapshot: &UploadProxySnapshot,
+    user_agent: String,
+    proxy_policy: &'static str,
+) -> UploadDiagnostics {
     UploadDiagnostics {
         http_version: format!("{:?}", response.version()),
         remote_address: response.remote_addr().map(|address| address.to_string()),
@@ -557,7 +565,7 @@ fn upload_response_diagnostics(response: &reqwest::Response, snapshot: &UploadPr
         no_proxy_present: snapshot.no_proxy_present,
         proxy_snapshot_time_ms: snapshot.time_ms,
         user_agent,
-        proxy_policy: "reqwest automatic; actual route not exposed",
+        proxy_policy,
     }
 }
 
@@ -622,8 +630,11 @@ fn proxy_redirect_rejection(
     None
 }
 
-fn build_proxy_http_client(same_origin_only: bool) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+fn build_proxy_http_client(
+    same_origin_only: bool,
+    proxy: Option<reqwest::Proxy>,
+) -> Result<reqwest::Client, String> {
+    let builder = reqwest::Client::builder()
         .user_agent("AI-Canvas/0.1")
         .connect_timeout(PROXY_HTTP_CONNECT_TIMEOUT)
         .pool_idle_timeout(PROXY_HTTP_POOL_IDLE_TIMEOUT)
@@ -638,9 +649,31 @@ fn build_proxy_http_client(same_origin_only: bool) -> Result<reqwest::Client, St
             } else {
                 attempt.follow()
             }
-        }))
-        .build()
-        .map_err(|error| format!("创建 HTTP 客户端失败: {error}"))
+        }));
+    let builder = match proxy {
+        Some(proxy) => builder.proxy(proxy),
+        None => builder,
+    };
+    builder.build().map_err(|error| format!("创建 HTTP 客户端失败: {error}"))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn is_uguu_upload(req: &ProxyFetchRequest) -> bool {
+    req.method == "POST" && req.url == "https://uguu.se/upload"
+}
+
+#[cfg(target_os = "macos")]
+fn system_uguu_proxy(req: &ProxyFetchRequest) -> Option<reqwest::Proxy> {
+    // 保留进程对 HTTPS 的显式代理配置。仅为固定 Uguu 上传入口补系统代理。
+    if !is_uguu_upload(req)
+        || ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]
+            .into_iter()
+            .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+    {
+        return None;
+    }
+    let proxy_url = uguu_system_proxy::https_proxy_url(&req.url)?;
+    Some(reqwest::Proxy::https(proxy_url).ok()?.no_proxy(reqwest::NoProxy::from_env()))
 }
 
 struct ProxyHttpState {
@@ -656,8 +689,8 @@ impl ProxyHttpState {
         // 在本进程创建 HTTP 客户端时仅保留脱敏代理摘要，不读取其他进程环境。
         let upload_proxy_snapshot = UploadProxySnapshot::capture();
         Ok(Self {
-            client: build_proxy_http_client(true)?,
-            download_client: build_proxy_http_client(false)?,
+            client: build_proxy_http_client(true, None)?,
+            download_client: build_proxy_http_client(false, None)?,
             cancellations: Mutex::default(),
             body_slots: tokio::sync::Semaphore::new(2),
             upload_proxy_snapshot,
@@ -821,7 +854,7 @@ fn proxy_transport_error(error: reqwest::Error) -> String {
 async fn send_proxy_request(
     state: &ProxyHttpState,
     req: ProxyFetchRequest,
-) -> Result<reqwest::Response, String> {
+) -> Result<(reqwest::Response, &'static str), String> {
     if req.body.is_some() && req.text_body.is_some() {
         return Err("请求体格式重复".into());
     }
@@ -840,11 +873,23 @@ async fn send_proxy_request(
     };
     let method = reqwest::Method::from_bytes(req.method.as_bytes())
         .map_err(|e| format!("无效的 HTTP 方法: {e}"))?;
+    #[cfg(target_os = "macos")]
+    let system_proxy = system_uguu_proxy(&req);
+    #[cfg(not(target_os = "macos"))]
+    let system_proxy: Option<reqwest::Proxy> = None;
+    let system_client = system_proxy
+        .map(|proxy| build_proxy_http_client(true, Some(proxy)))
+        .transpose()?;
     // Key 可以放进任意合法请求头，只有明确无调用方请求头的下载才允许跨来源。
-    let client = if is_public_proxy_download(&req) {
-        &state.download_client
+    let (client, proxy_policy) = if let Some(client) = &system_client {
+        (client, "macOS system proxy for Uguu; respects NO_PROXY")
     } else {
-        &state.client
+        let client = if is_public_proxy_download(&req) {
+            &state.download_client
+        } else {
+            &state.client
+        };
+        (client, "reqwest automatic; actual route not exposed")
     };
     let mut request = client.request(method, &req.url);
     for (key, value) in req.headers {
@@ -864,7 +909,8 @@ async fn send_proxy_request(
         }
     }
 
-    request.send().await.map_err(proxy_transport_error)
+    let response = request.send().await.map_err(proxy_transport_error)?;
+    Ok((response, proxy_policy))
 }
 
 fn ensure_content_length_within_limit(
@@ -944,9 +990,9 @@ async fn proxy_fetch(
     )?;
 
     let request = async {
-        let response = send_proxy_request(&state, req).await?;
+        let (response, proxy_policy) = send_proxy_request(&state, req).await?;
         let upload_diagnostics = upload_user_agent.map(|user_agent| {
-            upload_response_diagnostics(&response, &state.upload_proxy_snapshot, user_agent)
+            upload_response_diagnostics(&response, &state.upload_proxy_snapshot, user_agent, proxy_policy)
         });
 
         let status = response.status().as_u16();
@@ -990,9 +1036,9 @@ async fn proxy_stream_fetch(
     )?;
 
     let request = async {
-        let mut response = send_proxy_request(&state, req).await?;
+        let (mut response, proxy_policy) = send_proxy_request(&state, req).await?;
         let upload_diagnostics = upload_user_agent.map(|user_agent| {
-            upload_response_diagnostics(&response, &state.upload_proxy_snapshot, user_agent)
+            upload_response_diagnostics(&response, &state.upload_proxy_snapshot, user_agent, proxy_policy)
         });
         ensure_content_length_within_limit(&response, PROXY_RESPONSE_MAX_BYTES, "代理响应体")?;
         let status = response.status().as_u16();
@@ -1037,7 +1083,7 @@ async fn fetch_image_data_url(
     state: tauri::State<'_, ProxyHttpState>,
     url: String,
 ) -> Result<String, String> {
-    let response = send_proxy_request(&state, ProxyFetchRequest {
+    let (response, _) = send_proxy_request(&state, ProxyFetchRequest {
         request_id: None,
         upload_diagnostic_id: None,
         url: url.clone(),
@@ -1099,6 +1145,22 @@ mod proxy_http_tests {
         ProxyFetchRequest {
             request_id: None, upload_diagnostic_id: None, url, method: method.into(), headers: Vec::new(),
             body: None, text_body: None,
+        }
+    }
+
+    #[test]
+    fn macos_proxy_fallback_is_scoped_to_the_fixed_uguu_upload() {
+        let endpoint = "https://uguu.se/upload";
+        assert!(is_uguu_upload(&test_request(endpoint.into(), "POST")));
+        assert!(!is_uguu_upload(&test_request(endpoint.into(), "GET")));
+        for url in [
+            "http://uguu.se/upload",
+            "https://uguu.se/upload.php",
+            "https://uguu.se/upload?output=text",
+            "https://uguu.se.example/upload",
+            "https://api.example/upload",
+        ] {
+            assert!(!is_uguu_upload(&test_request(url.into(), "POST")));
         }
     }
 
@@ -1308,7 +1370,7 @@ mod proxy_http_tests {
             let target_server = serve_test_responses(target, vec![
                 "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".into(),
             ]);
-            let response = send_proxy_request(&state, request).await.unwrap();
+            let (response, _) = send_proxy_request(&state, request).await.unwrap();
             assert_eq!(response.status(), reqwest::StatusCode::OK);
             assert_eq!(source_server.join().unwrap().len(), 1);
             let requests = target_server.join().unwrap();
@@ -1328,7 +1390,8 @@ mod proxy_http_tests {
             "HTTP/1.1 307 Temporary Redirect\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into(),
             "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".into(),
         ]);
-        assert_eq!(send_proxy_request(&state, request).await.unwrap().status(), reqwest::StatusCode::OK);
+        let (response, _) = send_proxy_request(&state, request).await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
         let requests = server.join().unwrap();
         assert_eq!(requests.len(), 2);
         assert!(requests[1].starts_with("POST /final "));
