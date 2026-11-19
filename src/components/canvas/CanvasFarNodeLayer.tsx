@@ -27,11 +27,12 @@ interface Props {
 
 const MEDIA_TYPES = new Set(['ai-image', 'source-image', 'ai-video', 'source-video']);
 const EMPTY_NODE_IDS: ReadonlySet<string> = new Set();
-type PrototypeMode = 'dom' | 'unlinked' | 'canvas' | 'webgpu';
+type PrototypeMode = 'dom' | 'touch' | 'unlinked' | 'canvas' | 'webgpu';
 type HitCard = CanvasFarNodeCard & { handles: readonly Rect[] };
 
 function readPrototypeMode(): PrototypeMode {
-  if (!import.meta.env.DEV || !isTauri() || canvasFarNodeRequiresNativeTouch()) return 'dom';
+  if (!import.meta.env.DEV || !isTauri()) return 'dom';
+  if (canvasFarNodeRequiresNativeTouch()) return 'touch';
   try {
     const mode = sessionStorage.getItem(CANVAS_FAR_NODE_MODE_KEY);
     if (mode === 'dom' || mode === 'unlinked' || mode === 'webgpu') return mode;
@@ -76,14 +77,15 @@ function findTarget(cards: readonly HitCard[], surface: HTMLElement, viewport: H
 function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props & { runtime: CanvasNodeLodRuntime }) {
   const store = useStoreApi();
   const surface = useStore((state) => state.domNode);
-  const connectionInProgress = useStore((state) => state.connection.inProgress || !!state.connectionClickStartHandle);
+  const connectionInProgress = useStore((state) => state.connection.inProgress);
+  const clickConnectionSource = useStore((state) => state.connectionClickStartHandle?.nodeId);
   const assetConnectionInProgress = useSyncExternalStore(
     subscribeAssetNodeConnectionDrag, isAssetNodeConnectionDragging, () => false,
   );
   const flowRevision = useStore(geometry.getViewportRevision);
   const lodRevision = useSyncExternalStore(runtime.subscribeRepresentation, runtime.getRepresentationRevision);
   const mode = useSyncExternalStore(subscribePrototypeMode, readPrototypeMode, (): PrototypeMode => 'dom');
-  const enabled = mode !== 'dom';
+  const enabled = mode !== 'dom' && mode !== 'touch';
   const nodes = useAppStore((state) => state.nodes);
   const edges = useAppStore((state) => state.edges);
   const selected = useAppStore((state) => state.selectedNodeIds);
@@ -92,6 +94,7 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
   const nodeGesturesEnabled = useStore((state) => state.nodesDraggable && state.elementsSelectable);
   const [nativeOnly, setNativeOnly] = useState(false);
   const [keyboard, setKeyboard] = useState(false);
+  const [focusedId, setFocusedId] = useState<string>();
   const [hoverId, setHoverId] = useState<string>();
   const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
   const onUnavailable = useCallback(() => setNativeOnly(true), []);
@@ -99,16 +102,28 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
     const key = previewKey(source, image);
     setFailed((set) => set.has(key) ? set : new Set([...set, key]));
   }, []);
-  const visualMode = enabled && !nativeOnly && !keyboard && !connectionInProgress && !assetConnectionInProgress
-    && nodeGesturesEnabled && !!surface && !!projectId;
   const resolveRevision = useReferencedImageRevisions(useMemo(() => nodes.map((node) => node.data.filePath), [nodes]));
-  const models = useMemo(() => {
+  const { models, fallbackReason } = useMemo((): { models: HitCard[]; fallbackReason: string | null } => {
+    if (mode === 'touch') return { models: [], fallbackReason: 'touch' };
+    if (mode === 'dom') return { models: [], fallbackReason: 'requested-dom' };
+    if (!surface || !projectId) return { models: [], fallbackReason: 'canvas-not-ready' };
+    if (nativeOnly) return { models: [], fallbackReason: 'bitmap-unavailable' };
+    if (!runtime.isFar()) return { models: [], fallbackReason: 'near-zoom' };
+    if (keyboard) return { models: [], fallbackReason: 'keyboard-focus' };
+    if (connectionInProgress || assetConnectionInProgress) {
+      return { models: [], fallbackReason: 'connection-drag' };
+    }
+    if (!nodeGesturesEnabled) return { models: [], fallbackReason: 'node-gestures-disabled' };
     // Rebuild on authoritative geometry/pin updates. A pure camera publish reuses both revisions.
     const pinned = runtime.getRepresentationRevision() === lodRevision;
     const state = store.getState();
-    if (!visualMode || !runtime.isFar() || !pinned || geometry.getViewportRevision(state) !== flowRevision) return [];
+    if (!pinned || geometry.getViewportRevision(state) !== flowRevision) {
+      return { models: [], fallbackReason: 'geometry-sync' };
+    }
     const byId = new Map(nodes.map((node) => [node.id, node]));
     const nativeEndpoints = new Set<string>();
+    // In click-to-connect, keep the source port live and restore a target on mouse hit.
+    if (clickConnectionSource) nativeEndpoints.add(clickConnectionSource);
     for (const edge of edges) {
       if (mode === 'unlinked' || needsNativeCanvasEdge(edge)) {
         nativeEndpoints.add(edge.source);
@@ -148,36 +163,71 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
       cards.push({ id, ...rect, source, image: !!imageSource, handles: [...(bounds.source ?? []), ...(bounds.target ?? [])] });
     }
     // A shared layer is below native nodes at equal z. Keep ambiguous overlaps native.
-    return cards.filter((card) => !native.some((rect) => intersects(card, rect)));
-  }, [activeId, edges, failed, flowRevision, geometry, lodRevision, mode, nodes, resolveRevision, runtime, selected, store, visualMode]);
+    const models = cards.filter((card) => !native.some((rect) => intersects(card, rect)));
+    return { models, fallbackReason: models.length ? null : 'no-eligible-cards' };
+  }, [activeId, assetConnectionInProgress, clickConnectionSource, connectionInProgress, edges, failed, flowRevision,
+    geometry, keyboard, lodRevision, mode, nativeOnly, nodeGesturesEnabled, nodes, projectId, resolveRevision,
+    runtime, selected, store, surface]);
 
-  const input = useRef({ models, hoverId });
-  useLayoutEffect(() => { input.current = { models, hoverId }; }, [models, hoverId]);
+  const input = useRef({ models, hoverId, keyboard });
+  useLayoutEffect(() => { input.current = { models, hoverId, keyboard }; }, [models, hoverId, keyboard]);
   useLayoutEffect(() => {
-    if (!surface || !enabled || nativeOnly) return;
+    const view = surface?.ownerDocument.defaultView;
+    if (!surface || !view) return;
+    const onPointerDown = (event: PointerEvent) => {
+      // Disarm the override even if the renderer is already using DOM.
+      if (isCanvasFarNodeMouseOnly() && event.pointerType && event.pointerType !== 'mouse'
+        && event.target instanceof Element && surface.contains(event.target)) {
+        flushSync(() => setCanvasFarNodeMouseOnly(false));
+      }
+    };
+    view.addEventListener('pointerdown', onPointerDown, true);
+    return () => view.removeEventListener('pointerdown', onPointerDown, true);
+  }, [surface]);
+  useLayoutEffect(() => {
+    if (!surface || !projectId || !enabled || nativeOnly) return;
     const view = surface.ownerDocument.defaultView;
     const viewport = surface.querySelector<HTMLElement>('.react-flow__viewport');
     if (!view || !viewport) return;
     const captured = new WeakSet<Event>();
+    let focusFrame: number | undefined;
+    const cancelFocusCheck = () => {
+      if (focusFrame !== undefined) view.cancelAnimationFrame(focusFrame);
+      focusFrame = undefined;
+    };
+    const checkKeyboardFocus = () => {
+      cancelFocusCheck();
+      focusFrame = view.requestAnimationFrame(() => {
+        focusFrame = undefined;
+        setKeyboard(surface.contains(surface.ownerDocument.activeElement));
+      });
+    };
+    const getMountedNodeId = (target: EventTarget | null) => {
+      const node = target instanceof Element ? target.closest('.react-flow__node') : null;
+      return node && surface.contains(node) ? node.getAttribute('data-id') ?? undefined : undefined;
+    };
+    const leaveKeyboardMode = (event: Event) => {
+      cancelFocusCheck();
+      if (!input.current.keyboard) return false;
+      // Keep the existing wrapper under the pointer through the mouse gesture.
+      setHoverId(getMountedNodeId(event.target));
+      setKeyboard(false);
+      return true;
+    };
     const hover = (event: PointerEvent | DragEvent) => {
       if ('pointerType' in event && (event.pointerType !== 'mouse' || event.buttons !== 0)) return;
-      if (keyboard) setKeyboard(false);
+      if (leaveKeyboardMode(event)) return;
       const current = input.current;
-      const target = event.target instanceof Element ? event.target.closest('.react-flow__node') : null;
-      const mountedId = target?.getAttribute('data-id');
+      const mountedId = getMountedNodeId(event.target);
       if (mountedId && mountedId === current.hoverId) return;
       const next = findTarget(current.models, surface, viewport, event)?.id;
       if (next !== current.hoverId) setHoverId(next);
     };
     const restoreTarget = (event: MouseEvent) => {
       if (captured.has(event)) return;
-      if (event instanceof PointerEvent && event.pointerType && event.pointerType !== 'mouse') {
-        // Disarm the developer override. Native hit-testing is available for the next gesture.
-        if (isCanvasFarNodeMouseOnly() && event.target instanceof Element && surface.contains(event.target)) {
-          flushSync(() => setCanvasFarNodeMouseOnly(false));
-        }
-        return;
-      }
+      if (event instanceof PointerEvent && event.pointerType && event.pointerType !== 'mouse') return;
+      if (event instanceof PointerEvent && event.type === 'pointerdown' && event.isTrusted && event.pointerType === 'mouse'
+        && event.target instanceof Element && surface.contains(event.target) && leaveKeyboardMode(event)) return;
       const hit = findTarget(input.current.models, surface, viewport, event);
       if (!hit) return;
       if (input.current.hoverId !== hit.id) flushSync(() => setHoverId(hit.id));
@@ -191,8 +241,21 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
       if (replay.defaultPrevented) event.preventDefault();
     };
     const leave = (event: PointerEvent) => { if (event.buttons === 0) setHoverId(undefined); };
+    const onWheel = (event: WheelEvent) => {
+      if (event.isTrusted && event.target instanceof Element && event.target.closest('.react-flow__pane')) {
+        leaveKeyboardMode(event);
+      }
+    };
+    const onFocusIn = (event: FocusEvent) => setFocusedId(getMountedNodeId(event.target));
+    const onFocusOut = (event: FocusEvent) => {
+      setFocusedId(getMountedNodeId(event.relatedTarget));
+      if (input.current.keyboard) checkKeyboardFocus();
+    };
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Tab' && input.current.models.length) flushSync(() => setKeyboard(true));
+      if (event.key !== 'Tab' || event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented) return;
+      // Make the nodes tabbable before the browser chooses where to move focus.
+      if (input.current.models.length) flushSync(() => setKeyboard(true));
+      checkKeyboardFocus();
     };
     const events = ['pointerdown', 'mousedown', 'click', 'dblclick', 'contextmenu'] as const;
     // Capture above the React root so the original pointerdown cannot start a pane selection.
@@ -200,17 +263,34 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
     surface.addEventListener('pointermove', hover, true);
     surface.addEventListener('dragover', hover, true);
     surface.addEventListener('pointerleave', leave);
+    surface.addEventListener('wheel', onWheel, { capture: true, passive: true });
+    surface.addEventListener('focusin', onFocusIn);
+    surface.addEventListener('focusout', onFocusOut);
     view.addEventListener('keydown', onKey, true);
+    setFocusedId(getMountedNodeId(surface.ownerDocument.activeElement));
+    if (input.current.keyboard) checkKeyboardFocus();
     return () => {
+      cancelFocusCheck();
       for (const type of events) view.removeEventListener(type, restoreTarget, true);
       surface.removeEventListener('pointermove', hover, true);
       surface.removeEventListener('dragover', hover, true);
       surface.removeEventListener('pointerleave', leave);
+      surface.removeEventListener('wheel', onWheel, true);
+      surface.removeEventListener('focusin', onFocusIn);
+      surface.removeEventListener('focusout', onFocusOut);
       view.removeEventListener('keydown', onKey, true);
     };
-  }, [enabled, keyboard, nativeOnly, surface]);
+  }, [enabled, nativeOnly, projectId, surface]);
 
-  const staticCards = useMemo(() => models.filter((card) => card.id !== hoverId), [models, hoverId]);
+  // Mouse zoom can resume the bitmap while a node still holds keyboard focus.
+  const staticCards = useMemo(() => models.filter((card) => card.id !== hoverId && card.id !== focusedId),
+    [models, hoverId, focusedId]);
+  const hasStaticCards = staticCards.length > 0;
+  useLayoutEffect(() => {
+    if (!surface || hasStaticCards) return;
+    surface.dataset.canvasFarFallbackReason = fallbackReason ?? 'interactive-card';
+    return () => { delete surface.dataset.canvasFarFallbackReason; };
+  }, [fallbackReason, hasStaticCards, surface]);
   const staticIds = useMemo(() => new Set(staticCards.map((card) => card.id)), [staticCards]);
   const visibleFarIds = useMemo(() => staticIds.size
     ? new Set(nodeIds.filter((id) => staticIds.has(id))) : EMPTY_NODE_IDS, [nodeIds, staticIds]);

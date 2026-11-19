@@ -996,7 +996,7 @@ await canvasFarNodeBenchmark.run('canvas')
 await canvasFarNodeBenchmark.run('webgpu')
 ```
 
-两个 `run` 调用都先预热缩略图，再按原四段各 650 ms 的轨迹采样，结束后恢复原视口。交替重复四轮并对比 `zoom.p95`、`zoom.over50`、`over50`、实际 `backend` 和窗口 DPR。WebGPU 请求回退时会报出原因。手动检查当前后端时，先缩远到约 12%，再调用 `canvasFarNodeBenchmark.status()`。用 `setMode('canvas')` 恢复 Canvas 2D。可加跑 `run('dom')` 作为原节点对照。触屏设备的原型保护会禁用远景位图对照，先用非触屏 Windows 环境采样。
+两个 `run` 调用都先预热缩略图，再按原四段各 650 ms 的轨迹采样，结束后恢复原视口。交替重复四轮并对比 `zoom.p95`、`zoom.over50`、`over50`、实际 `backend` 和窗口 DPR。WebGPU 请求回退时会报出原因。手动检查当前后端时，先缩远到约 12%，再调用 `canvasFarNodeBenchmark.status()`。用 `setMode('canvas')` 恢复 Canvas 2D。可加跑 `run('dom')` 作为原节点对照。报告触点的设备默认使用 DOM，鼠标测试模式见下文。
 
 Windows 和 macOS 均核对深浅主题、连线坐标和点击命中。点选远景图片应恢复原编辑节点，视频播放后取消选择应继续播放，拖线应恢复原端口。macOS 尝试请求 `webgpu` 时应保持 `canvas2d`。本分支已实现，未运行自动化、构建或实机测试。
 
@@ -1009,3 +1009,63 @@ HTML-in-Canvas 探针回读红色像素成功。WebGPU 远景首次调用 `confi
 已将 GPU 上下文获取和配置推迟到首帧写入有效像素尺寸以后。另给开发版增加显式鼠标测试模式，保留 WebView2 原始触点报告，退出开发窗口或在画布内以触摸、笔输入时解除。触控设备的默认保护继续有效。修改后本次未运行测试，待用户验收。
 
 复测更新到测试分支最新提交，再打开同一测试副本。如果 `status().touchPoints` 大于 0，在 F12 Console 执行 `canvasFarNodeBenchmark.setMouseOnly(true)` 并仅使用鼠标交互。先运行 `run('canvas')` 和 `run('webgpu')` 确认后端，再按原顺序采样。WebGPU 组起止应均为 `backend: 'webgpu'`、`webgpuStatus: 'active'`，原生触点数量保持原值且 `mouseOnly: true`。若仍回退，记录 `webgpuReason` 和实际错误。完成后执行 `canvasFarNodeBenchmark.setMouseOnly(false)`，核对报告触点的设备恢复默认 DOM。
+
+#### Windows 实机复测结果
+
+用户在 Windows 11 实机验收了 `2e8d80c8`。同一项目为 600 节点、1,353 条线，环境为 RTX 4070 Ti、WebView2 157.0.4341.60、DPR 1.5。复测用开发版鼠标模式，原生触点报告保持 10。HTML-in-Canvas 像素回读通过，WebGPU 四轮起止均为 `active`，未复现 0×0 纹理回退。
+
+| 指标 | Canvas 2D | WebGPU |
+| --- | ---: | ---: |
+| 有效轮数 | 4 | 4 |
+| 缩放 P95 中位数 | 20.90 ms | 20.85 ms |
+| 超过 50 ms 的缩放间隔 | 0 / 609 | 0 / 620 |
+| 全程超过 50 ms 的间隔 | 0 | 0 |
+
+八轮的远景位图重绘计数在轨迹起止均一致，600 张预览均已就绪。该轨迹主要测量预热后复用缓存时的平移缩放，两组延迟无可辨别差异。冷启动、跨缓存窗口重绘及不同显卡仍待专项采样。
+
+两组重跑均通过深浅主题和层级、连线命中、框选、标注、视频取消选中后继续播放、拖线撤销及远近切换。测试副本保存后重开，恢复 600 节点、1,353 条线。关闭鼠标测试模式后恢复默认 DOM。早期交互中曾出现约 12% 缩放仍停留 DOM，重载后通过，触发原因待定位。
+
+#### Win 和 Mac 共用 Canvas 2D 的复测
+
+两端 Tauri 开发版在鼠标远景中默认使用 Canvas 2D，WebGPU 通过开发版命令显式选用。报告触点的设备默认回退到原节点。即使当前正在使用 DOM，在画布内用触摸或笔按下也会退出鼠标测试模式。
+
+源码确认两条可持续保留全量 DOM 的路径：单击端口后等待第二个端口，以及 Tab 恢复节点后未离开键盘模式。现在等待第二次点击时只保留来源节点及相关原生节点，命中目标时恢复其端口，点空白处清除待连线。实际拖线及资产拖线期间仍恢复可见节点和端口。键盘焦点离开画布或转回画布鼠标操作时恢复远景。原回传缺少回退原因，新版 `status().farFallbackReason` 补充了触控、倍率、连接拖动、键盘、位图不可用等状态。两条修正均已实现，原 Windows 现象待原轨迹复验。
+
+在先前的 Windows 测试工作树中，退出旧开发窗口，更新原分支后重新启动。继续使用 `NASA-600-dense-1353-desktop.aicanvas` 同一个已导入副本，核对节点数 600、连线数 1,353。
+
+```powershell
+git fetch origin
+git switch --detach origin/codex/windows-gpu-canvas-test
+npm ci
+npm run tauri dev
+```
+
+在桌面窗口的 F12 Console 执行 `canvasFarNodeBenchmark.setMode('canvas')`。若设备报告触点，使用鼠标复测时执行 `canvasFarNodeBenchmark.setMouseOnly(true)`。同一窗口中先验收交互。
+
+1. 由约 35% 缩至 12%，观察 `status()` 从 `backend: 'dom'` 切到 `backend: 'canvas2d'`。远景应减少实际挂载节点及端口。若仍是 DOM，先记录完整 `status()` 和触发前一步操作，再尝试恢复。
+2. 单击一个端口后缩放，未参与的卡片应继续使用 Canvas 2D。点另一个可连接端口应添加一条线，撤销后仍为 1,353 条。再单击一个端口并点空白处取消，确认全量 DOM 没有停留。分别核对连线点击、拖线与撤销。
+3. 用 Tab 在节点和画布外控件间切换，确认节点可获得焦点。焦点离开画布，或改用画布上的鼠标点击或滚轮，应恢复远景。核对框选、标注、视频取消选中后继续播放，以及浅色和深色下的卡片与连线。
+4. 有触屏或笔的设备，在鼠标测试模式下触摸画布。预期 `mouseOnly: false`、`backend: 'dom'`、`farFallbackReason: 'touch'`。用下一次触控手势检查原生交互。关闭或重开鼠标模式后再继续适用的对照。
+
+Windows 正式采样使用同一窗口、主题、DPR 和小地图状态，清空选中并关闭弹窗，解除缩放锁定。原轨迹为四段各 650 ms，每轮自动预热并恢复初始视口。在 Console 执行以下代码，每组四轮。
+
+```js
+const bench = canvasFarNodeBenchmark
+bench.setMouseOnly(true)
+const results = []
+try {
+  for (const mode of ['dom', 'canvas', 'canvas', 'dom', 'dom', 'canvas', 'canvas', 'dom']) {
+    results.push(await bench.run(mode))
+  }
+} finally {
+  bench.setMode('canvas')
+  bench.setMouseOnly(false)
+}
+console.table(results.map(({ mode, before, after, zoom, over50 }) => ({
+  mode, startBackend: before.backend, endBackend: after.backend,
+  zoomP95: zoom.p95, zoomFrames: zoom.frames, zoomLongFrames: zoom.over50,
+  zoomExcessMs: zoom.excess50, totalLongFrames: over50, mountedNodes: after.mountedNodeCount,
+})))
+```
+
+回传八轮原始结果及交互中的异常状态。比较各组缩放 P95 中位数与超过 50 ms 的帧间隔，结合采样帧数和超阈值累计时间判断。macOS 使用同一份副本和测试分支可走同一入口，设备没有报告触点时无需显式开启鼠标测试。本次未运行测试，待用户验收。

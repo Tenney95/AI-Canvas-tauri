@@ -34,6 +34,7 @@ function status() {
   return {
     requestedMode: sessionStorage.getItem(CANVAS_FAR_NODE_MODE_KEY) ?? 'canvas',
     backend: layer?.dataset.canvasFarBackend ?? (layer ? null : 'dom'),
+    farFallbackReason: root?.getAttribute('data-canvas-far-fallback-reason') ?? null,
     webgpuStatus: layer?.dataset.webgpuStatus ?? null,
     webgpuReason: layer?.dataset.webgpuReason ?? null,
     nodeCount: state.nodes.length,
@@ -69,6 +70,10 @@ function matchesBackend(mode: Mode, snapshot: ReturnType<typeof status>) {
   return snapshot.backend === expectedBackend(mode) && (mode !== 'webgpu' || snapshot.webgpuStatus === 'active');
 }
 
+function backendDetail(snapshot: ReturnType<typeof status>) {
+  return snapshot.farFallbackReason ?? snapshot.webgpuReason ?? snapshot.webgpuStatus ?? '无后端诊断';
+}
+
 async function waitForPreviews(mode: Mode, assertCurrent: () => void) {
   const deadline = performance.now() + READY_TIMEOUT_MS;
   while (performance.now() < deadline) {
@@ -82,7 +87,7 @@ async function waitForPreviews(mode: Mode, assertCurrent: () => void) {
     await wait(100);
   }
   const snapshot = status();
-  throw new Error(`远景预热超时，当前渲染为 ${snapshot.backend}（${snapshot.webgpuReason ?? snapshot.webgpuStatus ?? '无 GPU 状态'}），缩略图就绪 ${snapshot.previewReady}/${snapshot.previewTarget}。请清空节点选中并关闭弹窗后重试。`);
+  throw new Error(`远景预热超时，当前渲染为 ${snapshot.backend}（${backendDetail(snapshot)}），缩略图就绪 ${snapshot.previewReady}/${snapshot.previewTarget}。请清空节点选中并关闭弹窗后重试。`);
 }
 
 function summarize(gaps: number[]) {
@@ -206,7 +211,7 @@ export function installCanvasFarNodeBenchmark(): () => void {
         const measurements = await runTrajectory(controller, origin, assertCurrent);
         const after = status();
         if (!matchesBackend(mode, before) || !matchesBackend(mode, after)) {
-          throw new Error(`运行期间渲染后端发生变化，结束时为 ${after.backend}（${after.webgpuReason ?? after.webgpuStatus ?? '无 GPU 状态'}）`);
+          throw new Error(`运行期间渲染后端发生变化，结束时为 ${after.backend}（${backendDetail(after)}）`);
         }
         if (before.width !== after.width || before.height !== after.height || before.dpr !== after.dpr
           || before.theme !== after.theme || before.minimap !== after.minimap) {
