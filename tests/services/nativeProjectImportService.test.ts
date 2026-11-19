@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
 import type { NativeProjectImportJournal } from '../../src/services/indexedDb/nativeProjectRepository';
+import type { ValidatedProjectArchiveV4 } from '../../src/types/projectArchiveV4';
 
 const io = vi.hoisted(() => ({
   invoke: vi.fn(), getBaseDir: vi.fn(), readProject: vi.fn(), readImport: vi.fn(), readUpdate: vi.fn(), advanceImport: vi.fn(), commitImport: vi.fn(),
-  commitHistory: vi.fn(), verifyHistory: vi.fn(), publishMedia: vi.fn(), verifyMedia: vi.fn(),
+  commitHistory: vi.fn(), verifyHistory: vi.fn(), captureImportSource: vi.fn(), publishMedia: vi.fn(), verifyMedia: vi.fn(),
   exists: vi.fn(), lstat: vi.fn(), readDir: vi.fn(), remove: vi.fn(),
 }));
 
@@ -15,7 +16,7 @@ vi.mock('@tauri-apps/plugin-fs', () => ({ copyFile: vi.fn(), mkdir: vi.fn(), exi
 vi.mock('../../src/services/fileService', () => ({ getBaseDir: io.getBaseDir, joinPath: (...parts: string[]) => parts.join('/'), isTauriEnv: () => true }));
 vi.mock('../../src/services/nativeArchiveHistoryCommit', () => ({ assertNativeArchiveHistoryCommitted: io.verifyHistory, commitNativeArchiveHistory: io.commitHistory }));
 vi.mock('../../src/services/projectModelArchiveNativePort', () => ({ createBoundProjectModelArchiveImportPort: () => ({
-  publishMedia: io.publishMedia, verifyMediaPublication: io.verifyMedia,
+  captureImportSource: io.captureImportSource, publishMedia: io.publishMedia, verifyMediaPublication: io.verifyMedia,
 }) }));
 vi.mock('../../src/services/indexedDb/nativeProjectRepository', async (original) => ({
   ...await original<typeof import('../../src/services/indexedDb/nativeProjectRepository')>(),
@@ -25,6 +26,7 @@ vi.mock('../../src/services/indexedDb/nativeProjectRepository', async (original)
 vi.mock('../../src/services/projectImportService', () => ({ withPreparedProjectImportRead: vi.fn() }));
 
 import { cleanupFinalizedNativeProjectImportSources, listPendingNativeProjectImports, resumeNativeProjectImport } from '../../src/services/nativeProjectImportService';
+import { withStagedNativeUpdateSource } from '../../src/services/nativeProjectUpdateMedia';
 import { openNativeProjectDatabase, transact, TRANSFER } from '../../src/services/indexedDb/nativeProjectRepository';
 
 const operationId = '11111111-1111-4111-8111-111111111111';
@@ -166,6 +168,68 @@ describe('原新建导入耐久续接', () => {
     expect(io.commitImport).toHaveBeenCalledExactlyOnceWith(operationId, 4);
     expect(io.advanceImport).toHaveBeenCalledExactlyOnceWith(operationId, 5, 'finalized');
     expect(io.invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe('未登记的更新与恢复来源', () => {
+  const updateSource = { assets: [sourceFile] } as ValidatedProjectArchiveV4;
+  const updateSourceRef = `imports/native-update-${operationId}`;
+  const updateStage = `${base}/${updateSourceRef}`;
+  const backup = `${base}/native-project-backup-${operationId}.aicanvas`;
+  const seedStage = () => {
+    stageEntries.set(`${base}/imports`, entry('imports', 'folder'));
+    stageEntries.set(updateStage, entry(`native-update-${operationId}`, 'folder'));
+    stageEntries.set(`${updateStage}/images`, entry('images', 'folder'));
+    stageEntries.set(`${updateStage}/${sourceFile.path}`, entry('frame.png', 'file'));
+  };
+  const run = (mode: 'update-existing' | 'restore-content', use: () => Promise<void>) =>
+    withStagedNativeUpdateSource(updateSource, '/preview', { projectId, operationId, mode }, use);
+
+  beforeEach(() => {
+    stageEntries.set(backup, entry('备份.aicanvas', 'file'));
+    io.readUpdate.mockResolvedValue(null);
+    io.captureImportSource.mockResolvedValue({ sourceRef: updateSourceRef, sourceFiles: [] });
+    io.invoke.mockImplementation(async (command: string) => {
+      if (command === 'publish_project_import_assets') { seedStage(); return; }
+      return [sourceFile];
+    });
+  });
+
+  it.each(['update-existing', 'restore-content'] as const)('登记确认失败后只释放本次独占来源（%s）', async (mode) => {
+    const original = new Error('已有待结算的传输操作');
+    await expect(run(mode, async () => { throw original; })).rejects.toBe(original);
+    expect(io.readUpdate).toHaveBeenCalledExactlyOnceWith(operationId);
+    expect(io.remove.mock.calls).toEqual([[`${updateStage}/${sourceFile.path}`], [`${updateStage}/images`], [updateStage]]);
+    expect(stageEntries.has(backup)).toBe(true);
+  });
+
+  it.each(['已登记', '登记未知', '原目录已存在', '发布回执丢失'])('保留仍可能被原操作使用的来源（%s）', async (state) => {
+    if (state === '已登记') io.readUpdate.mockResolvedValue({ ...importJournal('prepared'), mode: 'update-existing' });
+    if (state === '登记未知') io.readUpdate.mockRejectedValue(new Error('数据库读回失败'));
+    if (state === '原目录已存在') seedStage();
+    if (state === '发布回执丢失') io.invoke.mockImplementation(async (command: string) => {
+      if (command === 'publish_project_import_assets') { seedStage(); throw new Error('发布回执丢失'); }
+      return [sourceFile];
+    });
+    await expect(run('update-existing', async () => { throw new Error('普通登记响应失败'); })).rejects.toThrow(
+      state === '已登记' ? '原操作' : state === '登记未知' ? '更新结果未知' : '普通登记响应失败');
+    expect(io.remove).not.toHaveBeenCalled();
+    expect(stageEntries.has(`${updateStage}/${sourceFile.path}`)).toBe(true);
+    expect(stageEntries.has(backup)).toBe(true);
+  });
+
+  it('同一次预览重试先补完中断清理，再发布完整来源', async () => {
+    io.remove.mockImplementationOnce(async (path: string) => { stageEntries.delete(path); })
+      .mockRejectedValueOnce(new Error('目录被短暂占用'));
+    await expect(run('update-existing', async () => { throw new Error('暂未登记'); })).rejects.toThrow('暂未登记');
+    expect(stageEntries.has(updateStage)).toBe(true);
+    expect(stageEntries.has(`${updateStage}/${sourceFile.path}`)).toBe(false);
+
+    await expect(run('update-existing', async () => {
+      expect(stageEntries.has(`${updateStage}/${sourceFile.path}`)).toBe(true);
+    })).resolves.toBeUndefined();
+    expect(io.invoke.mock.calls.filter(([command]) => command === 'publish_project_import_assets')).toHaveLength(2);
+    expect(stageEntries.has(backup)).toBe(true);
   });
 });
 

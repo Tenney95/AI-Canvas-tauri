@@ -12,8 +12,8 @@ import { buildProjectExchangeBundleV2, createProjectExchangeRevisionV2, findProj
 import { deriveLegacyProjectionProofFromRevisions } from './projectExchangeV2Domain';
 import { listNativeContentRecoveryPoints, replaceNativeContentWithRecovery } from './indexedDb/nativeProjectRepository';
 import { NATIVE_EDITOR_CHOICE_KEY, nativeEditorChoiceRequired, resolveNativeEditorUpdate } from './videoEditorArchive';
-import { cleanupFinalizedNativeProjectUpdateSource, createNativeUpdateBackup, withNativeRestorePoint, nativeUpdateInventory, stageNativeUpdateSource,
-  verifyNativeRestoreAssets, verifyNativeUpdateBackup } from './nativeProjectUpdateMedia';
+import { cleanupFinalizedNativeProjectUpdateSource, createNativeUpdateBackup, withNativeRestorePoint, nativeUpdateInventory,
+  verifyNativeRestoreAssets, verifyNativeUpdateBackup, withStagedNativeUpdateSource } from './nativeProjectUpdateMedia';
 import { createBoundProjectModelArchiveImportPort } from './projectModelArchiveNativePort';
 import { configValuesEqual } from './configPatch';
 import { sha256BytesHex } from './mediaDataUrl';
@@ -92,7 +92,19 @@ function mergeBundle(current: ProjectModelTransferExchange, source: ProjectModel
 }
 
 const digest = (value: unknown) => sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(value)));
-const updateAttempts = new WeakMap<NativeProjectUpdatePreview, { intent: string; input: Parameters<typeof prepareNativeProjectUpdate>[0] }>();
+type UnstagedNativeProjectUpdate = Omit<Parameters<typeof prepareNativeProjectUpdate>[0], 'sourceRef' | 'sourceFiles'>;
+const updateAttempts = new WeakMap<NativeProjectUpdatePreview, { intent: string; input: UnstagedNativeProjectUpdate }>();
+const updateRuns: Map<string, Promise<void>> = import.meta.hot?.data.nativeProjectUpdateRuns ?? new Map();
+if (import.meta.hot) import.meta.hot.data.nativeProjectUpdateRuns = updateRuns;
+
+/** 同一操作的重试等上次登记及收尾完成后，再读取原 journal。 */
+async function runNativeUpdate(operationId: string, work: () => Promise<void>): Promise<void> {
+  const previous = updateRuns.get(operationId);
+  const current = (previous ?? Promise.resolve()).catch(() => undefined).then(work);
+  updateRuns.set(operationId, current);
+  try { await current; }
+  finally { if (updateRuns.get(operationId) === current) updateRuns.delete(operationId); }
+}
 
 async function assertOriginalUpdate(operation: NativeProjectUpdateJournal): Promise<void> {
   await verifyNativeUpdateBackup(operation.projectId, operation.backup);
@@ -156,14 +168,16 @@ async function finishNativeUpdate(initial: NativeProjectUpdateJournal, assertCur
 }
 
 /** 各事务的副作用可能已提交，失败时必须保留原操作而不是生成新的 ID。 */
-export async function resumeNativeProjectUpdate(operationId: string, assertCurrent?: () => void): Promise<void> {
-  const operation = await readNativeProjectUpdate(operationId);
-  if (!operation) throw new Error('原更新操作不存在；请核对项目，不要直接重投');
-  await finishNativeUpdate(operation, assertCurrent);
+export function resumeNativeProjectUpdate(operationId: string, assertCurrent?: () => void): Promise<void> {
+  return runNativeUpdate(operationId, async () => {
+    const operation = await readNativeProjectUpdate(operationId);
+    if (!operation) throw new Error('原更新操作不存在；请核对项目，不要直接重投');
+    await finishNativeUpdate(operation, assertCurrent);
+  });
 }
 
 async function makeUpdateInput(preview: NativeProjectUpdatePreview, choices: Readonly<Record<string, ProjectMergeSideV2>>,
-  mode: 'update-existing' | 'restore-content', assertCurrent?: () => void): Promise<Parameters<typeof prepareNativeProjectUpdate>[0]> {
+  mode: 'update-existing' | 'restore-content', assertCurrent?: () => void): Promise<UnstagedNativeProjectUpdate> {
   const expected = preview.expected, projectId = expected.aggregate.project.id;
   const current = await captureNativeProjectArchive(projectId);
   if (current.value.sourceToken !== expected.sourceToken || !expected.exchange) throw new Error('项目或历史已变化，请重新预览');
@@ -192,7 +206,6 @@ async function makeUpdateInput(preview: NativeProjectUpdatePreview, choices: Rea
   const exchange: ProjectModelTransferExchange = { lineageId: snapshot.lineageId, localHead: bundle.head, bundle,
     identities: material.identities, fileBindings: material.fileBindings, stateVersion: expected.exchange.stateVersion + 1,
     published: expected.exchange.published };
-  if (!preview.sourceDirectory) throw new Error('项目包隔离来源不可用，请重新预览');
   assertCurrent?.();
   const { backup, oldAssets, assetSnapshots, recoveryState } = await createNativeUpdateBackup(expected, operationId);
   if (!configValuesEqual(preview.globalFiles ?? [], recoveryState.globalFiles)) throw new Error('预览后全局素材变化，请重新对比');
@@ -210,42 +223,49 @@ async function makeUpdateInput(preview: NativeProjectUpdatePreview, choices: Rea
       episodes: material.aggregate.episodes, defaultCanvasId: material.aggregate.project.kind === 'standalone' ? material.aggregate.canvases[0]?.id : undefined,
       fileBindings: material.fileBindings })).filter((row) => row.kind === 'output');
   assertCurrent?.();
-  const source = await stageNativeUpdateSource(preview.source, preview.sourceDirectory, projectId, operationId);
   return { operationId, mode, packageDigest, intentDigest, sourceLineageId: snapshot.lineageId, targetProjectId: projectId,
     expected, next: { ...material.aggregate, bindings: [], previews: [] }, exchange, idMap: material.identities,
-    history, media: material.media, editorRecords, backup, oldAssets, oldAssetSnapshots: assetSnapshots, recoveryState, assetRecords, ...source };
+    history, media: material.media, editorRecords, backup, oldAssets, oldAssetSnapshots: assetSnapshots, recoveryState, assetRecords };
 }
 
 /** 预览选择、独立备份、隔离来源及原生发布通过 journal 构成同一可恢复操作。 */
-export async function applyNativeProjectUpdate(preview: NativeProjectUpdatePreview, choices: Readonly<Record<string, ProjectMergeSideV2>>, assertCurrent?: () => void): Promise<void> {
+export function applyNativeProjectUpdate(preview: NativeProjectUpdatePreview, choices: Readonly<Record<string, ProjectMergeSideV2>>, assertCurrent?: () => void): Promise<void> {
+  return runNativeUpdate(preview.operationId, () => applyNativeProjectUpdateInOperation(preview, choices, assertCurrent));
+}
+
+async function applyNativeProjectUpdateInOperation(preview: NativeProjectUpdatePreview, choices: Readonly<Record<string, ProjectMergeSideV2>>, assertCurrent?: () => void): Promise<void> {
+  const { operationId, source, sourceDirectory } = preview;
+  const projectId = preview.expected.aggregate.project.id;
   const intent = JSON.stringify(Object.entries(choices).sort(([a], [b]) => a.localeCompare(b)));
-  const existing = await readNativeProjectUpdate(preview.operationId);
+  const existing = await readNativeProjectUpdate(operationId);
   if (existing) {
     const expectedIntent = await digest([existing.packageDigest, preview.expected.sourceToken, 'update-existing', choices]);
-    if (existing.intentDigest !== expectedIntent) throw new Error('原更新操作已冻结其他选择，请先核对');
+    if (existing.mode !== 'update-existing' || existing.projectId !== projectId || existing.intentDigest !== expectedIntent) {
+      throw new Error('原更新操作已冻结其他选择，请先核对');
+    }
     await finishNativeUpdate(existing, assertCurrent); return;
   }
+  if (!sourceDirectory) throw new Error('项目包隔离来源不可用，请重新预览');
   let attempt = updateAttempts.get(preview);
   if (attempt && attempt.intent !== intent) throw new Error('原更新操作已冻结选择，请先核对');
   if (!attempt) {
     const input = await makeUpdateInput(preview, choices, 'update-existing', assertCurrent);
     attempt = { intent, input }; updateAttempts.set(preview, attempt);
   }
-  try {
+  const { input } = attempt;
+  assertCurrent?.();
+  await withStagedNativeUpdateSource(source, sourceDirectory, { projectId, operationId, mode: 'update-existing' }, async (staged) => {
     assertCurrent?.();
-    const operation = await prepareNativeProjectUpdate(attempt.input);
-    await finishNativeUpdate(operation, assertCurrent);
-  } catch (error) {
-    let operation: NativeProjectUpdateJournal | null;
-    try { operation = await readNativeProjectUpdate(preview.operationId); }
-    catch (cause) { throw new Error(`更新结果未知，原操作 ${preview.operationId} 已保留，请先核对`, { cause }); }
-    if (operation) throw new Error(`更新未完成，原操作 ${preview.operationId} 已保留；${error instanceof Error ? error.message : '请核对后续接'}`, { cause: error });
-    throw error;
-  }
+    await finishNativeUpdate(await prepareNativeProjectUpdate({ ...input, ...staged }), assertCurrent);
+  });
 }
 
 /** 恢复读取原生备份，重新发布原素材并以新 journal 保存恢复前内容。 */
-export async function restoreNativeContentRecovery(projectId: string, recoveryId: string, operationId: string, assertCurrent?: () => void): Promise<void> {
+export function restoreNativeContentRecovery(projectId: string, recoveryId: string, operationId: string, assertCurrent?: () => void): Promise<void> {
+  return runNativeUpdate(operationId, () => restoreNativeContentRecoveryInOperation(projectId, recoveryId, operationId, assertCurrent));
+}
+
+async function restoreNativeContentRecoveryInOperation(projectId: string, recoveryId: string, operationId: string, assertCurrent?: () => void): Promise<void> {
   const existing = await readNativeProjectUpdate(operationId);
   if (existing) { if (existing.mode !== 'restore-content' || existing.projectId !== projectId || existing.restoreRecoveryId !== recoveryId) throw new Error('恢复操作身份冲突');
     await finishNativeUpdate(existing, assertCurrent); return; }
@@ -379,19 +399,14 @@ export async function restoreNativeContentRecovery(projectId: string, recoveryId
     const packageDigest = await digest([source.manifest, source.payload.exchange]);
     const intentDigest = await digest([packageDigest, expected.sourceToken, 'restore-content', recoveryId]);
     assertCurrent?.();
-    const staged = await stageNativeUpdateSource(source, directory, projectId, operationId);
-    const input: Parameters<typeof prepareNativeProjectUpdate>[0] = { operationId, mode: 'restore-content', packageDigest, intentDigest,
+    const input: UnstagedNativeProjectUpdate = { operationId, mode: 'restore-content', packageDigest, intentDigest,
       sourceLineageId: source.snapshot.lineageId, targetProjectId: projectId, expected, next, exchange,
       idMap: material.identities, history: [], media: material.media, editorRecords: raw.editors, backup, oldAssets,
       restoreRecoveryId: recoveryId, restoreAssets: structuredClone(reusableAssets), rawRecovery, oldAssetSnapshots,
-      assetRecords: recoveredAssets.records, recoveryState, ...staged };
-    try { await finishNativeUpdate(await prepareNativeProjectUpdate(input), assertCurrent); }
-    catch (error) {
-      let operation: NativeProjectUpdateJournal | null;
-      try { operation = await readNativeProjectUpdate(operationId); }
-      catch (cause) { throw new Error(`恢复结果未知，原操作 ${operationId} 已保留，请先核对`, { cause }); }
-      if (operation) throw new Error(`恢复未完成，原操作 ${operationId} 已保留；${error instanceof Error ? error.message : '请核对后续接'}`, { cause: error });
-      throw error;
-    }
+      assetRecords: recoveredAssets.records, recoveryState };
+    await withStagedNativeUpdateSource(source, directory, { projectId, operationId, mode: 'restore-content' }, async (staged) => {
+      assertCurrent?.();
+      await finishNativeUpdate(await prepareNativeProjectUpdate({ ...input, ...staged }), assertCurrent);
+    });
   });
 }

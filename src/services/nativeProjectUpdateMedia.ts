@@ -29,6 +29,8 @@ export const nativeUpdateInventory = (assets: ProjectModelArchiveAsset[]) => ass
   .sort((a, b) => { const left = `${a.rootRef}/${a.path}`, right = `${b.rootRef}/${b.path}`; return left < right ? -1 : left > right ? 1 : 0; });
 
 const updateSourceCleanups = new Map<string, Promise<void>>();
+const interruptedUnregisteredCleanups: Map<string, () => Promise<void>> = import.meta.hot?.data.interruptedNativeUpdateSourceCleanups ?? new Map();
+if (import.meta.hot) import.meta.hot.data.interruptedNativeUpdateSourceCleanups = interruptedUnregisteredCleanups;
 
 /** 正式媒体、历史和数据库提交已确认后，释放独立的更新或恢复输入。 */
 export function cleanupFinalizedNativeProjectUpdateSource(operation: NativeProjectUpdateJournal, scannedBase?: string): Promise<void> {
@@ -157,31 +159,60 @@ export async function verifyNativeUpdateBackup(projectId: string, backup: Native
   if (receipt.outputRef !== backup.outputRef || receipt.packageDigest !== backup.packageDigest) throw new Error('恢复备份无法核实，未更新');
 }
 
-/** 将预览包复制为原操作独立来源，并按包内摘要读回；journal 只保存相对标识。 */
-export async function stageNativeUpdateSource(source: ValidatedProjectArchiveV4, sourceDirectory: string,
-  projectId: string, operationId: string): Promise<{ sourceRef: string; sourceFiles: NonNullable<import('../types/projectModelTransfer').ProjectModelTransferImportInput['sourceFiles']> }> {
+/** 冻结原操作独立来源。只有本次成功发布且确认未登记时才可回收。 */
+export async function withStagedNativeUpdateSource(source: ValidatedProjectArchiveV4, sourceDirectory: string,
+  operation: { projectId: string; operationId: string; mode: 'update-existing' | 'restore-content' },
+  use: (staged: { sourceRef: string; sourceFiles: NonNullable<ProjectModelTransferImportJournal['sourceFiles']> }) => Promise<void>): Promise<void> {
+  const { projectId, operationId, mode } = operation;
   if (!validId(operationId) || !sourceDirectory) throw new Error('更新来源不可用，请重新预览');
   const base = await files.getBaseDir(); if (!base) throw new Error('更新暂存目录不可用');
   const stagedOperation = `native-update-${operationId}`;
   const sourceRef = `imports/${stagedOperation}`, directory = files.joinPath(base, sourceRef);
-  // 复用原生文件发布：逐文件摘要与 fsync、目录屏障及原子发布；不依赖插件复制缓存。
-  if (!await exists(directory)) {
-    try {
-      await invoke('publish_project_import_assets', { stagingDir: sourceDirectory, projectDir: base, operationId: stagedOperation,
-        assets: source.assets.map((asset) => ({ path: safeExchangePath(asset.path), destinationPath: safeExchangePath(asset.path),
-          bytes: asset.bytes, sha256: asset.sha256 })) });
-    } catch (error) {
-      // 发布回执丢失时只核验同一原目录；缺失则保留错误，绝不覆盖。
-      if (!await exists(directory)) throw error;
-    }
+  const assets = source.assets.map(({ path, bytes, sha256 }) => ({ path, bytes, sha256 }));
+  const retryCleanup = interruptedUnregisteredCleanups.get(operationId);
+  if (retryCleanup) {
+    const { readNativeProjectUpdate } = await import('./indexedDb/nativeProjectRepository');
+    if (await readNativeProjectUpdate(operationId)) throw new Error('原操作已登记，请通过原操作续接');
+    // 中途失败的清理可能已删除了一部分文件；补清理后再按原操作发布。
+    await retryCleanup();
+    interruptedUnregisteredCleanups.delete(operationId);
   }
-  const actual = await invoke<ArchiveAssetDigest[]>('inspect_project_archive_assets', { assetsDir: directory,
-    selectedPaths: source.assets.map((asset) => asset.path) });
-  if (actual.length !== source.assets.length || source.assets.some((asset) => !actual.some((item) => item.path === asset.path
-    && item.bytes === asset.bytes && item.sha256 === asset.sha256))) throw new Error('更新来源素材变化，未修改项目');
-  const port = createBoundProjectModelArchiveImportPort(projectId, sourceRef);
-  const staged = await port.captureImportSource!(source);
-  return { sourceRef, sourceFiles: staged.sourceFiles ?? [] };
+  let ownedStage = false, usingStage = false;
+  try {
+    // 逐文件摘要、fsync 与原子发布由原生端负责。
+    if (!await exists(directory)) {
+      try {
+        await invoke('publish_project_import_assets', { stagingDir: sourceDirectory, projectDir: base, operationId: stagedOperation,
+          assets: assets.map((asset) => ({ path: safeExchangePath(asset.path), destinationPath: safeExchangePath(asset.path),
+            bytes: asset.bytes, sha256: asset.sha256 })) });
+        ownedStage = true;
+      } catch (error) {
+        // 回执丢失时可以继续核验原目录，但不能证明由本次创建。
+        if (!await exists(directory)) throw error;
+      }
+    }
+    const actual = await invoke<ArchiveAssetDigest[]>('inspect_project_archive_assets', { assetsDir: directory,
+      selectedPaths: assets.map((asset) => asset.path) });
+    if (actual.length !== assets.length || assets.some((asset) => !actual.some((item) => item.path === asset.path
+      && item.bytes === asset.bytes && item.sha256 === asset.sha256))) throw new Error('更新来源素材变化，未修改项目');
+    const port = createBoundProjectModelArchiveImportPort(projectId, sourceRef);
+    const staged = await port.captureImportSource!(source);
+    usingStage = true;
+    await use({ sourceRef, sourceFiles: staged.sourceFiles ?? [] });
+  } catch (error) {
+    if (!ownedStage && !usingStage) throw error;
+    const action = mode === 'restore-content' ? '恢复' : '更新';
+    const { readNativeProjectUpdate } = await import('./indexedDb/nativeProjectRepository');
+    let recorded: NativeProjectUpdateJournal | null;
+    try { recorded = await readNativeProjectUpdate(operationId); }
+    catch (cause) { throw new Error(`${action}结果未知，原操作 ${operationId} 已保留，请先核对`, { cause }); }
+    if (recorded) throw new Error(`${action}未完成，原操作 ${operationId} 已保留；${error instanceof Error ? error.message : '请核对后续接'}`, { cause: error });
+    if (ownedStage) {
+      const cleanup = () => cleanupVerifiedArchiveSource(base, sourceRef, assets);
+      await cleanup().catch(() => { interruptedUnregisteredCleanups.set(operationId, cleanup); });
+    }
+    throw error;
+  }
 }
 
 /** 按原备份回执解包到隔离目录；不会覆盖当前项目或使用新的来源代替原备份。 */
