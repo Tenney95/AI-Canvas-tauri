@@ -104,8 +104,20 @@ interface NativeRuntime {
   activeId: string;
   library: AppState['dramaAssets'];
   tail: Promise<void>;
+  savedView: Pick<AppState, 'nodes' | 'edges' | 'groups'>;
   /** 排队的保存需重取事务投影后的视图，不能用旧快照覆盖已交付产物或引用。 */
   mediaGeneration?: number;
+}
+
+function nativeCanvasHasUnsavedEdits(runtime: NativeRuntime | undefined, state: AppState): boolean {
+  const saved = runtime?.savedView;
+  if (!saved || runtime?.library !== state.dramaAssets) return true;
+  // 流程图的选中和测量变化不会改变用户编辑的内容。
+  const nodeContent = (node: Node<BaseNodeData>) => ({ ...node, selected: undefined, measured: undefined, dragging: undefined, resizing: undefined });
+  const edgeContent = (edge: Edge) => ({ ...edge, selected: undefined });
+  return !configValuesEqual(saved.groups, state.groups)
+    || saved.nodes !== state.nodes && !configValuesEqual(saved.nodes.map(nodeContent), state.nodes.map(nodeContent))
+    || saved.edges !== state.edges && !configValuesEqual(saved.edges.map(edgeContent), state.edges.map(edgeContent));
 }
 const nativeKnownIds: Set<string> = import.meta.hot?.data.nativeKnownIds ?? new Set();
 const nativeRuntime: WeakMap<() => AppState, NativeRuntime> = import.meta.hot?.data.nativeRuntime ?? new WeakMap();
@@ -177,7 +189,8 @@ async function activateNativeProject(set: ProjectSliceSet, get: ProjectSliceGet,
   const { emptyDramaAssetLibrary } = await import('../types/dramaAssets');
   assertCurrent();
   const library = data.dramaAssets ?? emptyDramaAssetLibrary();
-  nativeRuntime.set(get, { loaded, activeId, library, tail: Promise.resolve() });
+  const view = { nodes: data.nodes as Node<BaseNodeData>[], edges: data.edges as Edge[], groups: getProjectGroups(data) };
+  nativeRuntime.set(get, { loaded, activeId, library, savedView: view, tail: Promise.resolve() });
   const projectContext = { schemaVersion: 2 as const, modelGeneration: 1, runtimeEpoch: crypto.randomUUID(),
     projectId: entry.project.id, projectEpoch: entry.project.epoch };
   const context: ProjectExpectedContext = canvas ? { kind: 'canvas', ...projectContext,
@@ -189,7 +202,7 @@ async function activateNativeProject(set: ProjectSliceSet, get: ProjectSliceGet,
       ...projected.map((item) => item.id === activeId ? { ...item, settings: data.settings,
         ...(canvas ? { revisionScope: canvas.revisionScope } : {}) } : item)],
     currentProjectId: activeId, projectName: selected.name, projectLoadStatus: 'ready', projectExecutionContext: context,
-    nodes: data.nodes as Node<BaseNodeData>[], edges: data.edges as Edge[], groups: getProjectGroups(data),
+    ...view,
     ...(preserveHistory ? {} : { history: [], historyIndex: -1 }), dramaAssets: library,
   }));
   if (canvas) void resumePendingTasks(activeId).catch(() => { /* 原缓存保留，下次原画布就绪再交付。 */ });
@@ -230,6 +243,7 @@ async function saveNativeCurrentProject(get: ProjectSliceGet, state: AppState, r
         runtime.loaded = { ...runtime.loaded, selection: { ...selection, changeRevision: saved.changeRevision }, content: saved.content };
         runtime.library = state.dramaAssets;
       }
+      runtime.savedView = { nodes: state.nodes, edges: state.edges, groups: state.groups };
       return record.id;
     }
     const saveOptions: [options?: { signal: AbortSignal }] = projection ? [{ signal: projection.signal }] : [];
@@ -241,6 +255,7 @@ async function saveNativeCurrentProject(get: ProjectSliceGet, state: AppState, r
     runtime.loaded = { ...runtime.loaded, selection: { ...selection, canvas: saved.canvas, changeRevision: saved.changeRevision,
       context: { ...selection.context, canvasRevision: saved.canvas.revision } }, content: saved.content ?? content };
     if (updateLibrary) runtime.library = state.dramaAssets;
+    runtime.savedView = { nodes: state.nodes, edges: state.edges, groups: state.groups };
     if (projection) {
       runtime.mediaGeneration = (runtime.mediaGeneration ?? 0) + 1;
       projection.commit();
@@ -377,6 +392,12 @@ async function runNativeImportMutation(set: ProjectSliceSet, get: ProjectSliceGe
       const target = entry.canvasIds.includes(activeId) ? activeId
         : entry.episodes[0]?.canvasId ?? entry.canvasIds[0] ?? entry.project.id;
       await activateNativeProject(set, get, entry, target, assertCurrent, false);
+      get().loadConversationsForProject(target).catch((e) => console.warn('[项目更新] 加载会话失败:', e));
+      if (target !== activeId) {
+        rememberActiveProject(target);
+        get().repairInterruptedForProject(target).catch((e) => console.warn('[项目更新] 修复中断消息失败:', e));
+        get().loadAgentTasksForProject(target).catch((e) => console.warn('[项目更新] 加载任务失败:', e));
+      }
     } else set((state) => ({ projects: [...state.projects.filter((item) => nativeBinding(item)?.projectId !== projectId), ...projectNativeCatalogEntry(entry)] }));
   } catch (error) {
     let unchanged = !started;
@@ -1041,6 +1062,7 @@ export interface ProjectSlice {
   importProject: (session?: PreparedProjectImport, preview?: ProjectImportPreview | null,
     choices?: Readonly<Record<string, ProjectMergeSide>>, options?: ProjectImportOptions) => Promise<string | undefined>;
   restoreProjectImport: (ownerId: string, recoveryId: string) => Promise<void>;
+  settleProjectTransfer: (ownerId: string, operationId: string, action: 'continue' | 'abandon') => Promise<void>;
   /** 事务提交原媒体结果，保存并重载当前画布；原租约失效时不覆盖其他作品。 */
   commitNativeMediaResult: (record: NativeMediaTaskRecord, relativePath: string, expected: ProjectExpectedContext, signal?: AbortSignal) => Promise<void>;
   /** 在冻结本轮生成输入前补齐当前节点和引用素材的落盘身份，不创建历史或提交付费请求。 */
@@ -2936,8 +2958,33 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     return result.projectId;
   },
 
+  settleProjectTransfer: async (ownerId, operationId, action) => {
+    const binding = nativeBinding(get().projects.find((item) => item.id === ownerId || nativeBinding(item)?.projectId === ownerId));
+    if (!binding) throw new Error('无法确认原操作所属项目');
+    const projectId = binding.projectId;
+    const repository = await import('../services/indexedDb/nativeProjectRepository');
+    const operation = (await repository.listNativeProjectPendingTransfers(projectId)).find((item) => item.operationId === operationId);
+    if (!operation) throw new Error('原操作已结束或不属于当前项目，请刷新');
+    if (projectImportsApplying.has(projectId) || projectAssetSyncBarriers.has(projectId)) throw new Error('该项目正在处理其它操作');
+    if (operation.kind === 'export') {
+      await (await import('../services/nativeProjectArchiveService')).settleNativeProjectArchiveExport(projectId, operationId, action);
+      return;
+    }
+    if (action === 'abandon') {
+      await repository.abortNativeProjectUpdate(operationId);
+      return;
+    }
+    const before = get();
+    if (nativeBinding(before.projects.find((item) => item.id === before.currentProjectId))?.projectId === projectId
+      && nativeCanvasHasUnsavedEdits(nativeRuntime.get(get), before)) {
+      throw new Error('当前画布有尚未保存的编辑，已保留画布。请先备份这些编辑，再重新打开项目并续接原操作');
+    }
+    await runNativeImportMutation(set, get, projectId, operationId,
+      async (assertCurrent) => (await import('../services/nativeProjectUpdateService')).resumeNativeProjectUpdate(operationId, assertCurrent));
+  },
+
   restoreProjectImport: async (ownerId, recoveryId) => {
-    const binding = nativeBinding(get().projects.find((item) => item.id === ownerId));
+    const binding = nativeBinding(get().projects.find((item) => item.id === ownerId || nativeBinding(item)?.projectId === ownerId));
     if (nativeKnownIds.has(ownerId) && !binding) throw new Error('新项目身份不可用，请重新打开');
     if (binding) {
       const operationId = crypto.randomUUID();

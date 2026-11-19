@@ -19,7 +19,8 @@ import { getAssetIndexById } from './indexedDbService';
 import { getGlobalFilesDir } from './fs/assetLibrary';
 import { getRelativeAssetPath } from './fs/assetIndex';
 import { safeExchangePath, type ArchiveAssetDigest } from './projectExchangeDomain';
-import { advanceNativeProjectExport, listNativeRetiredCanvasIds, prepareNativeProjectExport, readNativeProjectCapture, readNativeProjectExport } from './indexedDb/nativeProjectRepository';
+import { abandonNativeProjectExport, advanceNativeProjectExport, listNativeRetiredCanvasIds, prepareNativeProjectExport,
+  readNativeProjectCapture, readNativeProjectExport } from './indexedDb/nativeProjectRepository';
 import type { ProjectModelTransferCapture, ProjectModelTransferHistoryRow } from '../types/projectModelTransfer';
 import type { ProjectExportResult, ProjectImportResult } from './projectTransferService';
 import type { VideoEditorProjectRecord } from '../types/videoEditor';
@@ -260,6 +261,9 @@ async function prepareNativeArchiveMaterial(capture: ProjectModelTransferCapture
   return { portable, assets };
 }
 
+const activeNativeExports: Set<string> = import.meta.hot?.data.activeNativeExports ?? new Set();
+if (import.meta.hot) import.meta.hot.data.activeNativeExports = activeNativeExports;
+
 /** 保存对话框选定后捕获完整材料，登记 journal，再使用原生回执发布。 */
 export async function exportNativeProjectArchive(projectId: string): Promise<ProjectExportResult | null> {
   if (!isTauriEnv()) throw new Error('项目导出仅在桌面版可用');
@@ -290,6 +294,7 @@ export async function exportNativeProjectArchive(projectId: string): Promise<Pro
     return { filePath: outputPath, assetCount: assets.length, archiveBytes: receipt.archiveBytes ?? 0,
       episodeCount: source.value.aggregate.episodes.length, operationId };
   };
+  activeNativeExports.add(operationId);
   try { return await lock(0); }
   catch (error) {
     let operation: Awaited<ReturnType<typeof readNativeProjectExport>>;
@@ -297,7 +302,7 @@ export async function exportNativeProjectArchive(projectId: string): Promise<Pro
     catch (cause) { throw new Error(`导出结果未知，原操作 ${operationId} 已保留，请先核对`, { cause }); }
     if (operation) throw new Error(`导出未完成，原操作 ${operationId} 已保留；${error instanceof Error ? error.message : '请核对后续接'}`, { cause: error });
     throw error;
-  }
+  } finally { activeNativeExports.delete(operationId); }
 }
 
 /** 确认原操作的原生文件；不会重新打包或覆盖。 */
@@ -314,6 +319,15 @@ export async function reconcileNativeProjectArchiveExport(operationId: string): 
     throw new Error('原归档已发布，但项目或历史已变化，保留原回执待核对');
   }
   await advanceNativeProjectExport(operationId, operation.sequence, 'registered', receipt);
+}
+
+/** 按原项目和操作处理导出回执；结束登记保留磁盘上的原文件。 */
+export async function settleNativeProjectArchiveExport(projectId: string, operationId: string, action: 'continue' | 'abandon'): Promise<void> {
+  if (activeNativeExports.has(operationId)) throw new Error('原导出仍在运行，请稍后核对');
+  const operation = await readNativeProjectExport(operationId);
+  if (!operation || operation.projectId !== projectId) throw new Error('原导出不属于当前项目');
+  if (action === 'continue') return reconcileNativeProjectArchiveExport(operationId);
+  await abandonNativeProjectExport(projectId, operationId, operation.sequence);
 }
 
 /** 复制使用独立来源和导入 journal，不修改源项目的协作 head。 */

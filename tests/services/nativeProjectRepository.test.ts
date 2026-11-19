@@ -8,7 +8,8 @@ import { createNativeProject, readNativeProject, readNativeProjectByCanvasId, li
   readNativeEpisodeContent, saveNativeProjectContent, saveNativeProjectView, deleteNativeProject, transitionNativeProjectRecycle,
   openNativeProjectDatabase, transact, RETIRED, EXCHANGE,
   updateNativeProjectMetadata, updateNativeEpisodeMetadata, updateNativeEpisodeComposite, NATIVE_PROJECT_DATABASE_NAME } from '../../src/services/indexedDb/nativeProjectRepository';
-import { prepareNativeProjectExport, advanceNativeProjectExport, readNativeProjectExport, prepareNativeProjectImport,
+import { prepareNativeProjectExport, advanceNativeProjectExport, readNativeProjectExport, abandonNativeProjectExport,
+  listNativeProjectPendingTransfers, prepareNativeProjectImport,
   advanceNativeProjectImport, commitNativeProjectImport, replaceNativeContentWithRecovery,
   listNativeContentRecoveryPoints } from '../../src/services/indexedDb/nativeProjectRepository';
 import { prepareProjectModelArchiveCapture, materializeProjectModelArchiveBusiness } from '../../src/services/projectModelArchiveService';
@@ -80,7 +81,7 @@ describe('独立新项目仓储', () => {
       expect((await saveNativeCanvas(input, { factory })).revision).toBe(1);
     } finally { db.close(); }
   });
-  it('导出按原操作登记回执，过期版本保留发布状态且不登记', async () => {
+  it('过期导出可按原操作和版本结束，保留已发布回执', async () => {
     const root = await createNativeProject({ name: '导出', projectId: id('p2', '1'), canvasId: id('c2', '2') }, { factory });
     const capture: ProjectModelTransferCapture = { schemaVersion: 1, generation: 1, sessionId: 'native-project', sessionRevision: 0,
       sourceToken: 'a'.repeat(64), includesHistory: true, aggregate: { ...root, previews: [], bindings: [] }, exchange: null, history: [], historyBindings: [] };
@@ -95,6 +96,26 @@ describe('独立新项目仓储', () => {
       expectedCanvasEpoch: root.canvas!.epoch, expectedCanvasRevision: root.canvas!.revision, document: { nodes: [], edges: [], groups: [] } }, { factory });
     await expect(advanceNativeProjectExport(journal.operationId, published.sequence, 'registered', receipt, { factory })).rejects.toThrow('project-version-conflict');
     expect((await readNativeProjectExport(journal.operationId, { factory }))?.phase).toBe('published');
+    expect((await readNativeProjectCapture(root.project.id, { factory }))?.exchange).toBeNull();
+
+    const anotherProjectId = id('p2', '3');
+    expect(await listNativeProjectPendingTransfers(anotherProjectId, { factory })).toEqual([]);
+    expect(await listNativeProjectPendingTransfers(root.project.id, { factory })).toEqual([{
+      kind: 'export', phase: 'published', operationId: journal.operationId, updatedAt: published.updatedAt,
+    }]);
+    await expect(abandonNativeProjectExport(anotherProjectId, journal.operationId, published.sequence, { factory }))
+      .rejects.toThrow('export-journal-conflict');
+    await expect(abandonNativeProjectExport(root.project.id, journal.operationId, packing.sequence, { factory }))
+      .rejects.toThrow('export-journal-conflict');
+    expect(await readNativeProjectExport(journal.operationId, { factory })).toEqual(published);
+
+    await abandonNativeProjectExport(root.project.id, journal.operationId, published.sequence, { factory });
+    expect(await readNativeProjectExport(journal.operationId, { factory })).toMatchObject({
+      phase: 'aborted', sequence: published.sequence + 1, ...receipt, head: published.head,
+    });
+    await expect(advanceNativeProjectExport(journal.operationId, published.sequence + 1, 'registered', receipt, { factory }))
+      .rejects.toThrow('export-journal-conflict');
+    expect(await listNativeProjectPendingTransfers(root.project.id, { factory })).toEqual([]);
     expect((await readNativeProjectCapture(root.project.id, { factory }))?.exchange).toBeNull();
   });
 

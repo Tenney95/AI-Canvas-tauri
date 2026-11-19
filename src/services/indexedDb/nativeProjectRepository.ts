@@ -1072,7 +1072,7 @@ export async function deleteNativeProject(input: { projectId: string; expectedPr
       if (!revision || revision.projectId !== fixed.projectId || !Number.isSafeInteger(revision.changeRevision) || revision.changeRevision < 0) return fail('invalid-project-revision');
       if (current.project.epoch !== fixed.expectedProjectEpoch || revision.changeRevision !== fixed.expectedChangeRevision) return fail('project-version-conflict');
       if (transfers.some((entry) => !(entry.kind === 'project-model-export' && ['registered', 'aborted'].includes(entry.phase ?? ''))
-        && !(entry.kind === 'project-model-import' && entry.phase === 'finalized')
+        && !(entry.kind === 'project-model-import' && ['finalized', 'aborted'].includes(entry.phase ?? ''))
         && !(entry.kind === 'native-content-recovery' && entry.phase === 'ready')
         && !(entry.kind === 'native-shared-sync' && ['finalized', 'aborted'].includes(entry.phase ?? '')))) return fail('project-transfer-present');
       const retirement: NativeProjectRetirement = { id: fixed.projectId, projectId: fixed.projectId, kind: 'project', deletedAt: now };
@@ -1124,6 +1124,45 @@ export async function transitionNativeProjectRecycle(projectId: string, requestI
 export interface NativeProjectExportJournal extends ProjectModelTransferExportJournal {
   projectId: string;
   expectedChangeRevision: number;
+}
+
+export type NativeProjectPendingTransfer = { operationId: string; updatedAt: number } & (
+  { kind: 'export'; phase: 'prepared' | 'packing' | 'published' }
+  | { kind: 'update' | 'restore'; phase: 'prepared' | 'media_publishing' | 'media_ready' | 'db_committed' }
+);
+
+/** 恢复入口只读取指定作品的待完成操作元数据。 */
+export async function listNativeProjectPendingTransfers(projectId: string, options: NativeProjectOptions = {}): Promise<NativeProjectPendingTransfer[]> {
+  if (!isNativeProjectId(projectId)) return fail('invalid-identity');
+  const database = await openNativeProjectDatabase(false, options);
+  if (!database) return [];
+  try {
+    return await transact(database, 'readonly', options, async (tx) => {
+      const rows: NativeProjectPendingTransfer[] = [];
+      await new Promise<void>((resolve, reject) => {
+        const cursor = tx.objectStore(TRANSFER).index('projectId').openCursor(IDBKeyRange.only(projectId));
+        cursor.onerror = () => reject(cursor.error ?? new Error('读取项目操作失败'));
+        cursor.onsuccess = () => {
+          const entry = cursor.result;
+          if (!entry) { resolve(); return; }
+          const { operationId, updatedAt, kind, mode, phase, targetProjectId } = entry.value as {
+            operationId?: unknown; updatedAt?: unknown; kind?: unknown; mode?: unknown; phase?: unknown; targetProjectId?: unknown;
+          };
+          if (typeof operationId === 'string' && operationId === entry.primaryKey && targetProjectId === projectId
+            && typeof updatedAt === 'number' && Number.isSafeInteger(updatedAt) && updatedAt >= 0) {
+            if (kind === 'project-model-export' && (phase === 'prepared' || phase === 'packing' || phase === 'published')) {
+              rows.push({ operationId, updatedAt, kind: 'export', phase });
+            } else if (kind === 'project-model-import' && (mode === 'update-existing' || mode === 'restore-content')
+              && (phase === 'prepared' || phase === 'media_publishing' || phase === 'media_ready' || phase === 'db_committed')) {
+              rows.push({ operationId, updatedAt, kind: mode === 'update-existing' ? 'update' : 'restore', phase });
+            }
+          }
+          entry.continue();
+        };
+      });
+      return rows.sort((left, right) => right.updatedAt - left.updatedAt);
+    }, [TRANSFER]);
+  } finally { database.close(); }
 }
 
 export async function prepareNativeProjectExport(input: { operationId: string; projectId: string; expectedChangeRevision: number;
@@ -1208,6 +1247,24 @@ export async function advanceNativeProjectExport(operationId: string, sequence: 
       await request(tx.objectStore(TRANSFER).put(next));
       return next;
     }, [ROOTS, REVISIONS, EXCHANGE, TRANSFER]);
+  } finally { database.close(); }
+}
+
+/** 结束本机登记，保留原发布回执及所有已写文件。 */
+export async function abandonNativeProjectExport(projectId: string, operationId: string, expectedSequence: number,
+  options: NativeProjectOptions = {}): Promise<void> {
+  if (!isNativeProjectId(projectId) || !/^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(operationId)
+    || !Number.isSafeInteger(expectedSequence) || expectedSequence < 0) return fail('invalid-export');
+  const database = await openNativeProjectDatabase(false, options);
+  if (!database) return fail('project-not-found');
+  try {
+    await transact(database, 'readwrite', options, async (tx) => {
+      if (tx.durability !== 'strict') return fail('strict-durability-unavailable');
+      const store = tx.objectStore(TRANSFER), row = await request(store.get(operationId)) as NativeProjectExportJournal | undefined;
+      if (!row || row.kind !== 'project-model-export' || row.projectId !== projectId || row.targetProjectId !== projectId || row.operationId !== operationId
+        || row.sequence !== expectedSequence || !['prepared', 'packing', 'published'].includes(row.phase)) return fail('export-journal-conflict');
+      await request(store.put({ ...row, phase: 'aborted', sequence: increment(row.sequence), updatedAt: Date.now() } satisfies NativeProjectExportJournal));
+    }, [TRANSFER], true);
   } finally { database.close(); }
 }
 
@@ -1343,7 +1400,7 @@ export async function replaceNativeContentWithRecovery(input: { operationId: str
         || !configValuesEqual(readNativeProjectExchange(exchange?.exchange ?? null), fixed.expected.exchange)) return fail('project-version-conflict');
       if (operations.some((item) => !(item.kind === 'native-content-recovery' && item.phase === 'ready')
         && !(item.kind === 'project-model-export' && ['registered', 'aborted'].includes(item.phase ?? ''))
-        && !(item.kind === 'project-model-import' && item.phase === 'finalized')
+        && !(item.kind === 'project-model-import' && ['finalized', 'aborted'].includes(item.phase ?? ''))
         && !(item.kind === 'native-shared-sync' && ['finalized', 'aborted'].includes(item.phase ?? '')))) return fail('project-transfer-present');
       const before = fixed.expected.aggregate, updated = structuredClone(fixed.next);
       const ids = (values: Array<{ id: string }>) => values.map((item) => item.id).sort();

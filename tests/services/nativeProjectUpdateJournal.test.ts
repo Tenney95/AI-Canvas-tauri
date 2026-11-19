@@ -1,6 +1,6 @@
 /** 隔离 fake IndexedDB 样本；不读取或更改真实作品。 */
 import { webcrypto } from 'node:crypto';
-import { IDBFactory } from 'fake-indexeddb';
+import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const fixtureVerification = vi.hoisted(() => ({ verify: vi.fn(async () => {}) }));
 // 只在 Vitest 替身模块中注入物理文件证据；生产仓储没有允许调用方替换核验的参数。
@@ -8,7 +8,7 @@ vi.mock('../../src/services/nativeProjectUpdateVerification', () => ({ verifyNat
 import { createNativeProject, createNativeEpisode, readNativeProjectCapture, saveNativeCanvas,
   prepareNativeProjectExport, advanceNativeProjectExport, prepareNativeProjectUpdate, readNativeProjectUpdate,
   advanceNativeProjectUpdate, commitNativeProjectUpdate, abortNativeProjectUpdate, listNativeContentRecoveryPoints,
-  listNativeRetiredIdentityIds, NATIVE_PROJECT_DATABASE_NAME } from '../../src/services/indexedDb/nativeProjectRepository';
+  deleteNativeProject, listNativeProjectPendingTransfers, listNativeRetiredIdentityIds, NATIVE_PROJECT_DATABASE_NAME } from '../../src/services/indexedDb/nativeProjectRepository';
 import { prepareProjectModelArchiveCapture, materializeProjectModelArchiveBusiness } from '../../src/services/projectModelArchiveService';
 import { projectArchivePayloadFromSnapshotV2, readProjectArchiveV4Files } from '../../src/services/projectArchiveV4';
 import { createProjectExchangeRevisionV2, parseProjectExchangeBundleV2 } from '../../src/services/projectExchangeV2Format';
@@ -19,7 +19,10 @@ import type { ProjectModelTransferCapture } from '../../src/types/projectModelTr
 const id = (prefix: 'p2' | 'e2' | 'c2', digit: string) => `${prefix}-${digit.repeat(8)}-${digit.repeat(4)}-4${digit.repeat(3)}-8${digit.repeat(3)}-${digit.repeat(12)}`;
 const uuid = (digit: string) => `${digit.repeat(8)}-${digit.repeat(4)}-4${digit.repeat(3)}-8${digit.repeat(3)}-${digit.repeat(12)}`;
 let factory: IDBFactory;
-beforeEach(() => { factory = new IDBFactory(); fixtureVerification.verify.mockReset().mockResolvedValue(undefined); vi.stubGlobal('crypto', webcrypto); });
+beforeEach(() => {
+  factory = new IDBFactory(); fixtureVerification.verify.mockReset().mockResolvedValue(undefined);
+  vi.stubGlobal('crypto', webcrypto); vi.stubGlobal('IDBKeyRange', IDBKeyRange);
+});
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 async function capture(projectId: string): Promise<ProjectModelTransferCapture> {
@@ -93,10 +96,16 @@ describe('新项目更新 journal', () => {
     expect((await listNativeContentRecoveryPoints(expected.aggregate.project.id, { factory }))[0].exchange!.published[0])
       .not.toHaveProperty('archiveBytes');
   });
-  it('准备后冻结原项目；撤销与迟到推进竞争后不得再提交，原数据保留', async () => {
+  it('准备后冻结原项目；撤销后拒绝迟到提交，允许明确删除且保留操作回执', async () => {
     const expected = await setup(), operationId = uuid('4'), input = await updateInput(expected, operationId);
     const operation = await prepareNativeProjectUpdate(input, { factory });
     const canvas = expected.aggregate.canvases[0];
+    const deletion = { projectId: expected.aggregate.project.id, expectedProjectEpoch: expected.aggregate.project.epoch,
+      expectedChangeRevision: expected.sessionRevision };
+    expect(await listNativeProjectPendingTransfers(deletion.projectId, { factory })).toEqual([{
+      kind: 'update', phase: 'prepared', operationId, updatedAt: operation.updatedAt,
+    }]);
+    await expect(deleteNativeProject(deletion, { factory })).rejects.toThrow('project-transfer-present');
     await expect(saveNativeCanvas({ projectId: expected.aggregate.project.id, expectedProjectEpoch: expected.aggregate.project.epoch,
       canvasId: canvas.id, episodeId: canvas.episodeId, expectedCanvasEpoch: canvas.epoch, expectedCanvasRevision: canvas.revision,
       document: { nodes: [], edges: [], groups: [] } }, { factory })).rejects.toThrow('project-update-pending');
@@ -106,7 +115,12 @@ describe('新项目更新 journal', () => {
     if (current?.phase !== 'aborted') await abortNativeProjectUpdate(operationId, { factory });
     await expect(commitNativeProjectUpdate(operationId, operation.sequence, { factory })).rejects.toThrow();
     expect((await readNativeProjectCapture(expected.aggregate.project.id, { factory }))?.aggregate.canvases[0]).toEqual(canvas);
-    expect((await readNativeProjectUpdate(operationId, { factory }))?.phase).toBe('aborted');
+    const aborted = await readNativeProjectUpdate(operationId, { factory });
+    expect(aborted).toMatchObject({ phase: 'aborted', backup: input.backup });
+    expect(await listNativeProjectPendingTransfers(deletion.projectId, { factory })).toEqual([]);
+    await deleteNativeProject(deletion, { factory });
+    expect(await readNativeProjectCapture(deletion.projectId, { factory })).toBeNull();
+    expect(await readNativeProjectUpdate(operationId, { factory })).toEqual(aborted);
   });
 
   it.each(['missing', 'changed'] as const)('原素材 %s 时只接受备份同身份摘要并幂等提交', async (state) => {
@@ -163,9 +177,15 @@ describe('新项目更新 journal', () => {
     await expect(prepareNativeProjectUpdate({ ...input, sourceFiles: [{ ...sourceFile, sha256: 'f'.repeat(64) }] }, { factory }))
       .rejects.toThrow('restore-file-conflict');
     let operation = await prepareNativeProjectUpdate(input, { factory });
+    expect(await listNativeProjectPendingTransfers(current.aggregate.project.id, { factory })).toEqual([{
+      kind: 'restore', phase: 'prepared', operationId: restoreId, updatedAt: operation.updatedAt,
+    }]);
     operation = await advanceNativeProjectUpdate(restoreId, operation.sequence, 'media_publishing', undefined, { factory });
     operation = await advanceNativeProjectUpdate(restoreId, operation.sequence, 'media_ready', `media_v1_${restoreId}`, { factory });
     const committedRestore = await commitNativeProjectUpdate(restoreId, operation.sequence, { factory });
+    expect(await listNativeProjectPendingTransfers(current.aggregate.project.id, { factory })).toEqual([{
+      kind: 'restore', phase: 'db_committed', operationId: restoreId, updatedAt: committedRestore.updatedAt,
+    }]);
     expect((await commitNativeProjectUpdate(restoreId, operation.sequence, { factory })).committedToken).toBe(committedRestore.committedToken);
     const node = (await readNativeProjectCapture(current.aggregate.project.id, { factory }))!.aggregate.canvases[0].nodes[0] as { data: { relativePath: string } };
     expect(node.data.relativePath).toBe(destination);
