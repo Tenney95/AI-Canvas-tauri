@@ -27,6 +27,7 @@ import { allocateNativeRecoveryAssets, applyNativeGlobalRecoveryFiles } from './
 import { materializeNativeArchiveGlobalAssets, verifyNativeGlobalRecoverySources, type NativeGlobalRecoveryFile } from './nativeProjectArchiveService';
 import { prepareNativeMissingAssetBackup, verifyNativeMissingAssetBackups } from './nativeMissingAssetBackup';
 import { rebindRetiredNativeSnapshot } from './nativeProjectIdentityRebind';
+import { NativeProjectImportPausedError, type NativeProjectImportTransfer } from './nativeProjectImportTransfer';
 import { prepareNativeProjectUpdate, readNativeProjectUpdate, advanceNativeProjectUpdate, commitNativeProjectUpdate, listNativeRetiredIdentityIds,
   type NativeProjectUpdateJournal } from './indexedDb/nativeProjectRepository';
 
@@ -138,30 +139,36 @@ async function finalizeNativeUpdate(operation: NativeProjectUpdateJournal): Prom
   return operation;
 }
 
-async function finishNativeUpdate(initial: NativeProjectUpdateJournal, assertCurrent?: () => void): Promise<NativeProjectUpdateJournal> {
+async function finishNativeUpdate(initial: NativeProjectUpdateJournal, assertCurrent?: () => void,
+  transfer?: NativeProjectImportTransfer): Promise<NativeProjectUpdateJournal> {
   let operation = initial;
   if (operation.phase === 'finalized' || operation.phase === 'db_committed') return finalizeNativeUpdate(operation);
   if (operation.phase === 'aborted') throw new Error('原更新已撤销，备份和已发布素材仍保留');
   if (!operation.sourceRef) throw new Error('原更新的隔离来源缺失，请保留操作材料');
-  const port = createBoundProjectModelArchiveImportPort(operation.projectId, operation.sourceRef);
-  await assertOriginalUpdate(operation); assertCurrent?.();
+  const assertCurrentBeforeCommit = () => {
+    transfer?.signal?.throwIfAborted();
+    assertCurrent?.();
+  };
+  const port = createBoundProjectModelArchiveImportPort(operation.projectId, operation.sourceRef, transfer);
+  await assertOriginalUpdate(operation); assertCurrentBeforeCommit();
   if (operation.phase === 'prepared') {
     for (const root of operation.next.project.storageBindings) if (root.rootRef !== operation.next.project.storageRootRef) {
       try { await invoke('resolve_native_project_media_subroot', { projectId: operation.projectId, rootRef: root.rootRef, create: false }); }
       catch { await invoke('resolve_native_project_media_subroot', { projectId: operation.projectId, rootRef: root.rootRef, create: true }); }
     }
-    await assertOriginalUpdate(operation); assertCurrent?.();
+    await assertOriginalUpdate(operation); assertCurrentBeforeCommit();
     operation = await advanceNativeProjectUpdate(operation.operationId, operation.sequence, 'media_publishing');
   }
   if (operation.phase === 'media_publishing') {
     const reference = await port.publishMedia(operation as ProjectModelTransferImportJournal);
+    transfer?.signal?.throwIfAborted();
     await port.verifyMediaPublication(operation as ProjectModelTransferImportJournal, reference);
-    await assertOriginalUpdate(operation); assertCurrent?.();
+    await assertOriginalUpdate(operation); assertCurrentBeforeCommit();
     operation = await advanceNativeProjectUpdate(operation.operationId, operation.sequence, 'media_ready', reference);
   }
   if (operation.phase === 'media_ready') {
     await port.verifyMediaPublication(operation as ProjectModelTransferImportJournal, operation.mediaPublicationRef!);
-    await assertOriginalUpdate(operation); assertCurrent?.();
+    await assertOriginalUpdate(operation); assertCurrentBeforeCommit();
     operation = await commitNativeProjectUpdate(operation.operationId, operation.sequence);
   }
   return finalizeNativeUpdate(operation);
@@ -229,11 +236,14 @@ async function makeUpdateInput(preview: NativeProjectUpdatePreview, choices: Rea
 }
 
 /** 预览选择、独立备份、隔离来源及原生发布通过 journal 构成同一可恢复操作。 */
-export function applyNativeProjectUpdate(preview: NativeProjectUpdatePreview, choices: Readonly<Record<string, ProjectMergeSideV2>>, assertCurrent?: () => void): Promise<void> {
-  return runNativeUpdate(preview.operationId, () => applyNativeProjectUpdateInOperation(preview, choices, assertCurrent));
+export function applyNativeProjectUpdate(preview: NativeProjectUpdatePreview, choices: Readonly<Record<string, ProjectMergeSideV2>>,
+  assertCurrent?: () => void, transfer?: NativeProjectImportTransfer): Promise<void> {
+  return runNativeUpdate(preview.operationId, () => applyNativeProjectUpdateInOperation(preview, choices, assertCurrent, transfer));
 }
 
-async function applyNativeProjectUpdateInOperation(preview: NativeProjectUpdatePreview, choices: Readonly<Record<string, ProjectMergeSideV2>>, assertCurrent?: () => void): Promise<void> {
+async function applyNativeProjectUpdateInOperation(preview: NativeProjectUpdatePreview, choices: Readonly<Record<string, ProjectMergeSideV2>>,
+  assertCurrent?: () => void, transfer?: NativeProjectImportTransfer): Promise<void> {
+  transfer?.signal?.throwIfAborted();
   const { operationId, source, sourceDirectory } = preview;
   const projectId = preview.expected.aggregate.project.id;
   const intent = JSON.stringify(Object.entries(choices).sort(([a], [b]) => a.localeCompare(b)));
@@ -243,21 +253,31 @@ async function applyNativeProjectUpdateInOperation(preview: NativeProjectUpdateP
     if (existing.mode !== 'update-existing' || existing.projectId !== projectId || existing.intentDigest !== expectedIntent) {
       throw new Error('原更新操作已冻结其他选择，请先核对');
     }
-    await finishNativeUpdate(existing, assertCurrent); return;
+    try { await finishNativeUpdate(existing, assertCurrent, transfer); }
+    catch (error) {
+      if (transfer?.signal?.aborted && error === transfer.signal.reason) {
+        throw new NativeProjectImportPausedError(operationId, error);
+      }
+      throw error;
+    }
+    return;
   }
   if (!sourceDirectory) throw new Error('项目包隔离来源不可用，请重新预览');
   let attempt = updateAttempts.get(preview);
   if (attempt && attempt.intent !== intent) throw new Error('原更新操作已冻结选择，请先核对');
   if (!attempt) {
-    const input = await makeUpdateInput(preview, choices, 'update-existing', assertCurrent);
-    attempt = { intent, input }; updateAttempts.set(preview, attempt);
+    transfer?.onNativeProgress?.({ phase: 'backup' });
+    try {
+      const input = await makeUpdateInput(preview, choices, 'update-existing', assertCurrent);
+      attempt = { intent, input }; updateAttempts.set(preview, attempt);
+    } finally { transfer?.onNativeProgress?.({ phase: 'idle' }); }
   }
   const { input } = attempt;
   assertCurrent?.();
   await withStagedNativeUpdateSource(source, sourceDirectory, { projectId, operationId, mode: 'update-existing' }, async (staged) => {
     assertCurrent?.();
-    await finishNativeUpdate(await prepareNativeProjectUpdate({ ...input, ...staged }), assertCurrent);
-  });
+    await finishNativeUpdate(await prepareNativeProjectUpdate({ ...input, ...staged }), assertCurrent, transfer);
+  }, transfer);
 }
 
 /** 恢复读取原生备份，重新发布原素材并以新 journal 保存恢复前内容。 */

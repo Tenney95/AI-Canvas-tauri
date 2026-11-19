@@ -18,6 +18,7 @@ import type { NativeMissingAssetProof } from './nativeMissingAssetBackup';
 import { assertPlainArchiveSource, cleanupVerifiedArchiveSource, frozenArchiveSourceAssets, nativeUpdateSourceName } from './nativeArchiveSourceCleanup';
 import { assertNativeArchiveHistoryCommitted } from './nativeArchiveHistoryCommit';
 import { isPathInsideDir, trashPathKey } from './fs/undoTrashJournal';
+import { NativeProjectImportPausedError, publishNativeProjectImportAssets, type NativeProjectImportTransfer } from './nativeProjectImportTransfer';
 
 export interface NativeUpdateBackup {
   operationId: string;
@@ -162,7 +163,9 @@ export async function verifyNativeUpdateBackup(projectId: string, backup: Native
 /** 冻结原操作独立来源。只有本次成功发布且确认未登记时才可回收。 */
 export async function withStagedNativeUpdateSource(source: ValidatedProjectArchiveV4, sourceDirectory: string,
   operation: { projectId: string; operationId: string; mode: 'update-existing' | 'restore-content' },
-  use: (staged: { sourceRef: string; sourceFiles: NonNullable<ProjectModelTransferImportJournal['sourceFiles']> }) => Promise<void>): Promise<void> {
+  applySource: (staged: { sourceRef: string; sourceFiles: NonNullable<ProjectModelTransferImportJournal['sourceFiles']> }) => Promise<void>,
+  transfer?: NativeProjectImportTransfer): Promise<void> {
+  transfer?.signal?.throwIfAborted();
   const { projectId, operationId, mode } = operation;
   if (!validId(operationId) || !sourceDirectory) throw new Error('更新来源不可用，请重新预览');
   const base = await files.getBaseDir(); if (!base) throw new Error('更新暂存目录不可用');
@@ -182,23 +185,25 @@ export async function withStagedNativeUpdateSource(source: ValidatedProjectArchi
     // 逐文件摘要、fsync 与原子发布由原生端负责。
     if (!await exists(directory)) {
       try {
-        await invoke('publish_project_import_assets', { stagingDir: sourceDirectory, projectDir: base, operationId: stagedOperation,
+        await publishNativeProjectImportAssets({ stagingDir: sourceDirectory, projectDir: base, operationId: stagedOperation,
           assets: assets.map((asset) => ({ path: safeExchangePath(asset.path), destinationPath: safeExchangePath(asset.path),
-            bytes: asset.bytes, sha256: asset.sha256 })) });
+            bytes: asset.bytes, sha256: asset.sha256 })) }, transfer);
         ownedStage = true;
       } catch (error) {
         // 回执丢失时可以继续核验原目录，但不能证明由本次创建。
-        if (!await exists(directory)) throw error;
+        if (transfer?.signal?.aborted || !await exists(directory)) throw error;
       }
     }
+    transfer?.signal?.throwIfAborted();
     const actual = await invoke<ArchiveAssetDigest[]>('inspect_project_archive_assets', { assetsDir: directory,
       selectedPaths: assets.map((asset) => asset.path) });
     if (actual.length !== assets.length || assets.some((asset) => !actual.some((item) => item.path === asset.path
       && item.bytes === asset.bytes && item.sha256 === asset.sha256))) throw new Error('更新来源素材变化，未修改项目');
     const port = createBoundProjectModelArchiveImportPort(projectId, sourceRef);
     const staged = await port.captureImportSource!(source);
+    transfer?.signal?.throwIfAborted();
     usingStage = true;
-    await use({ sourceRef, sourceFiles: staged.sourceFiles ?? [] });
+    await applySource({ sourceRef, sourceFiles: staged.sourceFiles ?? [] });
   } catch (error) {
     if (!ownedStage && !usingStage) throw error;
     const action = mode === 'restore-content' ? '恢复' : '更新';
@@ -206,7 +211,10 @@ export async function withStagedNativeUpdateSource(source: ValidatedProjectArchi
     let recorded: NativeProjectUpdateJournal | null;
     try { recorded = await readNativeProjectUpdate(operationId); }
     catch (cause) { throw new Error(`${action}结果未知，原操作 ${operationId} 已保留，请先核对`, { cause }); }
-    if (recorded) throw new Error(`${action}未完成，原操作 ${operationId} 已保留；${error instanceof Error ? error.message : '请核对后续接'}`, { cause: error });
+    if (recorded) {
+      if (transfer?.signal?.aborted && error === transfer.signal.reason) throw new NativeProjectImportPausedError(operationId, error);
+      throw new Error(`${action}未完成，原操作 ${operationId} 已保留；${error instanceof Error ? error.message : '请核对后续接'}`, { cause: error });
+    }
     if (ownedStage) {
       const cleanup = () => cleanupVerifiedArchiveSource(base, sourceRef, assets);
       await cleanup().catch(() => { interruptedUnregisteredCleanups.set(operationId, cleanup); });

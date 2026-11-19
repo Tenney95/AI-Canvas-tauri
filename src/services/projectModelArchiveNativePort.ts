@@ -18,6 +18,7 @@ import { assertNativeFileMissing, type NativeMissingAssetProof } from './nativeM
 import { configValuesEqual } from './configPatch';
 import { nativeChatImagePaths, parseChatImageReferences } from '../utils/chatImageReference';
 import { isNativeEpisodeScriptVersionPath } from '../utils/manuscriptFileReference';
+import { publishNativeProjectImportAssets, type NativeProjectImportTransfer } from './nativeProjectImportTransfer';
 
 interface SourceRoot { rootRef: string; directory: string }
 type NativeAsset = ArchiveAssetDigest & { sourceRootRef?: string; sourceRelativePath?: string; destinationPath?: string };
@@ -201,7 +202,7 @@ export function createBoundProjectModelArchiveExportPort(projectId: string, outp
 }
 
 /** 新副本只发布到原生绑定的项目根和该操作的隔离来源目录。 */
-export function createBoundProjectModelArchiveImportPort(projectId: string, incomingFolder: string):
+export function createBoundProjectModelArchiveImportPort(projectId: string, incomingFolder: string, importTransfer?: NativeProjectImportTransfer):
   Pick<ProjectModelArchivePort, 'captureImportSource' | 'publishMedia' | 'verifyMediaPublication'> {
   if (!/^p2-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(projectId)
     || !/^(?:native-import-[a-f0-9-]{36}|imports\/native-update-[a-f0-9-]{36})$/.test(incomingFolder)) throw new Error('新项目导入身份无效');
@@ -232,13 +233,13 @@ export function createBoundProjectModelArchiveImportPort(projectId: string, inco
     }
     return files.joinPath(root, 'imports', parts[index + 1]);
   };
-  const port = createArchiveFilePort(directory, { incomingFolder, nativeRootFolder: rootFolder, nativeProjectId: projectId });
+  const port = createArchiveFilePort(directory, { incomingFolder, nativeRootFolder: rootFolder, nativeProjectId: projectId, importTransfer });
   return { captureImportSource: port.captureImportSource, publishMedia: port.publishMedia, verifyMediaPublication: port.verifyMediaPublication };
 }
 
 function createArchiveFilePort(directory: (relative: string, create?: boolean) => Promise<string>,
   options: { incomingFolder?: string; outputPath?: string; nativeRootFolder?: string; nativeProjectId?: string;
-    missingFiles?: readonly NativeMissingAssetProof[]; currentFilesOnly?: boolean; frozenPaths?: FrozenArchivePaths },
+    missingFiles?: readonly NativeMissingAssetProof[]; currentFilesOnly?: boolean; frozenPaths?: FrozenArchivePaths; importTransfer?: NativeProjectImportTransfer },
   backup?: ReturnType<typeof createProjectModelPreRestoreBackupService>): ProjectModelArchivePort {
   function assertBoundCapture(capture: ProjectModelTransferCapture): void {
     if (!options.nativeProjectId) return;
@@ -532,6 +533,7 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
         group.assets.push(native); groups.set(childOperationId, group);
       }
       for (const [operationId, group] of groups) {
+        options.importTransfer?.signal?.throwIfAborted();
         const root = operation.next.project.storageBindings.find((item) => item.rootRef === group.rootRef);
         if (!root) throw new Error('媒体发布根不属于目标项目');
         const projectDir = await directory(root.folderName, true);
@@ -547,11 +549,12 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
           const needed = new Set(group.assets.map((item) => item.sourceRootRef));
           const selectedRoots = sourceRoots.filter((item) => needed.has(item.rootRef));
           if (selectedRoots.length !== needed.size) throw new Error('原媒体来源根缺失，未重发');
-          await invoke('publish_project_import_assets', { stagingDir: selectedRoots[0]?.directory ?? projectDir,
-            projectDir, operationId, sourceRoots: selectedRoots, assets: group.assets });
+          await publishNativeProjectImportAssets({ stagingDir: selectedRoots[0]?.directory ?? projectDir,
+            projectDir, operationId, sourceRoots: selectedRoots, assets: group.assets }, options.importTransfer);
         }
       }
       const reference = `media_v1_${operation.operationId}`;
+      options.importTransfer?.signal?.throwIfAborted();
       await verifyMedia(operation, reference);
       return reference;
     },

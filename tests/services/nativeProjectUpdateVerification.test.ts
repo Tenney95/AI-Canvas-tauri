@@ -58,7 +58,7 @@ it('全局素材在核验时使用已冻结的项目副本，不重新复制或�
     content: { dramaAssets: { scenes: [{ assetId: 'global-index', relativePath: 'imports/global-fixture/a.png' }] } } } };
   journal.recoveryState = { capture: frozen as never, exchange: {} as never, assets: [], globalFiles: [], referenceFiles: [] };
   await verifyNativeProjectUpdateCommit(journal);
-  expect(probes.project).toHaveBeenCalledWith(frozen, [], legacyAudioMedia);
+  expect(probes.project).toHaveBeenCalledWith(frozen, [], legacyAudioMedia, 'snapshot');
   expect(probes.publish).toHaveBeenCalledOnce();
   expect(probes.inspect).toHaveBeenNthCalledWith(1, journal.expected);
   expect(probes.inspect).toHaveBeenNthCalledWith(2, frozen);

@@ -7,6 +7,7 @@ import { closePreparedProjectImport, projectImportMediaPreview, type PreparedPro
 import { resolveProjectMerge, type ProjectMergeChange, type ProjectMergeSide } from '../../services/projectMergeService';
 import { resolveProjectMergeV2 } from '../../services/projectMergeV2Service';
 import { NATIVE_EDITOR_CHOICE_KEY } from '../../services/videoEditorArchive';
+import { NativeProjectImportPausedError } from '../../services/nativeProjectImportTransfer';
 import type { ProjectExchangeValue } from '../../types/projectExchange';
 import ModalOverlay from '../shared/ModalOverlay';
 import PopupCloseButton from '../shared/PopupCloseButton';
@@ -16,6 +17,9 @@ import { useT } from '../../i18n';
 const labels: Record<ProjectMergeChange['kind'], string> = { project: '项目与分集', node: '画布节点', edge: '连线', group: '分组',
   character: '人物', scene: '场景', prop: '道具', referenceImage: '参考图', voiceClip: '声音', action: '动作', actionMedia: '动作素材',
   shot: '镜头行', file: '素材文件', imageMetadata: '图片信息' };
+// 更新当前作品会启用全屏加载遮罩，进度和取消入口需要留在遮罩之上。
+const ACTIVE_UPDATE_Z_INDEX = 10_000;
+
 function Value({ value, media }: { value: ProjectExchangeValue | undefined; media?: { url: string; kind: string } | null }) {
   const t = useT();
   const [expanded, setExpanded] = useState(false);
@@ -39,8 +43,11 @@ export default function ProjectImportDialog({ onClose, onImported }: { onClose: 
   const [mode, setMode] = useState<'new' | 'update'>('new'), [targetId, setTargetId] = useState('');
   const [preview, setPreview] = useState<ProjectImportPreview | null>(null), [choices, setChoices] = useState<Record<string, ProjectMergeSide>>({});
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [appendChat, setAppendChat] = useState(false), [appendMemories, setAppendMemories] = useState(false);
-  const transfer = useRef<{ id?: string; controller: AbortController } | null>(null);
-  const [progress, setProgress] = useState<number | null>(null), [canCancel, setCanCancel] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const transfer = useRef<{ id?: string; controller: AbortController; legacy?: boolean } | null>(null);
+  const [progress, setProgress] = useState<number | null>(null);
+  const [transferStatus, setTransferStatus] = useState<'idle' | 'transfer' | 'backup' | 'cancelling'>('idle');
+  const [cancelNotice, setCancelNotice] = useState('');
   const [independent, setIndependent] = useState(false), [conflictsOnly, setConflictsOnly] = useState(true), [query, setQuery] = useState(''), [page, setPage] = useState(0);
   const candidates = projects.filter((project) => !project.parentId && (session?.manifest.formatVersion !== 4 || 'nativeView' in project));
   useEffect(() => {
@@ -80,7 +87,7 @@ export default function ProjectImportDialog({ onClose, onImported }: { onClose: 
     catch (cause) { setError(cause instanceof Error ? cause.message : t('清理暂存素材失败，请重试')); setBusy(false); }
   };
   const chooseFile = async () => {
-    setBusy(true); setError('');
+    setBusy(true); setError(''); setCancelNotice('');
     let next: PreparedProjectImport | null = null;
     try {
       await retryCleanup();
@@ -97,12 +104,12 @@ export default function ProjectImportDialog({ onClose, onImported }: { onClose: 
     } finally { setBusy(false); }
   };
   const runCompare = async () => {
-    if (!session || !targetId) return; setBusy(true); setError(''); setPreview(null); setChoices({});
+    if (!session || !targetId) return; setBusy(true); setError(''); setCancelNotice(''); setPreview(null); setChoices({});
     try { const result = await compare(session, targetId, baseConfirmed ? baseline ?? undefined : undefined); setPreview(result); setPage(0); }
     catch (cause) { setError(cause instanceof Error ? cause.message : t('对比失败')); } finally { setBusy(false); }
   };
   const chooseBaseline = async () => {
-    setBusy(true); setError('');
+    setBusy(true); setError(''); setCancelNotice('');
     let next: PreparedProjectImport | null = null;
     try {
       await retryCleanup();
@@ -117,21 +124,57 @@ export default function ProjectImportDialog({ onClose, onImported }: { onClose: 
     } finally { setBusy(false); }
   };
   const runApply = async () => {
-    if (!session) return; setBusy(true); setError('');
-    const controller = new AbortController(); transfer.current = { controller }; setCanCancel(false); setProgress(null);
+    if (!session) return; setBusy(true); setError(''); setCancelNotice('');
+    setApplying(true);
+    const controller = new AbortController(); setTransferStatus('idle'); setProgress(null);
     try {
       await retryCleanup();
       const id = await apply(session, mode === 'update' ? preview : null, choices, { appendChat, appendMemories, independent,
-        signal: controller.signal, onTransfer: (id) => { transfer.current = { id, controller }; setCanCancel(true); setProgress(0); } });
+        signal: controller.signal,
+        onTransfer: (id) => {
+          if (controller.signal.aborted) return;
+          transfer.current = { id, controller, legacy: true };
+          setTransferStatus('transfer'); setProgress(0);
+        },
+        onNativeProgress: (event) => {
+          if (controller.signal.aborted) return;
+          switch (event.phase) {
+            case 'copy':
+              transfer.current = { controller };
+              setTransferStatus('transfer'); setProgress(event.percent);
+              break;
+            case 'publish':
+              transfer.current = { id: event.taskId, controller };
+              setTransferStatus('transfer'); setProgress(0);
+              break;
+            default:
+              transfer.current = null;
+              setTransferStatus(event.phase); setProgress(null);
+          }
+        },
+      });
       if (!id) throw new Error(t('项目导入未完成'));
       // 数据库已提交；暂存清理失败不能误报为项目导入失败。
       await closePreparedProjectImport(session).catch(() => useAppStore.getState().showToast('项目已导入，暂存目录清理失败，可在存储健康中检查', 'info'));
       if (baselineRef.current) await closePreparedProjectImport(baselineRef.current).catch(() => undefined);
       sessionRef.current = null; baselineRef.current = null; onImported();
-    } catch (cause) { setError(controller.signal.aborted ? t('已取消导入，原项目未改变') : cause instanceof Error ? cause.message : t('导入失败')); }
-    finally { transfer.current = null; setCanCancel(false); setBusy(false); }
+    } catch (cause) {
+      if (cause instanceof NativeProjectImportPausedError) {
+        setCancelNotice(t('已取消导入，原操作 {id} 已保留，可继续原操作', { id: cause.operationId }));
+      } else if (cause instanceof DOMException && cause.name === 'AbortError' && controller.signal.aborted) {
+        setCancelNotice(t('已取消导入'));
+      } else {
+        setError(cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : t('导入失败'));
+      }
+    } finally {
+      transfer.current = null;
+      setTransferStatus('idle');
+      setApplying(false);
+      setBusy(false);
+    }
   };
-  return <ModalOverlay isOpen onClose={() => void close()} ariaLabel={t('导入与更新项目')} zIndex={350} closeOnBackdrop={!busy}
+  return <ModalOverlay isOpen onClose={() => void close()} ariaLabel={t('导入与更新项目')}
+    zIndex={applying && mode === 'update' && preview?.nativeUpdate ? ACTIVE_UPDATE_Z_INDEX : 350} closeOnBackdrop={!busy}
     className="ui-dialog-surface flex max-h-[calc(100dvh-24px)] w-[min(1000px,calc(100vw-24px))] flex-col text-canvas-text">
     <header className="flex items-center justify-between border-b border-canvas-border p-3">
       <h2 className="text-sm font-semibold">{t('导入与更新项目')}</h2><PopupCloseButton onClick={() => void close()} disabled={busy} />
@@ -199,10 +242,18 @@ export default function ProjectImportDialog({ onClose, onImported }: { onClose: 
       {(error || dependencyError) && <p role="alert" className="ui-alert ui-alert--danger whitespace-pre-wrap text-xs">{error || `${dependencyError}。${t('请取消“只看冲突”，调整关联节点、分组、连线或素材的选择。')}`}</p>}
     </div>
     <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-canvas-border p-3">
-      {busy && <span role="status" className="mr-auto text-xs text-canvas-text-secondary">{t('正在处理，请稍候…')}{progress === null ? '' : ` ${progress}%`}</span>}
-      {busy && canCancel && <button type="button" className="ui-btn ui-btn--secondary" onClick={() => {
-        const current = transfer.current; current?.controller.abort(); setCanCancel(false);
-        if (current?.id) void invoke('cancel_file_transfer', { taskId: current.id }).catch(() => undefined);
+      {(busy || cancelNotice) && <span role="status" className="mr-auto min-w-0 break-words text-xs text-canvas-text-secondary">
+        {busy ? t(transferStatus === 'backup' ? '正在准备更新前备份…' : transferStatus === 'transfer' ? '正在传输素材…'
+          : transferStatus === 'cancelling' ? '正在停止传输…' : '正在处理，请稍候…') : cancelNotice}
+        {transferStatus === 'transfer' && progress !== null ? ` ${progress}%` : ''}
+      </span>}
+      {busy && transferStatus === 'transfer' && <button type="button" className="ui-btn ui-btn--secondary" onClick={() => {
+        const current = transfer.current;
+        if (!current) return;
+        transfer.current = null;
+        setTransferStatus('cancelling');
+        current.controller.abort(new DOMException(t('已取消导入'), 'AbortError'));
+        if (current.legacy && current.id) void invoke('cancel_file_transfer', { taskId: current.id }).catch(() => undefined);
       }}>{t('取消导入')}</button>}
       <button type="button" className="ui-btn ui-btn--secondary" disabled={busy} onClick={() => void close()}>{t('取消')}</button>
       <button type="button" className="ui-btn ui-btn--primary" disabled={busy || !session || mode === 'new' && !session.nativeSource || mode === 'update' && (!preview || unresolved > 0 || !!dependencyError || preview.plan.alreadyApplied)} onClick={() => void runApply()}>{t(mode === 'update' ? '应用更新' : '导入为新项目')}</button>

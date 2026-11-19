@@ -26,6 +26,7 @@ vi.mock('../../src/services/indexedDb/nativeProjectRepository', async (original)
 vi.mock('../../src/services/projectImportService', () => ({ withPreparedProjectImportRead: vi.fn() }));
 
 import { cleanupFinalizedNativeProjectImportSources, listPendingNativeProjectImports, resumeNativeProjectImport } from '../../src/services/nativeProjectImportService';
+import { publishNativeProjectImportAssets } from '../../src/services/nativeProjectImportTransfer';
 import { withStagedNativeUpdateSource } from '../../src/services/nativeProjectUpdateMedia';
 import { openNativeProjectDatabase, transact, TRANSFER } from '../../src/services/indexedDb/nativeProjectRepository';
 
@@ -155,6 +156,39 @@ describe('原新建导入耐久续接', () => {
     expect(io.advanceImport).not.toHaveBeenCalled();
     expect(io.commitHistory).not.toHaveBeenCalled();
     expect(io.commitImport).not.toHaveBeenCalled();
+  });
+
+  it('同一发布操作的下一次传输使用新的取消标识', async () => {
+    const controller = new AbortController(), report = vi.fn();
+    let rejectPublish!: (reason: unknown) => void;
+    io.invoke.mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectPublish = reject; }));
+    io.invoke.mockResolvedValue(undefined);
+    const args = { operationId, stagingDir: '/preview', projectDir: base, assets: [] };
+
+    const first = publishNativeProjectImportAssets(args, { signal: controller.signal, onNativeProgress: report });
+    const firstTaskId = io.invoke.mock.calls[0][1].transferId;
+    controller.abort();
+    rejectPublish('项目导入已取消');
+    await expect(first).rejects.toBe(controller.signal.reason);
+    expect(io.invoke).toHaveBeenNthCalledWith(2, 'cancel_file_transfer', { taskId: firstTaskId });
+    expect(report.mock.calls).toEqual([[{ phase: 'publish', taskId: firstTaskId }], [{ phase: 'idle' }]]);
+
+    await publishNativeProjectImportAssets(args, { onNativeProgress: report });
+    const retry = io.invoke.mock.calls[2][1];
+    expect(retry.operationId).toBe(operationId);
+    expect(retry.transferId).not.toBe(firstTaskId);
+  });
+
+  it('历史提交开始后完成原导入，迟到的取消不留下半套提交', async () => {
+    const controller = new AbortController();
+    const published = importJournal('media_ready');
+    io.readImport.mockResolvedValue(published);
+    io.commitHistory.mockImplementation(async () => { controller.abort(); });
+    io.commitImport.mockResolvedValue({ ...published, sequence: 5, phase: 'db_committed' });
+    io.advanceImport.mockResolvedValue({ ...published, phase: 'finalized', sourceRef: undefined });
+
+    await expect(resumeNativeProjectImport(operationId, controller.signal)).resolves.toMatchObject({ projectId });
+    expect(io.commitImport).toHaveBeenCalledExactlyOnceWith(operationId, 4);
   });
 
   it('原素材已发布时只用耐久操作完成验证与提交', async () => {

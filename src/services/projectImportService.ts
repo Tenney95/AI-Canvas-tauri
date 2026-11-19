@@ -26,6 +26,7 @@ import { assertLegacyProjectWritesAllowed } from './indexedDb/legacyProjectWrite
 import { throwProjectImportCommitFailure } from './projectImportOutcome';
 import { verifyPreparedProjectImportMedia } from './projectImportResumeService';
 import { assertLegacyProjectArchiveRoots } from './projectArchiveRoots';
+import type { NativeProjectImportTransfer } from './nativeProjectImportTransfer';
 export { resumeProjectImportOperation } from './projectImportResumeService';
 
 /** 接收端重建本机令牌；可交换语义不含该令牌，旧候选还受 exchangeEpoch 约束。 */
@@ -64,9 +65,9 @@ export function nativeImportPreview(sessionId: string, targetId: string,
     plan: { ...nativeUpdate.plan, changes, alreadyApplied: changes.length === 0 && !nativeUpdate.editorChoiceRequired } as unknown as ProjectMergePlan,
     baseStatus: 'found', localDirectory: '', incomingHead: null, localHead: null, nativeUpdate };
 }
-export interface ProjectImportOptions {
+export interface ProjectImportOptions extends NativeProjectImportTransfer {
   appendChat: boolean; appendMemories: boolean; independent?: boolean;
-  signal?: AbortSignal; onTransfer?: (operationId: string) => void;
+  onTransfer?: (operationId: string) => void;
 }
 const sessions = new Map<string, PreparedProjectImport>();
 const cleanedSessions = new WeakSet<PreparedProjectImport>();

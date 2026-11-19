@@ -731,14 +731,18 @@ fn create_import_destination(
 /// 只向全新子目录发布；逐文件复核已预览的字节，不覆盖目标的任何已有素材。
 #[tauri::command]
 pub async fn publish_project_import_assets<R: Runtime>(webview: Webview<R>, app: AppHandle<R>, staging_dir: String,
-    project_dir: String, operation_id: String, assets: Vec<ProjectImportAsset>, source_roots: Option<Vec<ProjectArchiveSourceRoot>>) -> Result<(), String> {
+    project_dir: String, operation_id: String, assets: Vec<ProjectImportAsset>, source_roots: Option<Vec<ProjectArchiveSourceRoot>>,
+    transfer_id: Option<String>) -> Result<(), String> {
     ensure_trusted_caller(&webview)?;
     if webview.label() != "main" || operation_id.len() > 128 || operation_id.is_empty()
         || !operation_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') { return Err("导入操作身份无效".into()); }
     let staging = authorize_path(&app, &staging_dir, PathAccess::Read)?;
     let root = authorize_path(&app, &project_dir, PathAccess::Write)?;
     let sources = authorize_source_roots(&app, source_roots.unwrap_or_default())?;
-    let cancellation_id = operation_id.clone();
+    // 重试复用发布目录身份，取消标记只归当前传输。
+    let task_id = transfer_id.unwrap_or_else(|| operation_id.clone());
+    if !publication_id(&task_id) { return Err("导入传输身份无效".into()); }
+    let cancellation_id = task_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let _guard = ARCHIVE_PUBLICATION_LOCK.lock().map_err(|_| PUBLICATION_ERROR)?;
         reauthorize_archive_path(&app, &staging, PathAccess::Read)?;
@@ -747,7 +751,7 @@ pub async fn publish_project_import_assets<R: Runtime>(webview: Webview<R>, app:
         let total_bytes = assets.iter().try_fold(0_u64, |total, asset| total.checked_add(asset.bytes)).ok_or("素材体积无效")?;
         if assets.len() > MAX_ARCHIVE_ENTRIES || total_bytes > MAX_EXPANDED_BYTES { return Err("导入素材超过上限".into()); }
         crate::file_transfer::ensure_disk_space(&root, Some(total_bytes))?;
-        if crate::file_transfer::is_cancelled(&operation_id)? { return Err("项目导入已取消".into()); }
+        if crate::file_transfer::is_cancelled(&task_id)? { return Err("项目导入已取消".into()); }
         let final_destination = root.join("imports").join(&operation_id);
         if final_destination.exists() { return Err("导入目录已存在，请核对原操作，未重复发布".into()); }
         let destination = create_import_destination(&root, &format!("{operation_id}-publishing"), |path, existing_plain| {
@@ -758,7 +762,7 @@ pub async fn publish_project_import_assets<R: Runtime>(webview: Webview<R>, app:
         let mut buffer = Vec::new();
         let result = (|| {
             for asset in assets {
-                if crate::file_transfer::is_cancelled(&operation_id)? { return Err("项目导入已取消".into()); }
+                if crate::file_transfer::is_cancelled(&task_id)? { return Err("项目导入已取消".into()); }
                 let relative = normalize_archive_path(Path::new(&asset.path))?;
                 let published = normalize_archive_path(Path::new(&asset.destination_path))?;
                 if !seen.insert(to_archive_text(&published).to_lowercase()) || relative.as_os_str().is_empty() || published.as_os_str().is_empty() { return Err("导入素材路径重复".into()); }
@@ -775,13 +779,13 @@ pub async fn publish_project_import_assets<R: Runtime>(webview: Webview<R>, app:
                 buffer.resize(IO_BUFFER_BYTES, 0);
                 let mut bytes = 0_u64; let mut digest = Sha256::new();
                 loop {
-                    if crate::file_transfer::is_cancelled(&operation_id)? { return Err("项目导入已取消".into()); }
+                    if crate::file_transfer::is_cancelled(&task_id)? { return Err("项目导入已取消".into()); }
                     let count = input.read(&mut buffer).map_err(|_| "素材发布读取失败")?; if count == 0 { break; }
                     bytes += count as u64;
                     if bytes > asset.bytes { return Err("暂存素材大小已变化".into()); }
                     output.write_all(&buffer[..count]).map_err(|_| "素材写入失败，原项目未改变")?; digest.update(&buffer[..count]);
                     transferred += count as u64;
-                    let _ = app.emit_to("main", "file-transfer-progress", ImportProgress { task_id: operation_id.clone(), transferred_bytes: transferred, total_bytes });
+                    let _ = app.emit_to("main", "file-transfer-progress", ImportProgress { task_id: task_id.clone(), transferred_bytes: transferred, total_bytes });
                 }
                 output.sync_all().map_err(|_| "素材落盘失败")?; drop(output);
                 sync_asset_parents(&destination, target.parent().ok_or(PUBLICATION_ERROR)?)?;
@@ -794,6 +798,7 @@ pub async fn publish_project_import_assets<R: Runtime>(webview: Webview<R>, app:
                 || authorize_path(&app, &final_destination.to_string_lossy(), PathAccess::Write)? != final_destination {
                 return Err("导入发布位置已变化，未覆盖已有素材".into());
             }
+            if crate::file_transfer::is_cancelled(&task_id)? { return Err("项目导入已取消".into()); }
             publish_import_directory_exclusive(&destination, &final_destination)?;
             Ok(())
         })();

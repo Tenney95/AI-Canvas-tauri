@@ -3,7 +3,8 @@ import { act, createContext, type ReactNode } from 'react';
 import Reconciler from 'react-reconciler';
 import { ConcurrentRoot, DefaultEventPriority, DiscreteEventPriority } from 'react-reconciler/constants';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import type { PreparedProjectImport } from '../../src/services/projectImportService';
+import type { PreparedProjectImport, ProjectImportOptions } from '../../src/services/projectImportService';
+import { NativeProjectImportPausedError, type NativeProjectImportProgress } from '../../src/services/nativeProjectImportTransfer';
 
 const driver = vi.hoisted(() => ({
   prepare: vi.fn<() => Promise<PreparedProjectImport | null>>(), compare: vi.fn(), apply: vi.fn(),
@@ -144,4 +145,28 @@ it('v4 零集项目包支持选择更新或新建，分集数量不会显示负�
   expect(radios[1].props.disabled).not.toBe(true);
   await click('导入为新项目');
   expect(driver.apply).toHaveBeenCalledWith(prepared, null, {}, expect.anything());
+});
+
+it('传输阶段显示进度，取消后普通提示可继续原操作，暂存仍可用于重试', async () => {
+  const prepared = session('可续接项目包');
+  driver.prepare.mockResolvedValueOnce(prepared);
+  let report!: (progress: NativeProjectImportProgress) => void;
+  driver.apply.mockImplementationOnce((_, __, ___, options: ProjectImportOptions) => new Promise((_, reject) => {
+    report = options.onNativeProgress!;
+    options.signal!.addEventListener('abort', () => reject(new NativeProjectImportPausedError('original-import', options.signal!.reason)), { once: true });
+  }));
+  await mount(); await click('选择项目包'); await click('导入为新项目');
+  await act(async () => { report({ phase: 'backup' }); });
+  expect(text(container)).toContain('正在准备更新前备份…');
+  expect(nodes(container).some((value) => value.type === 'button' && text(value) === '取消导入')).toBe(false);
+  await act(async () => { report({ phase: 'copy', percent: 42 }); });
+  expect(text(container)).toContain('正在传输素材… 42%');
+  await click('取消导入');
+  expect(nodes(container).filter((value) => value.props.role === 'alert')).toHaveLength(0);
+  expect(text(container)).toContain('可继续原操作');
+  expect(driver.cleanup).not.toHaveBeenCalled();
+  driver.apply.mockResolvedValueOnce('resumed-project');
+  await click('导入为新项目');
+  expect(driver.apply).toHaveBeenLastCalledWith(prepared, null, {}, expect.anything());
+  expect(driver.onImported).toHaveBeenCalledOnce();
 });

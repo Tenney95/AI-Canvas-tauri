@@ -3073,7 +3073,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       if (!binding || binding.projectId !== preview.nativeUpdate.expected.aggregate.project.id) throw new Error('项目身份已变化，请重新对比');
       const guard = importPreviewGuards.get(preview); if (!guard) throw new Error('预览状态已失效，请重新对比'); guard();
       await withPreparedProjectImportRead(session, () => runNativeImportMutation(set, get, binding.projectId, preview.nativeUpdate!.operationId,
-        async (assertCurrent) => { guard(); await (await import('../services/nativeProjectUpdateService')).applyNativeProjectUpdate(preview.nativeUpdate!, choices, assertCurrent); }));
+        async (assertCurrent) => { guard(); await (await import('../services/nativeProjectUpdateService')).applyNativeProjectUpdate(preview.nativeUpdate!, choices, assertCurrent, options); }));
       return binding.projectId;
     }
     if (preview && (nativeKnownIds.has(preview.targetId) || nativeBinding(get().projects.find((item) => item.id === preview.targetId)))) throw new Error('新项目更新预览已失效，请重新对比');

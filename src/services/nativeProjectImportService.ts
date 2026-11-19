@@ -21,6 +21,7 @@ import { withPreparedProjectImportRead, type PreparedProjectImport, type Project
 import type { ValidatedProjectArchiveV4 } from '../types/projectArchiveV4';
 import { isPathInsideDir, trashPathKey } from './fs/undoTrashJournal';
 import { assertPlainArchiveSource, cleanupVerifiedArchiveSource, frozenArchiveSourceAssets, nativeImportSourceName } from './nativeArchiveSourceCleanup';
+import { NativeProjectImportPausedError, type NativeProjectImportTransfer } from './nativeProjectImportTransfer';
 
 const digest = (value: unknown) => sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(value)));
 const importSourceCleanups = new Map<string, Promise<void>>();
@@ -116,7 +117,8 @@ async function finalizeNativeImport(operation: NativeProjectImportJournal): Prom
   return operation;
 }
 
-async function finishImport(operation: NativeProjectImportJournal, signal?: AbortSignal): Promise<NativeProjectImportJournal> {
+async function finishImport(operation: NativeProjectImportJournal, transfer?: NativeProjectImportTransfer): Promise<NativeProjectImportJournal> {
+  const signal = transfer?.signal;
   signal?.throwIfAborted();
   if (operation.phase === 'db_committed' || operation.phase === 'finalized') return finalizeNativeImport(operation);
   if (operation.phase !== 'prepared' && operation.phase !== 'media_publishing' && operation.phase !== 'media_ready') {
@@ -125,7 +127,7 @@ async function finishImport(operation: NativeProjectImportJournal, signal?: Abor
   if (!operation.sourceRef || nativeImportSourceName.exec(operation.sourceRef)?.[1] !== operation.operationId) {
     throw new Error('原导入的隔离来源缺失或身份不符，请保留操作材料');
   }
-  const port = createBoundProjectModelArchiveImportPort(operation.projectId, operation.sourceRef);
+  const port = createBoundProjectModelArchiveImportPort(operation.projectId, operation.sourceRef, transfer);
   if (operation.phase === 'prepared') {
     // claim 在原生登记已存在时校验并复用；未知目录不会被接管。
     await invoke('claim_native_project_media_root', { projectId: operation.projectId, projectName: operation.next.project.name });
@@ -149,7 +151,6 @@ async function finishImport(operation: NativeProjectImportJournal, signal?: Abor
     }
     signal?.throwIfAborted();
     await commitNativeArchiveHistory(operation);
-    signal?.throwIfAborted();
     operation = await commitNativeProjectImport(operation.operationId, operation.sequence);
   }
   return finalizeNativeImport(operation);
@@ -163,12 +164,12 @@ function result(operation: NativeProjectImportJournal): ProjectImportResult {
     memoryCount: operation.history.filter((item) => item.kind === 'memory').length };
 }
 
-function runImport(operationId: string, load: () => Promise<NativeProjectImportJournal>, signal?: AbortSignal): Promise<ProjectImportResult> {
+function runImport(operationId: string, load: () => Promise<NativeProjectImportJournal>, transfer?: NativeProjectImportTransfer): Promise<ProjectImportResult> {
   const existing = importRuns.get(operationId);
   if (existing) return existing;
   const pending = Promise.resolve().then(async () => {
-    signal?.throwIfAborted();
-    return result(await finishImport(await load(), signal));
+    transfer?.signal?.throwIfAborted();
+    return result(await finishImport(await load(), transfer));
   }).finally(() => importRuns.delete(operationId));
   importRuns.set(operationId, pending);
   return pending;
@@ -176,7 +177,7 @@ function runImport(operationId: string, load: () => Promise<NativeProjectImportJ
 
 /** v1–v4 项目包均转换为全新 p2/e2/c2 身份，不写入旧项目表。 */
 async function importSource(sourceValue: ValidatedProjectArchiveV4, originalDirectory: string,
-  options: Pick<ProjectImportOptions, 'appendChat' | 'appendMemories' | 'independent' | 'signal'>,
+  options: Pick<ProjectImportOptions, 'appendChat' | 'appendMemories' | 'independent'> & NativeProjectImportTransfer,
   onOperation?: (id: string) => void): Promise<ProjectImportResult> {
   options.signal?.throwIfAborted();
   const entries = await serializeProjectArchiveV4(sourceValue.payload, sourceValue.manifest, sourceValue.assets);
@@ -204,12 +205,30 @@ async function importSource(sourceValue: ValidatedProjectArchiveV4, originalDire
   const operation = await (async () => {
     await mkdir(directory);
     stageCreated = true;
-    for (const asset of source.assets) {
-      options.signal?.throwIfAborted();
-      const segments = safeExchangePath(asset.path).split('/');
-      if (segments.length > 1) await mkdir(files.joinPath(directory, ...segments.slice(0, -1)), { recursive: true });
-      await files.copyLocalFileStreamed(files.joinPath(originalDirectory, ...segments), files.joinPath(directory, ...segments), { signal: options.signal });
+    const report = source.assets.length ? options.onNativeProgress : undefined;
+    const totalBytes = report ? source.assets.reduce((sum, asset) => sum + asset.bytes, 0) : 0;
+    let copiedBytes = 0;
+    const reportCopy = (bytes: number) => report?.({ phase: 'copy', percent: totalBytes ? Math.min(100, Math.round(bytes * 100 / totalBytes)) : 0 });
+    reportCopy(0);
+    try {
+      for (const asset of source.assets) {
+        options.signal?.throwIfAborted();
+        const segments = safeExchangePath(asset.path).split('/');
+        if (segments.length > 1) await mkdir(files.joinPath(directory, ...segments.slice(0, -1)), { recursive: true });
+        await files.copyLocalFileStreamed(files.joinPath(originalDirectory, ...segments), files.joinPath(directory, ...segments), {
+          signal: options.signal,
+          onProgress: report ? ({ transferredBytes }) => reportCopy(copiedBytes + Math.min(asset.bytes, transferredBytes)) : undefined,
+        });
+        copiedBytes += asset.bytes;
+        reportCopy(copiedBytes);
+      }
+    } catch (error) {
+      if (error === '文件传输已取消') options.signal?.throwIfAborted();
+      throw error;
+    } finally {
+      report?.({ phase: 'idle' });
     }
+    options.signal?.throwIfAborted();
     const port = createBoundProjectModelArchiveImportPort(projectId, sourceRef);
     const staged = await port.captureImportSource!(source);
     options.signal?.throwIfAborted();
@@ -256,8 +275,11 @@ async function importSource(sourceValue: ValidatedProjectArchiveV4, originalDire
     throw error;
   });
   onOperation?.(operationId);
-  try { return await runImport(operationId, () => Promise.resolve(operation), options.signal); }
-  catch (error) { throw new Error(`导入未完成，原操作 ${operationId} 已保留；${error instanceof Error ? error.message : '请核对后续接'}`, { cause: error }); }
+  try { return await runImport(operationId, () => Promise.resolve(operation), options); }
+  catch (error) {
+    if (options.signal?.aborted && error === options.signal.reason) throw new NativeProjectImportPausedError(operationId, error);
+    throw new Error(`导入未完成，原操作 ${operationId} 已保留；${error instanceof Error ? error.message : '请核对后续接'}`, { cause: error });
+  }
 }
 
 /** 仅由受信调用方传入已校验包与隔离副本；仍重新核验正文和素材字节。 */
@@ -276,7 +298,13 @@ export async function importNativeProjectArchiveFromSession(session: PreparedPro
   if (attempt?.pending) return attempt.pending;
   if (!attempt) { attempt = { intent }; attempts.set(session, attempt); }
   const current = attempt;
-  const pending = current.operationId ? resumeNativeProjectImport(current.operationId, options.signal)
+  const operationId = current.operationId;
+  const pending = operationId ? resumeNativeProjectImport(operationId, options.signal, options.onNativeProgress).catch((error) => {
+    if (options.signal?.aborted && error === options.signal.reason) {
+      throw new NativeProjectImportPausedError(operationId, error);
+    }
+    throw error;
+  })
     : withPreparedProjectImportRead(session, () => importSource(session.nativeSource!, session.directory,
       options, (id) => { current.operationId = id; }));
   current.pending = pending;
@@ -301,10 +329,10 @@ export async function importNativeProjectArchive(): Promise<ProjectImportResult 
 }
 
 /** 按原 journal 和原隔离来源继续，不重新分配身份或覆盖已有作品。 */
-export function resumeNativeProjectImport(operationId: string, signal?: AbortSignal): Promise<ProjectImportResult> {
+export function resumeNativeProjectImport(operationId: string, signal?: AbortSignal, onNativeProgress?: NativeProjectImportTransfer['onNativeProgress']): Promise<ProjectImportResult> {
   return runImport(operationId, async () => {
     const operation = await readNativeProjectImport(operationId);
     if (!sameImportIdentity(operation, operationId)) throw new Error('原导入操作不存在或身份不符');
     return operation;
-  }, signal);
+  }, { signal, onNativeProgress });
 }
