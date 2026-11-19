@@ -6,7 +6,8 @@ import { createNativeProject, readNativeProject, readNativeProjectByCanvasId, li
   listNativeEpisodes, convertNativeProjectToSeries, createNativeEpisode, saveNativeCanvas, saveNativeEpisodeContent,
   reorderNativeEpisodes, deleteNativeEpisode, readNativeProjectCapture, readNativeProjectSelection, readNativeProjectContent,
   readNativeEpisodeContent, saveNativeProjectContent, saveNativeProjectView, deleteNativeProject, transitionNativeProjectRecycle,
-  openNativeProjectDatabase, transact, RETIRED, EXCHANGE,
+  openNativeProjectDatabase, transact, assertNoPendingNativeSharedSync, ROOTS, CONTENTS, CANVASES, EPISODES, EPISODE_CONTENTS, RETIRED,
+  REVISIONS, EXCHANGE, TRANSFER, NATIVE_PROJECT_DATABASE_VERSION,
   updateNativeProjectMetadata, updateNativeEpisodeMetadata, updateNativeEpisodeComposite, NATIVE_PROJECT_DATABASE_NAME } from '../../src/services/indexedDb/nativeProjectRepository';
 import { prepareNativeProjectExport, advanceNativeProjectExport, readNativeProjectExport, abandonNativeProjectExport,
   listNativeProjectPendingTransfers, prepareNativeProjectImport,
@@ -35,6 +36,60 @@ async function readRetiredProject(projectId: string): Promise<unknown> {
 }
 
 describe('独立新项目仓储', () => {
+  it('从 v3 仅增加操作索引，自动保存不复制已结算回执且仍冻结未结算更新', async () => {
+    const projectId = id('p2', '1');
+    const finished = { operationId: 'finished', projectId, kind: 'project-model-import', mode: 'update-existing',
+      phase: 'finalized', payload: { script: '保留原完整回执' } };
+    const pending = { ...finished, operationId: 'original', phase: 'media_ready' };
+    const shared = { operationId: 'malformed', projectId, kind: 'native-shared-sync' };
+    await new Promise<void>((resolve, reject) => {
+      const open = factory.open(NATIVE_PROJECT_DATABASE_NAME, 3);
+      open.onupgradeneeded = () => {
+        const db = open.result;
+        for (const [name, keyPath] of [[ROOTS, 'id'], [CONTENTS, 'projectId'], [CANVASES, 'id'], [EPISODES, 'id'],
+          [EPISODE_CONTENTS, 'episodeId'], [RETIRED, 'id'], [REVISIONS, 'projectId'], [EXCHANGE, 'projectId'], [TRANSFER, 'operationId']]) {
+          const store = db.createObjectStore(name, { keyPath });
+          if (name === CANVASES || name === EPISODES || name === TRANSFER) store.createIndex('projectId', 'projectId');
+        }
+        const exchange = open.transaction!.objectStore(EXCHANGE);
+        exchange.createIndex('mediaTaskStatus', ['kind', 'ownerProjectId', 'status', 'canvasId']);
+        exchange.createIndex('mediaTaskNode', ['kind', 'ownerProjectId', 'canvasId', 'nodeId']);
+        exchange.createIndex('mediaTaskMessage', ['kind', 'ownerProjectId', 'canvasId', 'origin.conversationId', 'origin.messageId']);
+        exchange.createIndex('nativeAssetByProject', ['kind', 'record.projectId']);
+        const journal = open.transaction!.objectStore(TRANSFER);
+        journal.add(finished);
+        journal.add(pending);
+        journal.add({ ...pending, operationId: 'different-project', projectId: id('p2', '2') });
+      };
+      open.onsuccess = () => { open.result.close(); resolve(); };
+      open.onerror = () => reject(open.error);
+    });
+    const db = (await openNativeProjectDatabase(false, { factory }))!;
+    const readAll = vi.spyOn(IDBIndex.prototype, 'getAll');
+    const run = (except?: string) => transact(db, 'readonly', { factory }, (tx) =>
+      assertNoPendingNativeSharedSync(tx, projectId, except), [TRANSFER]);
+    const put = <T extends { operationId: string }>(row: T) => transact(db, 'readwrite', { factory }, (tx) => new Promise<void>((resolve, reject) => {
+      const write = tx.objectStore(TRANSFER).put(row);
+      write.onsuccess = () => resolve(); write.onerror = () => reject(write.error);
+    }), [TRANSFER]);
+    try {
+      expect(db.version).toBe(NATIVE_PROJECT_DATABASE_VERSION);
+      await expect(run()).rejects.toThrow('project-update-pending');
+      await expect(run(pending.operationId)).resolves.toBeUndefined();
+      await put({ ...pending, phase: 'aborted' });
+      await expect(run()).resolves.toBeUndefined();
+      expect(readAll.mock.calls.some(([query]) => query === projectId)).toBe(false);
+      await put(shared);
+      await expect(run()).rejects.toThrow('project-shared-sync-pending');
+      await expect(run(shared.operationId)).resolves.toBeUndefined();
+      const unchanged = await transact(db, 'readonly', { factory }, (tx) => new Promise((resolve, reject) => {
+        const read = tx.objectStore(TRANSFER).get(finished.operationId);
+        read.onsuccess = () => resolve(read.result); read.onerror = () => reject(read.error);
+      }), [TRANSFER]);
+      expect(unchanged).toEqual(finished);
+    } finally { db.close(); }
+  });
+
   it('无媒体更新原子保存恢复点，过期预览和媒体引用不能覆盖结果', async () => {
     const root = await createNativeProject({ name: '恢复点', projectId: id('p2', '1'), canvasId: id('c2', '2') }, { factory });
     const initial = await readNativeProjectCapture(root.project.id, { factory });

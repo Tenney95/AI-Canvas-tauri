@@ -11,8 +11,9 @@ import { createBoundProjectModelArchiveImportPort } from './projectModelArchiveN
 import { readProjectArchiveV4, serializeProjectArchiveV4 } from './projectArchiveV4';
 import { buildProjectExchangeBundleV2, createProjectExchangeRevisionV2 } from './projectExchangeV2Format';
 import { assertNativeArchiveHistoryCommitted, commitNativeArchiveHistory } from './nativeArchiveHistoryCommit';
-import { advanceNativeProjectImport, commitNativeProjectImport, isNativeProjectId, openNativeProjectDatabase, prepareNativeProjectImport,
-  readNativeProjectContent, readNativeProjectImport, transact, TRANSFER, type NativeProjectImportJournal } from './indexedDb/nativeProjectRepository';
+import { advanceNativeProjectImport, commitNativeProjectImport, isNativeProjectId, NATIVE_PENDING_IMPORT_PHASES, openNativeProjectDatabase,
+  prepareNativeProjectImport, readNativeProjectContent, readNativeProjectImport, summarizeNativePendingNewImports, transact, TRANSFER,
+  type NativeProjectImportJournal } from './indexedDb/nativeProjectRepository';
 import type { ProjectModelTransferExchange, ProjectModelTransferHistoryRow } from '../types/projectModelTransfer';
 import { safeExchangePath, type ArchiveAssetDigest } from './projectExchangeDomain';
 import type { ProjectImportResult } from './projectTransferService';
@@ -26,7 +27,7 @@ const importSourceCleanups = new Map<string, Promise<void>>();
 const importRuns: Map<string, Promise<ProjectImportResult>> = import.meta.hot?.data.nativeProjectImportRuns ?? new Map();
 if (import.meta.hot) import.meta.hot.data.nativeProjectImportRuns = importRuns;
 
-type PendingImportPhase = 'prepared' | 'media_publishing' | 'media_ready' | 'db_committed';
+type PendingImportPhase = typeof NATIVE_PENDING_IMPORT_PHASES[number];
 export interface PendingNativeProjectImport {
   operationId: string;
   projectId: string;
@@ -49,22 +50,13 @@ export async function listPendingNativeProjectImports(signal?: AbortSignal): Pro
   const database = await openNativeProjectDatabase(false, { signal });
   if (!database) return [];
   try {
-    return await transact(database, 'readonly', { signal }, (tx) => new Promise<PendingNativeProjectImport[]>((resolve, reject) => {
-      const rows: PendingNativeProjectImport[] = [];
-      const cursor = tx.objectStore(TRANSFER).openCursor();
-      cursor.onerror = () => reject(cursor.error ?? new Error('无法读取待处理导入'));
-      cursor.onsuccess = () => {
-        const item = cursor.result;
-        if (!item) { resolve(rows.sort((a, b) => b.updatedAt - a.updatedAt)); return; }
-        const row = item.value as NativeProjectImportJournal | undefined;
-        if (sameImportIdentity(row, item.primaryKey) && Number.isSafeInteger(row.updatedAt) && row.updatedAt >= 0
-          && (row.phase === 'prepared' || row.phase === 'media_publishing' || row.phase === 'media_ready' || row.phase === 'db_committed')) {
-          rows.push({ operationId: row.operationId, projectId: row.projectId, phase: row.phase, updatedAt: row.updatedAt,
-            projectName: typeof row.next.project.name === 'string' ? row.next.project.name.slice(0, 256) : '' });
-        }
-        item.continue();
-      };
-    }), [TRANSFER]);
+    const rows = await transact(database, 'readonly', { signal }, (tx) =>
+      summarizeNativePendingNewImports<PendingNativeProjectImport>(tx, (row, phase) => {
+        if (!sameImportIdentity(row, row.operationId) || !Number.isSafeInteger(row.updatedAt) || row.updatedAt < 0) return;
+        return { operationId: row.operationId, projectId: row.projectId, phase, updatedAt: row.updatedAt,
+          projectName: typeof row.next.project.name === 'string' ? row.next.project.name.slice(0, 256) : '' };
+      }), [TRANSFER]);
+    return rows.sort((a, b) => b.updatedAt - a.updatedAt || (a.operationId < b.operationId ? -1 : 1));
   } finally { database.close(); }
 }
 

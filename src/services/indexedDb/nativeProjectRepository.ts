@@ -21,7 +21,7 @@ import { assertProjectModelProjectSettings, assertProjectModelSettingsPolicy, wi
 import { nativeChatImagePaths } from '../../utils/chatImageReference';
 
 export const NATIVE_PROJECT_DATABASE_NAME = 'ai-canvas-native-projects-v2' as const;
-export const NATIVE_PROJECT_DATABASE_VERSION = 3 as const;
+export const NATIVE_PROJECT_DATABASE_VERSION = 4 as const;
 export const ROOTS = 'projectRoots', CONTENTS = 'projectContents', CANVASES = 'canvasDocuments';
 export const EPISODES = 'episodes', EPISODE_CONTENTS = 'episodeContents';
 export const RETIRED = 'retiredIds';
@@ -37,6 +37,12 @@ const MEDIA_TASK_INDEXES = {
   [MEDIA_TASK_MESSAGE_INDEX]: ['kind', 'ownerProjectId', 'canvasId', 'origin.conversationId', 'origin.messageId'],
 };
 const EXCHANGE_INDEXES = { ...MEDIA_TASK_INDEXES, [NATIVE_ASSET_BY_PROJECT]: ['kind', 'record.projectId'] };
+const TRANSFER_BY_PROJECT_PHASE = 'transferByProjectKindPhase';
+const TRANSFER_BY_MODE_PHASE = 'transferByKindModePhase';
+const TRANSFER_INDEXES = {
+  [TRANSFER_BY_PROJECT_PHASE]: ['projectId', 'kind', 'phase'],
+  [TRANSFER_BY_MODE_PHASE]: ['kind', 'mode', 'phase'],
+};
 const canvasPreviewKey = (canvasId: string) => `canvas-preview:${canvasId}`;
 const STORES = [ROOTS, CONTENTS, CANVASES, EPISODES, EPISODE_CONTENTS, RETIRED, REVISIONS, EXCHANGE, TRANSFER] as const;
 const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
@@ -87,14 +93,49 @@ export function stringKeyPrefix(parts: readonly string[]): IDBKeyRange {
   return IDBKeyRange.bound([...parts], [...parts, []], false, true);
 }
 
+type TransferGuardRow = { kind?: string; phase?: string; operationId?: string; mode?: string };
+const isProjectReplacement = (row: TransferGuardRow) => row.mode === 'update-existing' || row.mode === 'restore-content';
+
+/** 跳过已终结操作的索引区间，未知但可索引的阶段仍按未完成处理。 */
+function openTransferRanges(projectId: string, kind: string): IDBKeyRange[] {
+  const prefix = [projectId, kind];
+  const aborted = [...prefix, 'aborted'], finalized = [...prefix, 'finalized'];
+  return [IDBKeyRange.bound(prefix, aborted, true, true),
+    IDBKeyRange.bound(aborted, finalized, true, true),
+    IDBKeyRange.bound(finalized, [projectId, kind + '\0'], true, true)];
+}
+
 /** 未完成的跨库同步或更新在事务内冻结作品；只允许对应原操作结算。 */
 export async function assertNoPendingNativeSharedSync(tx: IDBTransaction, projectId: string, exceptOperationId?: string): Promise<void> {
-  const rows = await request(tx.objectStore(TRANSFER).index('projectId').getAll(projectId)) as Array<{ kind?: string; phase?: string; operationId?: string; mode?: string }>;
-  if (rows.some((row) => !(exceptOperationId && row.operationId === exceptOperationId) && row.kind === 'native-shared-sync'
-    && row.phase !== 'finalized' && row.phase !== 'aborted')) return fail('project-shared-sync-pending');
-  if (rows.some((row) => !(exceptOperationId && row.operationId === exceptOperationId) && (row.kind === 'native-project-update' || row.kind === 'project-model-import'
-      && (row.mode === 'update-existing' || row.mode === 'restore-content'))
-    && row.phase !== 'finalized' && row.phase !== 'aborted')) return fail('project-update-pending');
+  const transfer = tx.objectStore(TRANSFER);
+  const byProject = transfer.index('projectId'), byPhase = transfer.index(TRANSFER_BY_PROJECT_PHASE);
+  const inProject = IDBKeyRange.bound([projectId], [projectId + '\0'], false, true);
+  const [total, indexed] = await Promise.all([request(byProject.count(projectId)), request(byPhase.count(inProject))]);
+  if (!total) return;
+  const isForeign = (id: unknown) => !exceptOperationId || id !== exceptOperationId;
+  if (total !== indexed) {
+    // 旧库损坏或不完整记录可能未进入复合索引，保留原冻结判断。
+    const rows = (await request(byProject.getAll(projectId)) as TransferGuardRow[])
+      .filter((row) => isForeign(row.operationId) && row.phase !== 'finalized' && row.phase !== 'aborted');
+    if (rows.some((row) => row.kind === 'native-shared-sync')) return fail('project-shared-sync-pending');
+    if (rows.some((row) => row.kind === 'native-project-update' || row.kind === 'project-model-import' && isProjectReplacement(row))) {
+      return fail('project-update-pending');
+    }
+    return;
+  }
+  const containsOther = async (kind: string) => {
+    const keys = await Promise.all(openTransferRanges(projectId, kind).map((range) => request(byPhase.getAllKeys(range, exceptOperationId ? 2 : 1))));
+    return keys.some((group) => group.some(isForeign));
+  };
+  const [sharedSync, legacyUpdate, imports] = await Promise.all([
+    containsOther('native-shared-sync'),
+    containsOther('native-project-update'),
+    Promise.all(openTransferRanges(projectId, 'project-model-import').map((range) => request(byPhase.getAll(range)) as Promise<TransferGuardRow[]>)),
+  ]);
+  if (sharedSync) return fail('project-shared-sync-pending');
+  if (legacyUpdate || imports.some((rows) => rows.some((row) => isForeign(row.operationId) && isProjectReplacement(row)))) {
+    return fail('project-update-pending');
+  }
 }
 
 /** 活动远端任务保留原项目代际；不能并发执行会使其无法续查的结构变更。 */
@@ -117,8 +158,10 @@ function assertNativeProjectSchema(database: IDBDatabase, tx: IDBTransaction, ve
     || Array.from(database.objectStoreNames).sort().join('\0') !== [...STORES].sort().join('\0')) fail('unsupported-schema');
   for (const [name, keyPath] of [[ROOTS, 'id'], [CONTENTS, 'projectId'], [CANVASES, 'id'], [EPISODES, 'id'], [EPISODE_CONTENTS, 'episodeId'], [RETIRED, 'id'], [REVISIONS, 'projectId'], [EXCHANGE, 'projectId'], [TRANSFER, 'operationId']] as const) {
     const store = tx.objectStore(name);
-    const expectedIndexes: Record<string, string | string[]> = name === CANVASES || name === EPISODES || name === TRANSFER
-      ? { projectId: 'projectId' } : name === EXCHANGE && version > 1 ? (version === 2 ? MEDIA_TASK_INDEXES : EXCHANGE_INDEXES) : {};
+    const expectedIndexes: Record<string, string | string[]> = name === TRANSFER
+      ? { projectId: 'projectId', ...(version >= 4 ? TRANSFER_INDEXES : {}) }
+      : name === CANVASES || name === EPISODES ? { projectId: 'projectId' }
+      : name === EXCHANGE && version > 1 ? (version === 2 ? MEDIA_TASK_INDEXES : EXCHANGE_INDEXES) : {};
     if (store.keyPath !== keyPath || store.autoIncrement
       || Array.from(store.indexNames).join('\0') !== Object.keys(expectedIndexes).sort().join('\0')) fail('unsupported-schema');
     for (const [indexName, indexPath] of Object.entries(expectedIndexes)) {
@@ -172,12 +215,14 @@ export async function openNativeProjectDatabase(create: boolean, options: Native
           db.createObjectStore(REVISIONS, { keyPath: 'projectId' });
           db.createObjectStore(EXCHANGE, { keyPath: 'projectId' });
           db.createObjectStore(TRANSFER, { keyPath: 'operationId' }).createIndex('projectId', 'projectId', { unique: false });
-        } else if (event.oldVersion !== 1 && event.oldVersion !== 2) return fail('unsupported-schema');
+        } else if (![1, 2, 3].includes(event.oldVersion)) return fail('unsupported-schema');
         assertNativeProjectSchema(db, transaction, event.oldVersion || 1);
         const exchange = transaction.objectStore(EXCHANGE);
         for (const [name, keyPath] of Object.entries(EXCHANGE_INDEXES)) {
           if (!exchange.indexNames.contains(name)) exchange.createIndex(name, keyPath);
         }
+        const transfer = transaction.objectStore(TRANSFER);
+        for (const [name, keyPath] of Object.entries(TRANSFER_INDEXES)) transfer.createIndex(name, keyPath);
       } catch (error) {
         upgradeFailure = error;
         transaction.abort();
@@ -1420,10 +1465,43 @@ export interface NativeProjectExportJournal extends ProjectModelTransferExportJo
   expectedChangeRevision: number;
 }
 
+const PENDING_EXPORT_PHASES = ['prepared', 'packing', 'published'] as const;
+export const NATIVE_PENDING_IMPORT_PHASES = ['prepared', 'media_publishing', 'media_ready', 'db_committed'] as const;
 export type NativeProjectPendingTransfer = { operationId: string; updatedAt: number } & (
-  { kind: 'export'; phase: 'prepared' | 'packing' | 'published' }
-  | { kind: 'update' | 'restore'; phase: 'prepared' | 'media_publishing' | 'media_ready' | 'db_committed' }
+  { kind: 'export'; phase: typeof PENDING_EXPORT_PHASES[number] }
+  | { kind: 'update' | 'restore'; phase: typeof NATIVE_PENDING_IMPORT_PHASES[number] }
 );
+
+/** 逐条投影摘要，避免同时持有多个待续接操作的完整画布和归档。 */
+function collectTransferSummaries<Row, Summary>(index: IDBIndex, key: IDBValidKey,
+  summarize: (row: Row) => Summary | undefined): Promise<Summary[]> {
+  return new Promise((resolve, reject) => {
+    const rows: Summary[] = [];
+    const reading = index.openCursor(key);
+    reading.onerror = () => reject(reading.error ?? new Error('读取项目操作失败'));
+    reading.onsuccess = () => {
+      const cursor = reading.result;
+      if (!cursor) { resolve(rows); return; }
+      try {
+        const summary = summarize(cursor.value as Row);
+        if (summary !== undefined) rows.push(summary);
+        cursor.continue();
+      } catch (error) { reject(error); }
+    };
+  });
+}
+
+/** 新建导入还没有作品目录，只读全库中这一模式的待处理阶段。 */
+export async function summarizeNativePendingNewImports<T>(tx: IDBTransaction,
+  summarize: (row: NativeProjectImportJournal, phase: typeof NATIVE_PENDING_IMPORT_PHASES[number]) => T | undefined): Promise<T[]> {
+  const index = tx.objectStore(TRANSFER).index(TRANSFER_BY_MODE_PHASE);
+  const results: T[][] = [];
+  for (const phase of NATIVE_PENDING_IMPORT_PHASES) {
+    results.push(await collectTransferSummaries(index, ['project-model-import', 'import-new', phase],
+      (row: NativeProjectImportJournal) => summarize(row, phase)));
+  }
+  return results.flat();
+}
 
 /** 恢复入口只读取指定作品的待完成操作元数据。 */
 export async function listNativeProjectPendingTransfers(projectId: string, options: NativeProjectOptions = {}): Promise<NativeProjectPendingTransfer[]> {
@@ -1432,29 +1510,21 @@ export async function listNativeProjectPendingTransfers(projectId: string, optio
   if (!database) return [];
   try {
     return await transact(database, 'readonly', options, async (tx) => {
-      const rows: NativeProjectPendingTransfer[] = [];
-      await new Promise<void>((resolve, reject) => {
-        const cursor = tx.objectStore(TRANSFER).index('projectId').openCursor(IDBKeyRange.only(projectId));
-        cursor.onerror = () => reject(cursor.error ?? new Error('读取项目操作失败'));
-        cursor.onsuccess = () => {
-          const entry = cursor.result;
-          if (!entry) { resolve(); return; }
-          const { operationId, updatedAt, kind, mode, phase, targetProjectId } = entry.value as {
-            operationId?: unknown; updatedAt?: unknown; kind?: unknown; mode?: unknown; phase?: unknown; targetProjectId?: unknown;
-          };
-          if (typeof operationId === 'string' && operationId === entry.primaryKey && targetProjectId === projectId
-            && typeof updatedAt === 'number' && Number.isSafeInteger(updatedAt) && updatedAt >= 0) {
-            if (kind === 'project-model-export' && (phase === 'prepared' || phase === 'packing' || phase === 'published')) {
-              rows.push({ operationId, updatedAt, kind: 'export', phase });
-            } else if (kind === 'project-model-import' && (mode === 'update-existing' || mode === 'restore-content')
-              && (phase === 'prepared' || phase === 'media_publishing' || phase === 'media_ready' || phase === 'db_committed')) {
-              rows.push({ operationId, updatedAt, kind: mode === 'update-existing' ? 'update' : 'restore', phase });
-            }
-          }
-          entry.continue();
-        };
-      });
-      return rows.sort((left, right) => right.updatedAt - left.updatedAt);
+      const index = tx.objectStore(TRANSFER).index(TRANSFER_BY_PROJECT_PHASE);
+      type Candidate = { operationId: string; updatedAt: number; targetProjectId: string; mode?: string };
+      const isOwned = (row: Candidate) => row.targetProjectId === projectId && typeof row.operationId === 'string'
+        && Number.isSafeInteger(row.updatedAt) && row.updatedAt >= 0;
+      const rows: NativeProjectPendingTransfer[][] = [];
+      for (const phase of PENDING_EXPORT_PHASES) {
+        rows.push(await collectTransferSummaries<Candidate, NativeProjectPendingTransfer>(index, [projectId, 'project-model-export', phase], (row) => isOwned(row)
+          ? { operationId: row.operationId, updatedAt: row.updatedAt, kind: 'export', phase } : undefined));
+      }
+      for (const phase of NATIVE_PENDING_IMPORT_PHASES) {
+        rows.push(await collectTransferSummaries<Candidate, NativeProjectPendingTransfer>(index, [projectId, 'project-model-import', phase], (row) => isOwned(row) && isProjectReplacement(row)
+          ? { operationId: row.operationId, updatedAt: row.updatedAt, kind: row.mode === 'update-existing' ? 'update' : 'restore', phase } : undefined));
+      }
+      return rows.flat().sort((left, right) => right.updatedAt - left.updatedAt
+        || (left.operationId < right.operationId ? -1 : 1));
     }, [TRANSFER]);
   } finally { database.close(); }
 }
