@@ -38,7 +38,7 @@ export async function verifyNativeProjectUpdateCommit(operation: NativeProjectUp
   if (operation.recoveryState && !configValuesEqual(nativeUpdateInventory(frozenAssets), operation.recoveryState.assets)) throw new Error('恢复副本素材在更新前发生变化');
   const backup = await openNativeUpdateBackup(operation.projectId, operation.backup);
   try {
-    const projected = await prepareProjectModelArchiveCapture(recovery, frozenAssets, backup.source.snapshot.media);
+    const projected = await prepareProjectModelArchiveCapture(recovery, frozenAssets, backup.source.snapshot.media, 'snapshot');
     if (!configValuesEqual(backup.source.snapshot, projected.snapshot)
       || !configValuesEqual(backup.source.payload.videoEditor, projected.payload.videoEditor)
       || !configValuesEqual(backup.source.payload.assetMetadata, projected.payload.assetMetadata)

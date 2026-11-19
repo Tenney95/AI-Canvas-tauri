@@ -164,21 +164,43 @@ export async function verifiedExchange(value: ProjectModelTransferExchange | nul
   if (!previous.identities.every((old) => value.identities.some((mapping) => compare(old, mapping)))) throw error('accepted-identities-changed');
   const keyOf = (item: { canonicalVersion: number; revisionId: string }) => JSON.stringify([item.canonicalVersion, item.revisionId]);
   const graph = new Map([...value.bundle.revisions, ...value.bundle.ancestors].map((entry) => [keyOf(entry), entry]));
+  const previousGraph = new Map([...previous.bundle.revisions, ...previous.bundle.ancestors].map((entry) => [keyOf(entry), entry]));
+  type Entry = NonNullable<ReturnType<typeof graph.get>>;
+  const parents = (entry: Entry) => entry.canonicalVersion === 1
+    ? entry.parentRevisionIds.map((revisionId) => ({ canonicalVersion: 1 as const, revisionId })) : entry.parents;
+  const header = (entry: Entry) => 'snapshot' in entry
+    ? Object.fromEntries(Object.entries(entry).filter(([field]) => field !== 'snapshot')) : entry;
+  // 旧版会随包携带从旧 head 不可达的支线；这些记录不构成它的已接受父链。
+  const previouslyReachable = new Set<string>(), previousPending = [previous.localHead];
+  while (previousPending.length) {
+    const key = keyOf(previousPending.pop()!), old = previousGraph.get(key);
+    if (!old || previouslyReachable.has(key)) continue;
+    previouslyReachable.add(key); previousPending.push(...parents(old));
+  }
+  // 只有明确声明的历史边界以外才可移出已接受图。边界不能替代仍须可达的上一个 head。
+  const outsideBoundary = new Set<string>(), cut = [...(value.bundle.historyBoundary ?? [])];
+  while (cut.length) {
+    const key = keyOf(cut.pop()!), old = previousGraph.get(key);
+    if (!old || outsideBoundary.has(key)) continue;
+    outsideBoundary.add(key); cut.push(...parents(old));
+  }
   for (const old of [...previous.bundle.revisions, ...previous.bundle.ancestors]) {
     const retained = graph.get(keyOf(old));
-    if (!retained) throw error('accepted-history-truncated');
-    if ('snapshot' in old ? !compare(old, retained) : !compare(old, 'snapshot' in retained
-      ? Object.fromEntries(Object.entries(retained).filter(([field]) => field !== 'snapshot')) : retained)) throw error('immutable-revision-conflict');
+    if (!retained) {
+      if (previouslyReachable.has(keyOf(old)) && !outsideBoundary.has(keyOf(old))) throw error('accepted-history-truncated');
+      continue;
+    }
+    if (!compare(header(old), header(retained)) || 'snapshot' in old && 'snapshot' in retained && !compare(old, retained)) throw error('immutable-revision-conflict');
   }
   const pending = [value.localHead], seen = new Set<string>();
   let reaches = false;
   while (pending.length) {
     const current = pending.pop()!, keyValue = keyOf(current);
+    const revision = graph.get(keyValue);
+    if (!revision) continue;
     if (keyValue === keyOf(previous.localHead)) { reaches = true; break; }
     if (seen.has(keyValue)) continue; seen.add(keyValue);
-    const revision = graph.get(keyValue);
-    if (revision) pending.push(...(revision.canonicalVersion === 1
-      ? revision.parentRevisionIds.map((revisionId) => ({ canonicalVersion: 1 as const, revisionId })) : revision.parents));
+    pending.push(...parents(revision));
   }
   if (!reaches) throw error('new-head-does-not-preserve-current');
   if (!previous.published.every((receipt) => value.published.some((item) => compare(item, receipt)))) throw error('publication-history-truncated');

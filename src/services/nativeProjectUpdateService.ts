@@ -8,7 +8,7 @@ import { createBoundProjectModelArchiveExportPort } from './projectModelArchiveN
 import { importProjectModelArchiveHistory, materializeProjectModelArchiveBusiness, prepareProjectModelArchiveCapture } from './projectModelArchiveService';
 import { commitNativeArchiveHistory } from './nativeArchiveHistoryCommit';
 import { projectArchivePayloadFromSnapshotV2, readProjectArchiveV4, readProjectArchiveV4Files, serializeProjectArchiveV4 } from './projectArchiveV4';
-import { createProjectExchangeRevisionV2, findProjectExchangeBaseV2, parseProjectExchangeBundleV2 } from './projectExchangeV2Format';
+import { buildProjectExchangeBundleV2, createProjectExchangeRevisionV2, findProjectExchangeBaseV2 } from './projectExchangeV2Format';
 import { deriveLegacyProjectionProofFromRevisions } from './projectExchangeV2Domain';
 import { listNativeContentRecoveryPoints, replaceNativeContentWithRecovery } from './indexedDb/nativeProjectRepository';
 import { NATIVE_EDITOR_CHOICE_KEY, nativeEditorChoiceRequired, resolveNativeEditorUpdate } from './videoEditorArchive';
@@ -75,7 +75,8 @@ export async function previewNativeProjectUpdate(source: ValidatedProjectArchive
   if (latest.value.sourceToken !== expected.sourceToken) throw new Error('项目在预览期间发生变化，请重试');
   const graph = [...expected.exchange.bundle.revisions, ...source.payload.exchange.revisions];
   const base = await findProjectExchangeBaseV2(expected.exchange.localHead, source.payload.exchange.head, graph,
-    [...expected.exchange.bundle.ancestors, ...source.payload.exchange.ancestors]);
+    [...expected.exchange.bundle.ancestors, ...source.payload.exchange.ancestors],
+    [...(expected.exchange.bundle.historyBoundary ?? []), ...(source.payload.exchange.historyBoundary ?? [])]);
   if (base.status !== 'found') throw new Error('缺少完整共同版本，请导入为新项目');
   const baseProof = base.revision.canonicalVersion === 1 ? await deriveLegacyProjectionProofFromRevisions(base.revision, graph) : undefined;
   const plan = await buildProjectMergePlanV2(base.revision.snapshot, prepared.snapshot, source.snapshot, { base: baseProof });
@@ -85,12 +86,7 @@ export async function previewNativeProjectUpdate(source: ValidatedProjectArchive
 
 function mergeBundle(current: ProjectModelTransferExchange, source: ProjectModelTransferExchange['bundle'],
   head: Awaited<ReturnType<typeof createProjectExchangeRevisionV2>>) {
-  const key = (row: { canonicalVersion: number; revisionId: string }) => `${row.canonicalVersion}:${row.revisionId}`;
-  const revisions = [...new Map([...current.bundle.revisions, ...source.revisions, head].map((row) => [key(row), row])).values()];
-  const ancestors = [...new Map([...current.bundle.ancestors, ...source.ancestors].map((row) => [key(row), row])).values()]
-    .filter((row) => !revisions.some((revision) => key(revision) === key(row)));
-  return parseProjectExchangeBundleV2({ ...source, packageId: crypto.randomUUID(), head: { canonicalVersion: 2, revisionId: head.revisionId },
-    revisions, ancestors, files: head.snapshot.media.map((media) => ({ mediaId: media.id, archivePath: `assets/${media.id}.${media.extension}` })) });
+  return buildProjectExchangeBundleV2({ packageId: crypto.randomUUID(), head, sources: [current.bundle, source] });
 }
 
 const digest = (value: unknown) => sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(value)));

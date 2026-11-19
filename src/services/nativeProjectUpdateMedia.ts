@@ -53,7 +53,7 @@ export async function createNativeUpdateBackup(expected: ProjectModelTransferCap
   rebindNativeAssetReferenceFiles(portable, referenceFiles);
   portable.assetMetadata = assetSnapshots;
   const assets = await port.inspectAssets(portable);
-  let prepared = await prepareProjectModelArchiveCapture(portable, assets);
+  let prepared = await prepareProjectModelArchiveCapture(portable, assets, [], 'snapshot');
   const descriptors = prepared.exchange.bundle.files.map((file) => {
     const media = prepared.snapshot.media.find((entry) => entry.id === file.mediaId);
     if (!media) throw new Error('恢复备份缺少素材描述');
@@ -82,7 +82,7 @@ export async function createNativeUpdateBackup(expected: ProjectModelTransferCap
   try {
     if (!configValuesEqual(checked.source.snapshot, prepared.snapshot)) {
       // 若原操作已经用旧版媒体分类写出备份，复现其分类并继续比较原始内容与摘要。
-      prepared = await prepareProjectModelArchiveCapture(portable, assets, checked.source.snapshot.media);
+      prepared = await prepareProjectModelArchiveCapture(portable, assets, checked.source.snapshot.media, 'snapshot');
     }
     if (!configValuesEqual(checked.source.snapshot, prepared.snapshot)
       || !configValuesEqual(checked.source.payload.videoEditor, prepared.payload.videoEditor)
@@ -194,7 +194,7 @@ export async function inspectNativeRestorePoint(projectId: string, point: Native
     const root = roots.get(item.rootRef); if (!root) throw new Error('恢复素材根不可用');
     return { ...item, localAbsolutePath: files.joinPath(root, item.path) };
   });
-  const prepared = await prepareProjectModelArchiveCapture(capture, assets, source.snapshot.media);
+  const prepared = await prepareProjectModelArchiveCapture(capture, assets, source.snapshot.media, 'snapshot');
   if (!configValuesEqual(prepared.snapshot.entities, source.snapshot.entities)
     || !configValuesEqual(prepared.snapshot.media, source.snapshot.media)
     || !configValuesEqual(prepared.payload.assetMetadata, source.payload.assetMetadata)

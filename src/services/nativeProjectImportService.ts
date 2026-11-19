@@ -9,7 +9,7 @@ import { projectModelSourceToken } from './projectModelComparisonMaterial';
 import { importProjectModelArchiveHistory, materializeProjectModelArchiveBusiness, readProjectModelArchive } from './projectModelArchiveService';
 import { createBoundProjectModelArchiveImportPort } from './projectModelArchiveNativePort';
 import { readProjectArchiveV4, serializeProjectArchiveV4 } from './projectArchiveV4';
-import { createProjectExchangeRevisionV2 } from './projectExchangeV2Format';
+import { buildProjectExchangeBundleV2, createProjectExchangeRevisionV2 } from './projectExchangeV2Format';
 import { assertNativeArchiveHistoryCommitted, commitNativeArchiveHistory } from './nativeArchiveHistoryCommit';
 import { advanceNativeProjectImport, commitNativeProjectImport, prepareNativeProjectImport, readNativeProjectContent, readNativeProjectImport,
   type NativeProjectImportJournal } from './indexedDb/nativeProjectRepository';
@@ -203,8 +203,7 @@ async function importSource(sourceValue: ValidatedProjectArchiveV4, originalDire
   if (options.independent) {
     const snapshot = { ...source.snapshot, lineageId: crypto.randomUUID() };
     const head = await createProjectExchangeRevisionV2(snapshot);
-    const exchange = { ...source.payload.exchange, lineageId: snapshot.lineageId, packageId: crypto.randomUUID(),
-      head: { canonicalVersion: 2 as const, revisionId: head.revisionId }, revisions: [head], ancestors: [] };
+    const exchange = await buildProjectExchangeBundleV2({ packageId: crypto.randomUUID(), head });
     const payload = { ...source.payload, exchange };
     const converted = await serializeProjectArchiveV4(payload, { packageId: exchange.packageId, exportedAt: source.manifest.exportedAt }, source.assets);
     source = await readProjectArchiveV4(Object.fromEntries(converted.map((entry) => [entry.path, entry.content])), source.assets);

@@ -5,7 +5,7 @@ import type { ProjectExchangeObject, ProjectExchangeSnapshot, ProjectExchangeVal
 import type { ProjectExchangeBundleV2, ProjectExchangeEntityV2, ProjectExchangeSnapshotV2 } from '../../src/types/projectArchiveV4';
 import { createProjectExchangeRevision, parseProjectExchangeBundle, parseProjectExchangeSnapshot } from '../../src/services/projectExchangeFormat';
 import { adaptSnapshotV1ToV2, deriveLegacyExchangeIdentity, deriveLegacyProjectionProofFromRevisions } from '../../src/services/projectExchangeV2Domain';
-import { assertProjectExchangeV3Compatible, createProjectExchangeRevisionV2, exchangeReferencesV2,
+import { assertProjectExchangeV3Compatible, buildProjectExchangeBundleV2, createProjectExchangeRevisionV2, exchangeReferencesV2,
   findProjectExchangeBaseV2, isProjectExchangeAncestorV2, parseProjectExchangeBundleV2,
   parseProjectExchangeSnapshotV2, projectExchangeRevisionHeaderV2 } from '../../src/services/projectExchangeV2Format';
 import { buildProjectMergePlanV2, resolveProjectMergeV2 } from '../../src/services/projectMergeV2Service';
@@ -103,6 +103,28 @@ describe('canonical2 与混版本历史', () => {
     await expect(parseProjectExchangeBundleV2({ ...original, head: { canonicalVersion: 2, revisionId: head.revisionId }, revisions: [head] })).rejects.toThrow('incomplete_ancestry');
     await expect(parseProjectExchangeBundleV2({ ...original, version: 3 })).rejects.toThrow();
     expect(() => parseProjectExchangeSnapshotV2({ ...zeroSeries(), canonicalVersion: 3 })).toThrow();
+  });
+
+  it('bounds new history, preserves verified nearby shared versions and accepts overlapping archive histories', async () => {
+    const revisions = [await createProjectExchangeRevisionV2(zeroSeries())];
+    for (let count = 1; count <= 256; count++) {
+      const snapshot = zeroSeries();
+      snapshot.entities[0].data.name = `版本 ${count}`;
+      const previous = revisions[count - 1];
+      revisions.push(await createProjectExchangeRevisionV2(snapshot, [{ canonicalVersion: 2, revisionId: previous.revisionId }]));
+    }
+    const original = await bundle();
+    const previous = { ...original, head: { canonicalVersion: 2 as const, revisionId: revisions[255].revisionId }, revisions: revisions.slice(0, 256) };
+    const current = await buildProjectExchangeBundleV2({ packageId: original.packageId, head: revisions[256], sources: [previous] });
+    expect(current.revisions).toHaveLength(8);
+    expect(current.revisions.length + current.ancestors.length).toBe(256);
+    expect(current.historyBoundary).toEqual([original.head]);
+    const base = await findProjectExchangeBaseV2(previous.head, current.head,
+      [...current.revisions, ...previous.revisions], current.ancestors, current.historyBoundary);
+    expect(base).toEqual({ status: 'found', revision: revisions[255] });
+    await expect(parseProjectExchangeBundleV2({ ...current, historyBoundary: [{ canonicalVersion: 2, revisionId: 'a'.repeat(64) }] }))
+      .rejects.toThrow('incomplete_ancestry');
+    expect(await isProjectExchangeAncestorV2(original.head, current.head, current)).toBe(false);
   });
 
   it('keeps same-named files from separate roots distinct and rejects forged scope or dependencies', () => {

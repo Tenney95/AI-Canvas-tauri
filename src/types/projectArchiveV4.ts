@@ -85,6 +85,8 @@ export interface ProjectExchangeBundleV2 {
   head: ProjectExchangeRevisionReference & { canonicalVersion: 2 };
   revisions: Array<ProjectExchangeRevision | ProjectExchangeRevisionV2>;
   ancestors: Array<ProjectExchangeRevisionHeader | ProjectExchangeRevisionHeaderV2>;
+  /** 被有界历史裁剪的父版本身份。只标明证明到此结束，不能替代父版本正文或摘要验证。 */
+  historyBoundary?: ProjectExchangeRevisionReference[];
   files: Array<{
     mediaId: string;
     /** 安全 assets/ 相对路径，不能传给本机文件接口当绝对路径。 */

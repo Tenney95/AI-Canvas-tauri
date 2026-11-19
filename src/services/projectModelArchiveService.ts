@@ -12,7 +12,7 @@ import { safeExchangePath, remapStoryGraphBindings } from './projectExchangeDoma
 import { captureProjectSnapshot } from './projectMergeWorkerClient';
 import { readProjectArchiveContents } from './projectImportService';
 import { portableArchiveChat, sanitizeLegacyArchiveProject } from './projectArchiveValidation';
-import { createProjectExchangeRevisionV2, parseProjectExchangeBundleV2, findProjectExchangeBaseV2 } from './projectExchangeV2Format';
+import { buildProjectExchangeBundleV2, createProjectExchangeRevisionV2, parseProjectExchangeBundleV2, findProjectExchangeBaseV2 } from './projectExchangeV2Format';
 import { adaptSnapshotV1ToV2, deriveLegacyExchangeIdentity, deriveLegacyProjectionProofFromRevisions } from './projectExchangeV2Domain';
 import { buildProjectExchangeSnapshotV2, projectArchivePayloadFromSnapshotV2, readProjectArchiveV4,
   readProjectArchiveV4Files, serializeProjectArchiveV4 } from './projectArchiveV4';
@@ -521,7 +521,7 @@ function captureMediaDescriptor(asset: ProjectModelArchiveAsset, relativePath: s
 
 /** 仅构造可序列化的捕获投影；备份核验可根据已读回的原描述复现旧版分类。 */
 export async function prepareProjectModelArchiveCapture(capture: ProjectModelTransferCapture, assets: ProjectModelArchiveAsset[],
-  verifiedBackupMedia: readonly ProjectExchangeMedia[] = []) {
+  verifiedBackupMedia: readonly ProjectExchangeMedia[] = [], history: 'collaboration' | 'snapshot' = 'collaboration') {
   const lineageId = capture.exchange?.lineageId ?? crypto.randomUUID();
   const roots = capture.aggregate.project.storageBindings;
   const identities = [...(capture.exchange?.identities ?? [])];
@@ -564,10 +564,10 @@ export async function prepareProjectModelArchiveCapture(capture: ProjectModelTra
     files.push({ id, rootRef, relativePath, mediaId: descriptor.id });
     fileBindings.push({ id, rootRef, relativePath, localRelativePath: previousBinding?.localRelativePath ?? asset.path });
   }
-  const history = await captureHistory(capture, business, identities, fileBindings, assets);
+  const archivedHistory = await captureHistory(capture, business, identities, fileBindings, assets);
   const retired = new Map(previous?.canonicalVersion === 2 ? previous.snapshot.historicalTargets.map((target) => [JSON.stringify([target.kind, target.id]), target]) : []);
-  for (const binding of history?.workbenchTargets ?? []) if (binding.target.state === 'retired') retired.set(JSON.stringify([binding.target.kind, binding.target.id]), binding.target);
-  for (const scope of history?.scopes ?? []) if (scope.retired) {
+  for (const binding of archivedHistory?.workbenchTargets ?? []) if (binding.target.state === 'retired') retired.set(JSON.stringify([binding.target.kind, binding.target.id]), binding.target);
+  for (const scope of archivedHistory?.scopes ?? []) if (scope.retired) {
     const target = { state: 'retired' as const, kind: 'canvas' as const, projectId: business.project.id, id: scope.canvasId };
     retired.set(JSON.stringify([target.kind, target.id]), target);
   }
@@ -578,18 +578,16 @@ export async function prepareProjectModelArchiveCapture(capture: ProjectModelTra
     retired.set(JSON.stringify([target.kind, target.id]), target);
   }
   const snapshot = buildProjectExchangeSnapshotV2(business, lineageId, [...media.values()], files, [...retired.values()]);
-  const createdHead = await createProjectExchangeRevisionV2(snapshot, capture.exchange ? [capture.exchange.localHead] : []);
-  const head = previous?.canonicalVersion === 2 && previous.contentDigest === createdHead.contentDigest ? previous : createdHead;
-  const revisions = [...(capture.exchange?.bundle.revisions ?? []).filter((revision) => refKey(revision) !== refKey(head)), head];
-  const bundle = await parseProjectExchangeBundleV2({ format: 'ai-canvas-project-exchange', version: 2, packageId: crypto.randomUUID(),
-    lineageId, head: { canonicalVersion: 2, revisionId: head.revisionId }, revisions, ancestors: capture.exchange?.bundle.ancestors ?? [],
-    files: [...media.values()].map((value) => ({ mediaId: value.id, archivePath: `assets/${value.id}.${value.extension}` })) });
+  const inherited = history === 'collaboration' ? capture.exchange : null;
+  const createdHead = await createProjectExchangeRevisionV2(snapshot, inherited ? [inherited.localHead] : []);
+  const head = inherited && previous?.canonicalVersion === 2 && previous.contentDigest === createdHead.contentDigest ? previous : createdHead;
+  const bundle = await buildProjectExchangeBundleV2({ packageId: crypto.randomUUID(), head, sources: inherited ? [inherited.bundle] : [] });
   const exchange: ProjectModelTransferExchange = { lineageId, localHead: bundle.head, bundle,
     stateVersion: (capture.exchange?.stateVersion ?? 0) + 1, identities, fileBindings, published: capture.exchange?.published ?? [] };
   const videoEditor = captureArchiveVideoEditorProjects(capture.editorRecords ?? [], capture.aggregate.canvases.map((canvas) => canvas.id),
     capture.aggregate.project.storageRootRef, identities, fileBindings, assets, capture.retiredEditorRecords ?? [], retiredEditorCanvasIds);
   const assetMetadata = captureArchiveAssetMetadata(capture.assetMetadata ?? [], exchange, files, snapshot.media);
-  return { assets, files, snapshot, exchange, payload: { ...business, exchange: bundle, ...(history ? { history } : {}),
+  return { assets, files, snapshot, exchange, payload: { ...business, exchange: bundle, ...(archivedHistory ? { history: archivedHistory } : {}),
     ...(videoEditor ? { videoEditor } : {}), ...(assetMetadata ? { assetMetadata } : {}) } as ProjectArchivePayloadV4 };
 }
 
@@ -641,7 +639,8 @@ export function createProjectModelArchiveService(database: IDBDatabase, session:
       const prepared = await prepareCapture(expected); localSnapshot = prepared.snapshot; localExchange = prepared.exchange; localAssets = prepared.assets;
       const graph = [...expected.exchange.bundle.revisions, ...source.payload.exchange.revisions];
       const base = await findProjectExchangeBaseV2(expected.exchange.localHead, source.payload.exchange.head, graph,
-        [...expected.exchange.bundle.ancestors, ...source.payload.exchange.ancestors]);
+        [...expected.exchange.bundle.ancestors, ...source.payload.exchange.ancestors],
+        [...(expected.exchange.bundle.historyBoundary ?? []), ...(source.payload.exchange.historyBoundary ?? [])]);
       if (base.status !== 'found') throw new Error(`无法自动合并：${base.status}，请补充完整基线材料`);
       const baseProof = base.revision.canonicalVersion === 1 ? await deriveLegacyProjectionProofFromRevisions(base.revision, graph) : undefined;
       plan = await buildProjectMergePlanV2(base.revision.snapshot, localSnapshot, source.snapshot, { base: baseProof });
@@ -703,13 +702,8 @@ export function createProjectModelArchiveService(database: IDBDatabase, session:
         ? [expected.exchange!.localHead, previewed.source.payload.exchange.head] : [previewed.source.payload.exchange.head];
       const head = await createProjectExchangeRevisionV2(snapshot, [...new Map(parents.map((ref) => [refKey(ref), ref])).values()]);
       const sourceBundle = previewed.source.payload.exchange, old = expected?.exchange?.bundle;
-      const revisions = options.mode === 'independent-copy' ? [head]
-        : [...new Map([...(old?.revisions ?? []), ...sourceBundle.revisions, head].map((row) => [refKey(row), row])).values()];
-      const ancestors = options.mode === 'independent-copy' ? []
-        : [...new Map([...(old?.ancestors ?? []), ...sourceBundle.ancestors].map((row) => [refKey(row), row])).values()].filter((row) => !revisions.some((revision) => refKey(row) === refKey(revision)));
-      const bundle = await parseProjectExchangeBundleV2({ ...sourceBundle, lineageId: snapshot.lineageId,
-        packageId: crypto.randomUUID(), head: { canonicalVersion: 2, revisionId: head.revisionId }, revisions, ancestors,
-        files: snapshot.media.map((media) => ({ mediaId: media.id, archivePath: `assets/${media.id}.${media.extension}` })) });
+      const bundle = await buildProjectExchangeBundleV2({ packageId: crypto.randomUUID(), head,
+        sources: options.mode === 'independent-copy' ? [] : old ? [old, sourceBundle] : [sourceBundle] });
       const exchange: ProjectModelTransferExchange = { lineageId: snapshot.lineageId, localHead: bundle.head, bundle,
         identities: material.identities, fileBindings: material.fileBindings,
         stateVersion: (expected?.exchange?.stateVersion ?? 0) + 1, published: expected?.exchange?.published ?? [] };

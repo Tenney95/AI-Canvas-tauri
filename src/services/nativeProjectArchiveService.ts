@@ -342,7 +342,7 @@ export async function duplicateNativeProjectArchive(projectId: string, name: str
     const port = createBoundProjectModelArchiveExportPort(projectId, '');
     const { portable, assets } = await prepareNativeArchiveMaterial(source.value, operationId, port);
     portable.aggregate.project.name = name.trim();
-    const prepared = await prepareProjectModelArchiveCapture(portable, assets);
+    const prepared = await prepareProjectModelArchiveCapture(portable, assets, [], 'snapshot');
     const descriptors = prepared.exchange.bundle.files.map((file) => {
       const media = prepared.snapshot.media.find((item) => item.id === file.mediaId);
       if (!media) throw new Error('项目副本缺少媒体描述');

@@ -334,11 +334,70 @@ const parentsOf = (entry: AnyProjectExchangeHeader): ProjectExchangeRevisionRefe
 const anyHeader = (entry: AnyProjectExchangeRevision): AnyProjectExchangeHeader => entry.canonicalVersion === 1
   ? projectExchangeRevisionHeader(entry) : projectExchangeRevisionHeaderV2(entry);
 
+/** 相同版本可同时来自本机和归档。仅合并内容与摘要完全一致的重复项。 */
+function mergeRevisionGraph(entries: readonly (AnyProjectExchangeRevision | AnyProjectExchangeHeader)[]) {
+  const graph = new Map<string, AnyProjectExchangeRevision | AnyProjectExchangeHeader>();
+  for (const entry of entries) {
+    const id = revisionKey(entry), previous = graph.get(id);
+    const header = 'snapshot' in entry ? anyHeader(entry) : entry;
+    if (previous && (!same('snapshot' in previous ? anyHeader(previous) : previous, header)
+      || 'snapshot' in previous && 'snapshot' in entry && !same(previous.snapshot, entry.snapshot))) return fail('invalid_ancestry');
+    if (!previous || 'snapshot' in entry && !('snapshot' in previous)) graph.set(id, entry);
+  }
+  return graph;
+}
+
+/** 有界写入端：最近的正文可用于三方合并，旧版保留经过验证的摘要和父边。 */
+export async function buildProjectExchangeBundleV2(input: {
+  packageId: string; head: ProjectExchangeRevisionV2; sources?: readonly ProjectExchangeBundleV2[];
+}): Promise<ProjectExchangeBundleV2> {
+  const { head, packageId, sources = [] } = input;
+  if (sources.length > 2 || sources.some((source) => source.lineageId !== head.lineageId)) return fail('invalid_ancestry');
+  const graph = mergeRevisionGraph([head, ...sources.flatMap((source) => [...source.revisions, ...source.ancestors])]);
+  const boundaries = new Set(sources.flatMap((source) => source.historyBoundary ?? []).map(revisionKey));
+  const recent = [head as AnyProjectExchangeRevision | AnyProjectExchangeHeader];
+  const used = new Set([revisionKey(head)]);
+  for (const entry of recent) for (const parent of parentsOf(entry)) {
+    const id = revisionKey(parent), next = graph.get(id);
+    if (!next && !boundaries.has(id)) return fail('incomplete_ancestry');
+    if (!next || used.has(id) || recent.length >= PROJECT_EXCHANGE_LIMITS.revisions) continue;
+    used.add(id); recent.push(next);
+  }
+  const files = head.snapshot.media.map((item) => ({ mediaId: item.id, archivePath: `assets/${item.id}.${item.extension}` }));
+  let ancestryLimit: number = PROJECT_EXCHANGE_LIMITS.revisions;
+  let snapshotLimit = 8;
+  for (;;) {
+    const selected = recent.slice(0, ancestryLimit), keys = new Set(selected.map(revisionKey));
+    const revisions: AnyProjectExchangeRevision[] = [], ancestors: AnyProjectExchangeHeader[] = [];
+    const omitted = new Map<string, ProjectExchangeRevisionReference>();
+    for (const entry of selected) {
+      if ('snapshot' in entry && revisions.length < snapshotLimit) revisions.push(entry);
+      else ancestors.push('snapshot' in entry ? anyHeader(entry) : entry);
+      for (const parent of parentsOf(entry)) if (!keys.has(revisionKey(parent))) omitted.set(revisionKey(parent), parent);
+    }
+    try {
+      return await parseProjectExchangeBundleV2({ format: 'ai-canvas-project-exchange', version: 2, packageId,
+        lineageId: head.lineageId, head: { canonicalVersion: 2, revisionId: head.revisionId }, revisions, ancestors, files,
+        ...(omitted.size ? { historyBoundary: [...omitted.values()] } : {}) });
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('(limit_exceeded)') && !error.message.includes('（limit_exceeded）')) throw error;
+      if (snapshotLimit > 1 && revisions.length > 1) snapshotLimit = Math.max(1, Math.floor(revisions.length / 2));
+      // 花两层父边仍能复核合并头和本机上一个已提交版本的关系。
+      else if (selected.length > 7) ancestryLimit = Math.max(7, Math.floor(selected.length / 2));
+      else throw error;
+    }
+  }
+}
+
 /** 唯一最近公共祖先；v1/v2 同名 digest 也不会混为同一个版本。 */
 export async function findProjectExchangeBaseV2(left: ProjectExchangeRevisionReference, right: ProjectExchangeRevisionReference,
-  revisions: readonly AnyProjectExchangeRevision[], ancestors: readonly AnyProjectExchangeHeader[] = []): Promise<ProjectExchangeBaseResultV2> {
+  revisions: readonly AnyProjectExchangeRevision[], ancestors: readonly AnyProjectExchangeHeader[] = [],
+  historyBoundary: readonly ProjectExchangeRevisionReference[] = []): Promise<ProjectExchangeBaseResultV2> {
   left = versioned(left); right = versioned(right);
-  if (revisions.length + ancestors.length > PROJECT_EXCHANGE_LIMITS.revisions) return fail('limit_exceeded');
+  // 两份各自有界的包可以拥有完全重叠的版本。原始输入仍设上限，重复项也逐条验证。
+  if (revisions.length + ancestors.length > 2 * PROJECT_EXCHANGE_LIMITS.revisions
+    || historyBoundary.length > 4 * PROJECT_EXCHANGE_LIMITS.revisions) return fail('limit_exceeded');
+  const boundaryKeys = new Set(historyBoundary.map((ref) => revisionKey(versioned(ref))));
   const graph = new Map<string, AnyProjectExchangeHeader>(), bodies = new Map<string, AnyProjectExchangeRevision>();
   const insert = (entry: AnyProjectExchangeHeader) => {
     const id = revisionKey(entry), previous = graph.get(id);
@@ -355,33 +414,58 @@ export async function findProjectExchangeBaseV2(left: ProjectExchangeRevisionRef
   const a = graph.get(revisionKey(left)), b = graph.get(revisionKey(right));
   if (!a || !b) return { status: 'incomplete' };
   if (a.lineageId !== b.lineageId) return { status: 'unrelated' };
-  const colors = new Map<string, number>(); let incomplete = false;
+  const colors = new Map<string, number>();
   const visit = (id: string) => {
     if (colors.get(id) === 1) return fail('invalid_ancestry');
     if (colors.get(id) === 2) return;
     const entry = graph.get(id);
-    if (!entry) { incomplete = true; return; }
+    if (!entry) return;
     if (entry.lineageId !== a.lineageId) return fail('invalid_ancestry');
     colors.set(id, 1); parentsOf(entry).forEach((parent) => visit(revisionKey(parent))); colors.set(id, 2);
   };
   visit(revisionKey(left)); visit(revisionKey(right));
-  if (incomplete) return { status: 'incomplete' };
   const reachable = (start: string) => {
     const found = new Set<string>(), pending = [start];
-    while (pending.length) { const id = pending.pop()!; if (found.has(id)) continue; found.add(id); pending.push(...parentsOf(graph.get(id)!).map(revisionKey)); }
-    return found;
+    const missing = new Set<string>();
+    while (pending.length) {
+      const id = pending.pop()!;
+      if (found.has(id)) continue;
+      const entry = graph.get(id);
+      if (!entry) { missing.add(id); continue; }
+      found.add(id); pending.push(...parentsOf(entry).map(revisionKey));
+    }
+    return { found, missing };
   };
-  const ar = reachable(revisionKey(left)), br = reachable(revisionKey(right)), common = [...ar].filter((id) => br.has(id));
-  if (!common.length) return { status: 'unrelated' };
+  const ar = reachable(revisionKey(left)), br = reachable(revisionKey(right)), common = [...ar.found].filter((id) => br.found.has(id));
+  const missing = [...ar.missing, ...br.missing];
+  if (missing.some((id) => !boundaryKeys.has(id))) return { status: 'incomplete' };
+  if (!common.length) return { status: missing.length ? 'incomplete' : 'unrelated' };
   const superseded = new Set<string>();
-  for (const id of common) for (const parent of reachable(id)) if (parent !== id) superseded.add(parent);
+  for (const id of common) for (const parent of parentsOf(graph.get(id)!)) superseded.add(revisionKey(parent));
   const nearest = common.filter((id) => !superseded.has(id));
   if (nearest.length !== 1) return { status: 'ambiguous' };
+  // 共同版本之前的裁剪不影响合并。任一独有分支的未知父边可能隐藏更新的共同版本。
+  if (missing.length) {
+    const baseline = reachable(nearest[0]);
+    const exclusiveHasBoundary = (start: string) => {
+      const seen = new Set<string>(), pending = [start];
+      while (pending.length) {
+        const id = pending.pop()!;
+        if (seen.has(id) || baseline.found.has(id)) continue;
+        seen.add(id);
+        const entry = graph.get(id);
+        if (!entry) return true;
+        pending.push(...parentsOf(entry).map(revisionKey));
+      }
+      return false;
+    };
+    if (exclusiveHasBoundary(revisionKey(left)) || exclusiveHasBoundary(revisionKey(right))) return { status: 'incomplete' };
+  }
   return bodies.has(nearest[0]) ? { status: 'found', revision: bodies.get(nearest[0])! } : { status: 'missingSnapshot' };
 }
 
 export async function parseProjectExchangeBundleV2(input: unknown): Promise<ProjectExchangeBundleV2> {
-  const item = object(parseInput(input, PROJECT_EXCHANGE_LIMITS.bundleBytes), ['format', 'version', 'packageId', 'lineageId', 'head', 'revisions', 'ancestors', 'files']);
+  const item = object(parseInput(input, PROJECT_EXCHANGE_LIMITS.bundleBytes), ['format', 'version', 'packageId', 'lineageId', 'head', 'revisions', 'ancestors', 'historyBoundary', 'files']);
   if (item.format !== 'ai-canvas-project-exchange' || item.version !== 2) return fail('unknown_bundle_version');
   const head = versioned(item.head); if (head.canonicalVersion !== 2) return fail('invalid_head');
   const lineageId = projectExchangeId(item.lineageId), revisions: AnyProjectExchangeRevision[] = [], ancestors: AnyProjectExchangeHeader[] = [];
@@ -396,14 +480,24 @@ export async function parseProjectExchangeBundleV2(input: unknown): Promise<Proj
   // 任一包内历史分支都必须闭合且可达；不允许附带循环/断裂的未使用伪历史。
   if (revisions.some((entry) => entry.snapshot.rootProjectId !== headRevision.snapshot.rootProjectId)) return fail('invalid_ancestry');
   const graph = new Map(all.map((entry) => [revisionKey(entry), entry])), colors = new Map<string, number>();
+  const historyBoundary = item.historyBoundary === undefined ? []
+    : array(item.historyBoundary, 2 * PROJECT_EXCHANGE_LIMITS.revisions).map(versioned).sort((a, b) => sort(revisionKey(a), revisionKey(b)));
+  const boundaries = new Set(historyBoundary.map(revisionKey)), missing = new Set<string>();
+  if (boundaries.size !== historyBoundary.length || historyBoundary.some((ref) => graph.has(revisionKey(ref)))) return fail('invalid_ancestry');
   const visit = (id: string): void => {
     if (colors.get(id) === 1) return fail('invalid_ancestry');
     if (colors.get(id) === 2) return;
     const entry = graph.get(id);
-    if (!entry) return fail('incomplete_ancestry');
+    if (!entry) {
+      if (!boundaries.has(id)) return fail('incomplete_ancestry');
+      missing.add(id); return;
+    }
     colors.set(id, 1); parentsOf(entry).forEach((parent) => visit(revisionKey(parent))); colors.set(id, 2);
   };
+  visit(revisionKey(head));
+  if (historyBoundary.length && colors.size !== graph.size) return fail('invalid_ancestry');
   for (const id of graph.keys()) visit(id);
+  if (missing.size !== boundaries.size) return fail('invalid_ancestry');
   const files = array(item.files, PROJECT_EXCHANGE_LIMITS.media).map((input) => {
     const file = object(input, ['mediaId', 'archivePath']), path = safeExchangePath(String(file.archivePath));
     if (!path.startsWith('assets/') || path !== file.archivePath) return fail('invalid_archive_path');
@@ -412,7 +506,8 @@ export async function parseProjectExchangeBundleV2(input: unknown): Promise<Proj
   if (new Set(files.map((file) => file.mediaId)).size !== files.length || new Set(files.map((file) => file.archivePath.normalize('NFC').toLowerCase())).size !== files.length
     || files.length !== headRevision.snapshot.media.length || headRevision.snapshot.media.some((media) => !files.some((file) => file.mediaId === media.id))) return fail('invalid_files');
   const result: ProjectExchangeBundleV2 = { format: 'ai-canvas-project-exchange', version: 2, packageId: projectExchangeId(item.packageId),
-    lineageId, head: { canonicalVersion: 2, revisionId: head.revisionId }, revisions, ancestors, files };
+    lineageId, head: { canonicalVersion: 2, revisionId: head.revisionId }, revisions, ancestors, files,
+    ...(historyBoundary.length ? { historyBoundary } : {}) };
   if (encoder.encode(JSON.stringify(result)).byteLength > PROJECT_EXCHANGE_LIMITS.bundleBytes) return fail('limit_exceeded');
   return result;
 }
@@ -434,7 +529,7 @@ export async function isProjectExchangeAncestorV2(ancestor: ProjectExchangeRevis
     const id = pending.pop()!;
     if (found.has(id)) continue;
     const entry = graph.get(id);
-    if (!entry) return false;
+    if (!entry) continue;
     if (id === target) return true;
     found.add(id); pending.push(...parentsOf(entry).map(revisionKey));
   }
