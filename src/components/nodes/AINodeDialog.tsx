@@ -1437,7 +1437,7 @@ function AINodeDialog() {
             nodeType={isPrevis ? 'ai-text' : nodeType}
             sourceNodeType={nodeType}
             nodeId={activeNodeId}
-            prompt={data.prompt || (isPrevis ? data.directorPrevisPrompt : '') || ''}
+            prompt={data.prompt ?? (isPrevis ? data.directorPrevisPrompt : undefined) ?? ''}
             placeholder={isPrevis ? t('按 @ 引用连线图片或完整分镜表，描述空间、人物走位和运镜；') : t('按 @ 引用素材；连线素材需 @ 后才会传给模型，仅连线不生效；\n描述想要生成的内容；\n/ 呼出指令；')}
             selectedModel={data.model ?? (isPrevis ? data.directorPrevisModel : undefined)}
             selectedProvider={data.provider || (isPrevis ? data.directorPrevisProvider : undefined)}

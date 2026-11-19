@@ -801,6 +801,51 @@ describe('automatic connection mentions', () => {
     expect(useAppStore.getState().edges).toHaveLength(1);
   });
 
+  it('adds image and shot list mentions to a closed AI previs editor without replacing the legacy prompt', () => {
+    useAppStore.setState({
+      currentProjectId: 'p',
+      nodes: [
+        { ...node('source', { label: '角色图', type: 'source-image', role: 'source' }), type: 'source-image' },
+        { ...node('sheet', { label: '分镜表', type: 'ai-shotlist' }), type: 'ai-shotlist' },
+        { ...node('target', { type: 'ai-director', role: 'source', directorRuntimeKind: 'ai-threejs',
+          directorPrevisPrompt: '摄影机绕到正面' }), type: 'ai-director' },
+      ],
+      activeNodeId: null,
+    });
+    connect();
+    expect(targetPrompt()).toBe('摄影机绕到正面 @{source:角色图}');
+    expect(useAppStore.getState().connectSelectedNodes(['source', 'sheet'], 'target', 'p')).toBe(1);
+    expect(targetPrompt()).toBe('摄影机绕到正面 @{source:角色图} @{sheet:分镜表}');
+  });
+
+  it.each([['lightweight-web', true], ['blender', true], ['ai-threejs', false]] as const)(
+    'connects a director with runtime %s and auto-mention %s without inserting a mention',
+    (runtime, enabled) => {
+      useAppStore.setState({
+        nodes: [node('source'), { ...node('target', { type: 'ai-director', role: 'source',
+          directorRuntimeKind: runtime, prompt: '原描述' }), type: 'ai-director' }],
+        config: { ...useAppStore.getState().config, autoMentionOnConnect: enabled },
+        activeNodeId: 'target',
+      });
+      connect();
+      expect(targetPrompt()).toBe('原描述');
+      expect(useAppStore.getState().edges).toHaveLength(1);
+    },
+  );
+
+  it('stores an empty AI previs draft after disconnecting the last reference in a legacy prompt', () => {
+    useAppStore.setState({
+      nodes: [
+        node('source'),
+        { ...node('target', { type: 'ai-director', role: 'source', directorRuntimeKind: 'ai-threejs',
+          directorPrevisPrompt: '@{source:素材}' }), type: 'ai-director' },
+      ],
+      edges: [{ id: 'edge', source: 'source', target: 'target' }],
+    });
+    useAppStore.getState().onEdgesChange([{ type: 'remove', id: 'edge' }]);
+    expect(targetPrompt()).toBe('');
+  });
+
   it('keeps manual references and does not duplicate mentions after a rename or reconnect', () => {
     useAppStore.setState({ nodes: [node('source', { label: '新名称' }), node('target', { prompt: '@{source:旧名称} 描述' })] });
     connect();

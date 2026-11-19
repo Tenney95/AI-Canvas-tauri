@@ -141,6 +141,10 @@ function mentionSourceNodeId(id: string): string {
   return parseShotlistRowMentionId(id)?.nodeId ?? id;
 }
 
+function getConnectionMentionPrompt(data: BaseNodeData): string {
+  return data.prompt ?? (data.type === 'ai-director' ? data.directorPrevisPrompt : undefined) ?? '';
+}
+
 /** 与新连线一起写入真实提示词，编辑器、持久化与撤销共用同一个状态。 */
 function appendConnectionMentions(
   nodes: Node<BaseNodeData>[],
@@ -155,10 +159,12 @@ function appendConnectionMentions(
   for (const edge of materializedEdges) {
     const source = byId.get(edge.source);
     const target = byId.get(edge.target);
-    if (!source || !target || source.id === target.id || target.type === 'group'
-      || !AUTO_MENTION_TARGET_TYPES.has(target.data.type)) continue;
+    if (!source || !target || source.id === target.id || target.type === 'group') continue;
+    const isPrevisTarget = target.data.type === 'ai-director' && target.data.directorRuntimeKind === 'ai-threejs';
+    if (!isPrevisTarget && !AUTO_MENTION_TARGET_TYPES.has(target.data.type)) continue;
     // 上传、导入和生成结果仍可打开同一生成对话框，编辑时不按来源角色跳过引用。
-    if (target.data.role === 'source' && target.id !== activeNodeId) continue;
+    // AI 镜头预演始终有生成输入，即使导演节点保留 source 角色且尚未打开编辑器。
+    if (!isPrevisTarget && target.data.role === 'source' && target.id !== activeNodeId) continue;
     const sources = source.type === 'group'
       ? nodes.filter((node) => node.parentId === source.id)
       : [source];
@@ -168,7 +174,7 @@ function appendConnectionMentions(
   const nextNodes = nodes.map((node) => {
     const sources = sourcesByTarget.get(node.id);
     if (!sources?.length) return node;
-    let prompt = node.data.prompt ?? '';
+    let prompt = getConnectionMentionPrompt(node.data);
     const mentioned = new Set([...prompt.matchAll(/@\{([^:]+):[^}]*\}/g)].map((match) => mentionSourceNodeId(match[1])));
     let changed = false;
     for (const source of sources) {
@@ -200,7 +206,8 @@ function removeDisconnectedMentions(
     ? nodes.filter((node) => node.parentId === edge.source).map((node) => node.id)
     : [edge.source];
   return nodes.map((node) => {
-    if (!node.data.prompt) return node;
+    const previousPrompt = getConnectionMentionPrompt(node.data);
+    if (!previousPrompt) return node;
     const targetIds = new Set([node.id, ...(node.parentId ? [node.parentId] : [])]);
     const disconnected = new Set(removedEdges
       .filter((edge) => targetIds.has(edge.target)).flatMap(sourceIds));
@@ -211,10 +218,10 @@ function removeDisconnectedMentions(
       }
     }
     if (disconnected.size === 0) return node;
-    const prompt = node.data.prompt.replace(/@\{([^:]+):[^}]*\}/g, (token, id: string) => (
+    const prompt = previousPrompt.replace(/@\{([^:]+):[^}]*\}/g, (token, id: string) => (
       disconnected.has(mentionSourceNodeId(id).replace(/\/cell\/\d+$/, '')) ? '' : token
     ));
-    if (prompt === node.data.prompt) return node;
+    if (prompt === previousPrompt) return node;
     const patch = { prompt: prompt.trim() ? prompt : '' };
     return { ...node, data: mergeShotlistReferenceSource(node.data, { ...node.data, ...patch }, patch, nodes) };
   });
