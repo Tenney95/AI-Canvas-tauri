@@ -337,16 +337,20 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
         for (const image of asset.images ?? []) for (const reference of image.references) paths.add(safeExchangePath(reference.relativePath));
         current.set(asset.rootRef, paths);
       }
-      const projected = new Map<string, ProjectModelArchiveAsset>();
+      const projected = new Map<string, Map<string, ProjectModelArchiveAsset>>();
       for (const asset of previewAssets) {
-        if (!options.nativeProjectId || asset.rootRef !== primary || !primaryPaths?.has(asset.path)
-          || !/^imports\/global-[a-f0-9-]{36}\/global-[a-f0-9]{64}\.[a-z0-9]{1,16}$/.test(asset.path)
+        const global = asset.rootRef === primary && /^imports\/global-[a-f0-9-]{36}\/global-[a-f0-9]{64}\.[a-z0-9]{1,16}$/.test(asset.path);
+        const reference = /^imports\/asset-refs-[a-f0-9-]{36}\/ref-([a-f0-9]{64})\.[a-z0-9]{1,8}$/.exec(asset.path)?.[1];
+        if (!options.nativeProjectId || !directories.has(asset.rootRef) || !current.get(asset.rootRef)?.has(asset.path)
+          || !global && reference !== asset.sha256
           || !Number.isSafeInteger(asset.bytes) || asset.bytes < 0 || !/^[a-f0-9]{64}$/.test(asset.sha256)) {
-          throw new Error('无效的全局素材预览证据');
+          throw new Error('无效的归档素材投影证据');
         }
-        const previous = projected.get(asset.path);
-        if (previous && !sameAsset(previous, asset)) throw new Error('全局素材预览映射冲突');
-        projected.set(asset.path, { rootRef: primary, path: asset.path, bytes: asset.bytes, sha256: asset.sha256 });
+        const scoped = projected.get(asset.rootRef) ?? new Map<string, ProjectModelArchiveAsset>();
+        const previous = scoped.get(asset.path);
+        if (previous && !sameAsset(previous, asset)) throw new Error('归档素材投影映射冲突');
+        scoped.set(asset.path, { rootRef: asset.rootRef, path: asset.path, bytes: asset.bytes, sha256: asset.sha256 });
+        projected.set(asset.rootRef, scoped);
       }
       const head = capture.exchange ? headFiles(capture.exchange) : null;
       for (const proof of options.missingFiles ?? []) {
@@ -393,11 +397,12 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
           continue;
         }
         const referencePaths = [...new Set([...required, ...(current.get(root.rootRef) ?? [])])];
-        const virtual = root.rootRef === primary ? projected : undefined;
+        const virtual = projected.get(root.rootRef);
         const nativeReferences = referencePaths.filter((path) => !virtual?.has(path)
           && !(options.nativeProjectId && sharedSyncPath.test(path) && !sharedSyncMediaPath.test(path))
           && !(options.missingFiles ?? []).some((proof) => proof.rootRef === root.rootRef && proof.path === path));
-        const includeImportPaths = [...new Set([...nativeReferences, ...(root.rootRef === primary ? chatPaths : [])]
+        // 合成路径无需本机存在，但扫描应发现同名实物，避免遮盖原项目的文件。
+        const includeImportPaths = [...new Set([...nativeReferences, ...(virtual?.keys() ?? []), ...(root.rootRef === primary ? chatPaths : [])]
           .filter((path) => /^imports\//i.test(path)))];
         const sharedReferences = new Set(nativeReferences.filter((path) => sharedSyncMediaPath.test(path)));
         const assets = await invoke<Array<ArchiveAssetDigest & { aliases?: string[] }>>('inspect_project_archive_assets', {
@@ -443,7 +448,7 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
             localAbsolutePath: `${assetsDir.replace(/\\/g, '/').replace(/\/$/, '')}/${asset.backupSourceRelativePath ?? asset.path}` })));
         if (virtual) {
           if (retained.some((asset) => virtual.has(asset.path) || asset.aliases?.some((path) => virtual.has(path)))) {
-            throw new Error('全局素材预览位置已被占用');
+            throw new Error('归档素材投影位置已被占用');
           }
           result.push(...virtual.values());
         }

@@ -1,5 +1,6 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { NativeAssetSnapshot } from '../../src/services/nativeProjectAssetRecovery';
+import type { NativeArchiveCopySource } from '../../src/services/nativeProjectArchiveService';
 const root = 'r2-11111111-1111-4111-8111-111111111111', subroot = 'r2-22222222-2222-4222-8222-222222222222';
 const probes = vi.hoisted(() => ({ invoke: vi.fn(), fingerprint: vi.fn(), index: vi.fn(), exists: vi.fn(async () => false) }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: probes.invoke }));
@@ -46,6 +47,24 @@ it('na2来源按索引根读取，subroot引用不会误发到primary根', async
   const result = await freezeNativeAssetImageReferences('project', operationId, [original]);
   expect(probes.invoke).toHaveBeenCalledWith('publish_project_import_assets', expect.objectContaining({ stagingDir: '/native-source', projectDir: '/project/subroot' }));
   expect(result.referenceFiles[0].rootRef).toBe(subroot);
+});
+
+it('复制预备按目标素材根记录参考图原件及两种摘要，源目录不发布副本', async () => {
+  const old = snapshot(), native = snapshot('na2-new', subroot);
+  native.images![0].references[0].relativePath = 'imports/old/ref.png';
+  const copySources: NativeArchiveCopySource[] = [];
+  const result = await freezeNativeAssetImageReferences('project', operationId, [old, native], copySources);
+  expect(probes.invoke.mock.calls.map(([command]) => command)).toEqual(['inspect_project_archive_assets', 'inspect_project_archive_assets']);
+  expect(probes.exists).not.toHaveBeenCalled();
+  expect(copySources).toEqual([
+    { ...result.referenceFiles[0], localAbsolutePath: '/base/asset-image-references/44444444-4444-4444-8444-444444444444.png', referenceDigest: 'b'.repeat(64) },
+    { ...result.referenceFiles[1], localAbsolutePath: '/native-source/imports/old/ref.png', referenceDigest: 'b'.repeat(64) },
+  ]);
+  expect(result.snapshots.map((item) => item.images?.[0].references[0].digest)).toEqual(['b'.repeat(64), 'b'.repeat(64)]);
+  expect(JSON.stringify(result)).not.toContain('/native-source');
+  expect(JSON.stringify(result)).not.toContain('/base/');
+  expect(copySources[0].rootRef).toBe(root);
+  expect(copySources[1].rootRef).toBe(subroot);
 });
 
 it('内容变化或发布副本不满足原chain身份时拒绝，旧记录仍保留', async () => {

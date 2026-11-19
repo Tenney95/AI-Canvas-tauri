@@ -4,12 +4,12 @@ import { hasControlCharacters } from '../utils/controlCharacters';
 /** 新项目归档入口；旧项目继续使用 projectTransferService 的原路径。 */
 import { save } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
-import { copyFile, mkdir, remove, exists } from '@tauri-apps/plugin-fs';
+import { mkdir, remove, exists } from '@tauri-apps/plugin-fs';
 import { configValuesEqual } from './configPatch';
-import { sanitizeFileName, isTauriEnv } from './fileService';
+import { copyLocalFileStreamed, getBaseDir, isTauriEnv, joinPath, sanitizeFileName } from './fileService';
 import { sha256BytesHex } from './mediaDataUrl';
 import { projectModelSourceToken } from './projectModelComparisonMaterial';
-import { prepareProjectModelArchiveCapture } from './projectModelArchiveService';
+import { prepareProjectModelArchiveCapture, type ProjectModelArchiveAsset } from './projectModelArchiveService';
 import { createBoundProjectModelArchiveExportPort } from './projectModelArchiveNativePort';
 import { readProjectArchiveV4, serializeProjectArchiveV4 } from './projectArchiveV4';
 import { PROJECT_EXCHANGE_LIMITS } from './projectExchangeFormat';
@@ -24,7 +24,6 @@ import { abandonNativeProjectExport, advanceNativeProjectExport, listNativeRetir
 import type { ProjectModelTransferCapture, ProjectModelTransferHistoryRow } from '../types/projectModelTransfer';
 import type { ProjectExportResult, ProjectImportResult } from './projectTransferService';
 import type { VideoEditorProjectRecord } from '../types/videoEditor';
-import { getBaseDir, joinPath } from './fileService';
 import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
 import { syncNativeOutputHistory } from './nativeOutputHistorySync';
 
@@ -150,6 +149,10 @@ async function assertCurrent(expected: ProjectModelTransferCapture): Promise<voi
 
 /** 只改本次归档快照；全局字节先以原生受控复制物化到独立目录。 */
 export interface NativeGlobalRecoveryFile { assetId: string; rootRef: string; path: string; bytes: number; sha256: string }
+/** 原文件定位仅用于本次复制，不能进入归档正文或恢复回执。 */
+export type NativeArchiveCopySource = ProjectModelArchiveAsset & { localAbsolutePath: string; referenceDigest?: string };
+type GlobalArchiveMaterialOptions = { files: NativeGlobalRecoveryFile[] }
+  & ({ preview?: false } | { preview: true; copySources?: NativeArchiveCopySource[] });
 export async function verifyNativeGlobalRecoverySources(capture: ProjectModelTransferCapture, files: readonly NativeGlobalRecoveryFile[]): Promise<void> {
   if (!files.length) return;
   const root = await getGlobalFilesDir(); if (!root) throw new Error('原全局素材目录不可用，未更新项目');
@@ -165,7 +168,7 @@ export async function verifyNativeGlobalRecoverySources(capture: ProjectModelTra
   }
 }
 export async function materializeNativeArchiveGlobalAssets(capture: ProjectModelTransferCapture, operationId: string,
-  recovery?: { files: NativeGlobalRecoveryFile[]; preview?: boolean }): Promise<ProjectModelTransferCapture> {
+  recovery?: GlobalArchiveMaterialOptions): Promise<ProjectModelTransferCapture> {
   const portable = structuredClone(capture), references: Array<{ row: Record<string, unknown>; id: string }> = [];
   const indexes = new Map<string, Awaited<ReturnType<typeof getAssetIndexById>>>();
   for (const record of nativeGlobalAssetReferenceRows(portable)) {
@@ -203,8 +206,14 @@ export async function materializeNativeArchiveGlobalAssets(capture: ProjectModel
   }));
   let copied: ArchiveAssetDigest[];
   if (recovery?.preview) {
+    const { copySources } = recovery;
     // 预览只投影将来会用的相对路径，摘要取自已核对的原全局素材，不在项目根创建副本。
-    copied = assets.map((asset) => ({ path: destination.get(asset.path)!, bytes: asset.bytes, sha256: asset.sha256 }));
+    copied = assets.map((asset) => {
+      const projected = { path: destination.get(asset.path)!, bytes: asset.bytes, sha256: asset.sha256 };
+      copySources?.push({ ...projected, rootRef: portable.aggregate.project.storageRootRef,
+        localAbsolutePath: joinPath(globalRoot, asset.path) });
+      return projected;
+    });
   } else {
     const projectDir = await invoke<string>('resolve_native_project_media_root', { projectId: capture.aggregate.project.id });
     const publicationDirectory = `${projectDir.replace(/[\\/]+$/, '')}/imports/${publicationId}`;
@@ -251,19 +260,20 @@ export async function materializeNativeArchiveGlobalAssets(capture: ProjectModel
 }
 
 async function prepareNativeArchiveMaterial(capture: ProjectModelTransferCapture, operationId: string,
-  port: ReturnType<typeof createBoundProjectModelArchiveExportPort>) {
+  port: ReturnType<typeof createBoundProjectModelArchiveExportPort>, copySources?: NativeArchiveCopySource[]) {
   const globalFiles: NativeGlobalRecoveryFile[] = [];
-  const portable = await materializeNativeArchiveGlobalAssets(capture, operationId, { files: globalFiles });
-  const original = await port.inspectAssets(portable);
+  const portable = await materializeNativeArchiveGlobalAssets(capture, operationId,
+    copySources ? { files: globalFiles, preview: true, copySources } : { files: globalFiles });
+  const original = await port.inspectAssets(portable, copySources ? globalFiles : undefined);
   const { captureNativeAssetSnapshots, rebindNativeAssetReferenceFiles } = await import('./nativeProjectAssetRecovery');
   const captured = await captureNativeAssetSnapshots(portable.aggregate, portable.editorRecords ?? [], original, globalFiles);
   const ids = new Set(captured.map((asset) => asset.assetId));
   for (const asset of portable.assetMetadata ?? []) if (!ids.has(asset.assetId) && original.some((file) => file.rootRef === asset.rootRef
     && file.path === asset.path && file.bytes === asset.bytes && file.sha256 === asset.sha256)) captured.push(structuredClone(asset));
   const { freezeNativeAssetImageReferences } = await import('./nativeAssetReferenceFiles');
-  const frozen = await freezeNativeAssetImageReferences(capture.aggregate.project.id, operationId, captured);
+  const frozen = await freezeNativeAssetImageReferences(capture.aggregate.project.id, operationId, captured, copySources);
   portable.assetMetadata = frozen.snapshots; rebindNativeAssetReferenceFiles(portable, frozen.referenceFiles);
-  const assets = await port.inspectAssets(portable);
+  const assets = await port.inspectAssets(portable, copySources ? [...globalFiles, ...frozen.referenceFiles] : undefined);
   return { portable, assets };
 }
 
@@ -346,7 +356,15 @@ export async function duplicateNativeProjectArchive(projectId: string, name: str
   const run = async (index: number): Promise<ProjectImportResult> => {
     if (index < owners.length) return withEpisodeEditorWrite(owners[index], () => run(index + 1));
     const port = createBoundProjectModelArchiveExportPort(projectId, '');
-    const { portable, assets } = await prepareNativeArchiveMaterial(source.value, operationId, port);
+    const copySources: NativeArchiveCopySource[] = [];
+    const { portable, assets } = await prepareNativeArchiveMaterial(source.value, operationId, port, copySources);
+    const sourcePaths = new Map(copySources.map((item) => [JSON.stringify([item.rootRef, item.path]), item]));
+    const referenceDigests = new Map<string, string>();
+    for (const item of copySources) if (item.referenceDigest) {
+      const previous = referenceDigests.get(item.sha256);
+      if (previous !== undefined && previous !== item.referenceDigest) throw new Error('项目副本的参考图摘要不一致');
+      referenceDigests.set(item.sha256, item.referenceDigest);
+    }
     portable.aggregate.project.name = name.trim();
     const prepared = await prepareProjectModelArchiveCapture(portable, assets, [], 'snapshot');
     const descriptors = prepared.exchange.bundle.files.map((file) => {
@@ -368,10 +386,22 @@ export async function duplicateNativeProjectArchive(projectId: string, name: str
         const root = logical && prepared.exchange.identities.find((item) => item.kind === 'storage-root' && item.sourceId === logical.rootRef)?.localId;
         const asset = assets.find((item) => item.rootRef === root && (item.path === binding?.localRelativePath
           || !!binding && item.aliases?.includes(binding.localRelativePath)));
-        if (!asset?.localAbsolutePath) throw new Error('项目副本缺少可确认的素材来源');
+        if (!asset) throw new Error('项目副本缺少可确认的素材来源');
+        const projected = sourcePaths.get(JSON.stringify([asset.rootRef, asset.path]));
+        if (projected && (projected.bytes !== asset.bytes || projected.sha256 !== asset.sha256)) throw new Error('项目副本素材与核验清单不一致');
+        const original = asset.localAbsolutePath ?? projected?.localAbsolutePath;
+        if (!original) throw new Error('项目副本缺少可确认的素材来源');
         const parts = safeExchangePath(file.archivePath.slice(7)).split('/');
         if (parts.length > 1) await mkdir(joinPath(directory, ...parts.slice(0, -1)), { recursive: true });
-        await copyFile(asset.localAbsolutePath, joinPath(directory, ...parts));
+        const destination = joinPath(directory, ...parts);
+        const copied = await copyLocalFileStreamed(original, destination);
+        if (copied.totalBytes !== asset.bytes) throw new Error('项目副本素材大小已变化');
+        const referenceDigest = referenceDigests.get(asset.sha256);
+        if (referenceDigest) {
+          const { fingerprintAssetImage } = await import('./fs/assetImageMetadata');
+          const fingerprint = await fingerprintAssetImage(destination);
+          if (fingerprint.digest !== referenceDigest || fingerprint.bytes !== asset.bytes) throw new Error('项目副本参考图与原元数据不一致');
+        }
       }
       await assertCurrent(source.value);
       const { importNativeProjectArchiveCopy } = await import('./nativeProjectImportService');

@@ -16,7 +16,8 @@ vi.mock('../../src/services/projectModelArchiveNativePort', () => ({ createBound
 vi.mock('../../src/services/indexedDb/nativeProjectRepository', () => ({ advanceNativeProjectExport: vi.fn(), prepareNativeProjectExport: vi.fn(),
   readNativeProjectCapture: vi.fn(), readNativeProjectExport: vi.fn(), listNativeRetiredCanvasIds: vi.fn() }));
 
-import { materializeNativeArchiveGlobalAssets, nativeMediaResultsForArchive, type NativeGlobalRecoveryFile } from '../../src/services/nativeProjectArchiveService';
+import { materializeNativeArchiveGlobalAssets, nativeMediaResultsForArchive,
+  type NativeArchiveCopySource, type NativeGlobalRecoveryFile } from '../../src/services/nativeProjectArchiveService';
 
 const hash = 'a'.repeat(64);
 const source = () => ({ aggregate: { project: { id: 'p2-11111111-1111-4111-8111-111111111111' },
@@ -97,6 +98,18 @@ describe('新项目包全局素材', () => {
     const confirmed = await materializeNativeArchiveGlobalAssets(original, operationId, { files: confirmedFiles });
     expect(confirmedFiles).toEqual(previewFiles);
     expect(confirmed).toEqual(preview);
+  });
+
+  it('项目复制只记录已核验的全局原件，投影和备份证据不携带本地绝对路径', async () => {
+    const original = source();
+    original.aggregate.project.storageRootRef = 'root';
+    const files: NativeGlobalRecoveryFile[] = [], copySources: NativeArchiveCopySource[] = [];
+    const portable = await materializeNativeArchiveGlobalAssets(original, '11111111-1111-4111-8111-111111111111', { files, preview: true, copySources });
+    expect(io.invoke).toHaveBeenCalledExactlyOnceWith('inspect_project_archive_assets', { assetsDir: 'C:/global', selectedPaths: ['scene.png'] });
+    expect(io.exists).not.toHaveBeenCalled();
+    expect(files).toHaveLength(1);
+    expect(copySources).toEqual([{ rootRef: 'root', path: files[0].path, bytes: 3, sha256: hash, localAbsolutePath: 'C:/global/scene.png' }]);
+    expect(JSON.stringify({ portable, files })).not.toContain('C:/global');
   });
 
   it('索引或字节缺失时拒绝导出且不发布文件', async () => {

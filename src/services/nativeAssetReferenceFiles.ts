@@ -8,6 +8,7 @@ import { getAssetIndexById } from './indexedDbService';
 import { fingerprintAssetImage } from './fs/assetImageMetadata';
 import { getBaseDir, joinPath, stripVerbatimPrefix } from './fs/core';
 import { safeExchangePath } from './projectExchangeDomain';
+import type { NativeArchiveCopySource } from './nativeProjectArchiveService';
 
 type ReferenceFile = { rootRef: string; path: string; bytes: number; sha256: string };
 type Digest = { path: string; bytes: number; sha256: string };
@@ -16,7 +17,8 @@ const samePath = (a: string, b: string) => {
   const normalize = (value: string) => { const path = stripVerbatimPrefix(value).replace(/\\/g, '/').replace(/\/+$/, ''); return /^[a-z]:\//i.test(path) ? path.toLowerCase() : path; };
   return normalize(a) === normalize(b);
 };
-export async function freezeNativeAssetImageReferences(projectId: string, operationId: string, snapshots: readonly NativeAssetSnapshot[]): Promise<{
+export async function freezeNativeAssetImageReferences(projectId: string, operationId: string, snapshots: readonly NativeAssetSnapshot[],
+  copySources?: NativeArchiveCopySource[]): Promise<{
   snapshots: NativeAssetSnapshot[]; referenceFiles: ReferenceFile[];
 }> {
   if (!uuid.test(operationId) || snapshots.length > 100_000) throw new Error('参考素材冻结操作无效');
@@ -25,6 +27,7 @@ export async function freezeNativeAssetImageReferences(projectId: string, operat
   const target = await readNativeProjectContent(projectId);
   if (!target) throw new Error('原项目不存在，未冻结参考图');
   const publicationId = `asset-refs-${operationId}`, referenceFiles = new Map<string, ReferenceFile>();
+  const originals = new Map<string, NativeArchiveCopySource>();
   const batches = new Map<string, { root: string; sources: Map<string, string>; assets: Map<string, { path: string; sourceRootRef: string; destinationPath: string; bytes: number; sha256: string }> }>();
   const verify: Array<{ reference: { relativePath: string; digest: string; bytes: number }; originalDigest: string; originalBytes: number; root: string }> = [];
   const sourceIdentities: Array<{ assetId: string; root: string }> = [];
@@ -38,31 +41,43 @@ export async function freezeNativeAssetImageReferences(projectId: string, operat
     if (!sourceRoot) throw new Error('原参考图目录不可用');
     sourceIdentities.push({ assetId: snapshot.assetId, root: sourceRoot });
     let batch = batches.get(snapshot.rootRef);
-    if (!batch) {
+    if (!copySources && !batch) {
       const root = snapshot.rootRef === target.project.storageRootRef
         ? await invoke<string>('resolve_native_project_media_root', { projectId })
         : await invoke<string>('resolve_native_project_media_subroot', { projectId, rootRef: snapshot.rootRef, create: false });
       batch = { root, sources: new Map(), assets: new Map() }; batches.set(snapshot.rootRef, batch);
     }
-    let sourceRef = [...batch.sources].find(([, directory]) => samePath(directory, sourceRoot))?.[0];
-    if (!sourceRef) { sourceRef = `source-${batch.sources.size}`; batch.sources.set(sourceRef, sourceRoot); }
+    let sourceRef = '';
+    if (batch) {
+      sourceRef = [...batch.sources].find(([, directory]) => samePath(directory, sourceRoot))?.[0] ?? '';
+      if (!sourceRef) { sourceRef = `source-${batch.sources.size}`; batch.sources.set(sourceRef, sourceRoot); }
+    }
     for (const image of snapshot.images) for (const reference of image.references) {
       const oldPath = reference.relativePath;
       const relative = index ? safeExchangePath(oldPath) : /^asset-image-references\/[a-f0-9-]{36}\.[a-z0-9]{1,8}$/.test(oldPath) ? oldPath.slice('asset-image-references/'.length) : undefined;
       if (!relative) throw new Error('旧参考图路径无效');
-      const original = await fingerprintAssetImage(joinPath(sourceRoot, relative));
+      const localAbsolutePath = joinPath(sourceRoot, relative);
+      const original = await fingerprintAssetImage(localAbsolutePath);
       if (original.digest !== reference.digest || original.bytes !== reference.bytes) throw new Error('原图片专属参考图已变化，未冻结');
       const scanned = await invoke<Digest[]>('inspect_project_archive_assets', { assetsDir: sourceRoot, selectedPaths: [relative] });
       if (scanned.length !== 1 || scanned[0].path !== relative || scanned[0].bytes !== reference.bytes || !/^[a-f0-9]{64}$/.test(scanned[0].sha256)) throw new Error('原参考图摘要无法确认');
       const extension = relative.split('.').at(-1)?.toLowerCase();
       if (!extension || !/^[a-z0-9]{1,8}$/.test(extension)) throw new Error('参考图扩展名无效');
       const name = `ref-${scanned[0].sha256}.${extension}`, path = `imports/${publicationId}/${name}`;
-      const assetKey = name.toLowerCase();
-      if (!batch.assets.has(assetKey)) batch.assets.set(assetKey, { path: relative, sourceRootRef: sourceRef, destinationPath: name,
-        bytes: scanned[0].bytes, sha256: scanned[0].sha256 });
+      const key = JSON.stringify([snapshot.rootRef, path]);
+      const file = { rootRef: snapshot.rootRef, path, bytes: scanned[0].bytes, sha256: scanned[0].sha256 };
       reference.relativePath = path;
-      referenceFiles.set(JSON.stringify([snapshot.rootRef, path]), { rootRef: snapshot.rootRef, path, bytes: scanned[0].bytes, sha256: scanned[0].sha256 });
-      verify.push({ reference, originalDigest: original.digest, originalBytes: original.bytes, root: batch.root });
+      referenceFiles.set(key, file);
+      if (batch) {
+        if (!batch.assets.has(name)) batch.assets.set(name, { path: relative, sourceRootRef: sourceRef, destinationPath: name,
+          bytes: file.bytes, sha256: file.sha256 });
+        verify.push({ reference, originalDigest: original.digest, originalBytes: original.bytes, root: batch.root });
+      } else {
+        // 复制直接暂存原件；保留元数据摘要供暂存文件复核。
+        const previous = originals.get(key);
+        if (previous && (previous.referenceDigest !== original.digest || previous.bytes !== file.bytes)) throw new Error('原参考图的内容证据不一致');
+        if (!previous) originals.set(key, { ...file, localAbsolutePath, referenceDigest: original.digest });
+      }
     }
   }
   for (const batch of batches.values()) {
@@ -86,5 +101,6 @@ export async function freezeNativeAssetImageReferences(projectId: string, operat
       : await getBaseDir().then((base) => base && joinPath(base, 'asset-image-references'));
     if (!current || !samePath(current, identity.root)) throw new Error('原参考图目录身份已变化，未提交元数据');
   }
+  if (copySources) for (const original of originals.values()) copySources.push(original);
   return { snapshots: result, referenceFiles: [...referenceFiles.values()].sort((a, b) => `${a.rootRef}/${a.path}`.localeCompare(`${b.rootRef}/${b.path}`)) };
 }

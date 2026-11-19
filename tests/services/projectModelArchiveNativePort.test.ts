@@ -116,6 +116,53 @@ describe('P5 native file projection', () => {
     await expect(port.inspectAssets(capture)).rejects.toThrow('素材根不属于该新项目');
   });
 
+  it('复制预备只投影有引用的全局原件与子根参考图，投影不能携带物理位置', async () => {
+    const { capture } = await setup();
+    const projectId = 'p2-00000000-0000-4000-8000-000000000001';
+    const primary = 'r2-00000000-0000-4000-8000-000000000002', child = 'r2-00000000-0000-4000-8000-000000000003';
+    const operationId = '00000000-0000-4000-8000-000000000004', folder = `project-${projectId}`;
+    const physicalRoot = 'authorized/native', physicalChild = `${physicalRoot}/roots/${child}`;
+    const global = `imports/global-${operationId}/global-${hash}.png`;
+    const reference = `imports/asset-refs-${operationId}/ref-${hash}.png`;
+    capture.aggregate.project = { ...capture.aggregate.project, id: projectId, dataFolder: folder, storageRootRef: primary,
+      storageBindings: [{ rootRef: primary, folderName: folder, sourceRecordIds: [], source: 'project-managed' },
+        { rootRef: child, folderName: `${folder}/roots/${child}`, sourceRecordIds: [], source: 'project-managed' }] };
+    capture.aggregate.content.projectId = projectId;
+    capture.exchange = null;
+    capture.assetMetadata = [{ assetId: 'global-asset', rootRef: primary, path: global, ownerId: projectId, bytes: 3, sha256: hash },
+      { assetId: 'native-asset', rootRef: child, path: 'origin.png', ownerId: projectId, bytes: 3, sha256: hash,
+        images: [{ id: 'meta', assetId: 'native-asset', contentDigest: hash, fileName: 'origin.png', prompt: '', revision: 1, updatedAt: 1,
+          references: [{ id: 'ref', name: '参考图', relativePath: reference, digest: 'b'.repeat(64), bytes: 3 }] }] }];
+    native.existing.add(physicalRoot); native.existing.add(physicalChild);
+    native.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+      if (command === 'resolve_native_project_media_root') return physicalRoot;
+      if (command === 'resolve_native_project_media_subroot') return physicalChild;
+      if (command === 'inspect_project_archive_assets') return args.assetsDir === physicalChild
+        ? [{ path: 'origin.png', bytes: 3, sha256: hash }] : [];
+      throw new Error('unexpected command');
+    });
+    const port = createBoundProjectModelArchiveExportPort(projectId, '');
+    const result = await port.inspectAssets(capture, [{ rootRef: primary, path: global, bytes: 3, sha256: hash },
+      { rootRef: child, path: reference, bytes: 3, sha256: hash, localAbsolutePath: '/untrusted/location.png' }]);
+
+    expect(result).toContainEqual({ rootRef: child, path: reference, bytes: 3, sha256: hash });
+    expect(result).toContainEqual({ rootRef: primary, path: global, bytes: 3, sha256: hash });
+    expect(native.invoke.mock.calls.filter(([command]) => command === 'inspect_project_archive_assets').map(([, args]) => args.referencePaths))
+      .toEqual([[], ['origin.png']]);
+    await expect(port.inspectAssets(capture, [{ rootRef: primary, path: reference, bytes: 3, sha256: hash }])).rejects.toThrow('投影证据');
+    await expect(port.inspectAssets(capture, [{ rootRef: child, path: reference, bytes: 3, sha256: 'c'.repeat(64) }])).rejects.toThrow('投影证据');
+    native.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+      if (command === 'resolve_native_project_media_root') return physicalRoot;
+      if (command === 'resolve_native_project_media_subroot') return physicalChild;
+      if (command === 'inspect_project_archive_assets') return args.assetsDir === physicalChild
+        ? [{ path: 'origin.png', bytes: 3, sha256: hash }, ...(args.includeImportPaths as string[])
+          .map((path) => ({ path, bytes: 3, sha256: hash }))] : [];
+      throw new Error('unexpected command');
+    });
+    await expect(port.inspectAssets(capture, [{ rootRef: primary, path: global, bytes: 3, sha256: hash },
+      { rootRef: child, path: reference, bytes: 3, sha256: hash }])).rejects.toThrow('投影位置已被占用');
+  });
+
   it('新项目仅收录已接受和明确引用的共享素材，旧更新按冻结清单核验', async () => {
     const { capture } = await setup();
     const projectId = 'p2-00000000-0000-4000-8000-000000000001';
