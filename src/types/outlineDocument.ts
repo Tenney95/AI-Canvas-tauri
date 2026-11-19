@@ -1,4 +1,13 @@
 /** 大纲资料目录的运行时列表与编辑摘要；不携带正文或本地路径。 */
+export const OUTLINE_DOCUMENT_DIRECTORY = 'outline-documents';
+
+export function isOutlineDocumentFileName(name: unknown): name is string {
+  return typeof name === 'string' && name.length > 0 && name.length <= 255 && name.lastIndexOf('.') > 0 && name !== '.' && name !== '..'
+    && !/[\\/:*?"<>|]/.test(name) && ![...name].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+    && !/[. ]$/.test(name)
+    && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name) && /\.(md|txt|pdf|pptx?|docx?)$/i.test(name);
+}
+
 export type OutlineDocumentKind = 'text' | 'pdf' | 'presentation' | 'word' | 'legacy-word';
 
 export interface OutlineDocumentFile {
@@ -41,6 +50,7 @@ export type OutlineDocumentAction =
   | { type: 'outline_create'; name: string; extension: 'md' | 'txt' }
   | { type: 'outline_import' }
   | { type: 'outline_open'; id: string }
+  | { type: 'outline_trash'; file: Pick<OutlineDocumentFile, 'id' | 'size' | 'modifiedAt'> }
   | { type: 'outline_edit'; handoff: OutlineDocumentHandoff }
   | { type: 'outline_save' }
   | { type: 'outline_reload'; discard?: boolean };

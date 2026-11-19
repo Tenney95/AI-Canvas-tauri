@@ -9,6 +9,14 @@ const kinds: readonly ProjectModelKind[] = ['text', 'image', 'video', 'audio'];
 const visualKeys = ['styleId', 'styleName', 'prompt', 'locked', 'styleReference'] as const;
 const generationKeys = ['imageAspectRatio', 'imageSize', 'videoAspectRatio', 'videoResolution', 'videoDuration'] as const;
 const patchKeys = ['visualStyle', 'defaultModels', 'promptSuffixes', 'generation', 'visionModelId', 'modelAutoRouting'];
+
+export function withProjectTextModel(settings: ProjectSettings | undefined, modelId: string | undefined): ProjectSettings {
+  const { defaultModels, ...otherSettings } = settings ?? {};
+  const models = { ...defaultModels };
+  if (modelId === undefined) delete models.text;
+  else models.text = modelId;
+  return Object.keys(models).length ? { ...otherSettings, defaultModels: models } : otherSettings;
+}
 const fail = (): never => { throw new Error('本集设置策略无效，未应用继承或覆盖'); };
 
 function object(value: unknown): Record<string, unknown> {

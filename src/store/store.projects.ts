@@ -83,14 +83,15 @@ import { nativeMediaInputMaterial } from '../services/nativeMediaInput';
 import { createNativeProject, saveNativeProjectView, saveNativeProjectContent, convertNativeProjectToSeries,
   createNativeEpisode, saveNativeEpisodeContent, readNativeProjectCapture, reorderNativeEpisodes,
   deleteNativeEpisode, deleteNativeProject, updateNativeProjectMetadata, updateNativeEpisodeMetadata,
-  updateNativeEpisodeComposite, readNativeEpisodeContent, readNativeProjectContent, saveNativeCanvasPreview } from '../services/indexedDb/nativeProjectRepository';
+  updateNativeEpisodeComposite, readNativeEpisodeContent, readNativeProjectContent, saveNativeCanvasPreview,
+  saveNativeProjectTextModel } from '../services/indexedDb/nativeProjectRepository';
 import { listProjectCatalog, resolveProjectModel, type ProjectCatalogEntry } from '../services/projectModelRouter';
 import { readNativeProjectView } from '../services/nativeProjectNavigation';
 import { applyNativeEpisodeContent, hydrateNativeProjectView, nativeEpisodeDisplayNumbers, needsNativeEpisodeContent,
   projectNativeCatalogEntry, type NativeProjectViewItem } from './nativeProjectView';
 import { restoreProjectRecord } from '../services/storageService';
 import { waitForPendingNodeFileDeletions } from '../services/fs/trash';
-import { resolveProjectModelSettings } from '../services/projectModelSettings';
+import { resolveProjectModelSettings, withProjectTextModel } from '../services/projectModelSettings';
 import { configValuesEqual } from '../services/configPatch';
 import { remapStoryGraphBindings } from '../services/projectExchangeDomain';
 import { duplicateNativeProjectArchive, exportNativeProjectArchive } from '../services/nativeProjectArchiveService';
@@ -353,6 +354,35 @@ async function mutateNativeMetadata(set: ProjectSliceSet, get: ProjectSliceGet, 
     if (active && freeze) set({ switchingProjectName: null });
   }
 }
+
+/** 正文和文本模型偏好独立保存，使用当前画布写队列且保持媒体任务的运行租约。 */
+async function writeNativeProjectText(get: ProjectSliceGet, projectId: string,
+  write: (runtime: NativeRuntime, isCurrent: () => boolean) => Promise<void>): Promise<boolean> {
+  const runtime = nativeRuntime.get(get), activeId = get().currentProjectId, sequence = projectSwitchSequence;
+  const isCurrent = () => {
+    const state = get();
+    return state.currentProjectId === activeId && state.projectLoadStatus === 'ready' && state.switchingProjectName === null
+      && !state.isCreatingProject && !state.isReturningToStartPage && sequence === projectSwitchSequence
+      && nativeRuntime.get(get) === runtime && !projectImportsApplying.has(projectId) && !projectAssetSyncBarriers.has(projectId);
+  };
+  if (!runtime || runtime.activeId !== activeId || runtime.loaded.selection.project.id !== projectId || !isCurrent()) {
+    get().showToast('项目已切换或正在更新，请稍后保存', 'error');
+    return false;
+  }
+  const previous = runtime.tail;
+  let release!: () => void;
+  runtime.tail = new Promise<void>((resolve) => { release = resolve; });
+  try {
+    await previous;
+    if (!isCurrent()) throw new Error('项目已切换或正在更新，请稍后保存');
+    await write(runtime, isCurrent);
+    return true;
+  } catch (error) {
+    get().showToast(error instanceof Error ? error.message : '项目保存失败', 'error');
+    return false;
+  } finally { release(); }
+}
+
 /** 导入和恢复冻结活动画布，提交不确定时禁止继续保存旧投影。 */
 async function runNativeImportMutation(set: ProjectSliceSet, get: ProjectSliceGet, projectId: string,
   operationId: string, work: (assertCurrent: () => void) => Promise<void>): Promise<void> {
@@ -469,6 +499,8 @@ export type EpisodeAssetRosterWriteOptions = Pick<EpisodeCreativeWriteOptions, '
 export interface SeriesInfoWriteOptions {
   expectedSeriesId?: string;
   expectedExchangeEpoch?: number;
+  /** 保存编辑器打开时读取的正文版本，空串与未填等价。 */
+  expectedScript?: string;
   /** null 表示首次绑定前不能已有原著；省略时兼容普通元数据更新。 */
   expectedOriginalWork?: ProjectOriginalWork | null;
   /** 主窗口编辑会话的运行时守卫，不持久化。 */
@@ -1797,6 +1829,21 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     }
 
     const native = nativeBinding(previousProject);
+    if (native && !native.episodeId) {
+      const before = normalizeProjectSettings(previousProject.settings ?? {}), next = normalizeProjectSettings(settings);
+      const modelId = next.defaultModels?.text;
+      if (configValuesEqual(withProjectTextModel(before, undefined), withProjectTextModel(next, undefined))) {
+        if (before.defaultModels?.text === modelId) return true;
+        return writeNativeProjectText(get, native.projectId, async (runtime, isCurrent) => {
+          const { selection } = runtime.loaded;
+          const saved = await saveNativeProjectTextModel({ projectId: native.projectId, expectedProjectEpoch: selection.project.epoch,
+            expectedModelId: selection.project.defaultSettings?.defaultModels?.text, modelId });
+          runtime.loaded = { ...runtime.loaded, selection: { ...selection, project: saved.project, changeRevision: saved.changeRevision } };
+          if (isCurrent()) set((current) => ({ projects: current.projects.map((item) => item.id === projectId
+            ? { ...item, settings: withProjectTextModel(item.settings, modelId), updatedAt: saved.project.updatedAt } : item) }));
+        });
+      }
+    }
     if (native) return mutateNativeMetadata(set, get, native, async ({ aggregate }) => {
       const record = createCurrentProjectSaveRecord(get());
       if (!record || record.id !== projectId) throw new Error('当前项目已切换');
@@ -2153,6 +2200,31 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     const canvasProjectId = state.currentProjectId;
     if (!canvasProjectId) return false;
     const native = nativeBinding(state.projects.find((item) => item.id === canvasProjectId));
+    if (native && 'script' in info && !('originalWork' in info)) {
+      const script = info.script;
+      return writeNativeProjectText(get, native.projectId, async (runtime, isCurrent) => {
+        const { selection, content } = runtime.loaded;
+        const project = selection.project;
+        const ownerId = project.kind === 'standalone' ? canvasProjectId : native.projectId;
+        options?.assertCurrent?.();
+        if (options?.expectedSeriesId !== undefined && options.expectedSeriesId !== ownerId
+          || options?.expectedExchangeEpoch !== undefined && options.expectedExchangeEpoch !== project.epoch) {
+          throw new Error('剧本所属项目已变化，已保留草稿');
+        }
+        if (options?.expectedScript !== undefined && (content.script ?? '') !== options.expectedScript) {
+          throw new Error('剧本已变化，已保留草稿');
+        }
+        if (options?.expectedOriginalWork !== undefined
+          && !configValuesEqual(options.expectedOriginalWork ?? undefined, content.originalWork)) throw new Error('原著引用已变化，请重新载入');
+        const now = Date.now();
+        const saved = await saveNativeProjectContent({ projectId: native.projectId, expectedProjectEpoch: project.epoch,
+          expectedRevisions: { script: content.revisions.script }, patch: { script }, now });
+        runtime.loaded = { ...runtime.loaded, content: saved.content, selection: { ...selection,
+          project: { ...project, updatedAt: now }, changeRevision: saved.changeRevision } };
+        if (isCurrent()) set((current) => ({ projects: current.projects.map((item) => item.id === ownerId
+          ? { ...item, series: { ...item.series, script: saved.content.script }, updatedAt: now } : item) }));
+      });
+    }
     if (native) return mutateNativeMetadata(set, get, native, async ({ aggregate }) => {
       options?.assertCurrent?.();
       if (options?.expectedSeriesId !== undefined && options.expectedSeriesId !== native.projectId

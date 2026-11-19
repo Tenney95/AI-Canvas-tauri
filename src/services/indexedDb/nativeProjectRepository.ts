@@ -16,6 +16,7 @@ import { validateNativeMissingAssetProof, type NativeMissingAssetProof } from '.
 import { hasControlCharacters } from '../../utils/controlCharacters';
 import { validateNativeArchiveOutputRows } from '../projectOutputHistoryArchive';
 import { isProjectSnapshotDataUrl } from '../projectSnapshotValidation';
+import { withProjectTextModel } from '../projectModelSettings';
 
 export const NATIVE_PROJECT_DATABASE_NAME = 'ai-canvas-native-projects-v2' as const;
 export const NATIVE_PROJECT_DATABASE_VERSION = 1 as const;
@@ -748,6 +749,38 @@ export async function updateNativeProjectMetadata(input: { projectId: string; ex
     await request(tx.objectStore(ROOTS).put(next.project));
     return next;
   });
+}
+
+/** 文本模型偏好按原值提交，不更换项目代际，也不重建正在运行的媒体任务。 */
+export async function saveNativeProjectTextModel(input: { projectId: string; expectedProjectEpoch: number;
+  expectedModelId?: string; modelId?: string; now?: number }, options: NativeProjectOptions = {}):
+Promise<{ project: ProjectRecord; changeRevision: number }> {
+  const { projectId, expectedProjectEpoch, expectedModelId, modelId, now } = input;
+  if (!isNativeProjectId(projectId) || !Number.isSafeInteger(expectedProjectEpoch) || expectedProjectEpoch < 0
+    || modelId !== undefined && (typeof modelId !== 'string' || !modelId.trim() || modelId !== modelId.trim() || hasControlCharacters(modelId))) {
+    return fail('invalid-project-text-model');
+  }
+  const database = await openNativeProjectDatabase(false, options);
+  if (!database) return fail('project-not-found');
+  try {
+    return await transact(database, 'readwrite', options, async (tx) => {
+      await assertNoPendingNativeSharedSync(tx, projectId);
+      const roots = tx.objectStore(ROOTS), revisions = tx.objectStore(REVISIONS);
+      const [before, revision] = await Promise.all([
+        request(roots.get(projectId)) as Promise<ProjectRecord | undefined>,
+        request(revisions.get(projectId)) as Promise<{ projectId: string; changeRevision: number } | undefined>,
+      ]);
+      if (!before || before.id !== projectId || !revision || revision.projectId !== projectId
+        || !Number.isSafeInteger(revision.changeRevision) || revision.changeRevision < 0) return fail('invalid-membership');
+      assertNativeRoot(before);
+      if (before.epoch !== expectedProjectEpoch || before.defaultSettings?.defaultModels?.text !== expectedModelId) return fail('project-version-conflict');
+      if (expectedModelId === modelId) return { project: before, changeRevision: revision.changeRevision };
+      const project = { ...before, defaultSettings: withProjectTextModel(before.defaultSettings, modelId), updatedAt: timestamp(now) };
+      const changeRevision = increment(revision.changeRevision);
+      await Promise.all([request(roots.put(project)), request(revisions.put({ projectId, changeRevision }))]);
+      return { project, changeRevision };
+    }, [ROOTS, REVISIONS, TRANSFER]);
+  } finally { database.close(); }
 }
 
 /** 修改分集名称或设置策略；保留项目与画布身份并校验分集 revision。 */

@@ -3,12 +3,12 @@ import { open as selectFiles } from '@tauri-apps/plugin-dialog';
 import { lstat, mkdir, open as fsOpen, readDir } from '@tauri-apps/plugin-fs';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { t } from '../i18n';
+import { isOutlineDocumentFileName as validFileName, OUTLINE_DOCUMENT_DIRECTORY as DIRECTORY } from '../types/outlineDocument';
 import type { OutlineDocumentAction, OutlineDocumentFile, OutlineDocumentHandoff, OutlineDocumentKind, OutlineDocumentSummary, OutlineOpenedDocument } from '../types/outlineDocument';
 import { useAppStore } from '../store/useAppStore';
 import { seriesOwnerId } from '../store/store.utils';
-import { copyAssetFileToFolder, createAssetTextFile, ensureProjectDataDir, getProjectDataDir, isTauriEnv, joinPath, notifyProjectDiskChanged, readAssetTextFile, saveAssetTextFile, stripVerbatimPrefix, type AssetTextSnapshot } from './fileService';
+import { copyAssetFileToFolder, createAssetTextFile, ensureProjectDataDir, getProjectDataDir, isTauriEnv, joinPath, moveToTrash, notifyProjectDiskChanged, readAssetTextFile, saveAssetTextFile, stripVerbatimPrefix, type AssetTextSnapshot } from './fileService';
 
-const DIRECTORY = 'outline-documents';
 const MAX_FILE_BYTES = 32 * 1024 * 1024;
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const EXTENSIONS = ['md', 'txt', 'pdf', 'ppt', 'pptx', 'doc', 'docx'];
@@ -52,6 +52,14 @@ function sameDirectory(left: FileInfo, right: FileInfo) {
     && (!left.birthtime || !right.birthtime || left.birthtime.getTime() === right.birthtime.getTime());
 }
 
+function sameFile(left: FileInfo, right: FileInfo) {
+  return right.isFile && !isLink(right) && left.size === right.size
+    && left.mtime?.getTime() === right.mtime?.getTime()
+    && (left.dev == null || right.dev == null || left.dev === right.dev)
+    && (left.ino == null || right.ino == null || left.ino === right.ino)
+    && (!left.birthtime || !right.birthtime || left.birthtime.getTime() === right.birthtime.getTime());
+}
+
 function sameStorage(left: Binding, right: Binding) {
   return left.seriesId === right.seriesId && left.projectName === right.projectName && left.folder === right.folder
     && left.exchangeEpoch === right.exchangeEpoch && left.baseDirectory === right.baseDirectory && left.nativeIdentity === right.nativeIdentity;
@@ -60,13 +68,6 @@ function sameStorage(left: Binding, right: Binding) {
 function comparablePath(path: string) {
   const normalized = stripVerbatimPrefix(path).replace(/\\/g, '/').replace(/\/+$/, '');
   return /^[a-z]:\//i.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
-}
-
-function validFileName(name: unknown): name is string {
-  return typeof name === 'string' && name.length > 0 && name.length <= 255 && name.lastIndexOf('.') > 0 && name !== '.' && name !== '..'
-    && !/[\\/:*?"<>|]/.test(name) && ![...name].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
-    && !/[. ]$/.test(name)
-    && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name) && /\.(md|txt|pdf|pptx?|docx?)$/i.test(name);
 }
 
 function enforceSize(fileName: string, size: number) {
@@ -94,14 +95,14 @@ export function createOutlineDocumentSession(options: { seriesId: string; onChan
   let generation = 0;
   let loaded = false;
   let files: OutlineDocumentFile[] = [];
-  let fileMap = new Map<string, OutlineDocumentFile>();
+  let fileMap = new Map<string, { file: OutlineDocumentFile; info: FileInfo }>();
   let catalogBinding: Binding | undefined;
   let catalogRoot: string | undefined;
   let selected = false;
   let error: string | undefined;
   let document: { file: OutlineDocumentFile; documentId: string; revision: number; acceptedSequence: number;
     content?: string; baseline?: AssetTextSnapshot; binding: Binding; root: string } | undefined;
-  let active: { controller: AbortController; stop: () => void } | undefined;
+  let active: { controller: AbortController; trashFileId?: string } | undefined;
   const listeners = new Set<() => void>();
   const changed = () => { if (!disposed) { options.onChange?.(); listeners.forEach((listener) => listener()); } };
   const live = () => { if (disposed) throw new OutlineError('大纲文件会话已关闭'); mainWindowOnly(); };
@@ -121,7 +122,7 @@ export function createOutlineDocumentSession(options: { seriesId: string; onChan
       revision: document.revision, acceptedSequence: document.acceptedSequence, content: document.content };
   };
 
-  async function operate<T>(run: (operation: Operation) => Promise<T>): Promise<T> {
+  async function operate<T>(run: (operation: Operation) => Promise<T>, trashFileId?: string): Promise<T> {
     live(); idle();
     const binding = captureBinding(options.seriesId);
     if (catalogBinding) assertStorage(catalogBinding);
@@ -133,7 +134,7 @@ export function createOutlineDocumentSession(options: { seriesId: string; onChan
       assertStorage(binding, true);
     };
     const stop = useAppStore.subscribe(() => { try { check(); } catch { controller.abort(); } });
-    const operation = { controller, stop };
+    const operation = { controller, trashFileId };
     active = operation; error = undefined; changed();
     try { return await run({ binding, check, signal: controller.signal }); }
     finally { stop(); if (active === operation) active = undefined; changed(); }
@@ -178,7 +179,7 @@ export function createOutlineDocumentSession(options: { seriesId: string; onChan
 
   async function scan(operation: Operation) {
     const folder = await directory(operation); operation.check();
-    const next: OutlineDocumentFile[] = [];
+    const next = new Map<string, { file: OutlineDocumentFile; info: FileInfo }>();
     if (folder) {
       const entries = await readDir(folder.path); operation.check();
       await verifyDirectory(folder, operation);
@@ -188,18 +189,20 @@ export function createOutlineDocumentSession(options: { seriesId: string; onChan
         const info = await lstat(joinPath(folder.path, entry.name)); operation.check();
         if (!info.isFile || isLink(info)) continue;
         const modifiedAt = info.mtime?.getTime();
-        next.push({ id: entry.name, fileName: entry.name, kind: KINDS[entry.name.split('.').pop()!.toLowerCase()], size: info.size,
-          ...(modifiedAt !== undefined && Number.isFinite(modifiedAt) ? { modifiedAt } : {}) });
+        const file: OutlineDocumentFile = { id: entry.name, fileName: entry.name, kind: KINDS[entry.name.split('.').pop()!.toLowerCase()],
+          size: info.size, ...(modifiedAt !== undefined && Number.isFinite(modifiedAt) ? { modifiedAt } : {}) };
+        next.set(file.id, { file, info });
       }
       await verifyDirectory(folder, operation);
     }
     operation.check();
-    next.sort((left, right) => left.fileName.localeCompare(right.fileName, undefined, { numeric: true }));
-    files = next; fileMap = new Map(next.map((file) => [file.id, file])); loaded = true; changed();
+    files = [...next.values()].map(({ file }) => file)
+      .sort((left, right) => left.fileName.localeCompare(right.fileName, undefined, { numeric: true }));
+    fileMap = next; loaded = true; changed();
   }
 
   async function openFile(id: string, operation: Operation, reload = false): Promise<OutlineOpenedDocument> {
-    const file = typeof id === 'string' && validFileName(id) ? fileMap.get(id) : undefined;
+    const file = validFileName(id) ? fileMap.get(id)?.file : undefined;
     if (!file) throw new OutlineError('该文件不在当前大纲资料列表中，请刷新列表后重试');
     if (!reload && document?.file.id === id && document.content !== undefined) {
       assertStorage(document.binding); selected = true; changed(); return textSnapshot();
@@ -248,6 +251,7 @@ export function createOutlineDocumentSession(options: { seriesId: string; onChan
   function flush(handoff: OutlineDocumentHandoff) {
     live();
     if (!document || document.content === undefined || !document.baseline) throw new OutlineError('请先打开 Markdown 或 TXT 文件');
+    if (active?.trashFileId === document.file.id) throw new OutlineError('该文件正在移入回收站，请等待操作完成');
     assertStorage(document.binding);
     if (!handoff || handoff.documentId !== document.documentId || !Number.isSafeInteger(handoff.sequence) || handoff.sequence < 0
       || typeof handoff.content !== 'string') throw new OutlineError('大纲文件编辑版本不匹配，请重新打开文件');
@@ -268,6 +272,31 @@ export function createOutlineDocumentSession(options: { seriesId: string; onChan
         case 'outline_edit': flush(action.handoff); return textSnapshot();
         case 'outline_list': await operate(scan); return;
         case 'outline_open': return await operate((operation) => openFile(action.id, operation));
+        case 'outline_trash': {
+          const expected = action.file;
+          if (!expected || !validFileName(expected.id)) throw new OutlineError('文件身份无效，请刷新列表');
+          await operate(async (operation) => {
+            const entry = fileMap.get(expected.id);
+            if (!entry || entry.file.size !== expected.size || entry.file.modifiedAt !== expected.modifiedAt) {
+              throw new OutlineError('文件在确认期间已变化，请刷新列表后重新确认');
+            }
+            if (document?.file.id === expected.id && isDirty()) throw new OutlineError('请先保存该文件的草稿后再移入回收站');
+            const folder = await directory(operation);
+            if (!folder) throw new OutlineError('大纲资料目录不存在，请刷新文件列表');
+            const path = joinPath(folder.path, entry.file.fileName);
+            await verifyDirectory(folder, operation);
+            const current = await lstat(path); operation.check();
+            if (!sameFile(entry.info, current)) throw new OutlineError('文件在确认期间已变化，请刷新列表后重新确认');
+            try { await moveToTrash(path, { throwOnError: true }); }
+            catch (cause) { throw new OutlineError('未能确认文件已移入回收站，请刷新列表并检查文件权限', { cause }); }
+            // 原文件移动成功后立即更新当前列表，避免刷新失败把已完成操作当作未执行。
+            fileMap.delete(expected.id);
+            files = files.filter((item) => item.id !== expected.id);
+            if (document?.file.id === expected.id) { document = undefined; selected = false; }
+            changed();
+          }, expected.id);
+          return;
+        }
         case 'outline_create':
           ensureClean();
           if ((action.extension !== 'md' && action.extension !== 'txt') || typeof action.name !== 'string') throw new OutlineError('只能新建 Markdown 或 TXT 文件');

@@ -17,7 +17,7 @@ const ACTIONS = new Set(['flush_draft', 'edit_text', 'edit_creative', 'select_ep
   'original_open', 'original_edit', 'original_save', 'original_reload', 'original_generate', 'original_apply',
   'original_discard_candidate', 'original_cancel',
   'article_generate', 'article_apply', 'article_cancel', 'article_discard_candidate',
-  'outline_list', 'outline_create', 'outline_import', 'outline_open', 'outline_edit', 'outline_save', 'outline_reload', 'outline_select_builtin',
+  'outline_list', 'outline_create', 'outline_import', 'outline_open', 'outline_trash', 'outline_edit', 'outline_save', 'outline_reload', 'outline_select_builtin',
   'shotlist', 'split_draft', 'extract_series', 'close_asset_preview', 'commit_asset_preview', 'asset', 'settle_editor',
   'set_execution', 'set_team_mode', 'save_team_profile', 'team_control', 'team_artifact', 'team_amend', 'view_agent_task',
   'select_assistant_model', 'save_assistant_team_profile',

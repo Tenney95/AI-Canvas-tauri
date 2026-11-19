@@ -51,7 +51,7 @@ function TextEditorDialog({
   };
 
   return (
-    <ModalOverlay isOpen={isOpen} onClose={onClose} ariaLabel={title}>
+    <ModalOverlay isOpen={isOpen} onClose={() => { if (!isSaving) onClose(); }} ariaLabel={title}>
       <div
         className="glass-bevel glass-bevel--panel flex h-[min(72vh,640px)] w-[min(680px,calc(100vw-32px))]
                    flex-col overflow-hidden rounded-2xl border border-[var(--glass-ring)]
@@ -65,11 +65,12 @@ function TextEditorDialog({
             <h2 className="truncate text-sm font-semibold leading-5">{title}</h2>
             <p className="truncate text-[11px] leading-4 text-canvas-text-muted">{hint}</p>
           </div>
-          <PopupCloseButton ariaLabel={t('关闭{title}', { title })} onClick={onClose} />
+          <PopupCloseButton ariaLabel={t('关闭{title}', { title })} onClick={onClose} disabled={isSaving} />
         </header>
         <textarea
           value={draft}
           onChange={(event) => onDraftChange(event.target.value)}
+          disabled={isSaving}
           spellCheck={false}
           className="min-h-0 flex-1 resize-none bg-transparent px-4 py-3 text-[13px] leading-relaxed
                      text-canvas-text outline-none placeholder:text-canvas-text-muted"
@@ -229,7 +230,10 @@ function SeriesRailPanel({ onOpenWorkbench }: { onOpenWorkbench: (mode: 'editor'
   const [assetsOpen, setAssetsOpen] = useState(false);
   const [sourceOpen, setSourceOpen] = useState(false);
   // 打开编辑器时就把草稿装好，弹窗内部不用再和外部值同步
-  const [editorDraft, setEditorDraft] = useState<string | null>(null);
+  const [scriptEditor, setScriptEditor] = useState<{
+    projectId: string; seriesId: string; seriesName: string; exchangeEpoch: number; runtimeEpoch?: string;
+    initialScript: string; draft: string;
+  } | null>(null);
   const [episodeNameDialog, setEpisodeNameDialog] = useState<{ episodeId?: string } | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
@@ -271,6 +275,33 @@ function SeriesRailPanel({ onOpenWorkbench }: { onOpenWorkbench: (mode: 'editor'
     // 只解除引用，文件留在项目目录里，避免误删用户的原稿。
     await updateSeriesInfo({ originalWork: undefined });
   });
+
+  const saveScript = async (next: string) => {
+    if (!scriptEditor) return false;
+    const assertCurrent = () => {
+      const state = useAppStore.getState();
+      if (state.currentProjectId !== scriptEditor.projectId
+        || seriesOwnerId(state.projects, scriptEditor.projectId) !== scriptEditor.seriesId
+        || state.projectExecutionContext?.runtimeEpoch !== scriptEditor.runtimeEpoch) {
+        throw new Error('剧本所属项目已变化，已保留草稿');
+      }
+    };
+    try {
+      assertCurrent();
+    } catch {
+      showToast(t('剧本所属项目已变化，已保留草稿'), 'error');
+      return false;
+    }
+    try {
+      return await updateSeriesInfo({ script: next }, scriptEditor.runtimeEpoch ? {
+        expectedSeriesId: scriptEditor.seriesId, expectedExchangeEpoch: scriptEditor.exchangeEpoch,
+        expectedScript: scriptEditor.initialScript, assertCurrent,
+      } : undefined);
+    } catch {
+      showToast(t('剧本保存失败，已保留草稿'), 'error');
+      return false;
+    }
+  };
 
   return (
     <>
@@ -381,7 +412,8 @@ function SeriesRailPanel({ onOpenWorkbench }: { onOpenWorkbench: (mode: 'editor'
                   <button
                     type="button"
                     disabled={!ready}
-                    onClick={() => setEditorDraft(script)}
+                    onClick={() => setScriptEditor({ projectId: currentProjectId, seriesId: series.id, seriesName: series.name, exchangeEpoch: series.exchangeEpoch ?? 0,
+                      runtimeEpoch: useAppStore.getState().projectExecutionContext?.runtimeEpoch, initialScript: script, draft: script })}
                     className="flex h-8 items-center gap-1 rounded-lg border border-canvas-border bg-canvas-card
                                px-2 text-left leading-none transition-colors hover:bg-canvas-hover
                                disabled:cursor-not-allowed disabled:opacity-40"
@@ -564,13 +596,13 @@ function SeriesRailPanel({ onOpenWorkbench }: { onOpenWorkbench: (mode: 'editor'
       </div>
 
       <TextEditorDialog
-        isOpen={editorDraft !== null}
+        isOpen={scriptEditor !== null}
         title={t('剧本')}
-        hint={t('{name} · 整部剧共用', { name: series.name })}
-        draft={editorDraft ?? ''}
-        onDraftChange={setEditorDraft}
-        onClose={() => setEditorDraft(null)}
-        onSave={(next) => updateSeriesInfo({ script: next })}
+        hint={t('{name} · 整部剧共用', { name: scriptEditor?.seriesName ?? series.name })}
+        draft={scriptEditor?.draft ?? ''}
+        onDraftChange={(draft) => setScriptEditor((editor) => editor && { ...editor, draft })}
+        onClose={() => setScriptEditor(null)}
+        onSave={saveScript}
       />
       {episodeNameDialog && (
         <EpisodeNameDialog

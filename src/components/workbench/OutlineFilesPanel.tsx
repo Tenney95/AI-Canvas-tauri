@@ -2,8 +2,9 @@
 import { lazy, Suspense, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { Icon } from '@iconify/react';
 import { useT } from '../../i18n';
-import type { OutlineDocumentAction, OutlineDocumentSummary, OutlineOpenedDocument } from '../../types/outlineDocument';
+import type { OutlineDocumentAction, OutlineDocumentFile, OutlineDocumentSummary, OutlineOpenedDocument } from '../../types/outlineDocument';
 import { LazyLoadBoundary, LazyLoadFallback } from '../shared/LazyLoadBoundary';
+import ModalOverlay from '../shared/ModalOverlay';
 
 const DocumentPreview = lazy(() => import('./OutlineDocumentPreview'));
 
@@ -31,6 +32,7 @@ export default function OutlineFilesPanel({ summary, dispatch, ready, active, ch
   const [error, setError] = useState('');
   const [editPending, setEditPending] = useState(false);
   const [discardConfirm, setDiscardConfirm] = useState(false);
+  const [trashTarget, setTrashTarget] = useState<OutlineDocumentFile>();
   const editSequence = useRef(0);
   const latestEdit = useRef<Promise<unknown> | null>(null);
   const lifetime = useRef(0);
@@ -100,6 +102,16 @@ export default function OutlineFilesPanel({ summary, dispatch, ready, active, ch
       if (lifetime.current !== version) return;
       if (result) adopt(result);
       if (action.type === 'outline_create') { setCreating(undefined); setName(''); }
+      if (action.type === 'outline_trash') {
+        setTrashTarget(undefined);
+        if (documentRef.current?.fileName === action.file.id) {
+          documentRef.current = undefined;
+          latestEdit.current = null;
+          setDocument(undefined);
+          setEditPending(false);
+          setDiscardConfirm(false);
+        }
+      }
       return true;
     } catch (reason) {
       if (lifetime.current === version) setError(reason instanceof Error ? reason.message : t('文件操作未完成，草稿已保留'));
@@ -181,16 +193,26 @@ export default function OutlineFilesPanel({ summary, dispatch, ready, active, ch
             <span className="min-w-0 flex-1 truncate">{t('本集大纲')}</span>
           </span>
         </button>
-        {summary.files.map((file) => <button key={file.id} type="button" title={file.fileName}
-          aria-current={selected && summary.fileId === file.id ? 'page' : undefined}
-          className={`ui-btn ui-btn--sm w-full ${selected && summary.fileId === file.id ? 'ui-btn--secondary' : 'ui-btn--ghost'}`}
-          disabled={!ready || working} onClick={() => { void run({ type: 'outline_open', id: file.id }); }}>
-          <span className="flex min-w-0 flex-1 items-center gap-2 text-left">
-            <Icon icon={icons[file.kind]} className="h-3.5 w-3.5 shrink-0" />
-            <span className="min-w-0 flex-1 truncate">{file.fileName}</span>
-            {summary.dirty && summary.fileId === file.id && <span aria-label={t('有未保存修改')} className="shrink-0 text-canvas-text-secondary">●</span>}
-          </span>
-        </button>)}
+        {summary.files.map((file) => {
+          const fileDirty = dirty && summary.fileId === file.id;
+          const trashLabel = t('将 {name} 移入回收站', { name: file.fileName });
+          return <div key={file.id} className="flex items-center gap-1">
+            <button type="button" title={file.fileName} aria-current={selected && summary.fileId === file.id ? 'page' : undefined}
+              className={`ui-btn ui-btn--sm min-w-0 flex-1 ${selected && summary.fileId === file.id ? 'ui-btn--secondary' : 'ui-btn--ghost'}`}
+              disabled={!ready || working} onClick={() => { void run({ type: 'outline_open', id: file.id }); }}>
+              <span className="flex min-w-0 flex-1 items-center gap-2 text-left">
+                <Icon icon={icons[file.kind]} className="h-3.5 w-3.5 shrink-0" />
+                <span className="min-w-0 flex-1 truncate">{file.fileName}</span>
+                {fileDirty && <span aria-label={t('有未保存修改')} className="shrink-0 text-canvas-text-secondary">●</span>}
+              </span>
+            </button>
+            <button type="button" className="ui-icon-btn ui-icon-btn--ghost ui-icon-btn--sm shrink-0" aria-label={trashLabel}
+              title={fileDirty ? t('请先保存该文件的草稿后再移入回收站') : trashLabel}
+              disabled={!ready || working || fileDirty} onClick={() => { setError(''); setTrashTarget(file); }}>
+              <Icon icon="lucide:trash-2" className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          </div>;
+        })}
         {summary.loaded && summary.files.length === 0 && <p className="p-2 text-[11px] leading-relaxed text-canvas-text-muted">{t('新建大纲文档，或上传参考资料。')}</p>}
       </nav>
       <p className="border-t border-border-subtle p-2 text-[10px] leading-relaxed text-canvas-text-muted">MD · TXT · PDF · PPT/PPTX · Word<br />{t('文件在本剧各集间共享')}</p>
@@ -229,5 +251,20 @@ export default function OutlineFilesPanel({ summary, dispatch, ready, active, ch
           </LazyLoadBoundary> : <div className="grid flex-1 place-items-center p-3 text-xs text-canvas-text-muted" role="status">{t('正在读取文件…')}</div>) : children}
       </div>
     </section>
+    {trashTarget && <ModalOverlay isOpen={active && ready} ariaLabel={t('移入回收站')} zIndex={360}
+      closeOnBackdrop={!working} onClose={() => { if (!working) setTrashTarget(undefined); }}
+      motionPreset="quick" className="w-[min(420px,calc(100vw-24px))] gap-3 p-3">
+      <h3 className="text-sm font-semibold text-canvas-text">{t('移入系统回收站？')}</h3>
+      <p className="break-words text-sm text-canvas-text">{trashTarget.fileName}</p>
+      <p className="text-xs leading-relaxed text-canvas-text-secondary">{t('这会移除本剧各集共享的这份文档。可从系统回收站恢复。')}</p>
+      {error && <p role="alert" className="ui-alert ui-alert--danger">{t(error)}</p>}
+      <div className="flex justify-end gap-2">
+        <button type="button" className="ui-btn ui-btn--ghost" disabled={working} onClick={() => setTrashTarget(undefined)}>{t('取消')}</button>
+        <button type="button" className="ui-btn ui-btn--danger" disabled={working}
+          onClick={() => { const { id, size, modifiedAt } = trashTarget; void run({ type: 'outline_trash', file: { id, size, modifiedAt } }); }}>
+          {working ? t('正在移入…') : t('移入回收站')}
+        </button>
+      </div>
+    </ModalOverlay>}
   </div>;
 }

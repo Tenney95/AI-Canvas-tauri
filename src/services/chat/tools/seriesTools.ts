@@ -296,7 +296,7 @@ export function registerSeriesAgentTools(): Array<() => void> {
       execute: async (_context, input) => {
         const { series } = currentSeries();
         if (!series) return { status: 'error', summary: '当前项目没有剧集信息', modelContent: '当前项目没有剧集信息', errorCode: 'SERIES_NOT_FOUND' };
-        const saved = await useAppStore.getState().updateSeriesInfo({ ...series.series, script: input.script });
+        const saved = await useAppStore.getState().updateSeriesInfo({ script: input.script });
         return saved ? { status: 'success', summary: '已更新全剧剧本', modelContent: JSON.stringify({ seriesId: series.id, scriptLength: input.script.length }) } : { status: 'error', summary: '全剧剧本更新失败', modelContent: '全剧剧本更新失败', errorCode: 'SERIES_UPDATE_FAILED' };
       },
     }),

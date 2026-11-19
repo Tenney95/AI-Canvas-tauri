@@ -1312,6 +1312,7 @@ export default function ScriptWorkbench({
     }
     if ((action.type === 'set_tab' && action.tab !== activeTab)
       || (action.type === 'select_episode' && action.episodeId !== selectedEpisodeRef.current)
+      || (action.type === 'outline_trash' && action.file?.id === outlineDocuments?.getSummary().fileId)
       || ['outline_open', 'outline_create', 'outline_select_builtin', 'outline_reload', 'original_reload'].includes(action.type)) articleAssistant.cancel();
     if (action.type.startsWith('outline_')) {
       if (!outlineDocuments) throw new Error(t('当前没有可编辑的大纲文件'));

@@ -176,6 +176,41 @@ describe('P5 native file projection', () => {
     expect(native.invoke).toHaveBeenCalledWith('inspect_project_archive_assets', { assetsDir: physicalRoot, selectedPaths: [old, temp] });
   });
 
+  it('已回收的工作台资料不阻塞新归档，当前引用和冻结清单仍须核对', async () => {
+    const { capture } = await setup();
+    const projectId = 'p2-00000000-0000-4000-8000-000000000001';
+    const root = 'r2-00000000-0000-4000-8000-000000000002', child = 'r2-00000000-0000-4000-8000-000000000003';
+    const folder = `project-${projectId}`, physicalRoot = 'authorized/native', physicalChild = `${physicalRoot}/roots/${child}`;
+    capture.aggregate.project = { ...capture.aggregate.project, id: projectId, dataFolder: folder, storageRootRef: root,
+      storageBindings: [{ rootRef: root, folderName: folder, sourceRecordIds: [], source: 'project-managed' },
+        { rootRef: child, folderName: `${folder}/roots/${child}`, sourceRecordIds: [], source: 'project-managed' }] };
+    capture.aggregate.content.projectId = projectId;
+    capture.exchange!.identities.find((item) => item.sourceId === 'A')!.localId = root;
+    capture.exchange!.identities.find((item) => item.sourceId === 'B')!.localId = child;
+    const outline = 'outline-documents/旧稿.docx';
+    capture.exchange!.fileBindings[0].localRelativePath = outline;
+    native.existing.add(physicalRoot); native.existing.add(physicalChild);
+    let hasOutline = false;
+    native.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+      if (command === 'resolve_native_project_media_root') return physicalRoot;
+      if (command === 'resolve_native_project_media_subroot') return physicalChild;
+      if (command === 'inspect_project_archive_assets') return [
+        ...(args.includeImportPaths as string[]),
+        ...(args.assetsDir === physicalRoot && hasOutline ? [outline] : []),
+      ].map((path) => ({ path, bytes: 3, sha256: hash }));
+      throw new Error('unexpected command');
+    });
+    const port = createBoundProjectModelArchiveExportPort(projectId, '');
+    expect((await port.inspectAssets(capture)).map((asset) => asset.path)).not.toContain(outline);
+    hasOutline = true;
+    expect((await port.inspectAssets(capture)).map((asset) => asset.path)).toContain(outline);
+    hasOutline = false;
+    const frozen = createBoundProjectModelArchiveExportPort(projectId, '', [], false, [{ rootRef: root, path: outline }]);
+    await expect(frozen.inspectAssets(capture)).rejects.toThrow(outline);
+    capture.aggregate.content.originalWork = { fileName: '旧稿.docx', relativePath: outline, addedAt: 1 };
+    await expect(port.inspectAssets(capture)).rejects.toThrow(outline);
+  });
+
   it.each(['readable', 'existing-id'] as const)('bound导入%s物理目录沿原journal续接，逻辑目录不重算且重启不重发已发布子操作', async (binding) => {
     const { operation, source } = await setup();
     const projectId = 'p2-00000000-0000-4000-8000-000000000001';

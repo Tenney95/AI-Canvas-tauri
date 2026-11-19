@@ -100,7 +100,7 @@ export function hydrateNativeProjectView(
     throw new Error('新项目正文与导航身份不一致');
   }
   const canvasByEpisode = new Map(entry.episodes.map((episode) => [episode.id, episode.canvasId]));
-  const series = entry.project.kind === 'series' ? {
+  const series = entry.project.kind === 'series' || content.originalWork || content.script !== undefined || content.storyGraph ? {
     ...(content.originalWork ? { originalWork: content.originalWork } : {}),
     ...(content.script !== undefined ? { script: content.script } : {}),
     ...(content.storyGraph ? { storyGraph: remapStoryGraphBindings(content.storyGraph,
@@ -110,8 +110,8 @@ export function hydrateNativeProjectView(
   if (selection.canvas && !view.some((item) => item.nativeView.canvasId === selection.canvas?.id)) {
     throw new Error('新项目画布与导航身份不一致');
   }
-  return view.map((item) => {
-    if (!item.parentId && series) return { ...item, series };
+  return view.map((viewItem) => {
+    const item = !viewItem.parentId && series ? { ...viewItem, series } : viewItem;
     if (item.nativeView.episodeId) return episodeContent?.episodeId === item.nativeView.episodeId
       ? applyNativeEpisodeContent(item, episodeContent) : item;
     const creative = item.nativeView.canvasId === selection.canvas?.id ? content.standaloneCreative : undefined;

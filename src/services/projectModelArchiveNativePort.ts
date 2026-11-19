@@ -5,6 +5,7 @@ import * as files from './fileService';
 import { projectModelArchiveMediaPrefix, projectModelArchiveStorageContext, readProjectModelArchive, type ProjectModelArchivePort, type ProjectModelArchiveAsset } from './projectModelArchiveService';
 import type { ProjectModelFixtureBusinessSession } from '../types/projectModelBusiness';
 import type { ProjectModelTransferCapture, ProjectModelTransferImportJournal } from '../types/projectModelTransfer';
+import { isOutlineDocumentFileName, OUTLINE_DOCUMENT_DIRECTORY } from '../types/outlineDocument';
 import { createProjectModelPreRestoreBackupService } from './projectModelPreRestoreBackup';
 import type { ArchiveAssetDigest } from './projectExchangeDomain';
 import { captureSourceLocation, missingProjectAssetMessage, projectArchiveDisplayLabel, safeExchangePath } from './projectExchangeDomain';
@@ -359,7 +360,12 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
         }).filter((path) => {
           if (current.get(root.rootRef)?.has(path)) return true;
           // 旧版 head 曾自动收录共享缓存，单独的文件绑定不能证明它仍在使用。
-          return !options.currentFilesOnly && !(options.nativeProjectId && sharedSyncPath.test(path));
+          if (options.currentFilesOnly || options.nativeProjectId && sharedSyncPath.test(path)) return false;
+          const [folder, fileName, nested] = path.split('/');
+          // 工作台资料只靠磁盘列表发现，回收后的旧 head 附件无需重新出现。冻结的原操作仍核验原件。
+          return !(options.nativeProjectId && root.rootRef === primary && folder === OUTLINE_DOCUMENT_DIRECTORY
+            && nested === undefined && isOutlineDocumentFileName(fileName)
+            && !options.frozenPaths?.some((item) => item.rootRef === root.rootRef && item.path === path));
         });
         if (!(await exists(assetsDir))) {
           if (required.length || current.get(root.rootRef)?.size) throw new Error('项目引用的素材根缺失，无法安全导出');

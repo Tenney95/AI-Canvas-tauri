@@ -176,6 +176,7 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
         return revision;
       },
       showToast: vi.fn(), loadConversationsForProject: vi.fn(async () => {}), repairInterruptedForProject: vi.fn(async () => {}),
+      repairNativeWorkConversationsOnFirstOpen: vi.fn(async () => {}),
       loadAgentTasksForProject: vi.fn(async () => {}), loadProjectMemoriesForProject: vi.fn(async () => {}),
     } as unknown as AppState));
   }
@@ -204,6 +205,39 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     store.setState({ history: [originalHistory], historyIndex: 0, agentTasks: [agent] });
     return { store, receipt, context: context as CanvasContext, originalHistory, agent };
   }
+
+  it('有在途媒体任务时仍能保存普通项目剧本和助手文本模型，保留原任务租约', async () => {
+    const initial = await createNativeProject({ projectId, canvasId: canvasA, name: '当前作品' });
+    const canvas = await saveNativeCanvas({ projectId, expectedProjectEpoch: initial.project.epoch, canvasId: canvasA,
+      episodeId: null, expectedCanvasEpoch: initial.canvas!.epoch, expectedCanvasRevision: initial.canvas!.revision,
+      document: { nodes: [sourceNode()], edges: [], groups: [] } });
+    const store = fixtureStore(initial);
+    expect(await store.getState().switchProject(canvasA)).toBe(canvasA);
+    const { projectExecutionContext: context, nodes } = store.getState();
+    if (context?.kind !== 'canvas') throw new Error('fixture canvas unavailable');
+    const inputFingerprint = await sha256BytesHex(new TextEncoder().encode(videoInputFingerprintMaterial(nodes[0], store.getState())));
+    const pending = await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: 'video-node', providerConfigId: 'volcengine',
+      providerBase: 'https://provider.example/api/v3', category: 'video', sourceCanvasRevision: canvas.revision, inputFingerprint });
+    const receipt = await recordNativeMediaSubmission(pending.operationId, pending.lease, { taskId: 'original-paid-task' });
+    await expect(store.getState().updateSeriesInfo({ script: '粘贴的全剧正文' }, { expectedSeriesId: canvasA, expectedScript: '' })).resolves.toBe(true);
+    await expect(store.getState().updateProjectSettings({ defaultModels: { text: 'general/writer' } })).resolves.toBe(true);
+    await expect(store.getState().updateSeriesInfo({ script: '过期草稿' }, { expectedSeriesId: canvasA, expectedScript: '' })).resolves.toBe(false);
+
+    expect(store.getState().projectExecutionContext).toBe(context);
+    expect(store.getState().nodes).toBe(nodes);
+    const persisted = (await readNativeProjectCapture(projectId))!.aggregate;
+    expect(persisted.project).toMatchObject({ kind: 'standalone', epoch: initial.project.epoch, defaultSettings: { defaultModels: { text: 'general/writer' } } });
+    expect(persisted.canvas).toEqual(canvas);
+    expect(persisted.content.script).toBe('粘贴的全剧正文');
+    expect(await listNativeMediaTasks(projectId)).toContainEqual(receipt);
+    await expect(convertNativeProjectToSeries({ projectId, expectedProjectEpoch: persisted.project.epoch,
+      expectedCanvasId: canvasA, expectedCanvasEpoch: canvas.epoch, expectedCanvasRevision: canvas.revision,
+      expectedStandaloneRevision: 0, episodeId: episodeA, name: '第一集' })).rejects.toThrow('project-media-task-pending');
+
+    const reopened = fixtureStore(persisted);
+    expect(await reopened.getState().switchProject(canvasA)).toBe(canvasA);
+    expect(reopened.getState().projects.find((item) => item.id === canvasA)?.series?.script).toBe('粘贴的全剧正文');
+  });
 
   it.each(['standalone', 'existing-conflict'] as const)('Store 实际新增分集处理 %s 集号并保留原数据', async (scenario) => {
     const initial = await createNativeProject({ projectId, canvasId: canvasA, name: '隔离作品' });
