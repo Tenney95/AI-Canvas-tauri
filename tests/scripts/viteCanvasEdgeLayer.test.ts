@@ -1,5 +1,5 @@
 /**
- * viteCanvasEdgeLayer — 回归测试：React Flow 集中连线构建适配。
+ * React Flow 集中连线与小地图构建适配的回归测试。
  */
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -19,6 +19,81 @@ const version = (JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf
 const entries = ['index.js', 'index.mjs'].map((name) => {
   const id = join(packageRoot, 'dist/esm', name);
   return { name, id, source: readFileSync(id, 'utf8') };
+});
+
+describe('React Flow 小地图构建适配', () => {
+  it.each(entries)('在真实 $name 入口只用 Canvas 绘制节点，保留原生手势和遮罩', (entry) => {
+    const transform = canvasEdgeLayerPlugin().transform;
+    if (!transform || typeof transform === 'function') throw new Error('缺少 Vite 入口适配');
+    const invoke = transform.handler as (source: string, id: string) => { code: string } | null;
+    const code = invoke(entry.source, entry.id)?.code;
+    if (!code) throw new Error('真实 React Flow 入口没有经过适配');
+
+    const revisionCode = code.slice(code.indexOf(CANVAS_EDGE_LAYER_ADAPTER_MARKER), code.indexOf('function EdgeRendererComponent('));
+    const miniMapCode = code.slice(code.indexOf('const defaultWidth = 200;'), code.indexOf('MiniMapComponent.displayName ='));
+    const makeHarness = new Function(
+      'getEdgePosition', 'getElevatedEdgeZIndex', 'getMarkerId', 'getInternalNodesBounds', 'getBoundsOfRects',
+      'getNodeDimensions', 'nodeHasDimensions', 'useStoreApi', 'useStore', 'shallow', 'useRef', 'useEffect',
+      'XYMinimap', 'jsx', 'jsxs', 'MiniMapNodes$1', 'Panel', 'cc',
+      `${revisionCode}\n${miniMapCode}\nreturn { render: MiniMapComponent, publish: __aiCanvasSetViewport };`,
+    ) as (...args: unknown[]) => {
+      render: (props: Record<string, unknown>) => ElementTree;
+      publish: (store: unknown, transform: number[]) => void;
+    };
+    const panZoom = {};
+    const store = createStore(() => ({
+      width: 600, height: 300, transform: [0, 0, 1], rfId: 'canvas', panZoom, ariaLabelConfig: {},
+      nodeLookup: new Map([['a', { x: 10 }]]),
+    }));
+    const svgElement = {};
+    const nativeNodes = Symbol('MiniMapNodes');
+    const jsx = vi.fn((type: unknown, props: Record<string, unknown>): ElementTree => ({ type, props }));
+    const nodeBounds = vi.fn((lookup: Map<string, { x: number }>) => ({ x: lookup.get('a')?.x, y: 10, width: 100, height: 100 }));
+    const gestures = { pointer: vi.fn(() => [44, 55]), update: vi.fn(), destroy: vi.fn() };
+    const createGestures = vi.fn(() => gestures);
+    const { render, publish } = makeHarness(
+      vi.fn(), vi.fn(), vi.fn(), nodeBounds, (_bounds: unknown, view: unknown) => view,
+      vi.fn(), vi.fn(), () => store, (selector: (state: ReturnType<typeof store.getState>) => unknown) => selector(store.getState()),
+      {}, (value: unknown) => ({ current: value === null ? svgElement : value }), (effect: () => unknown) => effect(),
+      createGestures, jsx, jsx, nativeNodes, Symbol('Panel'), vi.fn(),
+    );
+    const canvasNodeLayer = () => null;
+    const onClick = vi.fn();
+    const props = { canvasNodeLayer, onClick, pannable: true, zoomable: true };
+    const svg = render(props).props.children as ElementTree;
+    const [, layer, mask] = svg.props.children as ElementTree[];
+    expect(svg.type).toBe('svg');
+    expect(svg.props['data-minimap-renderer']).toBe('canvas2d');
+    expect(jsx.mock.calls.some(([type]) => type === nativeNodes)).toBe(false);
+    expect(layer).toMatchObject({ type: canvasNodeLayer, props: { width: 200, height: 150 } });
+    expect(mask).toMatchObject({ type: 'path', props: { className: 'react-flow__minimap-mask', fillRule: 'evenodd' } });
+    expect(mask.props.d).toEqual(expect.stringContaining('M0,0h600v300h-600z'));
+    expect(createGestures).toHaveBeenCalledWith(expect.objectContaining({ domNode: svgElement, panZoom }));
+    expect(gestures.update).toHaveBeenCalledWith(expect.objectContaining({ pannable: true, zoomable: true }));
+    const click = { button: 0 };
+    (svg.props.onClick as (event: typeof click) => void)(click);
+    expect(gestures.pointer).toHaveBeenCalledWith(click, svgElement);
+    expect(onClick).toHaveBeenCalledWith(click, { x: 44, y: 55 });
+
+    publish(store, [30, 40, 2]);
+    const nextSvg = render(props).props.children as ElementTree;
+    expect(nextSvg.props.viewBox).not.toBe(svg.props.viewBox);
+    expect(nodeBounds).toHaveBeenCalledTimes(1);
+    store.getState().nodeLookup.get('a')!.x = 30;
+    store.setState({}); // RF can publish new measurements with the same lookup.
+    render(props);
+    expect(nodeBounds).toHaveBeenCalledTimes(2);
+
+    const shell = render({ ...props, canvasNodeLayer: undefined }).props.children as ElementTree;
+    const [, absentLayer, shellMask] = shell.props.children as [unknown, null, ElementTree];
+    expect(shell.props['data-minimap-renderer']).toBe('canvas2d');
+    expect(absentLayer).toBeNull();
+    expect(jsx.mock.calls.some(([type]) => type === nativeNodes)).toBe(false);
+    expect(shellMask.type).toBe('path');
+    (shell.props.onClick as (event: typeof click) => void)(click);
+    expect(gestures.pointer).toHaveBeenLastCalledWith(click, svgElement);
+    expect(onClick).toHaveBeenCalledTimes(2);
+  });
 });
 
 interface ElementTree {

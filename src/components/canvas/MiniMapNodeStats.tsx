@@ -2,10 +2,16 @@
  * 小地图节点统计 — 悬浮小地图时在上方浮层里统计画布各类型节点数量与总数量。
  * 统计口径与 React Flow 实际渲染的节点一致（已剔除隐藏节点），与小地图显示的内容同步。
  */
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ComponentType } from 'react';
 import { MiniMap, useStore, type MiniMapProps, type Node as RFNode } from '@xyflow/react';
 import { useT } from '../../i18n';
 import { getNodeTypeConfig } from '../../types';
+import CanvasMiniMapNodeLayer from './CanvasMiniMapNodeLayer';
+
+// The locked React Flow adapter uses this component to draw the node layer.
+const AdaptedMiniMap: ComponentType<MiniMapProps & {
+  canvasNodeLayer: typeof CanvasMiniMapNodeLayer;
+}> = MiniMap;
 
 const MINIMAP_STYLE = {
   width: 180,
@@ -158,7 +164,8 @@ export default function MiniMapNodeStats({ onClick }: Pick<MiniMapProps, 'onClic
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <MiniMap
+      <AdaptedMiniMap
+        canvasNodeLayer={CanvasMiniMapNodeLayer}
         position="bottom-right"
         onClick={onClick}
         pannable
