@@ -6,6 +6,7 @@ import { webcrypto } from 'node:crypto';
 import { sha256BytesHex } from '../../src/services/mediaDataUrl';
 import { episodeTeamSourceSnapshot } from '../../src/services/seriesCreativeService';
 import { cancelProjectCanvasDerivations } from '../../src/services/canvasDerivationGuard';
+import { registerScriptWorkbenchAppClose } from '../../src/services/scriptWorkbenchAppClose';
 import type { BaseNodeData } from '../../src/types';
 import type { ProjectSaveData } from '../../src/services/storageService';
 import type { ProjectDataDirRenameResult } from '../../src/services/fs/core';
@@ -1876,6 +1877,23 @@ describe('returning to the startup page', () => {
       activeNodeId: 'text', projectLibraryOpen: true,
     });
   }
+
+  it.each([false, true])('waits for the workbench before saving or leaving the canvas (%s)', async (confirmed) => {
+    openProject();
+    let finishWorkbench!: (allowed: boolean) => void;
+    const prepare = vi.fn(() => new Promise<boolean>((resolve) => { finishWorkbench = resolve; }));
+    const unregister = registerScriptWorkbenchAppClose(prepare);
+    try {
+      const returning = useAppStore.getState().returnToStartPage();
+      expect(prepare).toHaveBeenCalledWith('start');
+      expect(useAppStore.getState()).toMatchObject({ currentProjectId: 'logo-project', isReturningToStartPage: false });
+      expect(fileMocks.saveProject).not.toHaveBeenCalled();
+      finishWorkbench(confirmed);
+      expect(await returning).toBe(confirmed);
+      expect(useAppStore.getState().currentProjectId).toBe(confirmed ? null : 'logo-project');
+      expect(fileMocks.saveProject).toHaveBeenCalledTimes(confirmed ? 1 : 0);
+    } finally { unregister(); }
+  });
 
   it('returns after saving even when thumbnail encoding remains pending', async () => {
     openProject();

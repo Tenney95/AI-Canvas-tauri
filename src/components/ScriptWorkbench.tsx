@@ -73,7 +73,7 @@ import { createAppearanceUiSnapshot } from '../services/appearance/appearanceWin
 import { resolveAppearanceMode } from '../services/appearance/appearanceRuntime';
 import { getAppearanceForConfig } from '../services/appearance/appearanceMigration';
 import { createScriptWorkbenchWindowHost, focusScriptWorkbenchWindow, type ScriptWorkbenchWindowHost } from '../services/scriptWorkbenchWindowService';
-import { registerScriptWorkbenchAppClose } from '../services/scriptWorkbenchAppClose';
+import { registerScriptWorkbenchAppClose, type ScriptWorkbenchExitTarget } from '../services/scriptWorkbenchAppClose';
 import { captureProjectWindowContext, isProjectWindowContextCurrent } from '../services/projectWindowContext';
 import { loadProjectAgentTasks } from '../services/chat/agentTaskService';
 import { buildSeriesChapterPrompt, indexSeriesSplitMaterial, readSeriesChapter, readSeriesSource } from '../services/seriesSourceService';
@@ -99,10 +99,12 @@ type EditorTab = WorkbenchEditorTab;
 type PendingAction = WorkbenchPendingAction;
 type WorkbenchPresentation = 'modal' | 'page';
 type CreativeDraft = WorkbenchCreativeDraft;
-type CloseDestination = 'canvas' | 'start' | 'app';
+type CloseDestination = 'canvas' | 'app';
 interface WorkbenchAppCloseRequest {
   id: string;
+  target: ScriptWorkbenchExitTarget;
   resolve: (allowed: boolean) => void;
+  restoreCanvas?: () => void;
   timer?: ReturnType<typeof setTimeout>;
   replyId?: string;
 }
@@ -405,12 +407,13 @@ export default function ScriptWorkbench({
   const afterReply = useRef<'close' | 'dock' | 'app-close' | null>(null);
   const pendingCloseDestination = useRef<CloseDestination>('canvas');
   const appCloseRequest = useRef<WorkbenchAppCloseRequest | null>(null);
-  const prepareAppCloseRef = useRef<() => Promise<boolean>>(async () => false);
+  const prepareAppCloseRef = useRef<(target: ScriptWorkbenchExitTarget) => Promise<boolean>>(async () => false);
   const settleAppClose = useCallback((allowed: boolean) => {
     const pending = appCloseRequest.current;
     appCloseRequest.current = null;
     if (pending?.timer !== undefined) clearTimeout(pending.timer);
     if (!allowed && afterReply.current === 'app-close') afterReply.current = null;
+    pending?.restoreCanvas?.();
     pending?.resolve(allowed);
   }, []);
   const acceptedEditSequenceRef = useRef(0);
@@ -600,10 +603,6 @@ export default function ScriptWorkbench({
     if (episodeId && local && !needsNativeEpisodeContent(saved) && draftSignature(local) === draftSignature(createDraft(saved ?? null))) {
       replaceEpisodeDraft(episodeId, undefined);
     }
-    if (destination === 'start') {
-      void useAppStore.getState().returnToStartPage();
-      return;
-    }
     if (destination === 'app') {
       if (detached) afterReply.current = 'app-close';
       else settleAppClose(true);
@@ -727,7 +726,8 @@ export default function ScriptWorkbench({
       return false;
     };
     if (savingEpisodeRef.current || editorWriteLocked) {
-      if (destination === 'app') showToast(t('请等待工作台保存完成后再关闭应用'), 'error');
+      if (destination === 'app') showToast(t(appCloseRequest.current?.target === 'start'
+        ? '请等待工作台保存完成后再返回启动页' : '请等待工作台保存完成后再关闭应用'), 'error');
       return blocked();
     }
     if (outlineDocuments?.isBusy()) {
@@ -763,24 +763,27 @@ export default function ScriptWorkbench({
     }
   };
 
-  const prepareAppClose = async (): Promise<boolean> => {
+  const prepareAppClose = async (target: ScriptWorkbenchExitTarget): Promise<boolean> => {
     if (openingWindow || closingWorkbench || appCloseRequest.current) {
-      showToast(t('请等待工作台窗口操作完成后再关闭应用'), 'error');
+      showToast(t(target === 'start' ? '请等待工作台窗口操作完成后再返回启动页' : '请等待工作台窗口操作完成后再关闭应用'), 'error');
       return false;
     }
     return new Promise<boolean>((resolve) => {
-      const pending: WorkbenchAppCloseRequest = { id: crypto.randomUUID(), resolve };
+      const pending: WorkbenchAppCloseRequest = { id: crypto.randomUUID(), target, resolve };
       appCloseRequest.current = pending;
       if (!detached) {
         requestClose('app');
-        if (appCloseRequest.current === pending && presentation === 'page' && !visible) onPageVisibilityChange?.(true);
+        if (appCloseRequest.current === pending && presentation === 'page' && !visible) {
+          if (target === 'start') pending.restoreCanvas = () => onPageVisibilityChange?.(false);
+          onPageVisibilityChange?.(true);
+        }
         return;
       }
       const host = windowHost.current;
       if (!host) { settleAppClose(false); return; }
       const unavailable = () => {
         if (appCloseRequest.current !== pending || pending.timer === undefined) return;
-        showToast(t('独立工作台未确认，已保留草稿，请处理后再关闭应用'), 'error');
+        showToast(t(target === 'start' ? '独立工作台未确认，已保留草稿，请处理后再返回启动页' : '独立工作台未确认，已保留草稿，请处理后再关闭应用'), 'error');
         settleAppClose(false);
       };
       // 只限制窗口握手，不限制用户确认及实际写盘的时间。
@@ -1784,7 +1787,7 @@ export default function ScriptWorkbench({
   });
   useEffect(() => {
     if (!isOpen) return;
-    const unregister = registerScriptWorkbenchAppClose(() => prepareAppCloseRef.current());
+    const unregister = registerScriptWorkbenchAppClose((target) => prepareAppCloseRef.current(target));
     return () => { unregister(); settleAppClose(false); };
   }, [isOpen, settleAppClose]);
   useEffect(() => {
@@ -1840,7 +1843,7 @@ export default function ScriptWorkbench({
   }, [presentation, visible, isOpen, detached, closingWorkbench, showToast, t]);
   return !isOpen || detached || closingWorkbench ? null : <ScriptWorkbenchView snapshot={snapshot} dispatch={dispatchView}
     presentation={presentation} visible={visible} onSwitchToCanvas={onSwitchToCanvas}
-    onBackToStartPage={() => { requestClose('start'); }}
+    onBackToStartPage={() => { void useAppStore.getState().returnToStartPage(); }}
     onReturnToProject={onReturnToProject} returningToProject={returningToProject} />;
 }
 

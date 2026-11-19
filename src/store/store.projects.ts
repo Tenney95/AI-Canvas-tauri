@@ -33,6 +33,7 @@ import { normalizeProjectSettings } from '../services/projectSettingsService';
 import { normalizeCreationProfileSelection } from '../services/creationProfiles/creationProfileManifest';
 import { normalizeTeamProfile } from '../services/chat/teams/teamProfileService';
 import { captureCurrentCanvasSnapshot } from '../services/projectSnapshotService';
+import { prepareScriptWorkbenchStartPage } from '../services/scriptWorkbenchAppClose';
 import { stopProjectAgentTasks } from '../services/chat/agentTaskControl';
 import { cancelProjectCanvasDerivations, completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasImport } from '../services/canvasDerivationGuard';
 import { clearConversationFileGrants } from '../services/chat/fileGrantService';
@@ -3704,9 +3705,20 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   },
 
   returnToStartPage: async () => {
+    const source = get(), projectId = source.currentProjectId, sequence = projectSwitchSequence;
+    if (!projectId) return true;
+    if (source.isReturningToStartPage || source.isCreatingProject || source.switchingProjectName !== null) return false;
+    try {
+      // 工作台可能仍在画布背后或独立窗口中。确认草稿时暂不冻结保存上下文。
+      const prepareWorkbench = prepareScriptWorkbenchStartPage();
+      if (prepareWorkbench && !await prepareWorkbench) return false;
+    } catch {
+      get().showToast('返回启动页失败，已保留当前画布，请重试', 'error');
+      return false;
+    }
     const state = get();
-    if (!state.currentProjectId) return true;
-    if (state.isReturningToStartPage || state.isCreatingProject || state.switchingProjectName !== null) return false;
+    if (state.currentProjectId !== projectId || projectSwitchSequence !== sequence
+      || state.isReturningToStartPage || state.isCreatingProject || state.switchingProjectName !== null) return false;
     const leavingReadonly = state.projectLoadStatus === 'readonly';
     if (leavingReadonly && state.hasUnsavedNativeProjectWriteBlock()) {
       state.showToast(NATIVE_PROJECT_PENDING_EDITS, 'error');
@@ -3716,8 +3728,6 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       state.showToast('项目尚未成功加载，暂时无法返回启动页', 'error');
       return false;
     }
-    const projectId = state.currentProjectId;
-    const sequence = projectSwitchSequence;
     set({ isReturningToStartPage: true });
     try {
       // 先绘制返回状态。缩略图是派生预览，不能阻塞必要保存和导航。
