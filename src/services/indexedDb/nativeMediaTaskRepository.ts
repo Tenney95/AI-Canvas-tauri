@@ -20,6 +20,7 @@ const KIND = 'native-media-task-v1';
 const MAX_TASK_ROWS = 100_000;
 export const ACTIVE_NATIVE_MEDIA_STATES: readonly NativeMediaTaskRecord['status'][] = ['prepared', 'submitted', 'outcome-unknown'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const MESSAGE_ARTIFACT = /^native-media-([a-f0-9-]{36})(?:-[1-9][0-9]{0,2})?$/;
 const id = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 256
   && !hasControlCharacters(value);
 const validEpoch = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
@@ -461,6 +462,52 @@ interface NativeMediaTaskQuery extends NativeProjectOptions {
   nodeIds?: ReadonlySet<string>;
   origin?: Pick<NativeMediaOrigin, 'conversationId' | 'messageId'>;
   statuses?: readonly NativeMediaTaskRecord['status'][];
+}
+
+/** 对话恢复只读已加载消息的原回执；不扫描作品或当前画布的全部生成历史。 */
+export async function readNativeMediaMessageTasks(projectId: string, canvasId: string | null, loaded: readonly {
+  conversationId: string; messageId: string; artifactId?: string;
+}[], options: NativeProjectOptions = {}): Promise<{
+  records: NativeMediaTaskRecord[]; project?: Pick<ProjectRecord, 'id' | 'storageRootRef' | 'storageBindings'>;
+}> {
+  if (!loaded.length || !isNativeProjectId(projectId) || canvasId !== null && !isNativeCanvasId(canvasId)) return { records: [] };
+  const db = await openNativeProjectDatabase(false, options); if (!db) return { records: [] };
+  try {
+    return await transact(db, 'readonly', options, async (tx) => {
+      const store = tx.objectStore(EXCHANGE), index = store.index(MEDIA_TASK_MESSAGE_INDEX);
+      const operations = new Set<string>(), origins = new Map<string, Set<string>>();
+      for (const { conversationId, messageId, artifactId } of loaded) {
+        if (!id(conversationId) || !id(messageId)) continue;
+        if (artifactId !== undefined) {
+          const operationId = MESSAGE_ARTIFACT.exec(artifactId)?.[1];
+          if (operationId && UUID.test(operationId)) operations.add(operationId);
+        } else if (canvasId) {
+          const messages = origins.get(conversationId) ?? new Set<string>();
+          messages.add(messageId); origins.set(conversationId, messages);
+        }
+      }
+      const [root, byOperation, byOrigin] = await Promise.all([
+        req(tx.objectStore(ROOTS).get(projectId)) as Promise<ProjectRecord | undefined>,
+        Promise.all([...operations].map((operationId) => req(store.get(PREFIX + operationId)) as Promise<NativeMediaTaskRecord | undefined>)),
+        Promise.all([...origins].flatMap(([conversationId, messages]) => [...messages].map(async (messageId) => {
+          const rows = await req(index.getAll([KIND, projectId, canvasId!, conversationId, messageId], MAX_TASK_ROWS + 1)) as NativeMediaTaskRecord[];
+          return rows.length <= MAX_TASK_ROWS ? rows : [];
+        }))),
+      ]);
+      if (root?.id !== projectId) return { records: [] };
+      const records = new Map<string, NativeMediaTaskRecord>();
+      for (const row of [...byOperation, ...byOrigin.flat()]) {
+        if (!row || row.ownerProjectId !== projectId || row.status !== 'delivered' || !row.origin || !row.resultRelativePath
+          || records.has(row.operationId)) continue;
+        // 损坏的旧回执应继续留在账本中，其余原消息仍可播放。
+        try { records.set(row.operationId, validateNativeMediaTaskRecord(row)); } catch { /* 原回执不可展示。 */ }
+      }
+      return {
+        records: [...records.values()].sort((a, b) => a.operationId < b.operationId ? -1 : a.operationId > b.operationId ? 1 : 0),
+        project: { id: root.id, storageRootRef: root.storageRootRef, storageBindings: root.storageBindings },
+      };
+    }, [ROOTS, EXCHANGE]);
+  } finally { db.close(); }
 }
 
 /** 使用已绑定身份查询；归档等确实需要作品历史时读取该作品的全部回执。 */

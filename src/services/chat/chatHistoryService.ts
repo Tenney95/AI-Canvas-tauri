@@ -287,18 +287,74 @@ async function persistMessageRecord(incoming: ChatMessageRecord, normalizedFrom?
   await putChatMessageWithSequence(incoming);
 }
 
-/** 一次追加所有候选并保存不可变投影收据；重试不重建已经被用户删除的消息。 */
-export async function projectNativeMediaMessageBatch(record: NativeMediaTaskRecord,
-  canvasNodeIds: readonly (string | undefined)[], isCurrent: () => boolean): Promise<{ created: boolean; messages: ChatMessage[]; batchNote?: string }> {
+type NativeMessageProjectionReceipt = { binding?: unknown; state?: string; ownerId?: string };
+const readProjectionRow = <T>(request: IDBRequest<T>) => new Promise<T>((done, fail) => {
+  request.onsuccess = () => done(request.result); request.onerror = () => fail(request.error);
+});
+
+function nativeMediaMessageBatchBinding(record: NativeMediaTaskRecord) {
   const origin = record.origin;
   if (!origin || record.status !== 'delivered' || !record.apimartImageBatch && !record.localResults
     || record.apimartImageBatch && !nativeImageBatchSettled(record.apimartImageBatch)
     || !/^[a-f0-9]{64}$/.test(record.deliveryDigest ?? '')) throw new Error('原媒体作业尚未完成，未投影消息');
+  // 既有APIMart收据不追加category字段，保留其不可变binding字节语义。
+  const files = record.apimartImageBatch ? nativeImageBatchResults(record) : nativeMediaLocalOutputs(record);
+  const outputs = files.map((file, ordinal) => ({ ...file,
+    artifactId: `native-media-${record.operationId}${ordinal ? `-${ordinal}` : ''}`,
+    messageId: ordinal ? `media-output-native-media-${record.operationId}-${ordinal}` : origin.messageId,
+  }));
+  const binding = { operationId: record.operationId, ownerProjectId: record.ownerProjectId, canvasId: record.canvasId,
+    episodeId: record.episodeId, projectEpoch: record.projectEpoch, canvasEpoch: record.canvasEpoch,
+    origin, deliveryDigest: record.deliveryDigest, outputs };
+  const receiptId = `native-media-message-projection:${record.operationId}`;
+  const belongsToProject = (ownerId: string) => ownerId === record.ownerProjectId || ownerId === record.canvasId
+    || isRegisteredNativeConversationAlias(record.ownerProjectId, ownerId);
+  return { files, outputs, binding, origin, receiptId, belongsToProject };
+}
+
+function messagesFromNativeMediaProjection(batch: ReturnType<typeof nativeMediaMessageBatchBinding>, receipt: NativeMessageProjectionReceipt,
+  conversation: ChatConversationRecord | undefined, rows: readonly (ChatMessageRecord | undefined)[]): ChatMessage[] {
+  if (!configValuesEqual(receipt.binding, batch.binding) || !['committed', 'suppressed'].includes(receipt.state ?? '')) throw new Error('图片消息投影收据冲突');
+  if (!conversation || conversation.deletedAt || !batch.belongsToProject(conversation.projectId) || receipt.state === 'suppressed') return [];
+  if (receipt.ownerId !== conversation.projectId) throw new Error('原候选会话归属已变化');
+  const outputByMessageId = new Map(batch.outputs.map((output) => [output.messageId, output]));
+  return rows.filter((row): row is ChatMessageRecord => {
+    const output = row && outputByMessageId.get(row.id);
+    const artifact = row?.mediaResult as MediaGenerationResult | undefined;
+    return !!row && !!output && row.role === 'assistant' && row.conversationId === batch.origin.conversationId
+      && row.projectId === conversation.projectId && row.agentTaskId === batch.origin.agentTaskId
+      && artifact?.id === output.artifactId && artifact.sourceUrl === output.relativePath;
+  }).map(fromMessageRecord);
+}
+
+/** 只水化当前页中已经提交的原消息，缺失或已删除的消息不会补写。 */
+export async function loadNativeMediaMessageProjection(record: NativeMediaTaskRecord,
+  loadedIds?: ReadonlySet<string>): Promise<ChatMessage[] | undefined> {
+  const batch = nativeMediaMessageBatchBinding(record);
+  const db = await openDB();
+  const tx = db.transaction([STORE_CHAT_MESSAGES, STORE_CHAT_CONVERSATIONS, STORE_METADATA], 'readonly');
+  const receipt = await readProjectionRow(tx.objectStore(STORE_METADATA).get(batch.receiptId)) as NativeMessageProjectionReceipt | undefined;
+  if (!receipt) return undefined;
+  const [conversation, rows] = await Promise.all([
+    readProjectionRow(tx.objectStore(STORE_CHAT_CONVERSATIONS).get(batch.origin.conversationId)) as Promise<ChatConversationRecord | undefined>,
+    Promise.all(batch.outputs.filter((output) => !loadedIds || loadedIds.has(output.messageId)).map((output) =>
+      readProjectionRow(tx.objectStore(STORE_CHAT_MESSAGES).get(output.messageId)) as Promise<ChatMessageRecord | undefined>)),
+  ]);
+  return messagesFromNativeMediaProjection(batch, receipt, conversation, rows);
+}
+
+/** 一次追加所有候选并保存不可变投影收据；仅首次投影需要重新核对全部产物字节。 */
+export async function projectNativeMediaMessageBatch(record: NativeMediaTaskRecord,
+  canvasNodeIds: readonly (string | undefined)[], isCurrent: () => boolean): Promise<{ created: boolean; messages: ChatMessage[]; batchNote?: string }> {
+  const batch = nativeMediaMessageBatchBinding(record);
+  const { origin, files, outputs, binding, receiptId, belongsToProject } = batch;
   const { listNativeMediaTasks } = await import('../indexedDb/nativeMediaTaskRepository');
   const current = (await listNativeMediaTasks(record.ownerProjectId, { canvasId: record.canvasId, operationId: record.operationId })).find((row) => row.operationId === record.operationId);
   if (!current || !configValuesEqual(current, record)) throw new Error('原图片批次回执已变化，未投影消息');
-  // 既有APIMart收据不追加category字段，保留其不可变binding字节语义。
-  const files = record.apimartImageBatch ? nativeImageBatchResults(record) : nativeMediaLocalOutputs(record);
+  if (!files.length || files.length !== canvasNodeIds.length) throw new Error('图片候选集合不完整，未投影消息');
+  const committed = await loadNativeMediaMessageProjection(record);
+  if (!isCurrent()) throw new Error('原画布已切换，图片回执保留');
+  if (committed) return { created: false, messages: committed };
   const categories = nativeMediaLocalOutputs(record).map((file) => file.category);
   const summary = nativeImageBatchSummary(record);
   if (record.apimartImageBatch && !summary) throw new Error('原图片批次缺少完整统计，未投影消息');
@@ -317,44 +373,23 @@ export async function projectNativeMediaMessageBatch(record: NativeMediaTaskReco
     }
   }
   const outputLabel = record.apimartImageBatch ? '候选图片' : '媒体产物';
-  if (!files.length || files.length !== canvasNodeIds.length) throw new Error('图片候选集合不完整，未投影消息');
   const { readNativeMediaLocalResult } = await import('../nativeMediaLocalResult');
   for (const file of files) { await readNativeMediaLocalResult(record.canvasId, file); if (!isCurrent()) throw new Error('原画布已切换，图片回执保留'); }
-  const outputs = files.map((file, ordinal) => ({ ...file,
-    artifactId: `native-media-${record.operationId}${ordinal ? `-${ordinal}` : ''}`,
-    messageId: ordinal ? `media-output-native-media-${record.operationId}-${ordinal}` : origin.messageId,
-  }));
-  const binding = { operationId: record.operationId, ownerProjectId: record.ownerProjectId, canvasId: record.canvasId,
-    episodeId: record.episodeId, projectEpoch: record.projectEpoch, canvasEpoch: record.canvasEpoch,
-    origin, deliveryDigest: record.deliveryDigest, outputs };
-  const receiptId = `native-media-message-projection:${record.operationId}`;
-  const belongsToProject = (ownerId: string) => ownerId === record.ownerProjectId || ownerId === record.canvasId
-    || isRegisteredNativeConversationAlias(record.ownerProjectId, ownerId);
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction([STORE_CHAT_MESSAGES, STORE_CHAT_CONVERSATIONS, STORE_METADATA], 'readwrite', { durability: 'strict' });
     if (tx.durability !== 'strict') { tx.abort(); reject(new Error('图片消息需要耐久投影事务')); return; }
     const messages = tx.objectStore(STORE_CHAT_MESSAGES), conversations = tx.objectStore(STORE_CHAT_CONVERSATIONS), metadata = tx.objectStore(STORE_METADATA);
-    const read = <T>(request: IDBRequest<T>) => new Promise<T>((done, fail) => { request.onsuccess = () => done(request.result); request.onerror = () => fail(request.error); });
+    const read = readProjectionRow;
     let result: { created: boolean; messages: ChatMessage[]; batchNote?: string } | undefined, failure: unknown;
     const work = async () => {
       const [receipt, conversation, stored] = await Promise.all([
-        read(metadata.get(receiptId)) as Promise<{ binding?: unknown; state?: string; ownerId?: string } | undefined>,
+        read(metadata.get(receiptId)) as Promise<NativeMessageProjectionReceipt | undefined>,
         read(conversations.get(origin.conversationId)) as Promise<ChatConversationRecord | undefined>,
         Promise.all(outputs.map((output) => read(messages.get(output.messageId)) as Promise<ChatMessageRecord | undefined>)),
       ]);
       if (!isCurrent()) throw new Error('原画布已切换，图片回执保留');
-      const belongs = (row: ChatMessageRecord | undefined, ordinal: number) => !!row && row.id === outputs[ordinal].messageId
-        && row.conversationId === origin.conversationId && row.projectId === conversation?.projectId
-        && row.agentTaskId === origin.agentTaskId && (row.mediaResult as MediaGenerationResult | undefined)?.id === outputs[ordinal].artifactId;
-      if (receipt) {
-        if (!configValuesEqual(receipt.binding, binding) || !['committed', 'suppressed'].includes(receipt.state ?? '')) throw new Error('图片消息投影收据冲突');
-        if (!conversation || conversation.deletedAt || !belongsToProject(conversation.projectId)
-          || receipt.state === 'suppressed') return { created: false, messages: [] };
-        if (receipt.ownerId !== conversation.projectId) throw new Error('原候选会话归属已变化');
-        // 缺失记录表示用户删除；只水化仍存在的精确原消息，不补建。
-        return { created: false, messages: stored.filter((row, ordinal): row is ChatMessageRecord => belongs(row, ordinal)).map(fromMessageRecord) };
-      }
+      if (receipt) return { created: false, messages: messagesFromNativeMediaProjection(batch, receipt, conversation, stored) };
       const root = stored[0];
       if (!conversation || conversation.deletedAt || !root) {
         for (const output of outputs) metadata.add({ id: nativeMediaSlotKey(output.messageId), kind: 'native-media-message-slot-v1',

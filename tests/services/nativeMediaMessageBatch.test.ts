@@ -16,7 +16,7 @@ vi.mock('../../src/services/chat/teams/teamProfileService', () => ({ normalizeEx
 vi.mock('../../src/services/creationProfiles/creationProfileManifest', () => ({ restoreCreationProfileSelection: (value: unknown) => value }));
 vi.mock('../../src/services/chat/workbenchConversationScope', () => ({ normalizeConversationWorkbenchTarget: (value: unknown) => value }));
 import { getConversationMessages, putChatMessageWithSequence } from '../../src/services/indexedDbService';
-import { loadMessages, persistMessage, projectNativeMediaMessageBatch } from '../../src/services/chat/chatHistoryService';
+import { loadMessages, loadNativeMediaMessageProjection, persistMessage, projectNativeMediaMessageBatch } from '../../src/services/chat/chatHistoryService';
 
 const op = '11111111-1111-4111-8111-111111111111';
 const owner = 'p2-22222222-2222-4222-8222-222222222222', canvas = 'c2-33333333-3333-4333-8333-333333333333';
@@ -64,11 +64,15 @@ it('全部候选与收据同事务稳定追加，重试和删除后均不重复�
   const stored = await all('messages');
   expect(stored.map((row) => (row.mediaResult as { url: string }).url).sort()).toEqual(io.records[0].apimartImageBatch!.tasks[0].results!.map((file) => file.relativePath).sort());
   expect((await all('metadata'))[0]).toMatchObject({ id: receiptId, state: 'committed' });
+  expect(io.verify).toHaveBeenCalledTimes(2);
+  io.verify.mockRejectedValue(new Error('旧文件已缺失'));
+  expect((await loadNativeMediaMessageProjection(io.records[0], new Set([extraId])))?.map((row) => row.id)).toEqual([extraId]);
   expect((await projectNativeMediaMessageBatch(io.records[0], [undefined, undefined], () => true)).created).toBe(false);
   expect(await all('messages')).toHaveLength(2);
   await write('messages', undefined, extraId);
   expect((await projectNativeMediaMessageBatch(io.records[0], [undefined, undefined], () => true)).messages.map((row) => row.id)).toEqual(['original-message']);
   expect(await all('messages')).toHaveLength(1);
+  expect(io.verify).toHaveBeenCalledTimes(2);
 });
 it('原消息已删除时记抑制收据，之后出现同ID也不自动重建候选', async () => {
   await write('messages', undefined, 'original-message');
