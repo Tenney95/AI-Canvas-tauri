@@ -42,6 +42,7 @@ import { initComfyRuntimeHostSync } from './services/comfyRuntimeHostSync';
 import { invoke } from '@tauri-apps/api/core';
 import { prepareSettingsClose, resumeSettingsPersistence } from './services/configPersistenceQueue';
 import { applyNativePerformanceMode, registerPerformanceRestartHost } from './services/nativePerformanceModeService';
+import { prepareScriptWorkbenchAppClose } from './services/scriptWorkbenchAppClose';
 import { t, useT } from './i18n';
 import { applyAppearanceTheme, installSystemAppearanceListener, resolveAppearanceMode } from './services/appearance/appearanceRuntime';
 import { getBuiltinAppearanceTheme, normalizeAppearanceTheme } from './services/appearance/appearanceDefaults';
@@ -295,6 +296,7 @@ export default function App() {
     if (closeInProgress.current) throw new Error('窗口正在保存，请稍后重试');
     closeInProgress.current = true;
     try {
+      if (!await prepareScriptWorkbenchAppClose()) return;
       flushSync(() => setClosePhase('restarting'));
       // 先展示遮罩，避免保存期间继续编辑；不依赖可能被遮挡节流的 rAF。
       await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
@@ -326,6 +328,8 @@ export default function App() {
           if (closeInProgress.current) return;
           closeInProgress.current = true;
           try {
+            // 草稿确认可能需要主窗口或独立工作台交互，完成后再遮挡输入。
+            if (!await prepareScriptWorkbenchAppClose()) return;
             getCanvasViewportController()?.rememberViewport?.();
             flushSync(() => setClosePhase('saving'));
             // 给提示一次绘制机会；窗口隐藏时 rAF 可能暂停，用计时器兜底。

@@ -81,6 +81,8 @@ export interface ScriptWorkbenchSnapshot {
   sourceLocation?: StoryGraphEvidence & { sequence: number };
   theme?: 'dark' | 'light'; language?: AppConfig['language']; appearance: AppearanceUiSnapshot;
   detached: boolean; openingWindow: boolean;
+  /** 仅由主窗口发出，独立窗口以原会话回传最后一次输入。 */
+  appCloseRequestId?: string;
 }
 
 export type ScriptWorkbenchAction =
@@ -94,7 +96,7 @@ export type ScriptWorkbenchAction =
   | { type: 'reload_episode' }
   | { type: 'set_tab'; tab: WorkbenchEditorTab }
   | { type: 'save'; rebuildScriptFile?: true }
-  | { type: 'close' } | { type: 'dock' } | { type: 'detach' }
+  | { type: 'close'; appCloseRequestId?: string } | { type: 'dock' } | { type: 'detach' }
   | { type: 'cancel_pending' } | { type: 'discard_pending' } | { type: 'save_pending' }
   | { type: 'open_split' } | { type: 'close_split' }
   | { type: 'read_split_material'; part: SeriesSourcePart }

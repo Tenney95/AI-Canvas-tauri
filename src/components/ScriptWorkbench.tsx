@@ -72,7 +72,8 @@ import { readEpisodeWorkspaceScope } from '../services/episodeWorkspaceScope';
 import { createAppearanceUiSnapshot } from '../services/appearance/appearanceWindowSync';
 import { resolveAppearanceMode } from '../services/appearance/appearanceRuntime';
 import { getAppearanceForConfig } from '../services/appearance/appearanceMigration';
-import { createScriptWorkbenchWindowHost, type ScriptWorkbenchWindowHost } from '../services/scriptWorkbenchWindowService';
+import { createScriptWorkbenchWindowHost, focusScriptWorkbenchWindow, type ScriptWorkbenchWindowHost } from '../services/scriptWorkbenchWindowService';
+import { registerScriptWorkbenchAppClose } from '../services/scriptWorkbenchAppClose';
 import { captureProjectWindowContext, isProjectWindowContextCurrent } from '../services/projectWindowContext';
 import { loadProjectAgentTasks } from '../services/chat/agentTaskService';
 import { buildSeriesChapterPrompt, indexSeriesSplitMaterial, readSeriesChapter, readSeriesSource } from '../services/seriesSourceService';
@@ -98,6 +99,13 @@ type EditorTab = WorkbenchEditorTab;
 type PendingAction = WorkbenchPendingAction;
 type WorkbenchPresentation = 'modal' | 'page';
 type CreativeDraft = WorkbenchCreativeDraft;
+type CloseDestination = 'canvas' | 'start' | 'app';
+interface WorkbenchAppCloseRequest {
+  id: string;
+  resolve: (allowed: boolean) => void;
+  timer?: ReturnType<typeof setTimeout>;
+  replyId?: string;
+}
 
 // 非持久化恢复副本：宿主因切项目卸载时不把未确认丢弃的稿件当作已经放弃。
 const workbenchDraftCache = new Map<string, { drafts: Record<string, WorkbenchDraft>; baselines: Record<string, string> }>();
@@ -394,8 +402,17 @@ export default function ScriptWorkbench({
   const [openingWindow, setOpeningWindow] = useState(false);
   const [closingWorkbench, setClosingWorkbench] = useState(false);
   const windowHost = useRef<ScriptWorkbenchWindowHost | null>(null);
-  const afterReply = useRef<'close' | 'dock' | null>(null);
-  const pendingCloseDestination = useRef<'canvas' | 'start'>('canvas');
+  const afterReply = useRef<'close' | 'dock' | 'app-close' | null>(null);
+  const pendingCloseDestination = useRef<CloseDestination>('canvas');
+  const appCloseRequest = useRef<WorkbenchAppCloseRequest | null>(null);
+  const prepareAppCloseRef = useRef<() => Promise<boolean>>(async () => false);
+  const settleAppClose = useCallback((allowed: boolean) => {
+    const pending = appCloseRequest.current;
+    appCloseRequest.current = null;
+    if (pending?.timer !== undefined) clearTimeout(pending.timer);
+    if (!allowed && afterReply.current === 'app-close') afterReply.current = null;
+    pending?.resolve(allowed);
+  }, []);
   const acceptedEditSequenceRef = useRef(0);
   const [acceptedEditSequence, setAcceptedEditSequence] = useState(0);
   const workspaceReady = !!series && !!currentProjectId && seriesOwnerId(projects, currentProjectId) === seriesId
@@ -566,7 +583,7 @@ export default function ScriptWorkbench({
     setDraftsByEpisode(next);
   }, [seriesId, setDraftVersionByEpisode, setDraftsByEpisode]);
 
-  const onClose = (destination: 'canvas' | 'start' = 'canvas') => {
+  const onClose = (destination: CloseDestination = 'canvas') => {
     if (outlineDocuments?.isDirty() || outlineDocuments?.isBusy()) {
       setActiveTab('outline');
       showToast(t('请先保存大纲文件或处理未保存修改，再离开工作台'), 'error');
@@ -585,6 +602,11 @@ export default function ScriptWorkbench({
     }
     if (destination === 'start') {
       void useAppStore.getState().returnToStartPage();
+      return;
+    }
+    if (destination === 'app') {
+      if (detached) afterReply.current = 'app-close';
+      else settleAppClose(true);
       return;
     }
     if (detached) afterReply.current = 'close';
@@ -698,26 +720,34 @@ export default function ScriptWorkbench({
     setSelectedEpisodeId(action.episodeId);
   };
 
-  const requestClose = (destination: 'canvas' | 'start' = 'canvas') => {
-    if (savingEpisodeRef.current || editorWriteLocked) return false;
+  const requestClose = (destination: CloseDestination = 'canvas') => {
+    if (pendingCloseDestination.current === 'app' && appCloseRequest.current) destination = 'app';
+    const blocked = () => {
+      if (destination === 'app') settleAppClose(false);
+      return false;
+    };
+    if (savingEpisodeRef.current || editorWriteLocked) {
+      if (destination === 'app') showToast(t('请等待工作台保存完成后再关闭应用'), 'error');
+      return blocked();
+    }
     if (outlineDocuments?.isBusy()) {
       setActiveTab('outline');
       showToast(t('请等待大纲文件操作完成后再离开工作台'), 'error');
-      return false;
+      return blocked();
     }
     if (originalWriting?.isBusy()) {
       setActiveTab('original');
       showToast(t('请先等待原文保存完成，或停止生成，再关闭工作台'), 'error');
-      return false;
+      return blocked();
     }
     if (graphEditorLease.current || graphWritesInFlight.current > 0) {
       showToast(t('请先保存或关闭关系图详情，再离开工作台'), 'error');
-      setActiveTab('story-graph'); return false;
+      setActiveTab('story-graph'); return blocked();
     }
     if (graphController.current || graphCandidate.current) {
       showToast(t('请先取消关系图提取，或采纳、丢弃候选后关闭工作台'), 'error');
       setActiveTab('story-graph');
-      return false;
+      return blocked();
     }
     if (currentDirty() || originalWriting?.isDirty() || outlineDocuments?.isDirty()) {
       const original = originalWriting?.summary();
@@ -731,6 +761,32 @@ export default function ScriptWorkbench({
       onClose(destination);
       return true;
     }
+  };
+
+  const prepareAppClose = async (): Promise<boolean> => {
+    if (openingWindow || closingWorkbench || appCloseRequest.current) {
+      showToast(t('请等待工作台窗口操作完成后再关闭应用'), 'error');
+      return false;
+    }
+    return new Promise<boolean>((resolve) => {
+      const pending: WorkbenchAppCloseRequest = { id: crypto.randomUUID(), resolve };
+      appCloseRequest.current = pending;
+      if (!detached) {
+        requestClose('app');
+        if (appCloseRequest.current === pending && presentation === 'page' && !visible) onPageVisibilityChange?.(true);
+        return;
+      }
+      const host = windowHost.current;
+      if (!host) { settleAppClose(false); return; }
+      const unavailable = () => {
+        if (appCloseRequest.current !== pending || pending.timer === undefined) return;
+        showToast(t('独立工作台未确认，已保留草稿，请处理后再关闭应用'), 'error');
+        settleAppClose(false);
+      };
+      // 只限制窗口握手，不限制用户确认及实际写盘的时间。
+      pending.timer = setTimeout(unavailable, 10_000);
+      void focusScriptWorkbenchWindow().then(() => host.publish()).catch(unavailable);
+    });
   };
 
   const requestEpisodeSwitch = (episodeId: string) => {
@@ -1365,7 +1421,14 @@ export default function ScriptWorkbench({
         if (rebuildScriptFile) showToast(t('已用本集正文重建 TXT'));
         return true;
       }
-      case 'close': return requestClose();
+      case 'close': {
+        if (action.appCloseRequestId === undefined) return requestClose();
+        const pending = appCloseRequest.current;
+        if (!request || !pending || pending.id !== action.appCloseRequestId || pending.timer === undefined) return false;
+        clearTimeout(pending.timer); pending.timer = undefined;
+        pending.replyId = request.requestId;
+        return requestClose('app');
+      }
       case 'dock':
         articleAssistant.cancel();
         if (outlineDocuments?.isBusy()) throw new Error(t('请等待大纲文件操作完成后再切换窗口'));
@@ -1386,19 +1449,35 @@ export default function ScriptWorkbench({
         }
         finally { setOpeningWindow(false); }
       }
-      case 'cancel_pending': pendingCloseDestination.current = 'canvas'; setPendingAction(null); return true;
-      case 'discard_pending': if (pendingAction) performPendingAction(pendingAction); return true;
+      case 'cancel_pending':
+        if (pendingCloseDestination.current === 'app') settleAppClose(false);
+        pendingCloseDestination.current = 'canvas'; setPendingAction(null); return true;
+      case 'discard_pending':
+        if (pendingAction) {
+          if (appCloseRequest.current) appCloseRequest.current.replyId = request?.requestId;
+          performPendingAction(pendingAction);
+        }
+        return true;
       case 'save_pending': {
         if (!pendingAction) return false;
+        const appRequest = pendingCloseDestination.current === 'app' ? appCloseRequest.current : null;
+        const appCloseCancelled = () => !!appRequest && appCloseRequest.current !== appRequest;
         if (pendingAction.type === 'close' && outlineDocuments?.isDirty()) {
           await outlineDocuments.handle({ type: 'outline_save' });
+          if (appCloseCancelled()) return false;
           if (outlineDocuments.isDirty()) throw new Error(t('大纲文件保存期间有新修改，草稿已保留，请重新保存'));
         }
         if (pendingAction.type === 'close' && originalWriting?.isDirty()) {
           await originalWriting.handle({ type: 'original_save' });
+          if (appCloseCancelled()) return false;
           if (originalWriting.isDirty()) throw new Error(t('原文保存期间有新修改，草稿已保留，请重新保存'));
         }
         if (currentDirty() && !await saveDraft()) throw new Error(t('当前草稿尚未全部保存，请核对后重试'));
+        if (appCloseCancelled()) return false;
+        if (pendingCloseDestination.current === 'app' && (outlineDocuments?.isDirty() || originalWriting?.isDirty() || currentDirty())) {
+          throw new Error(t('文档在确认期间有新修改，请核对当前草稿后重试'));
+        }
+        if (appCloseRequest.current) appCloseRequest.current.replyId = request?.requestId;
         performPendingAction(pendingAction); return true;
       }
       case 'open_split': setSplitOpen(true); return true;
@@ -1701,17 +1780,38 @@ export default function ScriptWorkbench({
     onDetachedChangeRef.current = onDetachedChange;
     actionRef.current = handleAction;
     requestRef.current = (request) => handleAction(request.action, request);
+    prepareAppCloseRef.current = prepareAppClose;
   });
   useEffect(() => {
-    const host = createScriptWorkbenchWindowHost({ sessionId, getSnapshot: () => snapshotRef.current,
+    if (!isOpen) return;
+    const unregister = registerScriptWorkbenchAppClose(() => prepareAppCloseRef.current());
+    return () => { unregister(); settleAppClose(false); };
+  }, [isOpen, settleAppClose]);
+  useEffect(() => {
+    const host = createScriptWorkbenchWindowHost({ sessionId, getSnapshot: () => {
+      const pending = appCloseRequest.current;
+      return pending?.timer === undefined ? snapshotRef.current : { ...snapshotRef.current, appCloseRequestId: pending.id };
+    },
       getContext: () => captureProjectWindowContext(useAppStore.getState(), selectedEpisodeRef.current),
       onRequest: (request) => requestRef.current(request), onDetachedChange: (next) => {
         setDetached(next);
         onDetachedChangeRef.current?.(next);
+        if (!next && afterReply.current !== 'app-close') settleAppClose(false);
       },
-      onReplySent: () => {
+      onReplySent: (request) => {
         const action = afterReply.current;
         if (!action) return;
+        if (action === 'app-close') {
+          const pending = appCloseRequest.current;
+          if (!pending || pending.replyId !== request.requestId) return;
+          pending.replyId = undefined;
+          setClosingWorkbench(true);
+          void host.close().then(() => { settleAppClose(true); onCloseRequestRef.current(); }).catch(() => {
+            setClosingWorkbench(false);
+            settleAppClose(false);
+          }).finally(() => { afterReply.current = null; });
+          return;
+        }
         afterReply.current = null;
         if (action === 'close') setClosingWorkbench(true);
         void host.close().catch(() => {}).finally(() => {
@@ -1722,7 +1822,7 @@ export default function ScriptWorkbench({
     });
     windowHost.current = host;
     return () => { windowHost.current = null; host.dispose(); };
-  }, [sessionId]);
+  }, [sessionId, settleAppClose]);
   useEffect(() => { void windowHost.current?.publish().catch(() => {}); });
   useEffect(() => {
     if (presentation !== 'page' || !visible || !isOpen || detached || closingWorkbench) return;
@@ -1791,10 +1891,10 @@ function WorkbenchRenameDialog({ name, onClose, onSave }: { name: string; onClos
 }
 
 /** 两种展示共用的纯视图；所有保存、模型与资产能力均通过主窗口 dispatch。 */
-export function ScriptWorkbenchView({ snapshot, dispatch: dispatchAction, standalone = false, presentation = 'modal', visible = true,
+export function ScriptWorkbenchView({ snapshot, dispatch: dispatchAction, standalone = false, presentation = 'modal', visible = true, closingWindow = false,
   onSwitchToCanvas, onBackToStartPage, onReturnToProject, returningToProject = false, externalError = '', onDismissError }: {
   snapshot: ScriptWorkbenchSnapshot; dispatch: ScriptWorkbenchDispatch; standalone?: boolean;
-  presentation?: WorkbenchPresentation; visible?: boolean; onSwitchToCanvas?: () => void;
+  presentation?: WorkbenchPresentation; visible?: boolean; closingWindow?: boolean; onSwitchToCanvas?: () => void;
   onBackToStartPage?: () => void;
   onReturnToProject?: () => Promise<boolean>; returningToProject?: boolean;
   externalError?: string; onDismissError?: () => void;
@@ -2147,7 +2247,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch: dispatchAction, standa
                 <div className={`h-full ${activeTab !== 'outline' && activeTab !== 'original' && activeTab !== 'script' ? 'overflow-auto script-workbench-article-text' : 'script-workbench-article-viewport overflow-hidden'}`}>
                   {snapshot.outlineDocuments && <section className={activeTab === 'outline' ? 'h-full min-h-0 min-w-0 overflow-hidden' : 'hidden'} aria-label={t('大纲文件')}>
                     <OutlineFilesPanel key={snapshot.articleRevision?.outlineDocument ?? 0}
-                      summary={snapshot.outlineDocuments} dispatch={dispatch} ready={contextReady && !articleApplying} fileListVisible={filesVisible}
+                      summary={snapshot.outlineDocuments} dispatch={dispatch} ready={contextReady && !articleApplying && !closingWindow} fileListVisible={filesVisible}
                       onArticleContainer={setOutlineArticleContainer}
                       active={activeTab === 'outline' && visible}>
                       <textarea ref={activeTab === 'outline' ? sourceEditorRef : undefined} value={draft.outline} readOnly={editorWriteLocked || !contextReady}
@@ -2158,7 +2258,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch: dispatchAction, standa
                   </section>}
                   {snapshot.originalWriting && <section className={activeTab === 'original' ? 'h-full min-h-0 min-w-0 overflow-hidden' : 'hidden'} aria-label={t('原文')}>
                     <OriginalWritingEditor key={snapshot.articleRevision?.original ?? 0}
-                      summary={snapshot.originalWriting} dispatch={dispatch} ready={contextReady && !articleApplying} active={activeTab === 'original'} toolsContainer={originalToolsContainer}
+                      summary={snapshot.originalWriting} dispatch={dispatch} ready={contextReady && !articleApplying && !closingWindow} active={activeTab === 'original'} toolsContainer={originalToolsContainer}
                       onArticleContainer={setOriginalArticleContainer} />
                   </section>}
                   {activeTab === 'story-graph' && snapshot.storyGraphView ? (
@@ -2324,7 +2424,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch: dispatchAction, standa
               </>
             ) : (
               snapshot.outlineDocuments ? <OutlineFilesPanel key={snapshot.articleRevision?.outlineDocument ?? 0}
-                summary={snapshot.outlineDocuments} dispatch={dispatch} ready={contextReady && !articleApplying} active={visible} fileListVisible={filesVisible}
+                summary={snapshot.outlineDocuments} dispatch={dispatch} ready={contextReady && !articleApplying && !closingWindow} active={visible} fileListVisible={filesVisible}
                 onArticleContainer={setOutlineArticleContainer}>
                 <div className="script-workbench-article-text grid min-h-80 flex-1 place-items-center p-3 text-center">
                   <p className="text-xs text-canvas-text-muted">{t('还没有分集，可以先新建大纲文件，或生成拆分草案。')}</p>

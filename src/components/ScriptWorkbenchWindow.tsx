@@ -28,6 +28,7 @@ export default function ScriptWorkbenchWindow() {
   const [closing, setClosing] = useState(false);
   const [error, setError] = useState('');
   const hasSnapshot = snapshot !== null;
+  const handledAppClose = useRef<string | undefined>(undefined);
 
   const dispatch = useCallback<ScriptWorkbenchDispatch>(async (action) => {
     const current = snapshotRef.current;
@@ -89,6 +90,14 @@ export default function ScriptWorkbenchWindow() {
     }
   }, []);
 
+  const handleHostClose = useCallback((requestId: string | undefined) => {
+    if (!requestId || requestId === handledAppClose.current || !connection.current) return;
+    handledAppClose.current = requestId;
+    // 与独立窗口点关闭共用同一个动作，最后输入等待主窗口确认。
+    void dispatch({ type: 'close', appCloseRequestId: requestId })
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : '关闭工作台失败'));
+  }, [dispatch]);
+
   useEffect(() => {
     let disposed = false;
     const params = new URLSearchParams(window.location.search);
@@ -113,6 +122,7 @@ export default function ScriptWorkbenchWindow() {
     }, windowSessionId).then((bridge) => {
       if (disposed) { bridge.dispose(); return; }
       connection.current = bridge;
+      handleHostClose(snapshotRef.current?.appCloseRequestId);
     }).catch(() => { if (!disposed) setError('无法连接主窗口，已保留原工作台，请回到主窗口重试'); });
     const beforeUnload = () => {
       const current = snapshotRef.current;
@@ -127,7 +137,11 @@ export default function ScriptWorkbenchWindow() {
       disposed = true; window.removeEventListener('beforeunload', beforeUnload);
       connection.current?.dispose(); connection.current = null;
     };
-  }, [dispatch]);
+  }, [handleHostClose]);
+
+  useEffect(() => {
+    handleHostClose(snapshot?.appCloseRequestId);
+  }, [handleHostClose, snapshot?.appCloseRequestId]);
 
   useEffect(() => {
     // 首帧到达前没有可编辑稿件，让系统直接关闭，不等待可能已离线的宿主。
@@ -161,7 +175,7 @@ export default function ScriptWorkbenchWindow() {
     {error || t('正在连接主窗口…')}
   </div>;
   const local = optimisticDraft?.episodeId === snapshot.currentEpisode?.id ? optimisticDraft : undefined;
-  return <ScriptWorkbenchView standalone snapshot={{ ...snapshot, detached: true,
+  return <ScriptWorkbenchView standalone closingWindow={closing} snapshot={{ ...snapshot, detached: true,
     draft: local?.draft ?? snapshot.draft, isDirty: local ? true : snapshot.isDirty,
     editorWriteLocked: snapshot.editorWriteLocked || closing }} dispatch={dispatch}
     externalError={error} onDismissError={() => setError('')} />;

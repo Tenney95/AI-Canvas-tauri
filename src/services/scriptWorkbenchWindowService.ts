@@ -48,7 +48,7 @@ export function createScriptWorkbenchWindowHost(options: {
   getContext?: () => ProjectWindowContext | null;
   onRequest: (request: ScriptWorkbenchRequest) => Promise<unknown>;
   onDetachedChange: (detached: boolean) => void;
-  onReplySent?: () => void;
+  onReplySent?: (request: ScriptWorkbenchRequest) => void;
 }): ScriptWorkbenchWindowHost {
   let disposed = false;
   let lifecycleGeneration = 0;
@@ -212,7 +212,7 @@ export function createScriptWorkbenchWindowHost(options: {
         // 读取可重读，编辑已由单调序号防重；付费和写入请求身份保留至本窗口会话结束。
         if (['flush_draft', 'read_source', 'read_split_material', 'team_artifact', 'preview_creation_profile', 'refresh_external_agents',
           'story_graph_detail', 'story_graph_resolve_evidence', 'story_graph_filter', 'story_graph_locate'].includes(payload.action.type)) requests.delete(payload.requestId);
-        options.onReplySent?.();
+        options.onReplySent?.(payload);
       }).catch(() => {});
       })().catch(() => {});
     }));

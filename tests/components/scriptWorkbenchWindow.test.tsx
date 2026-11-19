@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import type { ScriptWorkbenchSnapshot } from '../../src/types/scriptWorkbench';
+import type { ScriptWorkbenchDispatch, ScriptWorkbenchSnapshot } from '../../src/types/scriptWorkbench';
 
 const driver = vi.hoisted(() => ({
   receive: undefined as ((snapshot: ScriptWorkbenchSnapshot) => void) | undefined,
@@ -77,4 +77,32 @@ it('首帧到达后恢复关闭握手，不直接丢弃已载入的草稿', asyn
   await settle();
   expect(preventDefault).toHaveBeenCalledTimes(1);
   expect(driver.request).toHaveBeenCalledWith(expect.objectContaining({ episodeId: 'episode', action: { type: 'close' } }));
+});
+
+it('应用退出用当前窗口会话交接最后一次编辑，同一请求只处理一次，等待确认后恢复交互', async () => {
+  render(); await settle();
+  const snapshot = { sessionId: 'session-close-test', revision: 1, acceptedEditSequence: 0,
+    currentEpisode: { id: 'episode' }, pendingAction: null, contextReady: true,
+    windowContext: { schemaVersion: 2, canvas: null, target: { schemaVersion: 2, kind: 'episode', modelGeneration: 1,
+      projectId: 'project', projectEpoch: 1, episodeId: 'episode', episodeRevision: 0 } },
+    draft: { outline: '旧稿', script: '', creative: {} } } as ScriptWorkbenchSnapshot;
+  driver.receive!(snapshot);
+  const dispatch = render().props.dispatch as ScriptWorkbenchDispatch;
+  await dispatch({ type: 'edit_text', field: 'outline', value: '最后一次编辑' });
+
+  let answer!: (value: boolean) => void;
+  driver.request.mockImplementationOnce(() => new Promise<boolean>((resolve) => { answer = resolve; }));
+  driver.receive!({ ...snapshot, revision: 2, appCloseRequestId: 'app-close-1' });
+  render();
+  expect(render().props.closingWindow).toBe(true);
+  expect(driver.request).toHaveBeenLastCalledWith(expect.objectContaining({ revision: 2, episodeId: 'episode',
+    action: { type: 'close', appCloseRequestId: 'app-close-1' },
+    handoff: expect.objectContaining({ episodeId: 'episode', sequence: 1, draft: { ...snapshot.draft, outline: '最后一次编辑' } }),
+  }));
+
+  answer(false);
+  await settle();
+  driver.receive!({ ...snapshot, revision: 3, appCloseRequestId: 'app-close-1', pendingAction: { type: 'close' } });
+  expect(render().props.closingWindow).toBe(false);
+  expect(driver.request).toHaveBeenCalledTimes(2);
 });
