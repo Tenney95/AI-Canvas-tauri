@@ -12,7 +12,7 @@ import { listProjectCatalog } from './projectModelRouter';
 import { GENERAL_ASSISTANT_SCOPE_ID } from './chat/assistantScope';
 import { readNativeProjectCapture, listNativeRetiredCanvasIds, type NativeProjectAggregate } from './indexedDb/nativeProjectRepository';
 import { listProjectImportRecoveries } from './indexedDb/projectImportRepository';
-import { projectNativeCatalogEntry, type NativeProjectViewItem } from '../store/nativeProjectView';
+import { matchesNativeProjectCatalogBinding, projectNativeCatalogEntry, type NativeProjectViewItem } from '../store/nativeProjectView';
 import {
   getProjectById, getAllGlobalCharacters, getAllGlobalDramaAssets,
   getHistoryEntriesPage, getProjectConversations, getTrashConversations, getConversationMessages,
@@ -179,8 +179,8 @@ export async function loadAssetUsage(target: AssetUsageProbe | readonly AssetUsa
   const nativeViews = nativeCatalog.flatMap(projectNativeCatalogEntry);
   const nativeById = new Map(nativeViews.map((project) => [project.id, project]));
   for (const project of initial.projects) {
-    const binding = (project as NativeProjectViewItem).nativeView, catalogView = nativeById.get(project.id);
-    if (binding ? !catalogView || !configValuesEqual(binding, catalogView.nativeView) : !!catalogView) {
+    const binding = (project as Partial<NativeProjectViewItem>).nativeView, catalogBinding = nativeById.get(project.id)?.nativeView;
+    if (!matchesNativeProjectCatalogBinding(binding, catalogBinding)) {
       throw new Error(t('项目引用读取不完整，请重试'));
     }
   }

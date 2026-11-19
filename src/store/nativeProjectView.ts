@@ -20,6 +20,13 @@ export interface NativeProjectViewBinding {
 
 export type NativeProjectViewItem = CanvasProject & { nativeView: NativeProjectViewBinding };
 
+/** 目录只含成员关系与分集元数据版本，正文版本在独立读取时核对。 */
+export function matchesNativeProjectCatalogBinding(view: NativeProjectViewBinding | undefined, catalog: NativeProjectViewBinding | undefined): boolean {
+  if (!view || !catalog) return view === catalog;
+  return view.projectId === catalog.projectId && view.episodeId === catalog.episodeId
+    && view.canvasId === catalog.canvasId && view.orderRank === catalog.orderRank && view.episodeRevision === catalog.episodeRevision;
+}
+
 export function needsNativeEpisodeContent(project: CanvasProject | null | undefined): boolean {
   const binding = (project as NativeProjectViewItem | undefined)?.nativeView;
   return !!binding?.episodeId && binding.episodeContentRevision === undefined;

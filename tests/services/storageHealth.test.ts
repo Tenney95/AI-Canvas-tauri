@@ -4,7 +4,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
 import type { CanvasProject } from '../../src/types';
-import type { CanvasDocument, ProjectRecord } from '../../src/types/project';
+import type { CanvasDocument, EpisodeRecord, ProjectRecord } from '../../src/types/project';
 import type { NativeProjectAggregate } from '../../src/services/indexedDb/nativeProjectRepository';
 import type { ProjectCatalogEntry } from '../../src/services/projectModelRouter';
 import type { NativeProjectViewItem } from '../../src/store/nativeProjectView';
@@ -487,6 +487,31 @@ describe('storage health accounting and cleanup', () => {
     mocks.readNativeProjectCapture.mockResolvedValue({ aggregate: { ...native.aggregate, canvases: [] }, changeRevision: 0, exchange: null, includesHistory: false });
     await expect(scanStorageHealth([native.view], new Set())).rejects.toThrow('存储引用读取不完整');
     expect(mocks.getProjectById).not.toHaveBeenCalled();
+  });
+
+  it('已打开的分集允许核对存储，仍保留本机权威画布和正文引用的文件', async () => {
+    const native = nativeProject();
+    const owner: ProjectRecord = { ...native.aggregate.project, kind: 'series' };
+    const episode: EpisodeRecord = { id: 'e2-55555555-5555-4555-8555-555555555555', projectId: owner.id,
+      canvasId: native.canvasId, orderRank: 0, name: '第一集', createdAt: 1, updatedAt: 1,
+      epoch: 1, revision: 1, settingsPolicy: { mode: 'inherit', overrides: {} } };
+    const canvas: CanvasDocument = { ...native.aggregate.canvas!, episodeId: episode.id,
+      nodes: [{ data: { relativePath: 'used.png' } }] };
+    const aggregate: NativeProjectAggregate = { ...native.aggregate, project: owner, canvas, canvases: [canvas], episodes: [episode],
+      episodeContents: [{ episodeId: episode.id, storageRootRef: native.primary, revision: 4,
+        scriptFile: { fileName: 'script.txt', relativePath: 'script.txt' } }] };
+    mocks.listProjectCatalog.mockResolvedValue([{ dataModel: 'native', project: owner, episodes: [episode], episodeIds: [episode.id], canvasIds: [canvas.id] }]);
+    mocks.readNativeProjectCapture.mockResolvedValue({ aggregate, changeRevision: 10, exchange: null, includesHistory: false });
+    addFiles('/native', { 'used.png': 10, 'unused.png': 20, 'script.txt': 30 });
+    addFiles(native.secondaryPath, {});
+    const view: NativeProjectViewItem = { ...native.view, parentId: owner.id, nativeView: { ...native.view.nativeView,
+      episodeId: episode.id, orderRank: episode.orderRank, episodeRevision: episode.revision, episodeContentRevision: 4 } };
+
+    const report = await scanStorageHealth([view], new Set());
+    expect(report.complete).toBe(true);
+    expect(report.orphans.map((file) => file.path)).toEqual(['/native/unused.png']);
+    expect(await verifyStorageCleanupFile([view], new Set(), { path: '/native/used.png', name: 'used.png', size: 10 })).toBe(false);
+    expect(mocks.remove).not.toHaveBeenCalled();
   });
 
   it('迁移冻结或模型切换时，不扫描为可清理结果，也不删除孤儿文件或回收站', async () => {

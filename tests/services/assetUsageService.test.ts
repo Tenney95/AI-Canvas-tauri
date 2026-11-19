@@ -147,6 +147,27 @@ describe('asset usage identity matching', () => {
     expect(io.project).not.toHaveBeenCalledWith(canvas.id);
     expect(io.project).not.toHaveBeenCalledWith(root.id);
   });
+  it('已打开分集的正文版本不阻断引用查询，实际元数据版本冲突仍拒绝', async () => {
+    const root = { id: 'native-series', name: '新剧集', kind: 'series', createdAt: 1, updatedAt: 2, epoch: 1,
+      dataFolder: 'folder', storageRootRef: 'root', storageBindings: [{ rootRef: 'root' }] };
+    const episode = { id: 'episode', projectId: root.id, canvasId: 'native-canvas', name: '第一集',
+      orderRank: 0, revision: 2, createdAt: 1, updatedAt: 2, epoch: 1, settingsPolicy: { mode: 'inherit', overrides: {} } };
+    const nodes = [{ id: 'used', data: { relativePath: 'media.png', label: '分集引用的图' } }];
+    const canvas = { id: episode.canvasId, projectId: root.id, episodeId: episode.id, storageRootRef: root.storageRootRef, nodes, edges: [], groups: [] };
+    const binding = { projectId: root.id, episodeId: episode.id, canvasId: canvas.id, orderRank: 0, episodeRevision: 2, episodeContentRevision: 4 };
+    const view = { id: canvas.id, parentId: root.id, name: episode.name, nativeView: binding };
+    io.projects.mockResolvedValue([]);
+    io.nativeCatalog = [{ dataModel: 'native', project: root, episodes: [episode], episodeIds: [episode.id], canvasIds: [canvas.id] }];
+    io.nativeCapture.mockResolvedValue({ changeRevision: 10, aggregate: { project: root, content: { projectId: root.id },
+      episodes: [episode], episodeContents: [{ episodeId: episode.id, storageRootRef: root.storageRootRef, revision: 4 }], canvases: [canvas] } });
+    Object.assign(io.state.value, { currentProjectId: canvas.id, projects: [view], nodes });
+    const target = { kind: 'file' as const, path: '/data/native-series/media.png', name: '媒体' };
+
+    const report = await loadAssetUsage(target);
+    expect(report.locations).toContainEqual(expect.objectContaining({ kind: 'node', projectId: canvas.id, nodeId: 'used', live: true }));
+    io.state.value.projects = [{ ...view, nativeView: { ...binding, episodeRevision: 1 } }];
+    await expect(loadAssetUsage(target)).rejects.toThrow('读取不完整');
+  });
   it('新项目聚合读取失败或扫描期间发生变化时不生成可用于删除的报告', async () => {
     const root = { id: 'native-root', name: '新项目', kind: 'standalone', createdAt: 1, updatedAt: 2, epoch: 1,
       dataFolder: 'folder', storageRootRef: 'root', storageBindings: [{ rootRef: 'root' }] };

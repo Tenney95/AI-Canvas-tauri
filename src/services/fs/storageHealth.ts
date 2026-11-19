@@ -596,14 +596,14 @@ async function readStorageReferences(
     const catalog = await listProjectCatalog(); checkAbort(signal);
     nativeScopes = await readNativeStorageScopes(catalog, signal);
     if (nativeScopes.length) nativeSnapshot = await readNativeStorageSnapshot({ signal });
-    const nativeViews = new Map<string, NativeProjectViewItem>();
-    if (nativeScopes.length) {
-      const { projectNativeCatalogEntry } = await import('../../store/nativeProjectView');
-      for (const scope of nativeScopes) for (const view of projectNativeCatalogEntry(scope.entry)) nativeViews.set(view.id, view);
-    }
-    for (const project of projects) {
-      const binding = (project as Partial<NativeProjectViewItem>).nativeView, native = nativeViews.get(project.id);
-      if (binding ? !native || !configValuesEqual(binding, native.nativeView) : !!native) throw new Error('项目目录身份已变化');
+    if (nativeScopes.length || projects.some((project) => (project as Partial<NativeProjectViewItem>).nativeView)) {
+      const { matchesNativeProjectCatalogBinding, projectNativeCatalogEntry } = await import('../../store/nativeProjectView');
+      const nativeViews = new Map<string, NativeProjectViewItem['nativeView']>();
+      for (const scope of nativeScopes) for (const view of projectNativeCatalogEntry(scope.entry)) nativeViews.set(view.id, view.nativeView);
+      for (const project of projects) {
+        const binding = (project as Partial<NativeProjectViewItem>).nativeView;
+        if (!matchesNativeProjectCatalogBinding(binding, nativeViews.get(project.id))) throw new Error('项目目录身份已变化');
+      }
     }
     const allProjects = new Map(projects.filter((project) => !(project as Partial<NativeProjectViewItem>).nativeView).map((project) => [project.id, project]));
     for (const entry of catalog) if (entry.dataModel === 'legacy') allProjects.set(entry.project.id, entry.project);
