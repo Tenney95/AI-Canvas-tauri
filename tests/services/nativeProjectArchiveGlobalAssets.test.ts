@@ -1,5 +1,6 @@
 import { webcrypto } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { save } from '@tauri-apps/plugin-dialog';
 import type { ProjectModelTransferCapture } from '../../src/types/projectModelTransfer';
 import type { NativeMediaTaskRecord } from '../../src/services/indexedDb/nativeMediaTaskRepository';
 
@@ -13,10 +14,11 @@ vi.mock('../../src/services/indexedDbService', async (original) => ({
 vi.mock('../../src/services/fs/assetLibrary', () => ({ getGlobalFilesDir: vi.fn(async () => 'C:/global') }));
 vi.mock('../../src/services/fs/assetIndex', () => ({ getRelativeAssetPath: (path: string, root: string) => path.startsWith(root + '/') ? path.slice(root.length + 1) : undefined }));
 vi.mock('../../src/services/projectModelArchiveNativePort', () => ({ createBoundProjectModelArchiveExportPort: vi.fn() }));
-vi.mock('../../src/services/indexedDb/nativeProjectRepository', () => ({ advanceNativeProjectExport: vi.fn(), prepareNativeProjectExport: vi.fn(),
+vi.mock('../../src/services/indexedDb/nativeProjectRepository', () => ({ abandonNativeProjectExport: vi.fn(), advanceNativeProjectExport: vi.fn(), prepareNativeProjectExport: vi.fn(),
   readNativeProjectCapture: vi.fn(), readNativeProjectExport: vi.fn(), listNativeRetiredCanvasIds: vi.fn() }));
 
-import { materializeNativeArchiveGlobalAssets, nativeMediaResultsForArchive,
+import { prepareNativeProjectExport, readNativeProjectCapture } from '../../src/services/indexedDb/nativeProjectRepository';
+import { exportNativeProjectArchive, materializeNativeArchiveGlobalAssets, nativeMediaResultsForArchive,
   type NativeArchiveCopySource, type NativeGlobalRecoveryFile } from '../../src/services/nativeProjectArchiveService';
 
 const hash = 'a'.repeat(64);
@@ -38,6 +40,19 @@ beforeEach(() => {
   });
 });
 afterEach(() => { vi.unstubAllGlobals(); });
+
+it('导出目标已有同名文件时在捕获素材和登记前提示换名', async () => {
+  vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+  type Capture = NonNullable<Awaited<ReturnType<typeof readNativeProjectCapture>>>;
+  vi.mocked(readNativeProjectCapture).mockResolvedValueOnce({ aggregate: { project: { name: '已有作品' } } } as Capture);
+  vi.mocked(save).mockResolvedValueOnce('C:/output/已有作品.aicanvas');
+  io.exists.mockResolvedValueOnce(true);
+
+  await expect(exportNativeProjectArchive('p2-11111111-1111-4111-8111-111111111111')).rejects.toThrow('请换一个文件名');
+  expect(readNativeProjectCapture).toHaveBeenCalledTimes(1);
+  expect(prepareNativeProjectExport).not.toHaveBeenCalled();
+  expect(io.invoke).not.toHaveBeenCalled();
+});
 
 describe('新项目包全局素材', () => {
   it('通用已保留媒体集合按每项类型和稳定ordinal纳入闭包，不导出查询上下文', () => {

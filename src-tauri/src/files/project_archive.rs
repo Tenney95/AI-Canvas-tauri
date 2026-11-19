@@ -57,6 +57,7 @@ pub struct ProjectArchivePackResult {
 
 static ARCHIVE_PUBLICATION_LOCK: Mutex<()> = Mutex::new(());
 const PUBLICATION_ERROR: &str = "归档发布结果尚未确认，请核对原导出操作；未重复打包或覆盖文件";
+const ARCHIVE_OUTPUT_OCCUPIED: &str = "project-archive-output-occupied";
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ArchivePublicationReceipt {
@@ -109,30 +110,47 @@ fn write_publication_receipt(path: &Path, receipt: &ArchivePublicationReceipt) -
     let mut file = options.open(&temporary).map_err(|_| PUBLICATION_ERROR)?;
     file.write_all(&bytes).and_then(|_| file.sync_all()).map_err(|_| PUBLICATION_ERROR)?;
     drop(file);
-    publish_archive_exclusive(&temporary, path)
+    publish_archive_exclusive(&temporary, path).map_err(|_| PUBLICATION_ERROR.into())
 }
-fn publish_archive_exclusive(temporary: &Path, output: &Path) -> Result<(), String> {
+
+enum ExclusiveArchivePublishError {
+    DestinationOccupied,
+    Unconfirmed,
+}
+
+fn publish_archive_exclusive(temporary: &Path, output: &Path) -> Result<(), ExclusiveArchivePublishError> {
+    use ExclusiveArchivePublishError::{DestinationOccupied, Unconfirmed};
+    let parent = output.parent().ok_or(Unconfirmed)?;
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
-        use windows::{core::PCWSTR, Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH}};
+        use windows::{core::{HRESULT, PCWSTR}, Win32::{Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS}, Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH}}};
         let from: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
         let to: Vec<u16> = output.as_os_str().encode_wide().chain(Some(0)).collect();
-        unsafe { MoveFileExW(PCWSTR(from.as_ptr()), PCWSTR(to.as_ptr()), MOVEFILE_WRITE_THROUGH) }.map_err(|_| PUBLICATION_ERROR)?;
+        unsafe { MoveFileExW(PCWSTR(from.as_ptr()), PCWSTR(to.as_ptr()), MOVEFILE_WRITE_THROUGH) }.map_err(|error| {
+            let code = error.code();
+            if code == HRESULT::from_win32(ERROR_ALREADY_EXISTS.0) || code == HRESULT::from_win32(ERROR_FILE_EXISTS.0) {
+                DestinationOccupied
+            } else {
+                Unconfirmed
+            }
+        })?;
     }
     #[cfg(not(windows))]
     {
-        fs::hard_link(temporary, output).map_err(|_| PUBLICATION_ERROR)?;
-        sync_publication_directory(output.parent().ok_or(PUBLICATION_ERROR)?)?;
-        fs::remove_file(temporary).map_err(|_| PUBLICATION_ERROR)?;
+        fs::hard_link(temporary, output).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists { DestinationOccupied } else { Unconfirmed }
+        })?;
+        sync_publication_directory(parent).map_err(|_| Unconfirmed)?;
+        fs::remove_file(temporary).map_err(|_| Unconfirmed)?;
     }
-    sync_publication_directory(output.parent().ok_or(PUBLICATION_ERROR)?)
+    sync_publication_directory(parent).map_err(|_| Unconfirmed)
 }
 
 /// std::fs::rename 在 Unix 可替换已有空目录；导入发布必须使用平台的 no-replace 合同。
 fn publish_import_directory_exclusive(temporary: &Path, output: &Path) -> Result<(), String> {
     #[cfg(windows)]
-    { return publish_archive_exclusive(temporary, output); }
+    { return publish_archive_exclusive(temporary, output).map_err(|_| PUBLICATION_ERROR.into()); }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         use std::{ffi::CString, os::unix::ffi::OsStrExt, os::raw::{c_char, c_int, c_uint}};
@@ -191,7 +209,8 @@ fn read_publication_receipt(path: &Path) -> Result<ArchivePublicationReceipt, St
     serde_json::from_slice(&bytes).map_err(|_| PUBLICATION_ERROR.into())
 }
 fn begin_publication<R: Runtime>(app: &AppHandle<R>, operation_id: &str, output: &Path) -> Result<ArchivePublicationPlan, String> {
-    if !publication_id(operation_id) || output.exists() { return Err("归档发布需要新的操作身份和未占用的输出文件".into()); }
+    if !publication_id(operation_id) { return Err(PUBLICATION_ERROR.into()); }
+    if output.exists() { return Err(ARCHIVE_OUTPUT_OCCUPIED.into()); }
     let directory = publication_directory(app, true)?;
     let path = publication_path(&directory, operation_id, "prepared");
     let output_path = output.to_str().ok_or(PUBLICATION_ERROR)?.to_owned();
@@ -1086,7 +1105,10 @@ fn pack_archive_with_publication(entries: Vec<ProjectArchiveTextEntry>, assets_r
         // 发布之前先耐久保留最终字节摘要；发布后响应丢失时只核同一文件。
         write_publication_receipt(&publication_path(&plan.directory, &receipt.operation_id, "ready"), &receipt)?;
         if let Some(recheck) = &plan.recheck { recheck()?; }
-        publish_archive_exclusive(&temporary, &output)?;
+        publish_archive_exclusive(&temporary, &output).map_err(|error| match error {
+            ExclusiveArchivePublishError::DestinationOccupied => ARCHIVE_OUTPUT_OCCUPIED,
+            ExclusiveArchivePublishError::Unconfirmed => PUBLICATION_ERROR,
+        })?;
         write_publication_receipt(&publication_path(&plan.directory, &receipt.operation_id, "published"), &receipt)?;
     } else {
         fs::rename(&temporary, &output).map_err(|_| "无法发布归档，目标可能正被占用")?;
@@ -1510,6 +1532,28 @@ mod tests {
         assert_eq!(fs::read(output).unwrap(), before);
         assert_eq!(hash_file_with_limit(&fixture.0.join("result.aicanvas"), &mut Vec::new(), MAX_EXPANDED_BYTES + MAX_TEXT_BYTES).unwrap().1,
             result.archive_sha256.unwrap());
+    }
+
+    #[test]
+    fn late_output_collision_is_confirmed_without_replacing_the_occupied_file() {
+        let fixture = Fixture::new();
+        let output = fixture.0.join("result.aicanvas");
+        let operation_id = "archive-late-output-collision";
+        let receipt = ArchivePublicationReceipt {
+            operation_id: operation_id.into(), publication_ref: "a".repeat(64),
+            output_path: output.to_str().unwrap().into(), result: None,
+        };
+        write_publication_receipt(&publication_path(&fixture.0, operation_id, "prepared"), &receipt).unwrap();
+        let occupied_path = output.clone();
+        let plan = ArchivePublicationPlan {
+            directory: fixture.0.clone(), receipt,
+            recheck: Some(Box::new(move || fs::write(&occupied_path, "另一个操作".as_bytes()).map_err(|error| error.to_string()))),
+        };
+        let result = pack_archive_with_publication(vec![], None, output.clone(), None, MAX_ARCHIVE_ENTRIES, Some(plan), &HashMap::new());
+
+        assert!(matches!(result, Err(ref error) if error.as_str() == ARCHIVE_OUTPUT_OCCUPIED));
+        assert_eq!(fs::read(output).unwrap(), "另一个操作".as_bytes());
+        assert!(!publication_path(&fixture.0, operation_id, "published").exists());
     }
 
     #[test]

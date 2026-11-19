@@ -284,6 +284,10 @@ async function prepareNativeArchiveMaterial(capture: ProjectModelTransferCapture
 
 const activeNativeExports: Set<string> = import.meta.hot?.data.activeNativeExports ?? new Set();
 if (import.meta.hot) import.meta.hot.data.activeNativeExports = activeNativeExports;
+const ARCHIVE_OUTPUT_OCCUPIED = 'project-archive-output-occupied';
+class ArchiveOutputOccupiedError extends Error {
+  constructor() { super('导出位置已有同名文件，请换一个文件名'); }
+}
 
 /** 保存对话框选定后捕获完整材料，登记 journal，再使用原生回执发布。 */
 export async function exportNativeProjectArchive(projectId: string): Promise<ProjectExportResult | null> {
@@ -293,6 +297,7 @@ export async function exportNativeProjectArchive(projectId: string): Promise<Pro
   const outputPath = await save({ title: '导出项目', defaultPath: `${sanitizeFileName(initial.aggregate.project.name || '项目')}.aicanvas`,
     filters: [{ name: 'AI Canvas 项目包', extensions: ['aicanvas'] }] });
   if (!outputPath) return null;
+  if (await exists(outputPath).catch(() => false)) throw new ArchiveOutputOccupiedError();
   const source = await captureNativeProjectArchive(projectId), owners = [...new Set([projectId, ...source.value.aggregate.episodes.map((item) => item.id),
     ...source.value.aggregate.canvases.map((item) => item.id)])].sort();
   const operationId = crypto.randomUUID(), port = createBoundProjectModelArchiveExportPort(projectId, outputPath);
@@ -307,7 +312,12 @@ export async function exportNativeProjectArchive(projectId: string): Promise<Pro
     let operation = await prepareNativeProjectExport({ operationId, projectId, expectedChangeRevision: source.changeRevision,
       expectedExchange: source.value.exchange, exchange: prepared.exchange, includesHistory: true, sourceToken: source.value.sourceToken });
     operation = await advanceNativeProjectExport(operationId, operation.sequence, 'packing');
-    const receipt = await port.pack(operation, entries, portable, prepared.files, assets);
+    const receipt = await port.pack(operation, entries, portable, prepared.files, assets).catch(async (error: unknown) => {
+      if (error !== ARCHIVE_OUTPUT_OCCUPIED && !(error instanceof Error && error.message === ARCHIVE_OUTPUT_OCCUPIED)) throw error;
+      // 原生独占发布已确认未写入目标，使用同一操作与序号解除待处理状态。
+      await abandonNativeProjectExport(projectId, operationId, operation.sequence);
+      throw new ArchiveOutputOccupiedError();
+    });
     await port.verifyExportPublication(operation, receipt);
     operation = await advanceNativeProjectExport(operationId, operation.sequence, 'published', receipt);
     await assertCurrent(source.value);
@@ -318,6 +328,7 @@ export async function exportNativeProjectArchive(projectId: string): Promise<Pro
   activeNativeExports.add(operationId);
   try { return await lock(0); }
   catch (error) {
+    if (error instanceof ArchiveOutputOccupiedError) throw error;
     let operation: Awaited<ReturnType<typeof readNativeProjectExport>>;
     try { operation = await readNativeProjectExport(operationId); }
     catch (cause) { throw new Error(`导出结果未知，原操作 ${operationId} 已保留，请先核对`, { cause }); }

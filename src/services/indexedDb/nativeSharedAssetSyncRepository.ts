@@ -65,8 +65,8 @@ export async function prepareNativeSharedAssetSync(input: {
         if (asset.projectId !== fixed.projectId || !configValuesEqual(live?.record, asset)) throw fail();
       }
       const operations = await request(store.index('projectId').getAll(fixed.projectId)) as Array<{ kind?: string; phase?: string }>;
-      if (operations.some((row) => row.kind === 'project-model-import' && row.phase !== 'finalized'
-        || row.kind === 'project-model-export' && row.phase !== 'registered')) throw fail();
+      if (operations.some((row) => row.kind === 'project-model-import' && row.phase !== 'finalized' && row.phase !== 'aborted'
+        || row.kind === 'project-model-export' && row.phase !== 'registered' && row.phase !== 'aborted')) throw fail();
       const [project, content, revision, canvasKeys, episodes] = await Promise.all([
         request(tx.objectStore(ROOTS).get(fixed.projectId)) as Promise<ProjectRecord | undefined>,
         request(tx.objectStore(CONTENTS).get(fixed.projectId)) as Promise<ProjectContent | undefined>,
