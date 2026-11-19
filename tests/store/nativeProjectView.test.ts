@@ -11,7 +11,7 @@ import { useAppStore } from '../../src/store/useAppStore';
 import { createProjectSlice } from '../../src/store/store.projects';
 import { createHistorySlice } from '../../src/store/store.history';
 import { createNativeEpisode, createNativeProject, convertNativeProjectToSeries, listNativeProjectIdentities, readNativeProjectCapture, saveNativeCanvas,
-  type NativeProjectAggregate } from '../../src/services/indexedDb/nativeProjectRepository';
+  openNativeProjectDatabase, TRANSFER, transact, type NativeProjectAggregate } from '../../src/services/indexedDb/nativeProjectRepository';
 import { prepareNativeMediaTask, recordNativeMediaSubmission, listNativeMediaTasks } from '../../src/services/indexedDb/nativeMediaTaskRepository';
 import * as nativeDelivery from '../../src/services/nativeMediaDelivery';
 import { sha256BytesHex } from '../../src/services/mediaDataUrl';
@@ -206,6 +206,56 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     store.setState({ history: [originalHistory], historyIndex: 0, agentTasks: [agent] });
     return { store, receipt, context: context as CanvasContext, originalHistory, agent };
   }
+
+  async function putPendingUpdate(operationId: string, phase: 'media_publishing' | 'db_committed') {
+    const database = (await openNativeProjectDatabase(false))!;
+    try {
+      await transact(database, 'readwrite', {}, (tx) => new Promise<void>((resolve, reject) => {
+        const write = tx.objectStore(TRANSFER).add({ id: operationId, projectId, targetProjectId: projectId, operationId,
+          kind: 'project-model-import', mode: 'update-existing', phase, sequence: 1, updatedAt: 1 });
+        write.onsuccess = () => resolve(); write.onerror = () => reject(write.error);
+      }), [TRANSFER]);
+    } finally { database.close(); }
+  }
+
+  it('重开待收尾作品时进入只读，干净画布可以切换且不会发起保存', async () => {
+    const initial = await createNativeProject({ projectId, canvasId: canvasA, name: '待收尾' });
+    const other = await createNativeProject({ canvasId: canvasB, name: '其他作品' });
+    await putPendingUpdate(crypto.randomUUID(), 'db_committed');
+    const store = fixtureStore(initial);
+    await store.getState().refreshProjectCatalog();
+    expect(await store.getState().switchProject(canvasA)).toBe(canvasA);
+    expect(store.getState()).toMatchObject({ projectLoadStatus: 'readonly', projectExecutionContext: null,
+      nativeProjectWriteBlock: { projectId, phase: 'db_committed' } });
+    expect(store.getState().hasUnsavedNativeProjectWriteBlock()).toBe(false);
+    await expect(store.getState().saveCurrentProjectSilent()).resolves.toBeUndefined();
+    expect(store.getState().autoSaveFailure).toBeNull();
+    expect(await store.getState().switchProject(canvasB)).toBe(other.canvas!.id);
+    expect(store.getState()).toMatchObject({ projectLoadStatus: 'ready', nativeProjectWriteBlock: null });
+    expect((await readNativeProjectCapture(projectId))?.changeRevision).toBe(0);
+  });
+
+  it('首次遇到持久更新守卫时保留未保存编辑，撤销原操作后才重新开放写入', async () => {
+    const initial = await createNativeProject({ projectId, canvasId: canvasA, name: '待处理' });
+    await createNativeProject({ canvasId: canvasB, name: '其他作品' });
+    const store = fixtureStore(initial);
+    await store.getState().refreshProjectCatalog();
+    expect(await store.getState().switchProject(canvasA)).toBe(canvasA);
+    const draft = { ...sourceNode(), data: { ...sourceNode().data, status: 'idle' as const, label: '未保存编辑' } };
+    store.setState({ nodes: [draft] });
+    const operationId = crypto.randomUUID();
+    await putPendingUpdate(operationId, 'media_publishing');
+    await expect(store.getState().saveCurrentProjectSilent()).resolves.toBeUndefined();
+    expect(store.getState()).toMatchObject({ projectLoadStatus: 'readonly', nativeProjectWriteBlock: { operationId } });
+    expect(store.getState().hasUnsavedNativeProjectWriteBlock()).toBe(true);
+    await expect(store.getState().switchProject(canvasB)).resolves.toBeUndefined();
+    await expect(store.getState().settleProjectTransfer(projectId, operationId, 'continue')).rejects.toThrow('未保存');
+    expect(store.getState().nodes).toEqual([draft]);
+    await store.getState().settleProjectTransfer(projectId, operationId, 'abandon');
+    expect(store.getState()).toMatchObject({ projectLoadStatus: 'ready', nativeProjectWriteBlock: null, nodes: [draft] });
+    await expect(store.getState().saveCurrentProjectSilent()).resolves.toBe(canvasA);
+    expect((await readNativeProjectCapture(projectId))?.aggregate.canvas?.nodes).toEqual([draft]);
+  });
 
   it('有在途媒体任务时仍能保存普通项目剧本和助手文本模型，保留原任务租约', async () => {
     const initial = await createNativeProject({ projectId, canvasId: canvasA, name: '当前作品' });

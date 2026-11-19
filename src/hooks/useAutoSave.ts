@@ -129,6 +129,11 @@ export function useAutoSave() {
         if (!active || attempt.session !== sessionRef.current || attemptRef.current !== attempt
           || useAppStore.getState().currentProjectId !== attempt.projectId) return;
         attemptRef.current = null;
+        const latest = useAppStore.getState();
+        if (latest.projectLoadStatus === 'readonly') {
+          if (latest.hasUnsavedNativeProjectWriteBlock()) forceSaveRef.current = true;
+          return;
+        }
         if (savedId === attempt.projectId) {
           failureCountRef.current = 0;
           const state = useAppStore.getState();
@@ -193,6 +198,7 @@ export function useAutoSave() {
       retryAtRef.current = null;
       const state = useAppStore.getState();
       if (!state.currentProjectId) return;
+      if (state.projectLoadStatus === 'readonly') return;
 
       if (state.currentProjectId !== projectIdRef.current) {
         projectIdRef.current = state.currentProjectId;
@@ -300,15 +306,16 @@ export function useAutoSave() {
       // 保存自身的媒体物化仍刷新目录展示，但不是新的待保存输入。
       // 普通磁盘事件（包括保存期间发生的事件）继续保留 dirty。
       if ((event as CustomEvent<ProjectDiskChangedDetail | undefined>).detail?.source === 'save-materialization') return;
-      if (!useAppStore.getState().currentProjectId) return;
+      const state = useAppStore.getState();
+      if (!state.currentProjectId) return;
       diskVersionRef.current++;
       forceSaveRef.current = true;
-      if (pausedProjectRef.current === projectIdRef.current) return;
+      if (state.projectLoadStatus === 'readonly' || pausedProjectRef.current === projectIdRef.current) return;
       if (timerRef.current === null) timerRef.current = setTimeout(checkAndSave, 2000);
     };
     window.addEventListener(PROJECT_DISK_CHANGED_EVENT, onDiskChanged);
 
-    const unsub = useAppStore.subscribe((state) => {
+    const unsub = useAppStore.subscribe((state, previous) => {
       if (!state.currentProjectId) {
         if (timerRef.current) clearTimeout(timerRef.current);
         timerRef.current = null;
@@ -329,8 +336,20 @@ export function useAutoSave() {
         forceSaveRef.current = false;
         retryAtRef.current = null;
         resetFailureSession();
-        void state.syncGroupFiles();
+        if (state.projectLoadStatus !== 'readonly') void state.syncGroupFiles();
         return;
+      }
+
+      if (state.projectLoadStatus === 'readonly') {
+        if (timerRef.current) clearTimeout(timerRef.current);
+        timerRef.current = null;
+        retryAtRef.current = null;
+        return;
+      }
+      if (state.projectLoadStatus === 'ready' && previous.projectLoadStatus === 'readonly') {
+        resetFailureSession();
+        if (timerRef.current === null && (forceSaveRef.current || structureFingerprint(state) !== fingerprintRef.current
+          || hasNodeDataReferenceChanges(state.nodes, dataRefsRef.current))) timerRef.current = setTimeout(checkAndSave, 2000);
       }
 
       // 极廉价的引用比较：nodes/edges/groups 引用都没变 → 直接忽略
@@ -355,9 +374,11 @@ export function useAutoSave() {
       if (timerRef.current === null) timerRef.current = setTimeout(checkAndSave, 2000);
     });
     // 初次打开也恢复未完成迁移；之后先确认有持久化改动，再走归档检查。
-    if (initialState.currentProjectId && pausedProjectRef.current !== initialState.currentProjectId) void initialState.syncGroupFiles();
+    if (initialState.currentProjectId && initialState.projectLoadStatus !== 'readonly'
+      && pausedProjectRef.current !== initialState.currentProjectId) void initialState.syncGroupFiles();
     // StrictMode 或热更新重放 effect 时沿用基线与退避期限，不把待保存内容当作已保存。
-    if (initialState.currentProjectId && timerRef.current === null && pausedProjectRef.current !== initialState.currentProjectId) {
+    if (initialState.currentProjectId && initialState.projectLoadStatus !== 'readonly'
+      && timerRef.current === null && pausedProjectRef.current !== initialState.currentProjectId) {
       if (retryAtRef.current !== null) timerRef.current = setTimeout(checkAndSave, Math.max(0, retryAtRef.current - Date.now()));
       else if (forceSaveRef.current || structureFingerprint(initialState) !== fingerprintRef.current
         || hasNodeDataReferenceChanges(initialState.nodes, dataRefsRef.current)) timerRef.current = setTimeout(checkAndSave, 2000);

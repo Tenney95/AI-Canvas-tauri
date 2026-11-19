@@ -6,7 +6,7 @@ import type { ChatConversation } from '../types/chat';
 export interface EpisodeWorkspaceState {
   projects: CanvasProject[];
   currentProjectId: string | null;
-  projectLoadStatus: 'loading' | 'ready' | 'error';
+  projectLoadStatus: 'loading' | 'ready' | 'readonly' | 'error';
   isCreatingProject: boolean;
   isReturningToStartPage: boolean;
   switchingProjectName: string | null;

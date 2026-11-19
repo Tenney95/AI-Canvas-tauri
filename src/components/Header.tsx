@@ -31,8 +31,9 @@ export default function Header() {
     })),
   );
   const [episodeNameOpen, setEpisodeNameOpen] = useState(false);
-  const canCreateEpisode = !!currentProjectId && projectLoadStatus === 'ready'
+  const canSwitchEpisode = !!currentProjectId && (projectLoadStatus === 'ready' || projectLoadStatus === 'readonly')
     && !isCreatingProject && !isReturningToStartPage && switchingProjectName === null;
+  const canCreateEpisode = canSwitchEpisode && projectLoadStatus === 'ready';
   const currentProject = projects.find((project) => project.id === currentProjectId);
   const seriesId = currentProject?.parentId;
   const seriesName = seriesId ? projects.find((project) => project.id === seriesId)?.name ?? '' : '';
@@ -123,14 +124,15 @@ export default function Header() {
           triggerClassName="[&&&]:border-0 [&&&]:bg-transparent [&&&]:shadow-none
                             [&&&]:hover:bg-transparent [&&&]:focus-visible:bg-transparent
                             [&&&]:focus-visible:ring-2 [&&&]:focus-visible:ring-indigo-400/50"
-          disabled={!canCreateEpisode || episodeNameOpen}
+          disabled={!canSwitchEpisode || episodeNameOpen}
         />
       ) : (
         <div
-          contentEditable
+          contentEditable={projectLoadStatus === 'ready'}
           suppressContentEditableWarning
           spellCheck={false}
           onBlur={(e) => {
+            if (projectLoadStatus !== 'ready') return;
             const name = e.currentTarget.textContent?.trim() || t('新项目');
             setProjectName(name);
           }}

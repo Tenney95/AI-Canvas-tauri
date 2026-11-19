@@ -71,7 +71,7 @@ export function useKeyboardShortcuts() {
       || state.isCreatingProject || state.isReturningToStartPage || state.projectLoadStatus === 'loading';
     const saveActiveWorkspace = () => {
       const state = useAppStore.getState();
-      if (isNavigating(state)) return;
+      if (isNavigating(state) || state.projectLoadStatus === 'readonly') return;
       if (state.projectWorkspaceView === 'script') {
         window.dispatchEvent(new Event('script-workbench-save'));
         return;
@@ -86,6 +86,7 @@ export function useKeyboardShortcuts() {
       if (e.key !== 'F12' && isNavigating(state)) return;
       const target = e.target as HTMLElement;
       const isEditing = isEditableTarget(target);
+      if (state.projectLoadStatus === 'readonly' && e.key !== 'F12') return;
       // 剧本整页保留编辑器原生按键，保存交由工作台当前页签；不操作未显示的画布。
       if (state.projectWorkspaceView === 'script') {
         if ((e.ctrlKey || e.metaKey || e.altKey) && e.key.toLowerCase() === 's') {

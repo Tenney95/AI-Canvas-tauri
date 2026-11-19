@@ -15,6 +15,7 @@ import Canvas from './components/Canvas';
 import NodeMenu from './components/NodeMenu';
 import Toast from './components/Toast';
 import ProjectLibraryModal from './components/ProjectLibraryModal';
+import ProjectTransferNotice from './components/projectImport/ProjectTransferNotice';
 import SplashScreen from './components/SplashScreen';
 import CanvasBackground from './components/backgrounds/CanvasBackground';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
@@ -195,6 +196,7 @@ export default function App() {
   const availableUpdateInfo = updateInfo ?? (appUpdateVersion ? { version: appUpdateVersion } : null);
   const configHydrated = useAppStore((state) => state.configHydrated);
   const projectLoadStatus = useAppStore((state) => state.projectLoadStatus);
+  const nativeProjectWriteBlock = useAppStore((state) => state.nativeProjectWriteBlock);
   const currentProjectId = useAppStore((state) => state.currentProjectId);
   const switchingProjectName = useAppStore((state) => state.switchingProjectName);
   const isCreatingProject = useAppStore((state) => state.isCreatingProject);
@@ -358,26 +360,34 @@ export default function App() {
               break;
             }
             try {
-              // 正文先入队，避免已有/空预览的补丁抢在必要保存之前。
-              const savingProject = store.saveCurrentProjectSilent();
-              // 缩略图是可选预览，不能挡住必要保存或窗口退出。
-              void store.captureCurrentProjectSnapshot({ persistSnapshot: true }).catch((error) => {
-                console.warn('[退出] 生成画布快照失败:', error);
-              });
-              await savingProject;
+              if (useAppStore.getState().projectLoadStatus !== 'readonly') {
+                // 正文先入队，避免已有/空预览的补丁抢在必要保存之前。
+                const savingProject = store.saveCurrentProjectSilent();
+                // 缩略图是可选预览，不能挡住必要保存或窗口退出。
+                void store.captureCurrentProjectSnapshot({ persistSnapshot: true }).catch((error) => {
+                  console.warn('[退出] 生成画布快照失败:', error);
+                });
+                await savingProject;
+              }
             } catch (error) {
               console.warn('[退出] 保存失败:', error);
             }
 
             // 保存一直失败时不能默默销毁窗口，否则这次会话的工作全丢
-            const failure = useAppStore.getState().autoSaveFailure;
+            const latest = useAppStore.getState();
+            const failure = latest.projectLoadStatus === 'readonly'
+              ? (latest.hasUnsavedNativeProjectWriteBlock() ? { count: 1, reason: t('项目更新尚未结算，当前编辑未保存。') } : null)
+              : latest.autoSaveFailure;
             if (failure) {
               const { ask } = await import('@tauri-apps/plugin-dialog');
               const detail = failure.count > 1 ? t('已连续失败 {count} 次。', { count: failure.count }) : '';
+              const message = latest.projectLoadStatus === 'readonly'
+                ? t('项目更新尚未结算，当前编辑未保存。现在退出会丢失这些编辑。取消退出后，可通过「处理原操作」核对更新。')
+                : t('{detail}{reason}\n\n现在退出会丢失未保存的改动。建议先取消退出，再用「导出项目」把内容备份出去。', { detail, reason: failure.reason });
               const quitAnyway = await ask(
-                t('{detail}{reason}\n\n现在退出会丢失未保存的改动。建议先取消退出，再用「导出项目」把内容备份出去。', { detail, reason: failure.reason }),
+                message,
                 { title: t('保存失败，仍要退出吗？'), kind: 'warning', okLabel: t('仍然退出'), cancelLabel: t('取消退出') },
-              ).catch(() => true); // 弹不出对话框时不要把用户关在应用里
+              ).catch(() => latest.projectLoadStatus !== 'readonly');
               if (!quitAnyway) return;
             }
 
@@ -635,7 +645,7 @@ export default function App() {
       <div className={`app-box app-shell__content absolute ${managedCanvasBackground ? 'bg-transparent' : 'bg-canvas-bg/[0.988]'} shadow-2xl overflow-hidden`}>
         {showCanvas ? (
           <div
-            inert={!canvasVisible ? true : undefined}
+            inert={!canvasVisible || projectLoadStatus === 'readonly' ? true : undefined}
             aria-hidden={!canvasVisible ? true : undefined}
             className={`app-canvas-viewport absolute inset-0${canvasVisible ? '' : ' invisible pointer-events-none'}`}>
             <CanvasBackground />
@@ -658,9 +668,11 @@ export default function App() {
         {/* Top drag region */}
         <div data-tauri-drag-region className="fixed top-0 left-0 right-0 h-8 z-10" />
         {canvasVisible && <Header />}
+        {showCanvas && currentProjectId && nativeProjectWriteBlock && <ProjectTransferNotice key={nativeProjectWriteBlock.projectId}
+          ownerId={currentProjectId} />}
         <Titlebar />
         {canvasVisible && <SessionProjectTabs />}
-        {canvasVisible && <NodeMenu />}
+        {canvasVisible && projectLoadStatus !== 'readonly' && <NodeMenu />}
         <LazyLoadBoundary label="设置面板">
           <Suspense fallback={<LazyLoadFallback label="设置面板" />}>
             {mountSettings && <SettingsPanel />}

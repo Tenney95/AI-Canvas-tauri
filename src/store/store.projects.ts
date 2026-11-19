@@ -68,6 +68,7 @@ import { projectModelSourceToken } from '../services/projectModelComparisonMater
 import { finalizeNativeSharedAssetSync, prepareNativeSharedAssetSync } from '../services/indexedDb/nativeSharedAssetSyncRepository';
 import { episodeTeamSourceSnapshot } from '../services/seriesCreativeService';
 import { readEpisodeWorkspaceScope } from '../services/episodeWorkspaceScope';
+import { assertEpisodeEditorReady } from '../services/episodeEditorSessionService';
 import type { StoryGraph, StoryGraphPatch } from '../types/storyGraph';
 import { applyStoryGraphPatch, normalizeStoryGraph } from '../services/storyGraphService';
 import { prepareEpisodeScriptFileWrite, type EpisodeScriptFileReceipt } from '../services/episodeScriptFileService';
@@ -84,7 +85,7 @@ import { createNativeProject, saveNativeProjectView, saveNativeProjectContent, c
   createNativeEpisode, saveNativeEpisodeContent, readNativeProjectCapture, reorderNativeEpisodes,
   deleteNativeEpisode, deleteNativeProject, updateNativeProjectMetadata, updateNativeEpisodeMetadata,
   updateNativeEpisodeComposite, readNativeEpisodeContent, readNativeProjectContent, saveNativeCanvasPreview,
-  saveNativeProjectTextModel } from '../services/indexedDb/nativeProjectRepository';
+  saveNativeProjectTextModel, listNativeProjectPendingTransfers, type NativeProjectPendingTransfer } from '../services/indexedDb/nativeProjectRepository';
 import { listProjectCatalog, resolveProjectModel, type ProjectCatalogEntry } from '../services/projectModelRouter';
 import { readNativeProjectView } from '../services/nativeProjectNavigation';
 import { applyNativeEpisodeContent, hydrateNativeProjectView, nativeEpisodeDisplayNumbers, needsNativeEpisodeContent,
@@ -98,7 +99,10 @@ import { duplicateNativeProjectArchive, exportNativeProjectArchive } from '../se
 import { cleanupFinalizedNativeProjectImportSources, importNativeProjectArchive, importNativeProjectArchiveFromSession } from '../services/nativeProjectImportService';
 import type { CharacterVisualReferencePlan } from '../services/characterVisualReferencePlan';
 
-type ProjectLoadStatus = 'loading' | 'ready' | 'error';
+type ProjectLoadStatus = 'loading' | 'ready' | 'readonly' | 'error';
+type NativeProjectWriteBlock = Extract<NativeProjectPendingTransfer, { kind: 'update' | 'restore' }> & { projectId: string };
+const NATIVE_PROJECT_READONLY = '项目更新尚未结算，当前画布为只读';
+const NATIVE_PROJECT_PENDING_EDITS = '当前项目有未保存的编辑，请先处理原更新操作，编辑仍保留';
 type NativeCatalog = Extract<ProjectCatalogEntry, { dataModel: 'native' }>;
 type NativeLoaded = NonNullable<Awaited<ReturnType<typeof readNativeProjectView>>>;
 interface NativeRuntime {
@@ -123,6 +127,20 @@ function nativeCanvasDocumentChanged(saved: NativeRuntime['savedView'], state: A
 
 function nativeCanvasHasUnsavedEdits(runtime: NativeRuntime | undefined, state: AppState): boolean {
   return !runtime || runtime.library !== state.dramaAssets || nativeCanvasDocumentChanged(runtime.savedView, state);
+}
+
+async function readNativeProjectWriteBlock(projectId: string): Promise<NativeProjectWriteBlock | null> {
+  const transfer = (await listNativeProjectPendingTransfers(projectId)).find((item) => item.kind === 'update' || item.kind === 'restore');
+  return transfer?.kind === 'update' || transfer?.kind === 'restore' ? { projectId, ...transfer } : null;
+}
+
+function hasNativeProjectDrafts(state: AppState, runtime: NativeRuntime | undefined, projectId: string): boolean {
+  if (nativeCanvasHasUnsavedEdits(runtime, state)) return true;
+  try {
+    assertEpisodeEditorReady(projectId);
+    for (const item of state.projects) if (item.id !== projectId && nativeBinding(item)?.projectId === projectId) assertEpisodeEditorReady(item.id);
+    return false;
+  } catch { return true; }
 }
 const nativeKnownIds: Set<string> = import.meta.hot?.data.nativeKnownIds ?? new Set();
 const nativeRuntime: WeakMap<() => AppState, NativeRuntime> = import.meta.hot?.data.nativeRuntime ?? new WeakMap();
@@ -169,7 +187,9 @@ async function activateNativeProject(set: ProjectSliceSet, get: ProjectSliceGet,
   if (!binding) throw new Error('新项目导航身份已变化');
   await waitForPendingNodeFileDeletions();
   assertCurrent();
-  const loaded = await readNativeProjectView(entry.project.id, binding.canvasId ?? undefined);
+  const [loaded, nativeProjectWriteBlock] = await Promise.all([
+    readNativeProjectView(entry.project.id, binding.canvasId ?? undefined), readNativeProjectWriteBlock(entry.project.id),
+  ]);
   assertCurrent();
   if (!loaded || (loaded.selection.canvas?.id ?? null) !== binding.canvasId) throw new Error('项目画布身份已变化');
   const canvas = loaded.selection.canvas;
@@ -178,11 +198,11 @@ async function activateNativeProject(set: ProjectSliceSet, get: ProjectSliceGet,
   const selected = projected.find((item) => item.id === activeId);
   if (!selected) throw new Error('新项目画布身份已变化');
   const data = await restoreProjectRecord({ ...selected, nodes: canvas?.nodes ?? [], edges: canvas?.edges ?? [], groups: canvas?.groups ?? [],
-    dramaAssets: loaded.content.dramaAssets }, { recoverUndoTrash: true, assertCurrent });
+    dramaAssets: loaded.content.dramaAssets }, { recoverUndoTrash: !nativeProjectWriteBlock, assertCurrent });
   assertCurrent();
   const ids = [entry.project.id, ...entry.episodeIds, ...entry.canvasIds];
   fileService.registerNativeProjectFolders(ids.map((id) => ({ id, projectId: entry.project.id })));
-  await get().repairNativeWorkConversationsOnFirstOpen(entry.project.id);
+  if (!nativeProjectWriteBlock) await get().repairNativeWorkConversationsOnFirstOpen(entry.project.id);
   assertCurrent();
   const { emptyDramaAssetLibrary } = await import('../types/dramaAssets');
   assertCurrent();
@@ -220,11 +240,12 @@ async function activateNativeProject(set: ProjectSliceSet, get: ProjectSliceGet,
     projects: [...state.projects.filter((item) => nativeBinding(item)?.projectId !== entry.project.id),
       ...projected.map((item) => item.id === activeId ? { ...item, settings: data.settings,
         ...(canvas ? { revisionScope: canvas.revisionScope } : {}) } : item)],
-    currentProjectId: activeId, projectName: selected.name, projectLoadStatus: 'ready', projectExecutionContext: context,
+    currentProjectId: activeId, projectName: selected.name, nativeProjectWriteBlock,
+    projectLoadStatus: nativeProjectWriteBlock ? 'readonly' : 'ready', projectExecutionContext: nativeProjectWriteBlock ? null : context,
     ...view,
     ...(preserveHistory ? {} : { history: [], historyIndex: -1 }), dramaAssets,
   }));
-  if (canvas) void resumePendingTasks(activeId).catch(() => { /* 原缓存保留，下次原画布就绪再交付。 */ });
+  if (canvas && !nativeProjectWriteBlock) void resumePendingTasks(activeId).catch(() => { /* 原缓存保留，下次原画布就绪再交付。 */ });
   return activeId;
 }
 
@@ -425,6 +446,7 @@ async function runNativeImportMutation(set: ProjectSliceSet, get: ProjectSliceGe
     || [projectId, ...affected].some((id) => getPendingTasksForProject(id).length > 0)
     || before.agentTasks.some((task) => [projectId, ...affected].includes(task.projectId) && !['completed', 'failed', 'stopped', 'paused'].includes(task.status))
     || before.videoBatchBusy || active && before.nodes.some((node) => node.data.status === 'loading')) throw new Error('项目正在执行任务、同步或更新，请先停止后重试');
+  if (active && hasNativeProjectDrafts(before, nativeRuntime.get(get), projectId)) throw new Error('请先保存当前编辑，再处理项目更新或恢复');
   const assertCurrent = () => {
     const latest = get();
     if (latest.currentProjectId !== activeId || projectSwitchSequence !== sequence || latest.projects !== before.projects
@@ -459,9 +481,15 @@ async function runNativeImportMutation(set: ProjectSliceSet, get: ProjectSliceGe
   } catch (error) {
     let unchanged = !started;
     if (revision !== undefined) try { unchanged = (await readNativeProjectCapture(projectId))?.changeRevision === revision; } catch { unchanged = false; }
+    let block = before.nativeProjectWriteBlock?.projectId === projectId ? before.nativeProjectWriteBlock : null;
+    let checkedBlock = !started;
+    if (started && active) {
+      try { block = await readNativeProjectWriteBlock(projectId); checkedBlock = true; } catch { /* 查询失败时禁止恢复写入上下文。 */ }
+    }
     if (active && get().currentProjectId === activeId && sequence === projectSwitchSequence) {
-      set(unchanged ? { projectLoadStatus: 'ready', projectExecutionContext: previousContext }
-        : { projectLoadStatus: 'error', projectExecutionContext: null });
+      if (block) set({ projectLoadStatus: 'readonly', projectExecutionContext: null, nativeProjectWriteBlock: block });
+      else set(unchanged && checkedBlock ? { projectLoadStatus: 'ready', projectExecutionContext: previousContext, nativeProjectWriteBlock: null }
+        : { projectLoadStatus: 'error', projectExecutionContext: null, nativeProjectWriteBlock: null });
     }
     if (completed) throw new Error('项目已更新，但重新加载失败，请从项目库重新打开', { cause: error });
     if (!unchanged) throw new Error(`项目更新结果无法确认，原操作 ${operationId}；请重新打开项目并检查恢复点，勿直接重试`, { cause: error });
@@ -1073,6 +1101,16 @@ async function noteSaveError(
   return noteSaveFailure(set, get, { kind, reason, notify }, attempt);
 }
 
+/** 另一窗口也可能在画布打开后登记更新；首次写入拒绝时对齐真实状态。 */
+async function recognizePendingNativeUpdate(set: ProjectSliceSet, get: ProjectSliceGet, projectId: string | undefined,
+  error: unknown, attempt: ProjectSaveAttempt): Promise<boolean> {
+  if (!projectId || !(error instanceof Error) || !error.message.endsWith('project-update-pending')) return false;
+  const block = await readNativeProjectWriteBlock(projectId).catch(() => null);
+  if (!block || !isProjectSaveAttemptCurrent(get, attempt)) return false;
+  set({ projectLoadStatus: 'readonly', projectExecutionContext: null, nativeProjectWriteBlock: block });
+  return true;
+}
+
 export interface SharedProjectAssetSyncApplyInput {
   ownerId: string;
   originProjectId: string;
@@ -1089,6 +1127,8 @@ export interface ProjectSlice {
   projectExecutionContext?: ProjectExpectedContext | null;
   projectName: string;
   projectLoadStatus: ProjectLoadStatus;
+  nativeProjectWriteBlock: NativeProjectWriteBlock | null;
+  hasUnsavedNativeProjectWriteBlock: () => boolean;
   /** 当前 Store 已完成启动加载；重挂载和热更新不能重读磁盘覆盖当前画布。 */
   projectInitialized: boolean;
   isCreatingProject: boolean;
@@ -1411,6 +1451,12 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   projectExecutionContext: undefined,
   projectName: '新项目',
   projectLoadStatus: 'loading',
+  nativeProjectWriteBlock: live?.nativeProjectWriteBlock ?? null,
+  hasUnsavedNativeProjectWriteBlock: () => {
+    const state = get(), block = state.nativeProjectWriteBlock;
+    return !!block && nativeBinding(state.projects.find((item) => item.id === state.currentProjectId))?.projectId === block.projectId
+      && hasNativeProjectDrafts(state, nativeRuntime.get(get), block.projectId);
+  },
   projectInitialized: initialized,
   isCreatingProject: false,
   isReturningToStartPage: false,
@@ -2012,15 +2058,21 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     const currentOwner = nativeBinding(current.projects.find((item) => item.id === current.currentProjectId))?.projectId;
     if (options?.signal?.aborted || current.isCreatingProject || current.isReturningToStartPage
       || currentOwner && projectImportsApplying.has(currentOwner)) return undefined;
+    const leavingReadonly = current.projectLoadStatus === 'readonly';
+    if (leavingReadonly && current.hasUnsavedNativeProjectWriteBlock()) {
+      current.showToast(NATIVE_PROJECT_PENDING_EDITS, 'error');
+      return undefined;
+    }
     set({ isCreatingProject: true });
     try {
       const createSequence = ++projectSwitchSequence;
-      const isLatestCreate = () => !options?.signal?.aborted && createSequence === projectSwitchSequence;
+      const isLatestCreate = () => !options?.signal?.aborted && createSequence === projectSwitchSequence
+        && (!leavingReadonly || !get().hasUnsavedNativeProjectWriteBlock());
       await waitForLoadingPaint();
       if (!isLatestCreate()) return undefined;
       const previousProjectId = get().currentProjectId;
 
-      if (previousProjectId) {
+      if (previousProjectId && !leavingReadonly) {
         void get().captureCurrentProjectSnapshot({
           allowProjectChange: true,
           persistSnapshot: true,
@@ -3131,14 +3183,29 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       await (await import('../services/nativeProjectArchiveService')).settleNativeProjectArchiveExport(projectId, operationId, action);
       return;
     }
+    const before = get();
     if (action === 'abandon') {
+      const runtime = nativeRuntime.get(get), sequence = projectSwitchSequence;
       await repository.abortNativeProjectUpdate(operationId);
+      if (before.projectLoadStatus === 'readonly' && before.nativeProjectWriteBlock?.projectId === projectId && before.currentProjectId) {
+        const activeId = before.currentProjectId;
+        if (!runtime) throw new Error('原更新已撤销，请从项目库重新打开');
+        const assertCurrent = () => {
+          const latest = get();
+          if (latest.currentProjectId !== activeId || projectSwitchSequence !== sequence || nativeRuntime.get(get) !== runtime) {
+            throw new Error('当前项目已切换，原更新已撤销');
+          }
+        };
+        const catalog = await loadProjectCatalog(), entry = catalog.native.find((item) => item.project.id === projectId);
+        assertCurrent();
+        if (!entry) throw new Error('原更新已撤销，但项目目录无法重新读取');
+        await activateNativeProject(set, get, entry, activeId, assertCurrent, true, runtime);
+      }
       return;
     }
-    const before = get();
     if (nativeBinding(before.projects.find((item) => item.id === before.currentProjectId))?.projectId === projectId
-      && nativeCanvasHasUnsavedEdits(nativeRuntime.get(get), before)) {
-      throw new Error('当前画布有尚未保存的编辑，已保留画布。请先备份这些编辑，再重新打开项目并续接原操作');
+      && hasNativeProjectDrafts(before, nativeRuntime.get(get), projectId)) {
+      throw new Error(NATIVE_PROJECT_PENDING_EDITS);
     }
     await runNativeImportMutation(set, get, projectId, operationId,
       async (assertCurrent) => (await import('../services/nativeProjectUpdateService')).resumeNativeProjectUpdate(operationId, assertCurrent));
@@ -3504,6 +3571,10 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     if (options?.signal?.aborted || source.isReturningToStartPage || source.isCreatingProject
       || source.projectLoadStatus === 'loading') return;
     if (!source.projects.some((project) => project.id === requestedId)) return;
+    if (source.projectLoadStatus === 'readonly' && source.hasUnsavedNativeProjectWriteBlock()) {
+      source.showToast(NATIVE_PROJECT_PENDING_EDITS, 'error');
+      return;
+    }
     const sourceOwner = nativeBinding(source.projects.find((item) => item.id === currentProjectId))?.projectId;
     if (projectImportsApplying.has(requestedId)
       || projectImportsApplying.has(seriesOwnerId(source.projects, requestedId))
@@ -3519,6 +3590,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     const assertCanReplaceSource = () => {
       if (!isLatestSwitch()) throw new Error('项目切换已取消');
       const latest = get();
+      if (source.projectLoadStatus === 'readonly' && latest.hasUnsavedNativeProjectWriteBlock()) throw new Error(NATIVE_PROJECT_PENDING_EDITS);
       if (latest.currentProjectId !== currentProjectId || sourceRuntime
         && (nativeRuntime.get(get) !== sourceRuntime || nativeCanvasHasUnsavedEdits(sourceRuntime, latest))) {
         throw new Error('保存期间画布有新变化，已保留当前项目，请稍后再切换');
@@ -3602,7 +3674,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         currentProjectId: id,
         projectExecutionContext: undefined,
         projectName: data.name,
-        projectLoadStatus: 'ready',
+        projectLoadStatus: 'ready', nativeProjectWriteBlock: null,
         nodes: data.nodes as Node<BaseNodeData>[],
         edges: data.edges as Edge[],
         groups: getProjectGroups(data),
@@ -3639,7 +3711,12 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     const state = get();
     if (!state.currentProjectId) return true;
     if (state.isReturningToStartPage || state.isCreatingProject || state.switchingProjectName !== null) return false;
-    if (state.projectLoadStatus !== 'ready') {
+    const leavingReadonly = state.projectLoadStatus === 'readonly';
+    if (leavingReadonly && state.hasUnsavedNativeProjectWriteBlock()) {
+      state.showToast(NATIVE_PROJECT_PENDING_EDITS, 'error');
+      return false;
+    }
+    if (state.projectLoadStatus !== 'ready' && !leavingReadonly) {
       state.showToast('项目尚未成功加载，暂时无法返回启动页', 'error');
       return false;
     }
@@ -3651,11 +3728,16 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       await waitForLoadingPaint();
       if (get().currentProjectId !== projectId || projectSwitchSequence !== sequence) return false;
       const savingState = get();
-      // 正文先入队，空图清理或缓存预览的补丁随后排队，不能抢占必要保存。
-      const saving = savingState.saveCurrentProjectSilent();
-      void get().captureCurrentProjectSnapshot({ allowProjectChange: true, persistSnapshot: true })
-        .catch(() => undefined);
-      const savedId = await saving;
+      let savedId: string | undefined;
+      if (leavingReadonly) {
+        if (savingState.hasUnsavedNativeProjectWriteBlock()) return false;
+        savedId = projectId;
+      } else {
+        // 正文先入队，空图清理或缓存预览的补丁随后排队，不能抢占必要保存。
+        const saving = savingState.saveCurrentProjectSilent();
+        void get().captureCurrentProjectSnapshot({ allowProjectChange: true, persistSnapshot: true }).catch(() => undefined);
+        savedId = await saving;
+      }
       if (savedId !== projectId || get().currentProjectId !== projectId || projectSwitchSequence !== sequence) return false;
       const latest = get();
       // 保存期间 MCP 或生成任务仍可回填；卸载前必须确认没有落在这次快照之后的新内容。
@@ -3671,6 +3753,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         projectWorkspaceView: 'canvas',
         scriptWorkbenchOpenProjectId: null,
         projectExecutionContext: undefined,
+        nativeProjectWriteBlock: null,
         projectName: '',
         projectLoadStatus: 'ready',
         nodes: [], edges: [], groups: [],
@@ -3697,6 +3780,10 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     const state = get();
     if (!isProjectSaveAttemptCurrent(get, attempt)) return undefined;
     if (state.currentProjectId && state.projectLoadStatus !== 'ready') {
+      if (state.projectLoadStatus === 'readonly') {
+        state.showToast(NATIVE_PROJECT_READONLY, 'info');
+        return undefined;
+      }
       // 加载中只是还没就绪，不算故障；加载失败才记进退出拦截状态
       if (state.projectLoadStatus === 'error') {
         noteSaveFailure(set, get, {
@@ -3723,6 +3810,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       }
       return record.id;
     } catch (error) {
+      if (await recognizePendingNativeUpdate(set, get, native?.projectId, error, attempt)) return undefined;
       console.error('Save failed:', error);
       // 手动保存本来就每次都给反馈，交给 toast 自己说，不走去重逻辑
       const failure = await noteSaveError(set, get, error, false, attempt);
@@ -3761,6 +3849,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       applyProjectSaveSuccess(set, get, attempt, record);
       return record.id;
     } catch (error) {
+      if (await recognizePendingNativeUpdate(set, get, native?.projectId, error, attempt)) return undefined;
       console.warn('[自动保存] 保存失败:', error);
       await noteSaveError(set, get, error, true, attempt);
       return undefined;
@@ -4189,7 +4278,9 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         }
         // 恢复当前项目的待续轮询任务
         if (activeProjectId) {
-          if (get().projectExecutionContext?.modelGeneration !== 1) resumePendingTasks(activeProjectId).catch((e) => console.warn('[初始化] 恢复待续任务失败:', e));
+          if (get().projectLoadStatus === 'ready' && get().projectExecutionContext?.modelGeneration !== 1) {
+            resumePendingTasks(activeProjectId).catch((e) => console.warn('[初始化] 恢复待续任务失败:', e));
+          }
           // 加载聊天会话
           get().loadConversationsForProject(activeProjectId).catch((e) => console.warn('[初始化] 加载会话失败:', e));
           get().repairInterruptedForProject(activeProjectId).catch((e) => console.warn('[初始化] 修复中断消息失败:', e));
@@ -4204,7 +4295,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           get().repairInterruptedForProject(GENERAL_ASSISTANT_SCOPE_ID),
         ]);
         assertInitialization();
-        if (get().projectLoadStatus === 'ready') {
+        if (get().projectLoadStatus === 'ready' || get().projectLoadStatus === 'readonly') {
           set({ projectInitialized: true });
           void cleanupFinalizedNativeProjectImportSources();
         }
