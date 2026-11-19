@@ -190,6 +190,7 @@ export async function scanDirectoryFiles(
   const nativeOwner = projectScan && opts.projectId ? getNativeProjectOwner(opts.projectId) : undefined;
   let scopedLookup: ReturnType<typeof loadProjectAssetPathLookup> | undefined;
   let confirmedOwnerRoot: Promise<boolean> | undefined;
+  let retiredCanvasIds: Promise<Set<string>> | undefined;
   throwIfScanAborted(opts.signal);
   const indexedFilePaths = new Map<string, string>();
   let indexedAliases: Map<string, AssetIndexRecord | null> | undefined;
@@ -325,6 +326,7 @@ export async function scanDirectoryFiles(
         const assetUrl = CATEGORY_EXTENSIONS.image.includes(ext) && convertFileSrc ? convertFileSrc(r.filePath) : undefined;
         let assetId: string | undefined;
         let existingIdentity: AssetIndexRecord | undefined;
+        let retiredAssetOwner: string | undefined;
         if (opts.projectIdentityScope) {
           const relativePath = getRelativeAssetPath(r.filePath, rootDir);
           if (opts.source !== 'project' || !opts.projectId || !opts.projectIdentityScope.includes(opts.projectId) || !relativePath) {
@@ -347,7 +349,26 @@ export async function scanDirectoryFiles(
             }
           }
           if (indexed && (indexed.source !== 'project' || !indexed.projectId || !opts.projectIdentityScope.includes(indexed.projectId))) {
-            throw new Error('项目文件包含其他来源的资产身份，请先复制为独立项目资产');
+            const indexRoot = indexed.rootPath;
+            const nestedRoot = indexRoot && getRelativeAssetPath(indexRoot, rootDir);
+            const indexedRelativePath = indexRoot && getRelativeAssetPath(indexed.path, indexRoot);
+            if (!nativeOwner || !opts.projectIdentityScope.includes(nativeOwner) || indexed.source !== 'project' || !indexed.projectId
+              || !indexRoot || (comparablePath(indexRoot) !== comparablePath(rootDir)
+                && (!nestedRoot || nestedRoot.split('/').some((part) => !part || part === '.' || part === '..')))
+              || comparablePath(indexed.path) !== comparablePath(r.filePath)
+              || !indexedRelativePath || indexedRelativePath !== indexed.relativePath) {
+              throw new Error('项目文件包含其他来源的资产身份，请先复制为独立项目资产');
+            }
+            confirmedOwnerRoot ??= getProjectDataDir(nativeOwner).then((directory) => !!directory
+              && comparablePath(directory) === comparablePath(rootDir)).catch(() => false);
+            retiredCanvasIds ??= import('../indexedDb/nativeProjectRepository').then(async ({ listNativeRetiredCanvasIds }) =>
+              new Set(await listNativeRetiredCanvasIds(nativeOwner, { signal: opts.signal })));
+            const [rootConfirmed, retired] = await Promise.all([confirmedOwnerRoot, retiredCanvasIds]);
+            throwIfScanAborted(opts.signal);
+            if (!rootConfirmed || !retired.has(indexed.projectId)) throw new Error('项目文件包含其他来源的资产身份，请先复制为独立项目资产');
+            // 分集删除只退役画布，文件继续属于同一作品。沿用原索引，仅将展示归属收敛到作品。
+            retiredAssetOwner = nativeOwner;
+            existingIdentity = indexed;
           }
           assetId = indexed?.assetId ?? crypto.randomUUID();
           if (indexed && opts.preserveProjectIdentity) {
@@ -367,7 +388,8 @@ export async function scanDirectoryFiles(
             throwIfScanAborted(opts.signal);
           }
         }
-        const identity = identitiesByPath?.get(r.filePath) ?? await identifyAsset(r.filePath, {
+        const retiredIdentity = retiredAssetOwner ? existingIdentity : undefined;
+        const identity = retiredIdentity ?? identitiesByPath?.get(r.filePath) ?? await identifyAsset(r.filePath, {
           assetId,
           rootPath: existingIdentity?.rootPath ?? rootDir,
           source: opts.source ?? 'folder',
@@ -377,9 +399,10 @@ export async function scanDirectoryFiles(
         });
         throwIfScanAborted(opts.signal);
         if (!projectScan && identity.source === 'project') continue;
+        const ownerProjectId = retiredAssetOwner ?? identity.projectId;
         const file: AssetFileEntry = {
           assetId: identity.assetId,
-          ...(projectScan && identity.projectId ? { ownerProjectId: identity.projectId } : {}),
+          ...(projectScan && ownerProjectId ? { ownerProjectId } : {}),
           name: r.name,
           path: r.filePath,
           relativePath: identity.relativePath,

@@ -3,6 +3,7 @@ import { nativeGlobalAssetReferenceRows } from './nativeGlobalAssetReferences';
 import type { ProjectModelTransferAggregate, ProjectModelTransferCapture } from '../types/projectModelTransfer';
 import type { VideoEditorProjectRecord } from '../types/videoEditor';
 import type { NativeAssetRecord } from './indexedDb/nativeAssetRepository';
+import { listNativeRetiredCanvasIds } from './indexedDb/nativeProjectRepository';
 import type { NativeRecoveryAssetMapping, NativeRecoveryFileMapping, NativeRecoveryIdentityMapping } from './nativeProjectRawRecovery';
 import { getAssetImageRecords, getAssetIndexById, getAssetMetaById } from './indexedDbService';
 import type { NativeGlobalRecoveryFile } from './nativeProjectArchiveService';
@@ -60,29 +61,41 @@ export async function captureNativeAssetSnapshots(aggregate: ProjectModelTransfe
   const images = await getAssetImageRecords();
   const snapshots: NativeAssetSnapshot[] = [];
   const roots = new Map<string, string>();
+  const projectId = aggregate.project.id;
+  const activeCanvasIds = new Set(aggregate.canvases.map((canvas) => canvas.id));
+  let retiredCanvasIds: Set<string> | undefined;
   for (const [assetId, reference] of references) {
     const descriptors = files.filter((item) => item.rootRef === reference.rootRef && item.path === reference.path);
     const index = await getAssetIndexById(assetId);
     const global = globalFiles.some((file) => file.assetId === assetId && file.rootRef === reference.rootRef && file.path === reference.path
       && file.bytes === descriptors[0]?.bytes && file.sha256 === descriptors[0]?.sha256);
     if (descriptors.length !== 1 || !index || (global ? index.source !== 'global' : index.source !== 'project' || index.relativePath !== reference.path)
-      || !global && index.projectId !== aggregate.project.id && !aggregate.canvases.some((canvas) => canvas.id === index.projectId)
       || index.size !== descriptors[0].bytes) throw new Error('原素材缺少本项目索引或文件摘要证明');
+    let ownerId = projectId;
     if (!global) {
+      if (!index.projectId) throw new Error('原素材缺少本项目索引或文件摘要证明');
+      if (activeCanvasIds.has(index.projectId)) ownerId = index.projectId;
+      else if (index.projectId !== projectId) {
+        retiredCanvasIds ??= new Set(await listNativeRetiredCanvasIds(projectId));
+        if (!retiredCanvasIds.has(index.projectId)) throw new Error('原素材缺少本项目索引或文件摘要证明');
+      }
       let root = roots.get(reference.rootRef);
       if (!root) {
         root = reference.rootRef === aggregate.project.storageRootRef
-          ? await invoke<string>('resolve_native_project_media_root', { projectId: aggregate.project.id })
-          : await invoke<string>('resolve_native_project_media_subroot', { projectId: aggregate.project.id, rootRef: reference.rootRef, create: false });
+          ? await invoke<string>('resolve_native_project_media_root', { projectId })
+          : await invoke<string>('resolve_native_project_media_subroot', { projectId, rootRef: reference.rootRef, create: false });
         roots.set(reference.rootRef, root);
       }
-      const normalize = (value: string) => { const path = stripVerbatimPrefix(value).replace(/\\/g, '/').replace(/\/+$/, ''); return /^[a-z]:\//i.test(path) ? path.toLowerCase() : path; };
+      const normalize = (value: string) => {
+        const path = stripVerbatimPrefix(value).replace(/\\/g, '/').replace(/\/+$/, '');
+        return /^(?:[a-z]:\/|\/\/)/i.test(path) ? path.toLowerCase() : path;
+      };
       if (!index.rootPath || normalize(index.rootPath) !== normalize(root) || normalize(index.path) !== normalize(`${root}/${reference.path}`)) throw new Error('素材索引根与原生文件根不一致');
     }
     const tags = await getAssetMetaById(assetId), descriptor = descriptors[0];
     const { path: _path, ...portableTags } = tags ?? {};
     const imageRecords = images.filter((image) => image.assetId === assetId);
-    snapshots.push({ assetId, ...reference, ownerId: global ? aggregate.project.id : index.projectId!, bytes: descriptor.bytes, sha256: descriptor.sha256,
+    snapshots.push({ assetId, ...reference, ownerId, bytes: descriptor.bytes, sha256: descriptor.sha256,
       ...(tags ? { tags: portableTags as NativeAssetSnapshot['tags'] } : {}),
       images: imageRecords.map((image) => structuredClone(image)) });
   }
