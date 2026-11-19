@@ -2,14 +2,15 @@
  * seriesSourceService — 回归测试：章节索引与有界读取。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-const files = vi.hoisted(() => ({ read: vi.fn(), dir: vi.fn() }));
+const files = vi.hoisted(() => ({ read: vi.fn(), dir: vi.fn(), upload: vi.fn() }));
 vi.mock('../../src/services/fileService', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/services/fileService')>(),
   getProjectDataDir: files.dir, readAgentAuthorizedTextFile: files.read,
+  uploadSourceFileToProject: files.upload,
   joinPath: (...parts: string[]) => parts.join('/'),
 }));
 import { useAppStore } from '../../src/store/useAppStore';
-import { buildSeriesChapterPrompt, findSeriesChapters, indexSeriesChapters, readSeriesChapter, readSeriesSource } from '../../src/services/seriesSourceService';
+import { attachSeriesOriginalFile, buildSeriesChapterPrompt, findSeriesChapters, indexSeriesChapters, readSeriesChapter, readSeriesSource } from '../../src/services/seriesSourceService';
 import { registerSeriesSourceTools } from '../../src/services/chat/tools/seriesSourceTools';
 import { clearAgentToolRegistryForTests, getAgentTool, type AgentToolContext } from '../../src/services/chat/toolRegistry';
 import { searchMcpToolCatalog } from '../../src/services/mcp/mcpToolCatalog';
@@ -25,7 +26,46 @@ beforeEach(() => {
   ] });
   files.read.mockReset().mockResolvedValue(sourceText);
   files.dir.mockReset().mockResolvedValue('/project');
+  files.upload.mockReset();
   clearAgentToolRegistryForTests();
+});
+
+describe('剧集栏关联原著', () => {
+  it.each(['切换画布', '切换后返回', '更换原著'])('复制期间%s时保留现有原著引用', async (change) => {
+    const updateSeriesInfo = vi.fn().mockResolvedValue(true);
+    useAppStore.setState({ updateSeriesInfo });
+    let finish!: (value: { filePath: string; fileName: string }) => void;
+    files.upload.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const pending = attachSeriesOriginalFile('ep', 'series');
+    if (change === '切换画布') useAppStore.setState({ currentProjectId: 'another' });
+    else if (change === '切换后返回') {
+      useAppStore.setState({ currentProjectId: 'another' });
+      useAppStore.setState({ currentProjectId: 'ep' });
+    }
+    else useAppStore.setState((state) => ({ projects: state.projects.map((item) => item.id === 'series'
+      ? { ...item, series: { originalWork: { relativePath: 'new.txt', fileName: 'new.txt', addedAt: 2 } } } : item) }));
+    finish({ filePath: '/project/book.txt', fileName: 'book.txt' });
+    await expect(pending).rejects.toThrow('原著所属项目或引用已变化');
+    expect(updateSeriesInfo).not.toHaveBeenCalled();
+  });
+
+  it('只提交原项目内的相对路径，并向仓储传递原目标与原引用', async () => {
+    const updateSeriesInfo = vi.fn<ReturnType<typeof useAppStore.getState>['updateSeriesInfo']>();
+    updateSeriesInfo.mockImplementation(async (changes, options) => {
+      options?.assertCurrent?.();
+      useAppStore.setState((state) => ({ projects: state.projects.map((item) => item.id === 'series'
+        ? { ...item, series: { ...item.series, ...changes } } : item) }));
+      options?.assertCurrent?.();
+      return true;
+    });
+    useAppStore.setState({ updateSeriesInfo });
+    files.upload.mockResolvedValue({ filePath: '/project/source/book.txt', fileName: 'book.txt' });
+    await attachSeriesOriginalFile('ep', 'series');
+    expect(updateSeriesInfo).toHaveBeenCalledExactlyOnceWith({ originalWork: {
+      fileName: 'book.txt', relativePath: 'source/book.txt', addedAt: expect.any(Number),
+    } }, expect.objectContaining({ expectedSeriesId: 'series', expectedExchangeEpoch: 0,
+      expectedOriginalWork: expect.objectContaining({ relativePath: 'source/原著.md' }), assertCurrent: expect.any(Function) }));
+  });
 });
 
 describe('章节索引与有界读取', () => {

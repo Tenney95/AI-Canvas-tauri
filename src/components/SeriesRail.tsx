@@ -8,7 +8,7 @@ import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 import { listEpisodes, resolveOpenTargetId, seriesOwnerId } from '../store/store.utils';
-import { getProjectDataDir, uploadSourceFileToProject } from '../services/fileService';
+import { attachSeriesOriginalFile } from '../services/seriesSourceService';
 import ModalOverlay from './shared/ModalOverlay';
 import { ModalPresentationContext } from './shared/modalPresentationContext';
 import PopupCloseButton from './shared/PopupCloseButton';
@@ -18,16 +18,6 @@ import ScriptWorkbench from './ScriptWorkbench';
 import SeriesSourceBrowser from './SeriesSourceBrowser';
 import { useT } from '../i18n';
 import { focusScriptWorkbenchWindow } from '../services/scriptWorkbenchWindowService';
-
-/** 原著文件落在项目数据目录里，只存相对路径，换机器或导入后仍能定位。 */
-function toProjectRelativePath(filePath: string, projectDir: string | null): string {
-  const path = filePath.replace(/\\/g, '/');
-  const dir = (projectDir ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
-  if (dir && path.toLowerCase().startsWith(`${dir.toLowerCase()}/`)) {
-    return path.slice(dir.length + 1);
-  }
-  return path.split('/').pop() ?? path;
-}
 
 /** 草稿由打开它的那次点击初始化，弹窗自己只管编辑，不用 effect 去同步外部值。 */
 function TextEditorDialog({
@@ -268,20 +258,13 @@ function SeriesRailPanel({ onOpenWorkbench }: { onOpenWorkbench: (mode: 'editor'
   };
 
   const handleUploadOriginal = () => runBusy('original', async () => {
-    const uploaded = await uploadSourceFileToProject('txt,md', currentProjectId);
-    if (!uploaded) return;
-    if (!uploaded.filePath) {
-      showToast(t('原著需要保存到项目目录，请在桌面端添加'), 'error');
-      return;
+    try { await attachSeriesOriginalFile(currentProjectId, series.id); }
+    catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      const known = ['原著所属项目不存在', '原著所属项目或引用已变化，请重新添加',
+        '原著需要保存到项目目录，请在桌面端添加', '无法确认原著位于原项目目录，请重新添加', '原著引用未保存，已复制的文件保留在原项目目录'];
+      showToast(t(known.includes(message) ? message : '添加原著失败，请检查项目目录后重试'), 'error');
     }
-    const projectDir = await getProjectDataDir(currentProjectId);
-    await updateSeriesInfo({
-      originalWork: {
-        fileName: uploaded.fileName,
-        relativePath: toProjectRelativePath(uploaded.filePath, projectDir),
-        addedAt: Date.now(),
-      },
-    });
   });
 
   const handleRemoveOriginal = () => runBusy('original', async () => {

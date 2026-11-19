@@ -4,8 +4,51 @@
 import type { SeriesSourceChapter, SeriesSourcePart, SeriesSourceReference, SeriesSourceSnapshot } from '../types/seriesSource';
 import { useAppStore } from '../store/useAppStore';
 import { seriesOwnerId } from '../store/store.utils';
-import { getProjectDataDir, joinPath, readAgentAuthorizedTextFile } from './fileService';
+import { getProjectDataDir, joinPath, readAgentAuthorizedTextFile, uploadSourceFileToProject } from './fileService';
+import { getRelativeAssetPath } from './fs/assetIndex';
+import { configValuesEqual } from './configPatch';
 import { MAX_AGENT_FILE_READ_BYTES } from './chat/fileGrantService';
+
+/** 选文件、复制和写入引用始终使用打开选择器时的项目与原著版本。 */
+export async function attachSeriesOriginalFile(projectId: string, seriesId: string): Promise<void> {
+  const initial = useAppStore.getState();
+  const owner = initial.projects.find((item) => item.id === seriesId);
+  if (!owner) throw new Error('原著所属项目不存在');
+  const expectedOriginalWork = owner.series?.originalWork ? { ...owner.series.originalWork } : null;
+  const expectedExchangeEpoch = owner.exchangeEpoch ?? 0;
+  const runtimeEpoch = initial.projectExecutionContext?.runtimeEpoch;
+  const sameNavigation = (state: typeof initial) => state.currentProjectId === projectId && state.projectLoadStatus === 'ready'
+    && state.switchingProjectName === null && !state.isCreatingProject && !state.isReturningToStartPage
+    && state.projectExecutionContext?.runtimeEpoch === runtimeEpoch;
+  let navigationChanged = false;
+  const assertCurrent = (checkOriginal = true) => {
+    const state = useAppStore.getState();
+    const liveOwner = state.projects.find((item) => item.id === seriesId);
+    if (navigationChanged || !sameNavigation(state)
+      || seriesOwnerId(state.projects, projectId) !== seriesId || !liveOwner
+      || (liveOwner.exchangeEpoch ?? 0) !== expectedExchangeEpoch || liveOwner.dataFolder !== owner.dataFolder
+      || state.config.baseDataDir !== initial.config.baseDataDir
+      || checkOriginal && !configValuesEqual(liveOwner.series?.originalWork ?? null, expectedOriginalWork)) {
+      throw new Error('原著所属项目或引用已变化，请重新添加');
+    }
+  };
+  assertCurrent();
+  const unsubscribe = useAppStore.subscribe((state) => { if (!sameNavigation(state)) navigationChanged = true; });
+  try {
+    const uploaded = await uploadSourceFileToProject('txt,md', projectId, undefined, { assertCurrent });
+    assertCurrent();
+    if (!uploaded) return;
+    if (!uploaded.filePath) throw new Error('原著需要保存到项目目录，请在桌面端添加');
+    const directory = await getProjectDataDir(projectId);
+    assertCurrent();
+    const relativePath = directory ? getRelativeAssetPath(uploaded.filePath, directory) : undefined;
+    if (!relativePath) throw new Error('无法确认原著位于原项目目录，请重新添加');
+    const saved = await useAppStore.getState().updateSeriesInfo({
+      originalWork: { fileName: uploaded.fileName, relativePath, addedAt: Date.now() },
+    }, { expectedSeriesId: seriesId, expectedExchangeEpoch, expectedOriginalWork, assertCurrent: () => assertCurrent(false) });
+    if (!saved) throw new Error('原著引用未保存，已复制的文件保留在原项目目录');
+  } finally { unsubscribe(); }
+}
 
 export interface SeriesSplitMaterialScope {
   seriesId: string;
