@@ -56,6 +56,7 @@ import HistoryTimelinePanel from './canvas/HistoryTimelinePanel';
 import SelectedNodeFlowEdge from './canvas/SelectedNodeFlowEdge';
 import CanvasEdgeLayer from './canvas/CanvasEdgeLayer';
 import CanvasFarNodeLayer from './canvas/CanvasFarNodeLayer';
+import { installCanvasFarNodeBenchmark } from '../services/canvasFarNodeBenchmark';
 import { CanvasEdgePanePointerContext, useCanvasEdgePanePointer } from '../hooks/useCanvasEdgePanePointer';
 import CanvasRadialMenu, { CanvasLongPressIndicator } from './canvas/CanvasRadialMenu';
 import NodePluginToolDialog from './nodes/shared/toolbar/NodePluginToolDialog';
@@ -435,6 +436,9 @@ interface CanvasProps {
 }
 
 function CanvasInner({ onReady }: CanvasProps) {
+  useEffect(() => {
+    if (import.meta.env.DEV) return installCanvasFarNodeBenchmark();
+  }, []);
   const nodes = useAppStore((s) => s.nodes);
   const edges = useAppStore((s) => s.edges);
   const renderableGraph = useMemo(
@@ -925,9 +929,20 @@ function CanvasInner({ onReady }: CanvasProps) {
     [reactFlowInstance],
   );
 
+  const cancelClickConnection = useCallback(() => {
+    if (flowStore.getState().connectionClickStartHandle) {
+      flowStore.setState({ connectionClickStartHandle: null });
+    }
+  }, [flowStore]);
+
+  useEffect(() => {
+    cancelClickConnection();
+  }, [cancelClickConnection, currentProjectId]);
+
   const handleCanvasPaneClick = useCallback(() => {
+    cancelClickConnection();
     closeNodeDialog();
-  }, [closeNodeDialog]);
+  }, [cancelClickConnection, closeNodeDialog]);
 
   const toggleGrid = useCallback(() => setShowGrid((v) => !v), []);
   const toggleLine = useCallback(() => {

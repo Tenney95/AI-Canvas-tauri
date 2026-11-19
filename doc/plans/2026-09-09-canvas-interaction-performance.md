@@ -971,3 +971,101 @@ Canvas 组四轮缩放长帧依次为 0、0、0、1，采样期间位图均复�
 桌面实测在零节点 DOM 时点选已有连线，从已连线的图片右口拖到另一已连线图片左口，正确加入一条线并将副本恢复为 1,353 条。在远景点选已连线图片后可打开标注，已连线视频取消选择后继续播放。拖线期间会回挂全部可见节点。自动化用例已补充，未执行。
 
 继续保留开发版原型。下一步可单独比较连线描边在相机手势期间复用世界坐标缓存的收益，沿用独立命中几何。[gpucanvas 的实现说明](https://berkant.me/blog/gpucanvas-webgpu-infinite-canvas)也采用低清快照与相机解耦；其 GPU 绘制路径依赖 Chrome 的 HTML-in-Canvas，macOS Tauri 使用 WKWebView。
+
+### Windows WebGPU 远景对照分支
+
+在 `codex/windows-gpu-canvas-test` 的 Tauri 开发版中，Canvas 2D 是双平台默认后端。Windows 可按会话显式选择透明 WebGPU 后端。它复用现有位图窗口、卡片绘制、媒体预览缓存和命中逻辑，将卡片按纹理复用并在一次实例绘制中合成。纹理图集上限 32 MiB，不含输出位图和现有预览。GPU 初始化超时、适配器或设备不可用、设备丢失与图集超限时切回 Canvas 2D。macOS 走 Canvas 2D，现有触屏设备继续走 DOM 回退。项目数据、桌面媒体路径和连线绘制沿用原行为。
+
+透明合成器使用预览纹理。它借鉴 gpucanvas 的图集思路，运行时不依赖该库或 HTML-in-Canvas。开发窗口提供独立的 HTML-in-Canvas 探针，在当前 WebView 中将一个 DOM 元素画到 WebGPU 纹理并回读像素。探针结果用于评估上游路径的基础能力。
+
+验收在 Windows 的独立 Git 工作树中执行。已有 Tauri 开发环境时，从仓库根目录运行以下 PowerShell 命令。
+
+```powershell
+git fetch origin
+git worktree add --detach ..\AI-Canvas-GPU-Test origin/codex/windows-gpu-canvas-test
+Set-Location ..\AI-Canvas-GPU-Test
+npm ci
+npm run tauri dev
+```
+
+在桌面开发窗口导入并打开先前的 `NASA-600-dense-1353-desktop.aicanvas` 测试副本。取消选区和缩放锁定，保持测试窗口可见与尺寸一致。按 F12 打开开发者工具，在 Console 执行。
+
+```js
+await canvasFarNodeBenchmark.probeHtmlInCanvas()
+await canvasFarNodeBenchmark.run('canvas')
+await canvasFarNodeBenchmark.run('webgpu')
+```
+
+两个 `run` 调用都先预热缩略图，再按原四段各 650 ms 的轨迹采样，结束后恢复原视口。交替重复四轮并对比 `zoom.p95`、`zoom.over50`、`over50`、实际 `backend` 和窗口 DPR。WebGPU 请求回退时会报出原因。手动检查当前后端时，先缩远到约 12%，再调用 `canvasFarNodeBenchmark.status()`。用 `setMode('canvas')` 恢复 Canvas 2D。可加跑 `run('dom')` 作为原节点对照。报告触点的设备默认使用 DOM，鼠标测试模式见下文。
+
+Windows 和 macOS 均核对深浅主题、连线坐标和点击命中。点选远景图片应恢复原编辑节点，视频播放后取消选择应继续播放，拖线应恢复原端口。macOS 尝试请求 `webgpu` 时应保持 `canvas2d`。本分支已实现，未运行自动化、构建或实机测试。
+
+#### Windows 首轮回传与修正
+
+`b5f6d777` 在 RTX 4070 Ti、WebView2 157.0.4341.60、DPR 1.5 的 Windows 11 桌面实机上启动，测试项目为同一份 600 节点和 1,353 条线副本。WebView2 默认报告 10 个触点，远景层先按触控保护使用 DOM。测试在页面临时将报告值设为 0 后，四轮 Canvas 2D 的缩放 P95 分别为 20.90、27.60、20.80、20.70 ms，中位数 20.85 ms。604 个缩放帧间隔中有 1 个超过 50 ms。深浅主题、连线命中、框选、标注、视频播放、拖线撤销、缩放恢复及保存重开共八项 Canvas 2D 桌面检查通过。
+
+HTML-in-Canvas 探针回读红色像素成功。WebGPU 远景首次调用 `configure()` 时目标像素尺寸仍为 0×0，触发 WebView2 纹理校验并回退到 Canvas 2D。首轮 WebGPU 性能和交互均无有效结果。
+
+已将 GPU 上下文获取和配置推迟到首帧写入有效像素尺寸以后。另给开发版增加显式鼠标测试模式，保留 WebView2 原始触点报告，退出开发窗口或在画布内以触摸、笔输入时解除。触控设备的默认保护继续有效。修改后本次未运行测试，待用户验收。
+
+复测更新到测试分支最新提交，再打开同一测试副本。如果 `status().touchPoints` 大于 0，在 F12 Console 执行 `canvasFarNodeBenchmark.setMouseOnly(true)` 并仅使用鼠标交互。先运行 `run('canvas')` 和 `run('webgpu')` 确认后端，再按原顺序采样。WebGPU 组起止应均为 `backend: 'webgpu'`、`webgpuStatus: 'active'`，原生触点数量保持原值且 `mouseOnly: true`。若仍回退，记录 `webgpuReason` 和实际错误。完成后执行 `canvasFarNodeBenchmark.setMouseOnly(false)`，核对报告触点的设备恢复默认 DOM。
+
+#### Windows 实机复测结果
+
+用户在 Windows 11 实机验收了 `2e8d80c8`。同一项目为 600 节点、1,353 条线，环境为 RTX 4070 Ti、WebView2 157.0.4341.60、DPR 1.5。复测用开发版鼠标模式，原生触点报告保持 10。HTML-in-Canvas 像素回读通过，WebGPU 四轮起止均为 `active`，未复现 0×0 纹理回退。
+
+| 指标 | Canvas 2D | WebGPU |
+| --- | ---: | ---: |
+| 有效轮数 | 4 | 4 |
+| 缩放 P95 中位数 | 20.90 ms | 20.85 ms |
+| 超过 50 ms 的缩放间隔 | 0 / 609 | 0 / 620 |
+| 全程超过 50 ms 的间隔 | 0 | 0 |
+
+八轮的远景位图重绘计数在轨迹起止均一致，600 张预览均已就绪。该轨迹主要测量预热后复用缓存时的平移缩放，两组延迟无可辨别差异。冷启动、跨缓存窗口重绘及不同显卡仍待专项采样。
+
+两组重跑均通过深浅主题和层级、连线命中、框选、标注、视频取消选中后继续播放、拖线撤销及远近切换。测试副本保存后重开，恢复 600 节点、1,353 条线。关闭鼠标测试模式后恢复默认 DOM。早期交互中曾出现约 12% 缩放仍停留 DOM，重载后通过，触发原因待定位。
+
+#### Win 和 Mac 共用 Canvas 2D 的复测
+
+两端 Tauri 开发版在鼠标远景中默认使用 Canvas 2D，WebGPU 通过开发版命令显式选用。报告触点的设备默认回退到原节点。即使当前正在使用 DOM，在画布内用触摸或笔按下也会退出鼠标测试模式。
+
+源码确认两条可持续保留全量 DOM 的路径：单击端口后等待第二个端口，以及 Tab 恢复节点后未离开键盘模式。现在等待第二次点击时只保留来源节点及相关原生节点，命中目标时恢复其端口，点空白处清除待连线。实际拖线及资产拖线期间仍恢复可见节点和端口。键盘焦点离开画布或转回画布鼠标操作时恢复远景。原回传缺少回退原因，新版 `status().farFallbackReason` 补充了触控、倍率、连接拖动、键盘、位图不可用等状态。两条修正均已实现，原 Windows 现象待原轨迹复验。
+
+在先前的 Windows 测试工作树中，退出旧开发窗口，更新原分支后重新启动。继续使用 `NASA-600-dense-1353-desktop.aicanvas` 同一个已导入副本，核对节点数 600、连线数 1,353。
+
+```powershell
+git fetch origin
+git switch --detach origin/codex/windows-gpu-canvas-test
+npm ci
+npm run tauri dev
+```
+
+在桌面窗口的 F12 Console 执行 `canvasFarNodeBenchmark.setMode('canvas')`。若设备报告触点，使用鼠标复测时执行 `canvasFarNodeBenchmark.setMouseOnly(true)`。同一窗口中先验收交互。
+
+1. 由约 35% 缩至 12%，观察 `status()` 从 `backend: 'dom'` 切到 `backend: 'canvas2d'`。远景应减少实际挂载节点及端口。若仍是 DOM，先记录完整 `status()` 和触发前一步操作，再尝试恢复。
+2. 单击一个端口后缩放，未参与的卡片应继续使用 Canvas 2D。点另一个可连接端口应添加一条线，撤销后仍为 1,353 条。再单击一个端口并点空白处取消，确认全量 DOM 没有停留。分别核对连线点击、拖线与撤销。
+3. 用 Tab 在节点和画布外控件间切换，确认节点可获得焦点。焦点离开画布，或改用画布上的鼠标点击或滚轮，应恢复远景。核对框选、标注、视频取消选中后继续播放，以及浅色和深色下的卡片与连线。
+4. 有触屏或笔的设备，在鼠标测试模式下触摸画布。预期 `mouseOnly: false`、`backend: 'dom'`、`farFallbackReason: 'touch'`。用下一次触控手势检查原生交互。关闭或重开鼠标模式后再继续适用的对照。
+
+Windows 正式采样使用同一窗口、主题、DPR 和小地图状态，清空选中并关闭弹窗，解除缩放锁定。原轨迹为四段各 650 ms，每轮自动预热并恢复初始视口。在 Console 执行以下代码，每组四轮。
+
+```js
+const bench = canvasFarNodeBenchmark
+bench.setMouseOnly(true)
+const results = []
+try {
+  for (const mode of ['dom', 'canvas', 'canvas', 'dom', 'dom', 'canvas', 'canvas', 'dom']) {
+    results.push(await bench.run(mode))
+  }
+} finally {
+  bench.setMode('canvas')
+  bench.setMouseOnly(false)
+}
+console.table(results.map(({ mode, before, after, zoom, over50 }) => ({
+  mode, startBackend: before.backend, endBackend: after.backend,
+  zoomP95: zoom.p95, zoomFrames: zoom.frames, zoomLongFrames: zoom.over50,
+  zoomExcessMs: zoom.excess50, totalLongFrames: over50, mountedNodes: after.mountedNodeCount,
+})))
+```
+
+回传八轮原始结果及交互中的异常状态。比较各组缩放 P95 中位数与超过 50 ms 的帧间隔，结合采样帧数和超阈值累计时间判断。macOS 使用同一份副本和测试分支可走同一入口，设备没有报告触点时无需显式开启鼠标测试。本次未运行测试，待用户验收。
