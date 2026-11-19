@@ -22,7 +22,7 @@ import { hydrateNativeProjectView, nativeEpisodeDisplayNumbers, projectNativeCat
 import { listEpisodes, projectMemoryOwnerId, resolveOpenTargetId, seriesOwnerId } from '../../src/store/store.utils';
 import { nativeMediaInputMaterial } from '../../src/services/nativeMediaInput';
 import { retainNativeMediaOutputs } from '../../src/services/indexedDb/nativeMediaCollectionRepository';
-import { restoreProjectRecord } from '../../src/services/storageService';
+import { restoreProjectRecord, serializeProjectRecord } from '../../src/services/storageService';
 
 const nativeDisplayIo = vi.hoisted(() => ({ inspect: vi.fn(), assetUrl: vi.fn(), normalizeMedia: vi.fn() }));
 vi.mock('@tauri-apps/api/core', async (original) => ({ ...await original<typeof import('@tauri-apps/api/core')>(),
@@ -275,7 +275,7 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     return { promise, resolve };
   }
 
-  it.each(['切集', '新增', '重排'] as const)('%s 准备重载时的迟到编辑仍留在原画布且可以保存', async (operation) => {
+  it.each(['切集', '新增', '重排', '作品改名', '删除他集'] as const)('%s 准备重载时的迟到编辑仍留在原画布且可以保存', async (operation) => {
     const initial = await createNativeProject({ projectId, name: '隔离剧集', kind: 'series' });
     const first = await createNativeEpisode({ projectId, expectedProjectEpoch: initial.project.epoch, episodeId: episodeA, canvasId: canvasA, name: '第一集' });
     const aggregate = await createNativeEpisode({ projectId, expectedProjectEpoch: first.project.epoch, episodeId: episodeB, canvasId: canvasB, name: '第二集' });
@@ -287,14 +287,21 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
       await release.promise;
       return record;
     });
-    const task = operation === '切集' ? store.getState().switchProject(canvasB)
-      : operation === '新增' ? store.getState().addEpisodes([{ name: '新集' }]) : store.getState().moveEpisode(canvasA, 1);
+    const actions = store.getState();
+    const operations = {
+      切集: () => actions.switchProject(canvasB),
+      新增: () => actions.addEpisodes([{ name: '新集' }]),
+      重排: () => actions.moveEpisode(canvasA, 1),
+      作品改名: () => actions.renameProject(projectId, '作品新名称'),
+      删除他集: () => actions.deleteProject(canvasB),
+    };
+    const task = operations[operation]();
     await entered.promise;
     const lateNode = { ...sourceNode(), data: { ...sourceNode().data, prompt: '等待期间的新编辑' } };
     store.setState({ nodes: [lateNode] });
     release.resolve();
     const result = await task;
-    if (operation === '切集') expect(result).toBeUndefined();
+    if (operation === '切集' || operation === '删除他集') expect(result).toBeUndefined();
     else if (operation === '新增') expect(result).toHaveLength(1);
     else expect(result).toBe(true);
 
@@ -302,8 +309,35 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     await expect(store.getState().saveCurrentProjectSilent()).resolves.toBe(canvasA);
     const persisted = (await readNativeProjectCapture(projectId))!.aggregate;
     expect(persisted.canvases.find((canvas) => canvas.id === canvasA)?.nodes).toEqual([lateNode]);
-    expect(persisted.canvases.find((canvas) => canvas.id === canvasB)?.nodes).toEqual([]);
+    expect(persisted.canvases.find((canvas) => canvas.id === canvasB)?.nodes).toEqual(operation === '删除他集' ? undefined : []);
+    if (operation === '作品改名') expect(persisted.project.name).toBe('作品新名称');
     if (operation === '切集') await expect(store.getState().switchProject(canvasB)).resolves.toBe(canvasB);
+  });
+
+  it.each(['分集改名', '删除他集', '删除当前集', '删除整项目'] as const)('%s 核对前置保存实际提交的画布版本', async (operation) => {
+    const initial = await createNativeProject({ projectId, name: '隔离剧集', kind: 'series' });
+    const first = await createNativeEpisode({ projectId, expectedProjectEpoch: initial.project.epoch, episodeId: episodeA, canvasId: canvasA, name: '第一集' });
+    const aggregate = await createNativeEpisode({ projectId, expectedProjectEpoch: first.project.epoch, episodeId: episodeB, canvasId: canvasB, name: '第二集' });
+    const store = fixtureStore(aggregate);
+    await expect(store.getState().switchProject(canvasA)).resolves.toBe(canvasA);
+    const entered = deferred<void>(), release = deferred<void>();
+    vi.mocked(serializeProjectRecord).mockImplementationOnce(async (record) => { entered.resolve(); await release.promise; return record; });
+    const actions = store.getState();
+    const deleteTargets = { 删除他集: canvasB, 删除当前集: canvasA, 删除整项目: projectId };
+    const task = operation === '分集改名' ? actions.renameProject(canvasA, '本集新名称')
+      : actions.deleteProject(deleteTargets[operation]);
+    await entered.promise;
+    const lateNode = { ...sourceNode(), data: { ...sourceNode().data, prompt: '保存期间的新编辑' } };
+    store.setState({ nodes: [lateNode] });
+    release.resolve();
+    await task;
+
+    expect(store.getState()).toMatchObject({ currentProjectId: canvasA, nodes: [lateNode], switchingProjectName: null, projectLoadStatus: 'ready' });
+    await expect(store.getState().saveCurrentProjectSilent()).resolves.toBe(canvasA);
+    const persisted = (await readNativeProjectCapture(projectId))!.aggregate;
+    expect(persisted.canvases.find((canvas) => canvas.id === canvasA)?.nodes).toEqual([lateNode]);
+    expect(persisted.episodes.find((episode) => episode.id === episodeA)?.name).toBe(operation === '分集改名' ? '本集新名称' : '第一集');
+    expect(persisted.canvases.some((canvas) => canvas.id === canvasB)).toBe(operation !== '删除他集');
   });
 
   function pauseBeforeDatabaseCommit() {

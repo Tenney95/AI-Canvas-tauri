@@ -329,24 +329,33 @@ function nativeEpisodeSettings(settings: ProjectSettings, defaults?: ProjectSett
 
 async function mutateNativeMetadata(set: ProjectSliceSet, get: ProjectSliceGet, binding: NativeProjectViewItem['nativeView'],
   mutate: (capture: NonNullable<Awaited<ReturnType<typeof readNativeProjectCapture>>>) => Promise<unknown>, freeze = true): Promise<boolean> {
-  const initial = get(), activeId = initial.currentProjectId;
+  const initial = get(), activeId = initial.currentProjectId, sequence = projectSwitchSequence;
   const active = nativeBinding(initial.projects.find((item) => item.id === activeId))?.projectId === binding.projectId;
-  if (active && activeId && await get().saveCurrentProjectSilent() !== activeId) return false;
-  if (projectImportsApplying.has(binding.projectId)) return false;
-  const before = get(), sequence = projectSwitchSequence;
-  const previousContext = before.projectExecutionContext;
+  const runtime = active ? nativeRuntime.get(get) : undefined;
+  const isCurrent = () => {
+    const state = get();
+    return state.currentProjectId === activeId && projectSwitchSequence === sequence
+      && state.projectLoadStatus === 'ready' && (!active || nativeRuntime.get(get) === runtime);
+  };
+  const canStart = () => {
+    const state = get();
+    return isCurrent() && !projectImportsApplying.has(binding.projectId) && state.switchingProjectName === null
+      && !state.isCreatingProject && !state.isReturningToStartPage;
+  };
+  if (!canStart()) return false;
+  if (active && (!runtime || runtime.activeId !== activeId || await get().saveCurrentProjectSilent() !== activeId)) return false;
+  if (!canStart()) return false;
+  const previousContext = get().projectExecutionContext;
   const assertCurrent = () => {
-    const latest = get();
-    if (latest.currentProjectId !== activeId || projectSwitchSequence !== sequence
-      || active && (latest.nodes !== before.nodes || latest.edges !== before.edges || latest.groups !== before.groups || latest.dramaAssets !== before.dramaAssets)) {
-      throw new Error('项目在操作期间发生变化，请重试');
-    }
+    if (!isCurrent()) throw new Error('项目在操作期间发生变化，请重试');
   };
   projectImportsApplying.add(binding.projectId);
   if (active && freeze) set({ switchingProjectName: '正在保存项目', projectExecutionContext: null });
   let previousRevision: number | undefined;
   let writeStarted = false;
   try {
+    if (runtime) await runtime.tail;
+    assertCurrent();
     const capture = await readNativeProjectCapture(binding.projectId);
     if (!capture) throw new Error('项目不存在');
     previousRevision = capture.changeRevision;
@@ -357,16 +366,16 @@ async function mutateNativeMetadata(set: ProjectSliceSet, get: ProjectSliceGet, 
     const entry = catalog.native.find((item) => item.project.id === binding.projectId);
     if (!entry) throw new Error('项目目录不可用');
     assertCurrent();
-    if (active && activeId) await activateNativeProject(set, get, entry, activeId, assertCurrent, true);
+    if (active && activeId) await activateNativeProject(set, get, entry, activeId, assertCurrent, true, runtime);
     else set((state) => ({ projects: [...state.projects.filter((item) => nativeBinding(item)?.projectId !== binding.projectId), ...projectNativeCatalogEntry(entry)] }));
     return true;
   } catch (error) {
-    if (active && get().currentProjectId === activeId && sequence === projectSwitchSequence) {
+    if (active && isCurrent()) {
       let unchanged = !writeStarted;
-      if (previousRevision !== undefined) {
+      if (writeStarted && previousRevision !== undefined) {
         try { unchanged = (await readNativeProjectCapture(binding.projectId))?.changeRevision === previousRevision; } catch { /* 无法确认结果，阻止继续保存 */ }
       }
-      if (get().currentProjectId === activeId && sequence === projectSwitchSequence) set(unchanged
+      if (isCurrent()) set(unchanged
         ? { projectLoadStatus: 'ready', projectExecutionContext: previousContext }
         : { projectLoadStatus: 'error', projectExecutionContext: null });
     }
@@ -374,7 +383,7 @@ async function mutateNativeMetadata(set: ProjectSliceSet, get: ProjectSliceGet, 
     return false;
   } finally {
     projectImportsApplying.delete(binding.projectId);
-    if (active && freeze) set({ switchingProjectName: null });
+    if (active && freeze && sequence === projectSwitchSequence) set({ switchingProjectName: null });
   }
 }
 
@@ -3195,51 +3204,84 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       const activeId = state.currentProjectId;
       const activeBinding = nativeBinding(state.projects.find((item) => item.id === activeId));
       const activeOwner = activeBinding?.projectId === native.projectId;
-      if (activeOwner && activeId && await get().saveCurrentProjectSilent() !== activeId) return;
       if (projectImportsApplying.has(native.projectId)) return;
+      const navigationSequence = projectSwitchSequence;
+      const runtime = activeOwner ? nativeRuntime.get(get) : undefined;
+      if (activeOwner && (!runtime || runtime.activeId !== activeId || await get().saveCurrentProjectSilent() !== activeId)) return;
+      const latest = get();
+      if (projectSwitchSequence !== navigationSequence || latest.currentProjectId !== activeId
+        || activeOwner && nativeRuntime.get(get) !== runtime || projectImportsApplying.has(native.projectId)
+        || latest.projectLoadStatus !== 'ready' || latest.switchingProjectName !== null
+        || latest.isCreatingProject || latest.isReturningToStartPage) return;
       const sequence = ++projectSwitchSequence;
-      const assertCurrent = () => { if (sequence !== projectSwitchSequence || get().currentProjectId !== activeId) throw new Error('项目已切换，删除已停止'); };
-      const previousContext = get().projectExecutionContext;
+      const isCurrent = () => {
+        const current = get();
+        return sequence === projectSwitchSequence && current.currentProjectId === activeId
+          && current.projectLoadStatus === 'ready' && (!activeOwner || nativeRuntime.get(get) === runtime);
+      };
+      const removingCurrent = activeOwner && (!native.episodeId || native.canvasId === activeId);
+      const assertCanDelete = () => {
+        if (!isCurrent()) throw new Error('项目已切换，删除已停止');
+        if (removingCurrent && nativeCanvasHasUnsavedEdits(runtime, get())) {
+          throw new Error('保存期间画布有新编辑，已保留当前画布，请保存后再删除');
+        }
+      };
+      const previousContext = latest.projectExecutionContext;
       let previousRevision: number | undefined, writeStarted = false;
       let projectDeleted = false;
+      const commitDeletion = async (write: (options: { signal: AbortSignal }) => Promise<unknown>) => {
+        assertCanDelete();
+        const controller = new AbortController();
+        const unsubscribe = api.subscribe(() => {
+          try { assertCanDelete(); } catch (error) { controller.abort(error); }
+        });
+        try {
+          writeStarted = true;
+          await write({ signal: controller.signal });
+        } catch (error) {
+          controller.signal.throwIfAborted();
+          throw error;
+        } finally { unsubscribe(); }
+      };
       const recycleRequestId = options?.recycleMedia === true && !native.episodeId && fileService.isTauriEnv()
         ? crypto.randomUUID() : undefined;
       projectImportsApplying.add(native.projectId);
       if (activeOwner) set({ switchingProjectName: '正在删除项目', projectExecutionContext: null });
       try {
+        if (runtime) await runtime.tail;
+        assertCanDelete();
         const capture = await readNativeProjectCapture(native.projectId);
         if (!capture) throw new Error('项目不存在');
         previousRevision = capture.changeRevision;
-        assertCurrent();
+        assertCanDelete();
         const recycle = recycleRequestId ? await import('../services/fs/nativeProjectRecycle') : undefined;
         const recycleRoot = recycle ? await recycle.readNativeProjectRecycleRoot(native.projectId) : undefined;
-        if (recycle) assertCurrent();
+        assertCanDelete();
         if (native.episodeId) {
           const episode = capture.aggregate.episodes.find((item) => item.id === native.episodeId);
           const body = capture.aggregate.episodeContents.find((item) => item.episodeId === native.episodeId);
           const canvas = capture.aggregate.canvases.find((item) => item.id === native.canvasId);
           if (!episode || !body || !canvas) throw new Error('分集身份已变化');
           cancelProjectCanvasDerivations(canvas.id); stopProjectAgentTasks(canvas.id);
-          writeStarted = true;
-          await deleteNativeEpisode({ projectId: native.projectId, expectedProjectEpoch: capture.aggregate.project.epoch,
+          await commitDeletion((options) => deleteNativeEpisode({ projectId: native.projectId, expectedProjectEpoch: capture.aggregate.project.epoch,
             episodeId: episode.id, expectedCanvasId: canvas.id, expectedEpisodeRevision: episode.revision,
-            expectedContentRevision: body.revision, expectedCanvasEpoch: canvas.epoch, expectedCanvasRevision: canvas.revision });
+            expectedContentRevision: body.revision, expectedCanvasEpoch: canvas.epoch, expectedCanvasRevision: canvas.revision }, options));
         } else {
           const ids = capture.aggregate.canvases.map((canvas) => canvas.id);
           ids.forEach((canvasId) => { cancelProjectCanvasDerivations(canvasId); stopProjectAgentTasks(canvasId); });
-          writeStarted = true;
-          await deleteNativeProject({ projectId: native.projectId, expectedProjectEpoch: capture.aggregate.project.epoch,
-            expectedChangeRevision: capture.changeRevision, ...(recycleRequestId ? { recycleRequestId } : {}) });
+          await commitDeletion((options) => deleteNativeProject({ projectId: native.projectId, expectedProjectEpoch: capture.aggregate.project.epoch,
+            expectedChangeRevision: capture.changeRevision, ...(recycleRequestId ? { recycleRequestId } : {}) }, options));
           projectDeleted = true;
           stopPollingForDeletedProjects(ids);
         }
         const catalog = await loadProjectCatalog();
-        assertCurrent();
+        assertCanDelete();
         const entry = catalog.native.find((item) => item.project.id === native.projectId);
         if (entry) {
           if (activeOwner && activeId) {
             const nextId = activeId === id ? (entry.episodes[0]?.canvasId ?? entry.project.id) : activeId;
-            await activateNativeProject(set, get, entry, nextId, assertCurrent, nextId === activeId);
+            const keepCanvas = nextId === activeId;
+            await activateNativeProject(set, get, entry, nextId, assertCanDelete, keepCanvas, keepCanvas ? runtime : undefined);
             get().loadConversationsForProject(nextId).catch((e) => console.warn('[删除分集] 加载会话失败:', e));
             if (nextId !== activeId) {
               rememberActiveProject(nextId);
@@ -3249,6 +3291,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
             }
           } else set((current) => ({ projects: [...current.projects.filter((item) => nativeBinding(item)?.projectId !== native.projectId), ...projectNativeCatalogEntry(entry)] }));
         } else {
+          if (!projectDeleted) throw new Error('分集已删除，作品目录无法刷新，已保留当前画布');
           set((current) => ({ projects: current.projects.filter((item) => nativeBinding(item)?.projectId !== native.projectId),
             ...(activeOwner ? { currentProjectId: null, projectExecutionContext: undefined, projectName: '', nodes: [], edges: [], groups: [],
               history: [], historyIndex: -1, selectedNodeIds: [], activeConversationId: null, projectLoadStatus: 'ready' as const } : {}) }));
@@ -3264,12 +3307,12 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           }
         }
       } catch (error) {
-        if (activeOwner && get().currentProjectId === activeId && sequence === projectSwitchSequence) {
+        if (activeOwner && isCurrent()) {
           let unchanged = !writeStarted;
           if (writeStarted && previousRevision !== undefined) try {
             unchanged = (await readNativeProjectCapture(native.projectId))?.changeRevision === previousRevision;
           } catch { /* 无法核实提交结果 */ }
-          if (get().currentProjectId === activeId && sequence === projectSwitchSequence) set(unchanged
+          if (isCurrent()) set(unchanged
             ? { projectLoadStatus: 'ready', projectExecutionContext: previousContext }
             : { projectLoadStatus: 'error', projectExecutionContext: null });
         }
@@ -3277,7 +3320,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           : error instanceof Error ? error.message : '删除失败，原数据已保留', 'error');
       } finally {
         projectImportsApplying.delete(native.projectId);
-        if (activeOwner) set({ switchingProjectName: null });
+        if (activeOwner && sequence === projectSwitchSequence) set({ switchingProjectName: null });
       }
       return;
     }
