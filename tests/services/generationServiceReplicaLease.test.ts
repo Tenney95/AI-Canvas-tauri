@@ -3,12 +3,14 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BaseNodeData } from '../../src/types';
+import type { CanvasContext } from '../../src/types/project';
 import type { AppState } from '../../src/store/useAppStore';
+import type { CharacterDirectionGridResult } from '../../src/services/onnxService';
 
 const mocks = vi.hoisted(() => ({
-  store: { currentProjectId: 'p', nodes: [] as Array<{ id: string; data: BaseNodeData }>,
+  store: { currentProjectId: 'p', nodes: [] as Array<{ id: string; type?: BaseNodeData['type']; position?: { x: number; y: number }; data: BaseNodeData }>,
     config: { theme: 'dark' as const, providers: {} }, commitToHistory: vi.fn(), getCurrentRevision: vi.fn(() => 0),
-    workflows: [], projects: [], customStyles: [], updateNodeDataTransient: vi.fn(), updateNodeData: vi.fn(),
+    workflows: [], projects: [], customStyles: [], addNode: vi.fn(), updateNodeDataTransient: vi.fn(), updateNodeData: vi.fn(),
     recordOutputHistory: vi.fn(), showToast: vi.fn(), mergeDramaExtract: vi.fn(),
     normalizeNativeMediaGenerationInputs: vi.fn(), projectExecutionContext: undefined as AppState['projectExecutionContext'] },
   generate: vi.fn(), persist: vi.fn(), guardFresh: true, completeGuard: vi.fn(),
@@ -18,9 +20,13 @@ const mocks = vi.hoisted(() => ({
   tasks: [] as Array<import('../../src/services/pollManager').PendingTask>,
   polling: new Map<string, { controller: AbortController; signal: AbortSignal }>(),
   imageOutputs: vi.fn(() => 1),
+  createDirectionGrid: vi.fn<(filePath: string) => Promise<CharacterDirectionGridResult>>(),
+  convertFileSrc: vi.fn<(filePath: string) => string>(),
+  moveToTrash: vi.fn<(filePath: string, options?: { throwOnError?: boolean; nativeProjectId?: string }) => Promise<void>>(),
 }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => mocks.store } }));
-vi.mock('../../src/store/store.utils', () => ({ generateId: () => 'test-id', derivedNodePlacement: vi.fn() }));
+vi.mock('../../src/store/store.utils', () => ({ generateId: () => 'test-id',
+  derivedNodePlacement: vi.fn(() => ({ position: { x: 240, y: 30 } })) }));
 vi.mock('../../src/services/aiService', () => ({ generateVideo: mocks.generate, generateImage: mocks.image,
   generateImagesBatch: mocks.imageBatch, generateAudio: mocks.audio, generateText: mocks.text, generateTextResult: mocks.textResult,
   buildPanoramaPrompt: (prompt: string) => prompt }));
@@ -29,14 +35,15 @@ vi.mock('../../src/services/ai/mediaModelCapabilities', async (original) => ({
   ...await original<typeof import('../../src/services/ai/mediaModelCapabilities')>(),
   resolveImageOutputsPerJob: mocks.imageOutputs,
 }));
-vi.mock('../../src/services/fileService', () => ({ persistMediaUrlToProjectData: mocks.persist }));
+vi.mock('../../src/services/fileService', () => ({ persistMediaUrlToProjectData: mocks.persist, moveToTrash: mocks.moveToTrash }));
 vi.mock('../../src/services/imageBatchService', () => ({ applyImageBatchResults: mocks.applyBatch,
   failImageBatchNodes: vi.fn(), prepareImageBatchNodes: mocks.prepareBatch }));
 vi.mock('../../src/services/projectSettingsService', () => ({ getProjectModelKind: () => 'video', parseProjectModelRef: () => undefined,
   resolveProjectGenerationPrompt: ({ prompt }: { prompt: string }) => prompt }));
 vi.mock('../../src/services/dramaAssetExtract', () => ({ postProcessDramaExtractOutput: mocks.processText,
   prepareDramaExtractPrompt: (prompt: string) => prompt }));
-vi.mock('@tauri-apps/api/core', () => ({ convertFileSrc: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ convertFileSrc: mocks.convertFileSrc }));
+vi.mock('../../src/services/onnxService', () => ({ createCharacterDirectionGrid: mocks.createDirectionGrid }));
 vi.mock('../../src/services/ai/videoRequestResolver', () => ({ resolveVideoSubmissionControls: (options: { seedanceDuration?: number }) => ({ seedanceDuration: options.seedanceDuration }) }));
 vi.mock('../../src/services/shotlistService', () => ({ generateShotlistRows: mocks.shotlist }));
 vi.mock('../../src/services/directorPrevisService', () => ({ generateDirectorPrevis: mocks.director }));
@@ -95,6 +102,7 @@ beforeEach(() => {
   vi.clearAllMocks(); mocks.guardFresh = true; mocks.store.currentProjectId = 'p';
   mocks.tasks = [];
   mocks.store.projectExecutionContext = undefined;
+  mocks.store.getCurrentRevision.mockReset().mockReturnValue(0);
   mocks.store.normalizeNativeMediaGenerationInputs.mockReset().mockResolvedValue({ targetPatch: {}, nodePatches: new Map() });
   mocks.polling.clear();
   mocks.store.nodes = [{ id: 'video', data: data() }];
@@ -178,6 +186,135 @@ describe('节点扩图的独立输入', () => {
     expect(await run()).toEqual({ success: false, message: '扩图请选择单图输出模型' });
     expect(mocks.image).not.toHaveBeenCalled(); expect(mocks.imageBatch).not.toHaveBeenCalled();
     expect(mocks.prepareBatch).not.toHaveBeenCalled();
+  });
+});
+
+describe('原生角色八向宫格', () => {
+  const context: CanvasContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'runtime',
+    projectId: 'p', projectEpoch: 1, canvasId: 'p', episodeId: null, canvasEpoch: 1, canvasRevision: 0 };
+  const nodeId = 'character';
+  const operationId = '32e78e03-1b5f-4523-b99f-1a35580d1998';
+  const artifactId = `native-media-${operationId}`;
+  const relativePath = `media/${'1'.repeat(64)}.png`;
+  const filePath = `/project/${relativePath}`;
+  const grid: CharacterDirectionGridResult = { grid_path: '/project/media/character-grid.png', cell_size: 512, grid_size: 1536 };
+  const prompt = '生成同一角色的八个方向';
+  const generate = () => executeGeneration(nodeId, prompt, 'character-8-direction-grid');
+
+  function deliver(patch: Partial<BaseNodeData> = {}) {
+    const source = mocks.store.nodes[0];
+    mocks.store.nodes = [{ ...source, data: { ...source.data, status: 'success', artifactId, relativePath,
+      filePath, imageUrl: `asset://localhost/project/${relativePath}`, ...patch } }];
+    // 原生保存已推进画布修订，已交付的原图仍应允许本地派生。
+    mocks.store.projectExecutionContext = { ...context, canvasRevision: context.canvasRevision + 1 };
+    mocks.store.getCurrentRevision.mockReturnValue(context.canvasRevision + 1);
+    throw Object.assign(new Error('原图已交付'), { name: 'NativeMediaTaskDelivered', nativeOperationId: operationId });
+  }
+
+  beforeEach(() => {
+    mocks.store.projectExecutionContext = context;
+    mocks.store.nodes = [{ id: nodeId, type: 'ai-image', position: { x: 0, y: 30 },
+      data: { type: 'ai-image', role: 'generator', label: '角色', prompt, provider: 'general', model: 'general/image' } }];
+    mocks.createDirectionGrid.mockReset().mockResolvedValue(grid);
+    mocks.convertFileSrc.mockReset().mockReturnValue('asset://localhost/project/media/character-grid.png');
+    mocks.moveToTrash.mockReset().mockResolvedValue(undefined);
+  });
+
+  it('沿用单个原生生成任务并从已落盘的本轮原图派生一个 3×3 分镜节点', async () => {
+    mocks.imageBatch.mockImplementationOnce(async () => deliver());
+
+    expect(await generate()).toEqual({ success: true });
+    expect(mocks.imageBatch).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ nodeId, prompt }), 1, undefined, expect.any(Function));
+    expect(mocks.image).not.toHaveBeenCalled();
+    expect(mocks.persist).not.toHaveBeenCalled();
+    expect(mocks.createDirectionGrid).toHaveBeenCalledExactlyOnceWith(filePath);
+    expect(mocks.store.addNode).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      type: 'ai-storyboard',
+      data: expect.objectContaining({ type: 'ai-storyboard', role: 'source', status: 'success',
+        filePath: grid.grid_path, imageWidth: grid.grid_size, imageHeight: grid.grid_size,
+        storyboardRows: 3, storyboardCols: 3 }),
+    }));
+    expect(mocks.store.nodes[0].data).toMatchObject({ status: 'success', artifactId, filePath, relativePath });
+    expectNoCommit();
+  });
+
+  it.each([
+    { why: '节点展示的是另一轮成功原图', patch: { artifactId: 'native-media-f32362ca-3970-4632-b2fb-2f22a36fe742' } },
+    { why: '节点尚未交付成功', patch: { status: 'loading' as const } },
+    { why: '节点缺少本机文件地址', patch: { filePath: undefined } },
+    { why: '节点缺少已归档的相对路径', patch: { relativePath: undefined } },
+  ])('$why 时跳过本地派生', async ({ patch }) => {
+    mocks.imageBatch.mockImplementationOnce(async () => deliver(patch));
+
+    expect((await generate()).success).toBe(true);
+    expect(mocks.createDirectionGrid).not.toHaveBeenCalled();
+    expect(mocks.store.addNode).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    Object.assign(new Error('仍待保存原图'), { name: 'NativeMediaTaskPending', nativeOperationId: operationId, localResultAvailable: true }),
+    new Error('模型拒绝原图请求'),
+  ])('原图未交付（%s）时跳过派生', async (error) => {
+    mocks.imageBatch.mockRejectedValueOnce(error);
+
+    expect(await generate()).toMatchObject({ success: false, message: error.message });
+    expect(mocks.imageBatch).toHaveBeenCalledOnce();
+    expect(mocks.createDirectionGrid).not.toHaveBeenCalled();
+    expect(mocks.store.addNode).not.toHaveBeenCalled();
+  });
+
+  it('提交守卫在本节点的参考图被替换后阻止付费请求', async () => {
+    const source = mocks.store.nodes[0];
+    const originalImage = { filePath: '/project/reference.png', imageUrl: 'asset://localhost/project/reference.png' };
+    mocks.store.nodes = [{ ...source, data: { ...source.data, ...originalImage } }];
+    const submit = vi.fn();
+    mocks.imageBatch.mockImplementationOnce(async (_params, _count, _signal, assertCurrent: () => Promise<void>) => {
+      const current = mocks.store.nodes[0];
+      mocks.store.nodes = [{ ...current, data: { ...current.data, imageUrl: 'asset://localhost/project/replacement.png' } }];
+      await assertCurrent();
+      submit();
+      deliver();
+    });
+
+    expect(await executeGeneration(nodeId, `${prompt}\n@{${nodeId}:角色}`, 'character-8-direction-grid')).toEqual({
+      success: false, message: '原媒体输入已变化，未提交请求',
+    });
+    expect(submit).not.toHaveBeenCalled();
+    expect(mocks.createDirectionGrid).not.toHaveBeenCalled();
+  });
+
+  it('本地处理失败时保留已交付的原图和生成成功状态', async () => {
+    mocks.imageBatch.mockImplementationOnce(async () => deliver());
+    mocks.createDirectionGrid.mockRejectedValueOnce(new Error('本地处理失败'));
+
+    expect(await generate()).toEqual({ success: true });
+    expect(mocks.createDirectionGrid).toHaveBeenCalledExactlyOnceWith(filePath);
+    expect(mocks.store.addNode).not.toHaveBeenCalled();
+    expect(mocks.store.showToast).toHaveBeenCalledWith('原图已生成，8 向宫格处理失败', 'error');
+    expect(mocks.store.nodes[0].data).toMatchObject({ status: 'success', artifactId, filePath, relativePath });
+    expectNoCommit();
+  });
+
+  it.each(['画布已重新打开', '已交付原图被替换'])('处理期间%s时不写回分镜节点', async (change) => {
+    const gridWork = deferred<CharacterDirectionGridResult>();
+    mocks.imageBatch.mockImplementationOnce(async () => deliver());
+    mocks.createDirectionGrid.mockReturnValueOnce(gridWork.promise);
+    const generation = generate();
+    await vi.waitFor(() => expect(mocks.createDirectionGrid).toHaveBeenCalledExactlyOnceWith(filePath));
+    if (change === '画布已重新打开') {
+      mocks.store.projectExecutionContext = { ...context, runtimeEpoch: 'replacement-runtime', canvasRevision: 1 };
+    } else {
+      const source = mocks.store.nodes[0];
+      mocks.store.nodes = [{ ...source, data: { ...source.data, filePath: '/project/replaced.png' } }];
+    }
+    gridWork.resolve(grid);
+
+    expect(await generation).toEqual({ success: true });
+    expect(mocks.store.addNode).not.toHaveBeenCalled();
+    expect(mocks.moveToTrash).toHaveBeenCalledOnce();
+    expect(mocks.moveToTrash.mock.calls[0][0]).toBe(grid.grid_path);
+    expectNoCommit();
   });
 });
 

@@ -13,14 +13,14 @@ import type { AppConfig, BaseNodeData, ImagePostProcess } from '../types';
 import { MAX_IMAGE_BATCH_COUNT, type GenerationRecovery, type MediaTaskReceipt, type TextGenerationResult } from '../types/aiTypes';
 import { generateText, generateTextResult, generateImage, generateImagesBatch, generateVideo, generateAudio, buildPanoramaPrompt } from './aiService';
 import { persistAudioGenerationResult } from './ai/generateAudio';
-import { persistMediaUrlToProjectData, type PersistedProjectMedia } from './fileService';
+import { moveToTrash, persistMediaUrlToProjectData, type PersistedProjectMedia } from './fileService';
 import {
   applyImageBatchResults,
   failImageBatchNodes,
   prepareImageBatchNodes,
 } from './imageBatchService';
 import { derivedNodePlacement, generateId } from '../store/store.utils';
-import { useAppStore } from '../store/useAppStore';
+import { useAppStore, type AppState } from '../store/useAppStore';
 import {
   parseProjectModelRef,
   resolveProjectGenerationPrompt,
@@ -36,6 +36,7 @@ import { registerCanvasDerivation, isCanvasDerivationFresh, completeCanvasDeriva
 import { videoInputFingerprint, videoInputFingerprintMaterial } from './videoBatchPlanning';
 import { registerNativeVideoSubmissionGuard } from './nativeVideoSubmission';
 import { nativeMediaInputMaterial } from './nativeMediaInput';
+import { nativeMediaOutputArtifactId } from './nativeMediaCollectionCanvas';
 import { beginComfyNodeDelivery, cancelNodePolling, cleanupNodePolling, completeComfyNodeTask, completeMediaNodeTask, getPendingTasksForProject, pauseComfyNodeDelivery, pauseMediaNodeTask, pauseMediaTask, prepareMediaNodeGeneration, registerMediaNodeOperation, registerNodePolling, isMediaTaskPausedError, showNativeComfyVideoRecovery } from './pollManager';
 import { isProjectExpectedContextCurrent } from './projectExecutionContext';
 import { resolveGenerationNodeData } from '../utils/nodeGeneration';
@@ -49,6 +50,67 @@ export interface GenerationResult {
   success: boolean;
   message?: string;
   recovery?: GenerationRecovery;
+}
+
+const DIRECTION_IMAGE_FIELDS = ['filePath', 'imageUrl', 'sourceUrl', 'thumbnailUrl', 'relativePath',
+  'storageRootRef', 'artifactId', 'assetId', 'mediaVersion', 'mattingMask', 'annotation', 'annotationLayer'] as const;
+
+function sameDirectionImage(first: BaseNodeData, second: BaseNodeData): boolean {
+  return DIRECTION_IMAGE_FIELDS.every((field) => configValuesEqual(first[field], second[field]));
+}
+
+async function addCharacterDirectionGrid(
+  nodeId: string,
+  original: { filePath?: string } | { nativeOperationId: string },
+  ownsGeneration: (state: AppState) => boolean,
+  notify: AppState['showToast'],
+): Promise<void> {
+  const state = useAppStore.getState();
+  if (!ownsGeneration(state)) return;
+  const source = state.nodes.find((node) => node.id === nodeId);
+  const filePath = source?.data.filePath;
+  const failed = () => notify(t('原图已生成，8 向宫格处理失败'), 'error');
+  if (!source || source.data.status !== 'success' || !filePath
+    || ('nativeOperationId' in original
+      ? !source.data.relativePath || source.data.artifactId !== nativeMediaOutputArtifactId(original.nativeOperationId, 0)
+      : filePath !== original.filePath)) {
+    failed();
+    return;
+  }
+  // 原生交付会推进画布 revision，宫格从已交付的产物重新登记派生。
+  const guard = registerCanvasDerivation(state, nodeId);
+  if (!guard) return;
+  const currentSource = () => {
+    const current = useAppStore.getState();
+    const node = current.nodes.find((item) => item.id === nodeId);
+    return ownsGeneration(current) && isCanvasDerivationFresh(guard, current)
+      && node && node.type === source.type && node.data.status === 'success'
+      && sameDirectionImage(node.data, source.data) ? { current, node } : undefined;
+  };
+  let unusedPath: string | undefined;
+  try {
+    const { createCharacterDirectionGrid } = await import('./onnxService');
+    if (!currentSource()) return;
+    const grid = await createCharacterDirectionGrid(filePath);
+    unusedPath = grid.grid_path;
+    const target = currentSource();
+    if (!target) return;
+    target.current.addNode({
+      id: `node-${generateId()}`,
+      type: 'ai-storyboard',
+      ...derivedNodePlacement(target.node, 60),
+      data: { label: `${target.node.data.label} 8向宫格`, type: 'ai-storyboard', role: 'source', status: 'success',
+        imageUrl: convertFileSrc(grid.grid_path), filePath: grid.grid_path, imageWidth: grid.grid_size, imageHeight: grid.grid_size,
+        storyboardRows: 3, storyboardCols: 3, nodeWidth: 360, nodeHeight: 360 },
+    });
+    unusedPath = undefined;
+    notify(t('角色 8 向宫格已生成'));
+  } catch {
+    if (currentSource()) failed();
+  } finally {
+    completeCanvasDerivation(guard);
+    if (unusedPath) await moveToTrash(unusedPath, { throwOnError: true }).catch(() => undefined);
+  }
 }
 
 function mediaRecovery(error: Error, receipt?: MediaTaskReceipt): GenerationRecovery {
@@ -432,6 +494,7 @@ export async function executeGeneration(
     ? videoInputFingerprintMaterial(videoNode, store) : undefined;
   const nativeMediaMaterial = ['ai-image', 'ai-audio', 'ai-animation', 'ai-panorama'].includes(nodeType) && store.projectExecutionContext?.modelGeneration === 1 && videoNode
     ? nativeMediaInputMaterial(videoNode, store, 'media-input-v3') : undefined;
+  const directionReference = postProcess === 'character-8-direction-grid' ? videoNode?.data : undefined;
   const hasShotReference = nodeType === 'ai-video'
     && `${rawPrompt}\n${JSON.stringify(data.workflowInputs ?? {})}`.includes('/shot/');
   const hasProtectedVideoInputs = hasShotReference || (nodeType === 'ai-video'
@@ -440,11 +503,12 @@ export async function executeGeneration(
   const videoOwner = nodeType === 'ai-video' ? Symbol(nodeId) : undefined;
   if (videoOwner) videoSubmissionOwners.set(submissionKey, videoOwner);
   const promptOverride = overridePrompt === undefined ? {} : { prompt: rawPrompt };
+  const ownsGeneration = (state: AppState) => leaseValid && !lease?.signal?.aborted && !savingSignal?.aborted
+    && state.currentProjectId === submittingProjectId && endOperation?.isCurrent?.() !== false;
   const isStillCurrentSubmission = () => {
     const s = useAppStore.getState();
     const currentVideo = hasProtectedVideoInputs ? s.nodes.find((node) => node.id === nodeId) : undefined;
-    return leaseValid && !lease?.signal?.aborted && !savingSignal?.aborted && s.currentProjectId === submittingProjectId && s.nodes.some((n) => n.id === nodeId)
-      && endOperation?.isCurrent?.() !== false
+    return ownsGeneration(s) && s.nodes.some((n) => n.id === nodeId)
       && (!guardedSubmission || (!!cloudGuard && isCanvasDerivationFresh(cloudGuard, s)))
       && (!videoOwner || videoSubmissionOwners.get(submissionKey) === videoOwner)
       && (!hasProtectedVideoInputs || (!!currentVideo
@@ -459,7 +523,8 @@ export async function executeGeneration(
   const nativeMediaGuard = nativeMediaMaterial === undefined ? undefined : registerNativeVideoSubmissionGuard(async () => {
     if (lease) await assertLease();
     const current = useAppStore.getState(), node = current.nodes.find((item) => item.id === nodeId);
-    if (!isStillCurrentSubmission() || !node || nativeMediaInputMaterial(node, current, 'media-input-v3') !== nativeMediaMaterial) throw new Error('原媒体输入已变化，未提交请求');
+    if (!isStillCurrentSubmission() || !node || nativeMediaInputMaterial(node, current, 'media-input-v3') !== nativeMediaMaterial
+      || directionReference && !sameDirectionImage(directionReference, node.data)) throw new Error('原媒体输入已变化，未提交请求');
   });
   store.updateNodeDataTransient(nodeId, { status: 'loading', error: undefined, videoTaskState: undefined, mediaTaskState: undefined });
   let batchNodeIds: string[] | undefined;
@@ -490,8 +555,9 @@ export async function executeGeneration(
       const batchCount = cloudWorkflow || isAnimation ? 1 : Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(Number(data.batchCount) || 1)));
       const outputsPerJob = workflowId || isAnimation ? 1 : resolveImageOutputsPerJob(nodeModel, nodeProvider, store.config);
       const outpaintReferences = data.outpaintInput?.url ? { image_urls: [data.outpaintInput.url] } : {};
+      if (postProcess && (batchCount > 1 || outputsPerJob > 1)) throw new Error(outputsPerJob > 1
+        ? '固定多候选模型暂不支持图片后处理，请选择单图模型' : '批量生成暂不支持图片后处理，请将数量设为 1');
       if (nativeMediaGuard) {
-        if (postProcess) throw new Error('请先生成原媒体，再执行图片后处理，避免将后处理误记为生成回执');
         await generateImagesBatch({ prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
           ...(batchOptions?.imagePromptResolution ? { imagePromptResolution: batchOptions.imagePromptResolution } : {}),
           imageSize, imageQuality, imageBackground: data.imageBackground === '' ? '' : imageBackground, ...imageOutput, aspectRatio, nodeId,
@@ -502,8 +568,6 @@ export async function executeGeneration(
         throw new Error('原生图片生成缺少耐久原回执，未确认交付');
       }
       if (batchCount > 1 || outputsPerJob > 1) {
-        if (postProcess) throw new Error(outputsPerJob > 1
-          ? '固定多候选模型暂不支持图片后处理，请选择单图模型' : '批量生成暂不支持图片后处理，请将数量设为 1');
         const outputCount = batchCount * outputsPerJob;
         const commitHistory = batchOptions?.history !== 'transient' && !(lease && imageBatchLeases.has(lease));
         batchNodeIds = prepareImageBatchNodes({
@@ -596,24 +660,7 @@ export async function executeGeneration(
       });
 
       if (postProcess === 'character-8-direction-grid' && persisted.filePath) {
-        const { createCharacterDirectionGrid } = await import('./onnxService');
-        try {
-          const gridResult = await createCharacterDirectionGrid(persisted.filePath);
-          if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
-
-          const sourceNode = useAppStore.getState().nodes.find((item) => item.id === nodeId);
-          if (sourceNode) {
-            store.addNode({
-              id: `node-${generateId()}`,
-              type: 'ai-storyboard',
-              ...derivedNodePlacement(sourceNode, 60),
-              data: { label: `${data.label} 8向宫格`, type: 'ai-storyboard', role: 'source', status: 'success', imageUrl: convertFileSrc(gridResult.grid_path), filePath: gridResult.grid_path, imageWidth: gridResult.grid_size, imageHeight: gridResult.grid_size, storyboardRows: 3, storyboardCols: 3, nodeWidth: 360, nodeHeight: 360 },
-            });
-          }
-          notify('角色 8 向宫格已生成');
-        } catch {
-          notify(`原图已生成，8 向宫格处理失败`, 'error');
-        }
+        await addCharacterDirectionGrid(nodeId, { filePath: persisted.filePath }, ownsGeneration, notify);
       } else {
         notify(isAnimation ? '帧动画生成完成' : '图片生成完成');
       }
@@ -863,7 +910,17 @@ export async function executeGeneration(
   } catch (err) {
     comfyDeliveryError = err;
     if (err instanceof Error && err.name === 'NativeMediaTaskDelivered') {
-      mediaDelivered = true; return { success: true };
+      mediaDelivered = true;
+      if (postProcess === 'character-8-direction-grid' && nodeType === 'ai-image' && executionContext?.kind === 'canvas') {
+        const ownsDeliveredImage = (state: AppState) => ownsGeneration(state)
+          && isProjectExpectedContextCurrent(executionContext, state, { checkCanvasRevision: false });
+        if ('nativeOperationId' in err && typeof err.nativeOperationId === 'string' && err.nativeOperationId) {
+          await addCharacterDirectionGrid(nodeId, { nativeOperationId: err.nativeOperationId }, ownsDeliveredImage, notify);
+        } else if (ownsDeliveredImage(useAppStore.getState())) {
+          notify(t('原图已生成，8 向宫格处理失败'), 'error');
+        }
+      }
+      return { success: true };
     }
     const pausedError = isMediaTaskPausedError(err);
     if (err instanceof Error && (err.name === 'NativeVolcengineTaskPending' || err.name === 'NativeMediaTaskPending')) {

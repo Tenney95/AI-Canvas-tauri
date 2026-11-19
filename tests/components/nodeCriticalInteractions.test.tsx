@@ -3281,3 +3281,52 @@ describe('MJ generation job controls', () => {
     expect(onSubmit).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('character direction shortcuts', () => {
+  afterEach(() => {
+    vi.doUnmock('framer-motion');
+    vi.doUnmock('../../src/i18n');
+  });
+
+  it.each([
+    { id: 'char-8dir-run', draft: '', image: { imageUrl: 'blob:character' }, addCurrentImage: true },
+    { id: 'char-8dir-walk', draft: '@{extra:服装}', image: { thumbnailUrl: 'blob:character' }, addCurrentImage: true },
+    { id: 'char-8dir-walk', draft: '@{extra:服装} @{character:已引用图片}', image: { imageUrl: 'blob:character' }, addCurrentImage: false },
+  ])('passes the existing image to $id while preserving explicit references in "$draft"', async ({
+    id, draft, image, addCurrentImage,
+  }) => {
+    const store = Object.assign(createStore([
+      { id: 'character', type: 'ai-image', position: { x: 0, y: 0 },
+        data: { type: 'ai-image', label: '角色参考', prompt: draft, ...image } },
+      { id: 'extra', type: 'ai-image', position: { x: 0, y: 0 },
+        data: { type: 'ai-image', label: '服装', imageUrl: 'blob:costume' } },
+    ], () => 1), { userPresets: [], presetFolders: [], userSkills: [], agentPackageSkills: [] });
+    await installReactHookDriver((initial, index) => index === 1 ? true : initial);
+    installStoreMock(store);
+    vi.doMock('../../src/i18n', () => ({ useT: () => (key: string) => key, t: (key: string) => key }));
+    vi.doMock('framer-motion', async () => ({
+      ...await vi.importActual<typeof import('framer-motion')>('framer-motion'), useReducedMotion: () => false,
+    }));
+    vi.doUnmock('../../src/components/nodes/shared/PromptPanel');
+    const { default: Panel } = await import('../../src/components/nodes/shared/PromptPanel');
+    const { fillTemplate, getSlashCommands } = await import('../../src/components/nodes/shared/slashCommands');
+    const preset = getSlashCommands('ai-image').find((item) => item.id === 'character')
+      ?.children?.find((item) => item.id === id);
+    if (!preset?.promptTemplate) throw new Error(`缺少角色快捷指令：${id}`);
+    const onSubmit = vi.fn();
+    const onChange = vi.fn();
+    const tree = Panel({ nodeId: 'character', nodeType: 'ai-image', prompt: draft,
+      onSubmit, onChange, onModelSelect: vi.fn() });
+    const menu = findElement(tree, (element) => componentName(element) === 'SlashCommandMenu');
+    const filled = fillTemplate(preset.promptTemplate, menu.props.currentPrompt as string);
+    const onSelect = menu.props.onSelect as (prompt: string, direct: boolean, override: typeof preset) => void;
+    onSelect(filled, true, preset);
+
+    expect(onSubmit).toHaveBeenCalledExactlyOnceWith(
+      addCurrentImage ? `${filled}\n@{character:角色参考}` : filled,
+      'character-8-direction-grid',
+    );
+    expect(onChange).not.toHaveBeenCalled();
+    expect(store.nodes[0].data.prompt).toBe(draft);
+  });
+});

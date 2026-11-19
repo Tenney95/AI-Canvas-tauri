@@ -806,13 +806,24 @@ export default function PromptPanel({
     if (shouldTrigger) {
       // Direct trigger: combine preset template + input box content, call model directly
       // Don't update the input box — the preset prompt is only used for this generation
-      handleSingleSubmit(filledPrompt, preset?.postProcess);
+      let submittedPrompt = filledPrompt;
+      if (preset?.postProcess === 'character-8-direction-grid' && nodeId) {
+        const node = useAppStore.getState().nodes.find((item) => item.id === nodeId);
+        const image = node?.data.imageUrl || node?.data.thumbnailUrl;
+        const alreadyReferenced = [...filledPrompt.matchAll(/@\{([^:}]+):[^}]+\}/g)].some((match) => match[1] === nodeId);
+        if (typeof image === 'string' && image.trim() && !alreadyReferenced) {
+          const label = node?.data.label?.replace(/[{}\r\n]/g, ' ').trim() || t('当前图片');
+          // 显式引用优先；当前图片仅补到本次提交。
+          submittedPrompt += `\n@{${nodeId}:${label}}`;
+        }
+      }
+      handleSingleSubmit(submittedPrompt, preset?.postProcess);
     } else {
       // Insert mode: update input box with filled template, user can edit before generating
       onChange(filledPrompt);
       onContinuousEditEnd?.();
     }
-  }, [handleSingleSubmit, onChange, onContinuousEditEnd, onModelSelect, onChangeImageSize, onChangeAspectRatio]);
+  }, [handleSingleSubmit, nodeId, onChange, onContinuousEditEnd, onModelSelect, onChangeImageSize, onChangeAspectRatio, t]);
 
   // ── 从 Toolbar 点击快捷指令后的自动执行 ──
   useEffect(() => {
