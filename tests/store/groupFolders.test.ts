@@ -56,7 +56,7 @@ vi.mock('../../src/services/pollManager', () => ({
 
 import { useAppStore } from '../../src/store/useAppStore';
 import { copyFileToProjectData, finishProjectFileRelocation, getProjectDataDir, removeEmptyProjectGroupFolder } from '../../src/services/fileService';
-import { persistMediaRelocation, pendingMediaRelocations } from '../../src/services/indexedDb/mediaRelocations';
+import { completeMediaRelocation, persistMediaRelocation, pendingMediaRelocations } from '../../src/services/indexedDb/mediaRelocations';
 import { copyNodeMedia } from '../../src/services/nodeMediaCopy';
 
 function node(id: string): Node<BaseNodeData> {
@@ -87,6 +87,7 @@ beforeEach(() => {
   vi.mocked(getProjectDataDir).mockResolvedValue(PROJECT_DIR);
   vi.mocked(removeEmptyProjectGroupFolder).mockClear();
   vi.mocked(persistMediaRelocation).mockClear();
+  vi.mocked(completeMediaRelocation).mockClear();
   vi.mocked(pendingMediaRelocations).mockClear();
   vi.mocked(pendingMediaRelocations).mockResolvedValue([]);
 });
@@ -725,6 +726,61 @@ describe('缩放分组后同步成员归属', () => {
 });
 
 describe('分组与本地文件夹同步', () => {
+  function markNativeCanvasActive() {
+    useAppStore.setState({ projectExecutionContext: { kind: 'canvas', schemaVersion: 2, modelGeneration: 1,
+      runtimeEpoch: 'native-group-test', projectId: 'native-owner', projectEpoch: 0, canvasId: 'p1',
+      episodeId: 'native-episode', canvasEpoch: 0, canvasRevision: useAppStore.getState().getCurrentRevision() } });
+  }
+
+  it('新项目归档仅改当前节点的副本，保留原件、同路径节点和历史', async () => {
+    const path = `${PROJECT_DIR}/shared.png`;
+    const source = (id: string) => ({ ...node(id), data: { ...node(id).data, filePath: path,
+      imageUrl: `asset://${path}`, relativePath: 'shared.png', assetId: 'original-asset' } });
+    useAppStore.setState({ nodes: [source('grouped'), node('b'), source('outside')] });
+    createGroup(['grouped', 'b']);
+    markNativeCanvasActive();
+    const { history } = useAppStore.getState();
+
+    await useAppStore.getState().syncGroupFiles();
+
+    const state = useAppStore.getState();
+    expect(moveProjectFileToFolder).toHaveBeenCalledExactlyOnceWith(path, PROJECT_DIR, '分组', { preserveSource: true, forceCopy: false });
+    expect(state.nodes.find((item) => item.id === 'grouped')?.data).toMatchObject({
+      filePath: `${PROJECT_DIR}/分组/shared.png`, relativePath: '分组/shared.png',
+    });
+    expect(state.nodes.find((item) => item.id === 'grouped')?.data.assetId).toBeUndefined();
+    expect(state.nodes.find((item) => item.id === 'outside')?.data).toMatchObject({ filePath: path, assetId: 'original-asset' });
+    expect(state.history).toBe(history);
+    expect(state.saveCurrentProjectSilent).toHaveBeenCalledOnce();
+    expect(persistMediaRelocation).not.toHaveBeenCalled();
+    expect(finishProjectFileRelocation).not.toHaveBeenCalled();
+  });
+
+  it('新项目摘要产物和子根素材不归档，旧日志也不改写引用或删除原件', async () => {
+    const digest = 'a'.repeat(64);
+    const nodes = [`media/${digest}.png`, `imports/retained-${digest}/${digest}.png`, 'roots/r2-root/asset.png',
+      `media/${digest}.mp4`, 'shared.png'].map((path, index) => ({
+      ...node(`source-${index}`), data: { ...node(`source-${index}`).data,
+        relativePath: path, filePath: `${PROJECT_DIR}/${path}` },
+    }));
+    useAppStore.setState({ nodes });
+    createGroup(nodes.slice(0, 3).map((item) => item.id));
+    markNativeCanvasActive();
+    const pending = nodes.slice(3).map((item) => ({ oldPath: item.data.filePath, newPath: `${PROJECT_DIR}/old-archive/${item.id}`,
+      projectId: 'p1', assetUrl: `asset://${PROJECT_DIR}/old-archive/${item.id}`, relativePath: `old-archive/${item.id}` }));
+    vi.mocked(pendingMediaRelocations).mockResolvedValueOnce(pending);
+
+    await useAppStore.getState().syncGroupFiles();
+
+    const state = useAppStore.getState();
+    expect(state.nodes.filter((item) => item.type !== 'group').map((item) => item.data.filePath))
+      .toEqual(nodes.map((item) => item.data.filePath));
+    expect(vi.mocked(completeMediaRelocation).mock.calls).toEqual(pending.map((item) => [item]));
+    expect(moveProjectFileToFolder).not.toHaveBeenCalled();
+    expect(state.saveCurrentProjectSilent).not.toHaveBeenCalled();
+    expect(finishProjectFileRelocation).not.toHaveBeenCalled();
+  });
+
   it('MCP 导入的深层图片入组后提交路径迁移并放入分组目录', async () => {
     const path = `${PROJECT_DIR}/images/EP000/portrait.png`;
     const imported = { ...node('imported'), type: 'source-image', data: { ...node('imported').data,
