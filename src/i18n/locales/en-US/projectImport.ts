@@ -15,6 +15,7 @@ const projectImport: Record<string, string> = {
   '正在处理，请稍候…': 'Processing…', '取消导入': 'Cancel import', '已取消导入，原项目未改变': 'Import cancelled; the original project is unchanged',
   '共享素材同步': 'Shared asset sync', '重新读取项目': 'Reload project',
   '共享素材同步尚未完成，当前画布为只读。': 'Shared asset sync is pending. The canvas is read-only.',
+  '素材正在导入，请等导入完成后再离开当前画布': 'Wait for the asset import to finish before leaving this canvas.',
   '素材预览': 'Media preview', '收起全文': 'Collapse text', '显示全文': 'Show full text', '个分集': 'episodes', '个素材': 'assets',
   '旧项目包没有可靠共同版本。更新时每项差异都需要人工选择；请仔细核对分集与删除项。': 'Legacy archives have no verified common revision. Review each difference, especially episodes and deletions.',
   '补充最初交接的项目包': 'Provide the original handoff archive', '我确认这是双方开始修改前的共同版本；选择错误会影响自动合并和删除判断。': 'I confirm this is the common revision before either side edited. An incorrect choice affects merges and deletions.',

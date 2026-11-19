@@ -140,6 +140,12 @@ async function readNativeProjectWriteBlock(projectId: string): Promise<NativePro
   return transfer ? { projectId, ...transfer } : null;
 }
 
+function hasMediaImportBlockingNavigation(state: AppState): boolean {
+  if (!hasPendingCanvasMediaImport(state)) return false;
+  state.showToast(t('素材正在导入，请等导入完成后再离开当前画布'), 'info');
+  return true;
+}
+
 function hasNativeProjectDrafts(state: AppState, runtime: NativeRuntime | undefined, projectId: string): boolean {
   if (nativeCanvasHasUnsavedEdits(runtime, state)) return true;
   try {
@@ -2068,6 +2074,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     const currentOwner = nativeBinding(current.projects.find((item) => item.id === current.currentProjectId))?.projectId;
     if (options?.signal?.aborted || current.isCreatingProject || current.isReturningToStartPage
       || currentOwner && projectImportsApplying.has(currentOwner)) return undefined;
+    if (hasMediaImportBlockingNavigation(current)) return undefined;
     const leavingReadonly = current.projectLoadStatus === 'readonly';
     if (leavingReadonly && current.hasUnsavedNativeProjectWriteBlock()) {
       current.showToast(NATIVE_PROJECT_PENDING_EDITS, 'error');
@@ -3609,6 +3616,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     if (options?.signal?.aborted || source.isReturningToStartPage || source.isCreatingProject
       || source.projectLoadStatus === 'loading') return;
     if (!source.projects.some((project) => project.id === requestedId)) return;
+    if (hasMediaImportBlockingNavigation(source)) return;
     if (source.projectLoadStatus === 'readonly' && source.hasUnsavedNativeProjectWriteBlock()) {
       source.showToast(NATIVE_PROJECT_PENDING_EDITS, 'error');
       return;
@@ -3749,6 +3757,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     const source = get(), projectId = source.currentProjectId, sequence = projectSwitchSequence;
     if (!projectId) return true;
     if (source.isReturningToStartPage || source.isCreatingProject || source.switchingProjectName !== null) return false;
+    if (hasMediaImportBlockingNavigation(source)) return false;
     try {
       // 工作台可能仍在画布背后或独立窗口中。确认草稿时暂不冻结保存上下文。
       const prepareWorkbench = prepareScriptWorkbenchStartPage();
@@ -3760,6 +3769,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     const state = get();
     if (state.currentProjectId !== projectId || projectSwitchSequence !== sequence
       || state.isReturningToStartPage || state.isCreatingProject || state.switchingProjectName !== null) return false;
+    if (hasMediaImportBlockingNavigation(state)) return false;
     const leavingReadonly = state.projectLoadStatus === 'readonly';
     if (leavingReadonly && state.hasUnsavedNativeProjectWriteBlock()) {
       state.showToast(NATIVE_PROJECT_PENDING_EDITS, 'error');

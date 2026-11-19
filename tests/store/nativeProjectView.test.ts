@@ -23,6 +23,7 @@ import { listEpisodes, projectMemoryOwnerId, resolveOpenTargetId, seriesOwnerId 
 import { nativeMediaInputMaterial } from '../../src/services/nativeMediaInput';
 import { retainNativeMediaOutputs } from '../../src/services/indexedDb/nativeMediaCollectionRepository';
 import { restoreProjectRecord, serializeProjectRecord } from '../../src/services/storageService';
+import { trackCanvasMediaImport } from '../../src/services/canvasDerivationGuard';
 
 const nativeDisplayIo = vi.hoisted(() => ({ inspect: vi.fn(), assetUrl: vi.fn(), normalizeMedia: vi.fn() }));
 vi.mock('@tauri-apps/api/core', async (original) => ({ ...await original<typeof import('@tauri-apps/api/core')>(),
@@ -208,7 +209,7 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
   }
 
   async function putPendingUpdate(operationId: string, phase: 'media_publishing' | 'db_committed') {
-    const database = (await openNativeProjectDatabase(false))!;
+    const database = (await openNativeProjectDatabase(false, {}))!;
     try {
       await transact(database, 'readwrite', {}, (tx) => new Promise<void>((resolve, reject) => {
         const write = tx.objectStore(TRANSFER).add({ id: operationId, projectId, targetProjectId: projectId, operationId,
@@ -255,6 +256,30 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     expect(store.getState()).toMatchObject({ projectLoadStatus: 'ready', nativeProjectWriteBlock: null, nodes: [draft] });
     await expect(store.getState().saveCurrentProjectSilent()).resolves.toBe(canvasA);
     expect((await readNativeProjectCapture(projectId))?.aggregate.canvas?.nodes).toEqual([draft]);
+  });
+
+  it('素材尚未回填时保留当前画布，回填后切换会保存素材关联', async () => {
+    const initial = await createNativeProject({ projectId, canvasId: canvasA, name: '当前作品' });
+    await createNativeProject({ canvasId: canvasB, name: '其他作品' });
+    const store = fixtureStore(initial);
+    await store.getState().refreshProjectCatalog();
+    expect(await store.getState().switchProject(canvasA)).toBe(canvasA);
+    const placeholder = sourceNode();
+    store.setState({ nodes: [placeholder] });
+    let complete!: () => void;
+    const pending = trackCanvasMediaImport(canvasA, new Promise<void>((resolve) => { complete = resolve; }), placeholder.id);
+    try {
+      await expect(store.getState().switchProject(canvasB)).resolves.toBeUndefined();
+      await expect(store.getState().createProject('新项目')).resolves.toBeUndefined();
+      await expect(store.getState().returnToStartPage()).resolves.toBe(false);
+      expect(store.getState().currentProjectId).toBe(canvasA);
+      expect((await readNativeProjectCapture(projectId))?.aggregate.canvas?.nodes).toEqual([]);
+      store.setState({ nodes: [{ ...placeholder, data: { ...placeholder.data, status: 'success', videoUrl: 'clip.mp4', relativePath: 'clip.mp4' } }] });
+    } finally { complete(); await pending; }
+    await expect(store.getState().switchProject(canvasB)).resolves.toBe(canvasB);
+    expect((await readNativeProjectCapture(projectId))?.aggregate.canvas?.nodes).toMatchObject([
+      { id: placeholder.id, data: { status: 'success', videoUrl: 'clip.mp4', relativePath: 'clip.mp4' } },
+    ]);
   });
 
   it('有在途媒体任务时仍能保存普通项目剧本和助手文本模型，保留原任务租约', async () => {
