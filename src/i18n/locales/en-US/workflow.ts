@@ -41,6 +41,7 @@ const workflow: Record<string, string> = {
   "选择执行这个工作流的 ComfyUI 服务端": "Select the ComfyUI server to run this workflow",
   "{count} 个节点": "{count} nodes",
   "编辑工作流：{name}": "Edit workflow: {name}",
+  "重命名工作流「{name}」": "Rename workflow “{name}”",
   "删除工作流": "Delete workflow",
   "重试打开": "Retry opening",
   "已是默认{type}节点，点击取消": "Default {type} node; click to clear",

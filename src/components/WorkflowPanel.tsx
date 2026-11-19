@@ -121,6 +121,97 @@ const itemVariants = {
   }),
 };
 
+function WorkflowCardName({ name, fileName, onRename }: {
+  name: string;
+  fileName: string;
+  onRename?: (name: string) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState<string>();
+  const [saving, setSaving] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
+  const renameButtonRef = useRef<HTMLButtonElement>(null);
+  const nextName = draft?.trim();
+
+  const closeEditor = () => {
+    setDraft(undefined);
+    setSaveFailed(false);
+    requestAnimationFrame(() => renameButtonRef.current?.focus());
+  };
+
+  const saveName = async () => {
+    if (saving || !nextName || !onRename) return;
+    if (nextName === name) {
+      closeEditor();
+      return;
+    }
+    setSaving(true);
+    setSaveFailed(false);
+    try {
+      await onRename(nextName);
+      closeEditor();
+    } catch {
+      setSaveFailed(true);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="wf-item-info">
+      {draft === undefined ? (
+        <div className="flex min-w-0 items-center gap-1">
+          <span className="wf-item-name min-w-0" title={name}>{name}</span>
+          {onRename && (
+            <button
+              ref={renameButtonRef}
+              type="button"
+              className="ui-btn ui-btn--sm ui-btn--ghost shrink-0"
+              aria-label={t('重命名工作流「{name}」', { name })}
+              onClick={() => setDraft(name)}
+            >
+              {t('重命名')}
+            </button>
+          )}
+        </div>
+      ) : (
+        <form
+          className="flex min-w-0 flex-wrap items-center gap-1"
+          aria-busy={saving}
+          onSubmit={(event) => { event.preventDefault(); void saveName(); }}
+          onKeyDown={(event) => {
+            const composing = event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229;
+            if (event.key === 'Enter' && composing) event.preventDefault();
+            if (event.key === 'Escape') {
+              event.stopPropagation();
+              if (!composing && !saving) {
+                event.preventDefault();
+                closeEditor();
+              }
+            }
+          }}
+        >
+          <input
+            autoFocus
+            className="ui-input ui-input--sm flex-1 basis-28"
+            aria-label={t('工作流名称')}
+            value={draft}
+            maxLength={120}
+            readOnly={saving}
+            onFocus={(event) => event.currentTarget.select()}
+            onChange={(event) => setDraft(event.target.value)}
+          />
+          <div className="flex shrink-0 gap-1">
+            <button type="submit" className="ui-btn ui-btn--sm ui-btn--primary" disabled={saving || !nextName}>{t('保存')}</button>
+            <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" disabled={saving} onClick={closeEditor}>{t('取消')}</button>
+          </div>
+        </form>
+      )}
+      <span className="wf-item-meta wf-item-file" title={fileName}>{fileName}</span>
+      {saveFailed && <p role="alert" className="ui-error mt-1">{t('保存工作流失败，请重试')}</p>}
+    </div>
+  );
+}
+
 export default function WorkflowPanel() {
   useT();
   const {
@@ -738,10 +829,13 @@ export default function WorkflowPanel() {
                         variants={itemVariants}
                       >
                         <div className="wf-item-row">
-                          <div className="wf-item-info">
-                            <span className="wf-item-name" title={wf.name}>{wf.name}</span>
-                            <span className="wf-item-meta wf-item-file" title={wf.fileName}>{wf.fileName}</span>
-                          </div>
+                          <WorkflowCardName
+                            name={wf.name}
+                            fileName={wf.fileName}
+                            onRename={importSource === 'comfyui'
+                              ? (name) => updateWorkflow(wf.id, { name, updatedAt: Date.now() })
+                              : undefined}
+                          />
                           <div className="flex shrink-0 items-center gap-1">
                             <span className="wf-item-date">
                               {new Date(wf.createdAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}

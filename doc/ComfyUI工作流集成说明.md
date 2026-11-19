@@ -122,6 +122,8 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 
 工作流管理面板（设置 → ComfyUI → 管理工作流，或画布右键菜单）选 `.json` 文件，解析成功后即时识别 IO 节点并预览。**必须是 API 格式**，导入界面格式的文件会因为识别不到 `class_type` 而一个 IO 节点都认不出来。
 
+已导入的 ComfyUI 工作流可通过卡片标题旁的「重命名」修改显示名称。输入后点击「保存」或按 Enter，按 Esc 可取消。已有画布引用和默认节点设置会继续关联同一个工作流。在已打开的 ComfyUI 标签页保存节点与布局时，工作流库会沿用当前名称。
+
 ### 4.2 内置工作流播种
 
 [builtinWorkflows.ts](../src/services/builtinWorkflows.ts) 内置了 6 个 MiniMax H3 视频工作流（普通/Turbo 图生视频、3 个 PDD，以及 12GB 极速图生视频）、DLSS5 图片与视频材质增强各 1 项、2 个 AuK、3 个 Qwen3 和 2 个 Breeze TTS 2 音频工作流，共 15 项。每项可独立声明分类，未声明时保留视频分类。API JSON 位于 `src/assets/comfyWorkflows/`，界面格式放在同级 `ui/` 里；打包仅包含仍在内置目录中的资源。

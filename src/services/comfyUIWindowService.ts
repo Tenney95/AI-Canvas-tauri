@@ -209,8 +209,8 @@ async function persistComfyUIWorkflow(saved: ComfyUIWorkflowSavePayload): Promis
   const ioNodes = extractComfyUIIONodes(saved.fileContent);
   if (saved.saveMode === 'update') {
     if (!existing) throw new Error('原工作流已删除，无法更新；需要保留当前内容请另存');
+    // 编辑标签携带打开时的名称，回写节点和布局时保留工作流库里的当前名称。
     await store.updateWorkflow(saved.workflowId, {
-      name: saved.name,
       category: saved.category,
       fileName: saved.fileName,
       fileContent: saved.fileContent,
@@ -219,7 +219,8 @@ async function persistComfyUIWorkflow(saved: ComfyUIWorkflowSavePayload): Promis
       defaultNodes: pruneDefaultNodes(existing.defaultNodes, ioNodes),
       updatedAt: now,
     });
-    return { success: true, detail: saved.name, message: `“${saved.name}”已从 ComfyUI 更新` };
+    const name = useAppStore.getState().workflows.find((workflow) => workflow.id === saved.workflowId)?.name ?? existing.name;
+    return { success: true, detail: name, message: `“${name}”已从 ComfyUI 更新` };
   }
   if (existing) throw new Error('新工作流标识已存在，请重新另存，不会覆盖已有记录');
   await store.addWorkflow({

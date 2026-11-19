@@ -104,11 +104,18 @@ describe('ComfyUI 工作流保存回写', () => {
     });
   });
 
-  it('手动导入的工作流照常原地更新', async () => {
+  it('手动导入的工作流原地更新时保留库中的新名称', async () => {
     await saveFromComfyUI('wf-imported');
 
     expect(mocks.storeState.addWorkflow).not.toHaveBeenCalled();
-    expect(mocks.storeState.updateWorkflow.mock.calls[0][0]).toBe('wf-imported');
+    const [id, updates] = mocks.storeState.updateWorkflow.mock.calls[0];
+    expect(id).toBe('wf-imported');
+    expect(updates).not.toHaveProperty('name');
+    expect(mocks.invoke).toHaveBeenCalledWith('complete_comfyui_workflow_save', {
+      requestId: 'save-request-1',
+      success: true,
+      detail: '手动导入的',
+    });
   });
 
   it('MCP 创建的工作流编辑后原地更新并保留服务器及默认输入', async () => {

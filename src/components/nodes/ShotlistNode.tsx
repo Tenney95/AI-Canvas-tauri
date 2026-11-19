@@ -103,11 +103,17 @@ const DEFAULT_COLUMN_WIDTHS: Record<ShotlistColumnKey, number> = {
 };
 const FLEXIBLE_COLUMNS = SHOTLIST_COLUMN_ORDER.filter((column) => FIXED_COLUMN_WIDTHS[column] === undefined);
 const DEFAULT_WEIGHT_TOTAL = FLEXIBLE_COLUMNS.reduce((sum, column) => sum + DEFAULT_COLUMN_WIDTHS[column], 0);
+const ROW_DRAG_THRESHOLD = 4;
 const clampColumnRatio = (ratio: number) => Math.max(1, Math.min(95, ratio));
 const renumberRows = (rows: ShotRow[]) => rows.map((row, index) => {
   const shotNo = String(index + 1);
   return row.shotNo === shotNo ? row : { ...row, shotNo };
 });
+
+function shotRowAtPoint(table: HTMLTableElement, x: number, y: number): string | undefined {
+  const row = table.ownerDocument.elementFromPoint(x, y)?.closest<HTMLTableRowElement>('tr[data-shot-row-id]');
+  if (row?.closest('table') === table) return row.dataset.shotRowId;
+}
 
 /** 带候选值的列：下拉给建议，仍可自由输入 */
 const OPTION_COLUMNS: Record<string, readonly string[]> = {
@@ -185,9 +191,21 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
 
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [columnMenuRequested, setColumnMenuRequested] = useState(false);
-  const [dragRowId, setDragRowId] = useState<string | null>(null);
+  const [rowDragPreview, setRowDragPreview] = useState<{ sourceId: string; targetId?: string } | null>(null);
   const columnMenuRef = useRef<HTMLDivElement>(null);
   const tableRef = useRef<HTMLTableElement>(null);
+  const rowDragRef = useRef<{
+    sourceId: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    moved: boolean;
+    grip: HTMLSpanElement;
+    table: HTMLTableElement;
+    projectId: string | null;
+    revision: number;
+    events: AbortController;
+  } | null>(null);
   const [draftColumnRatios, setDraftColumnRatios] = useState<BaseNodeData['shotlistColumnRatios'] | null>(null);
   const columnResizeRef = useRef<{
     column: ShotlistColumnKey;
@@ -338,20 +356,32 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
     }
   };
 
+  const cancelRowDrag = useCallback(() => {
+    const drag = rowDragRef.current;
+    if (!drag) return;
+    rowDragRef.current = null;
+    drag.events.abort();
+    if (drag.grip.hasPointerCapture(drag.pointerId)) drag.grip.releasePointerCapture(drag.pointerId);
+    setRowDragPreview(null);
+  }, []);
+
+  useEffect(() => () => cancelRowDrag(), [cancelRowDrag, currentProjectId]);
+
   const openFullscreen = useCallback(() => {
+    cancelRowDrag();
     setPicker(null);
     setColumnMenuRequested(false);
     setIsFullscreen(true);
-  }, [setPicker]);
+  }, [cancelRowDrag]);
 
   const closeFullscreen = useCallback(() => {
+    cancelRowDrag();
     columnResizeRef.current = null;
     setDraftColumnRatios(null);
     setPicker(null);
     setColumnMenuRequested(false);
-    setDragRowId(null);
     setIsFullscreen(false);
-  }, []);
+  }, [cancelRowDrag]);
 
   const prepareFrameModel = useCallback(() => {
     const state = useAppStore.getState();
@@ -392,18 +422,76 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   const moveRow = useCallback(
     (fromId: string, toId: string) => {
       if (fromId === toId) return;
-      const from = rows.findIndex((row) => row.id === fromId);
-      const to = rows.findIndex((row) => row.id === toId);
+      const currentRows = getCanvasNodeById(useAppStore.getState().nodes, id)?.data.shotlistRows ?? [];
+      const from = currentRows.findIndex((row) => row.id === fromId);
+      const to = currentRows.findIndex((row) => row.id === toId);
       if (from < 0 || to < 0) return;
-      const next = [...rows];
+      const next = [...currentRows];
       const [moved] = next.splice(from, 1);
       next.splice(to, 0, moved);
       commitToHistory();
       writeRows(renumberRows(next));
       commitToHistory();
     },
-    [rows, writeRows, commitToHistory],
+    [id, writeRows, commitToHistory],
   );
+
+  // 行排序留在 WebView 内，避免和画布接收原生文件拖放的会话争抢。
+  const startRowDrag = (event: ReactPointerEvent<HTMLSpanElement>, sourceId: string) => {
+    const table = tableRef.current;
+    if (!table || !event.isPrimary || event.button !== 0 || rowDragRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const { pointerId } = event;
+    const grip = event.currentTarget;
+    const events = new AbortController();
+    const state = useAppStore.getState();
+    grip.setPointerCapture(pointerId);
+    rowDragRef.current = {
+      sourceId, pointerId, startX: event.clientX, startY: event.clientY, moved: false,
+      grip, table, projectId: state.currentProjectId, revision: state.getCurrentRevision(), events,
+    };
+    const doc = table.ownerDocument;
+    // 被拖行若在手势中删除，浏览器会把丢失捕获事件发给 document。
+    doc.addEventListener('lostpointercapture', (captureEvent) => {
+      if (captureEvent.target === doc && captureEvent.pointerId === pointerId) cancelRowDrag();
+    }, { signal: events.signal });
+    window.addEventListener('blur', cancelRowDrag, { signal: events.signal });
+    window.addEventListener('keydown', (keyEvent) => {
+      if (keyEvent.key !== 'Escape') return;
+      keyEvent.preventDefault();
+      keyEvent.stopImmediatePropagation();
+      cancelRowDrag();
+    }, { capture: true, signal: events.signal });
+  };
+
+  const previewRowDrag = (event: ReactPointerEvent<HTMLSpanElement>) => {
+    const drag = rowDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    if (event.pointerType === 'mouse' && (event.buttons & 1) === 0) {
+      cancelRowDrag();
+      return;
+    }
+    if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < ROW_DRAG_THRESHOLD) return;
+    drag.moved = true;
+    const targetId = shotRowAtPoint(drag.table, event.clientX, event.clientY);
+    setRowDragPreview((current) => current?.targetId === targetId && current?.sourceId === drag.sourceId
+      ? current : { sourceId: drag.sourceId, targetId });
+  };
+
+  const finishRowDrag = (event: ReactPointerEvent<HTMLSpanElement>, cancelled = false) => {
+    const drag = rowDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    const state = useAppStore.getState();
+    const moved = drag.moved || Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >= ROW_DRAG_THRESHOLD;
+    const targetId = !cancelled && moved && tableRef.current === drag.table
+      && state.currentProjectId === drag.projectId && state.getCurrentRevision() === drag.revision
+      ? shotRowAtPoint(drag.table, event.clientX, event.clientY) : undefined;
+    cancelRowDrag();
+    if (targetId) moveRow(drag.sourceId, targetId);
+  };
 
   const toggleColumn = useCallback(
     (key: ShotlistColumnKey) => {
@@ -1001,21 +1089,20 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
               {rows.map((row, rowIndex) => (
                 <tr
                   key={row.id}
-                  className={dragRowId === row.id ? 'shot-row--dragging' : ''}
-                  onDragOver={(e) => { if (dragRowId) e.preventDefault(); }}
-                  onDrop={(e) => {
-                    if (!dragRowId) return;
-                    e.preventDefault();
-                    moveRow(dragRowId, row.id);
-                    setDragRowId(null);
-                  }}
+                  data-shot-row-id={row.id}
+                  className={rowDragPreview?.sourceId === row.id ? 'shot-row--dragging'
+                    : rowDragPreview?.targetId === row.id ? 'outline outline-1 -outline-offset-1 outline-brand' : ''}
                 >
                   <td className="shot-col-grip">
                     <span
-                      className="shot-grip nodrag"
-                      draggable
-                      onDragStart={() => setDragRowId(row.id)}
-                      onDragEnd={() => setDragRowId(null)}
+                      className="shot-grip nodrag nopan touch-none select-none"
+                      onPointerDown={(event) => startRowDrag(event, row.id)}
+                      onPointerMove={previewRowDrag}
+                      onPointerUp={(event) => finishRowDrag(event)}
+                      onPointerCancel={(event) => finishRowDrag(event, true)}
+                      onLostPointerCapture={(event) => finishRowDrag(event, true)}
+                      onClick={(event) => event.stopPropagation()}
+                      onDoubleClick={(event) => event.stopPropagation()}
                       title={t('拖动调整顺序')}
                     >
                       <Icon icon="mdi:drag-horizontal-variant" width={13} height={13} />
@@ -1130,7 +1217,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
                     ? <VideoThumbnail src={candidate.videoUrl} filePath={candidate.filePath} poster={candidate.url}
                         name={candidate.label} alt="" className="shot-picker-img absolute inset-0" />
                     : candidate.url
-                    ? <ViewportImage src={candidate.url} alt="" className="shot-picker-img" />
+                    ? <ViewportImage src={candidate.url} alt="" className="shot-picker-img" draggable={false} />
                     : <span className="shot-frame-hint">{t('未出图')}</span>}
                   {candidate.kind === 'video' && (
                     <Icon className="shot-frame-badge" icon="mdi:play-circle" width={12} height={12} />

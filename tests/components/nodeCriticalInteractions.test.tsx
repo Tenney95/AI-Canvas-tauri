@@ -366,13 +366,12 @@ async function installShotlistTimelineMock() {
 }
 
 async function setupShotlistWidths(
-  widths?: Record<string, number>, rows: Record<string, unknown>[] = [], dragRowId?: string,
+  widths?: Record<string, number>, rows: Record<string, unknown>[] = [],
   dataOverrides: Record<string, unknown> = {},
   options: { nodes?: TestNode[]; picker?: Record<string, unknown> } = {},
 ) {
   const setters: Array<ReturnType<typeof vi.fn>> = [];
-  await installReactHookDriver((initial, index) => index === 1 ? true
-    : index === 2 ? dragRowId ?? initial : index === 4 ? options.picker ?? initial : initial,
+  await installReactHookDriver((initial, index) => index === 1 ? true : index === 4 ? options.picker ?? initial : initial,
   undefined, undefined, setters);
   const shotlist: TestNode = {
     id: 'shotlist', type: 'ai-shotlist', position: { x: 0, y: 0 },
@@ -397,16 +396,35 @@ async function setupShotlistWidths(
     dataset: { shotColumn: 'content' }, offsetWidth: widths?.content ?? 200,
     getBoundingClientRect: () => ({ width: (widths?.content ?? 200) / 2 }),
   };
-  (table.props.ref as { current: unknown }).current = { offsetWidth: 1456 };
+  const ownerDocument = Object.assign(new EventTarget(), { elementFromPoint: vi.fn() });
+  const tableElement = { offsetWidth: 1456, ownerDocument };
+  (table.props.ref as { current: unknown }).current = tableElement;
   const handle = findElement(tree, (element) => element.type === 'button' && element.props['aria-label'] === '内容列宽');
   const pointer = (clientX: number) => ({
-    button: 0, pointerId: 7, clientX, preventDefault: vi.fn(), stopPropagation: vi.fn(),
+    button: 0, buttons: 1, isPrimary: true, pointerId: 7, pointerType: 'mouse', clientX, clientY: 120,
+    preventDefault: vi.fn(), stopPropagation: vi.fn(),
     currentTarget: {
       closest: () => header, setPointerCapture: vi.fn(),
       hasPointerCapture: () => true, releasePointerCapture: vi.fn(),
     },
   });
-  return { tree, table, store, handle, pointer, setters, timeline };
+  const dragRow = (sourceId: string) => {
+    const row = findElement(tree, (element) => element.props['data-shot-row-id'] === sourceId);
+    const grip = findElement(row, (element) => typeof element.props.onLostPointerCapture === 'function');
+    const dragWindow = new EventTarget();
+    vi.stubGlobal('window', dragWindow);
+    const start = pointer(100);
+    const send = (handler: string, event = { ...pointer(150), currentTarget: start.currentTarget }) =>
+      (grip.props[handler] as (event: ReturnType<typeof pointer>) => void)(event);
+    send('onPointerDown', start);
+    return {
+      dragWindow, ownerDocument, send, start,
+      hit: (id: string, sameTable = true) => tableElement.ownerDocument.elementFromPoint.mockReturnValue({
+        closest: () => ({ dataset: { shotRowId: id }, closest: () => sameTable ? tableElement : {} }),
+      }),
+    };
+  };
+  return { tree, table, store, handle, pointer, setters, timeline, dragRow };
 }
 
 beforeEach(() => {
@@ -1049,7 +1067,7 @@ describe('critical canvas node interactions', () => {
     const frame = { nodeId: 'reference', kind: 'image', url: 'asset://reference.png' };
     const { tree, table, setters } = await setupShotlistWidths(undefined, [
       { id: 'row-1', shotNo: '1', frame },
-    ], undefined, { shotlistColumns: ['camera', 'dialogue'] }, { nodes: [
+    ], { shotlistColumns: ['camera', 'dialogue'] }, { nodes: [
       { id: 'other-video', type: 'source-video', position: { x: 0, y: 0 }, data: { label: '导入视频', videoUrl: 'asset://other.mp4' } },
       { id: 'shot-video', type: 'ai-video', position: { x: 0, y: 0 }, data: { label: '本镜成片', videoUrl: 'asset://shot.mp4',
         shotlistProductionSource: { kind: 'video', nodeId: 'shotlist', rowId: 'row-1' } } },
@@ -1072,7 +1090,7 @@ describe('critical canvas node interactions', () => {
   it('binds a picked generated video through its own Store action', async () => {
     vi.stubGlobal('document', { body: {} });
     const frame = { nodeId: 'reference', kind: 'image', url: 'asset://reference.png' };
-    const { tree, store } = await setupShotlistWidths(undefined, [{ id: 'row-1', shotNo: '1', frame }], undefined, {}, {
+    const { tree, store } = await setupShotlistWidths(undefined, [{ id: 'row-1', shotNo: '1', frame }], {}, {
       picker: { rowId: 'row-1', target: 'video', projectId: 'project-a', left: 0, top: 0,
         candidates: [{ nodeId: 'shot-video', kind: 'video', label: '本镜成片' }] },
     });
@@ -1129,11 +1147,11 @@ describe('critical canvas node interactions', () => {
   it.each(['add', 'delete', 'reorder'])(
     'renumbers shots after %s while keeping their stable IDs and frame bindings', async (action) => {
       const frame = { nodeId: 'image-source', kind: 'image', url: 'data:image/png;base64,frame' };
-      const { tree, store } = await setupShotlistWidths(undefined, [
+      const { tree, store, dragRow } = await setupShotlistWidths(undefined, [
         { id: 'row-1', shotNo: '3a', frame },
         { id: 'row-2', shotNo: '9' },
         { id: 'row-3', shotNo: '12' },
-      ], action === 'reorder' ? 'row-1' : undefined);
+      ]);
       const body = findElement(tree, (element) => element.type === 'tbody');
       const renderedRows = body.props.children as ElementLike[];
       if (action === 'add') {
@@ -1144,7 +1162,13 @@ describe('critical canvas node interactions', () => {
         const remove = findElement(renderedRows[1], (element) => element.props['aria-label'] === '删除该镜');
         (remove.props.onClick as () => void)();
       } else {
-        (renderedRows[2].props.onDrop as (event: unknown) => void)({ preventDefault: vi.fn() });
+        const drag = dragRow('row-1');
+        drag.hit('row-3');
+        drag.send('onPointerMove');
+        expect(store.updateNodeDataTransient).not.toHaveBeenCalled();
+        drag.send('onPointerUp');
+        expect(drag.start.currentTarget.setPointerCapture).toHaveBeenCalledWith(7);
+        expect(drag.start.currentTarget.releasePointerCapture).toHaveBeenCalledOnce();
       }
       const result = store.nodes[0].data.shotlistRows as Array<Record<string, unknown>>;
       const expectedIds = action === 'add' ? ['row-1', 'row-2', 'row-3', 'shot-generated']
@@ -1154,6 +1178,34 @@ describe('critical canvas node interactions', () => {
       expect(result.find((row) => row.id === 'row-1')?.frame).toBe(frame);
       expect(store.updateNodeDataTransient).toHaveBeenCalledOnce();
       expect(store.commitToHistory).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each([
+    'outside', 'another table', 'cancel', 'lost capture', 'removed grip',
+    'escape', 'window blur', 'project switch', 'revision change', 'mouse released', 'click',
+  ])(
+    'clears the row drag without reordering after %s', async (reason) => {
+      const { store, dragRow, pointer, setters } = await setupShotlistWidths(undefined, [
+        { id: 'row-1', shotNo: '1' }, { id: 'row-2', shotNo: '2' },
+      ]);
+      const drag = dragRow('row-1');
+      if (reason !== 'outside') drag.hit('row-2', reason !== 'another table');
+      if (reason !== 'click') drag.send('onPointerMove');
+      if (reason === 'project switch') store.currentProjectId = 'project-b';
+      if (reason === 'revision change') store.getCurrentRevision = () => 2;
+      if (reason === 'escape') drag.dragWindow.dispatchEvent(Object.assign(new Event('keydown'), { key: 'Escape' }));
+      if (reason === 'window blur') drag.dragWindow.dispatchEvent(new Event('blur'));
+      if (reason === 'removed grip') {
+        drag.ownerDocument.dispatchEvent(Object.assign(new Event('lostpointercapture'), { pointerId: 7 }));
+      }
+      if (reason === 'mouse released') drag.send('onPointerMove', { ...pointer(150), buttons: 0 });
+      const handler = reason === 'cancel' ? 'onPointerCancel' : reason === 'lost capture' ? 'onLostPointerCapture' : 'onPointerUp';
+      drag.send(handler, reason === 'click' ? drag.start : undefined);
+      expect(drag.start.currentTarget.releasePointerCapture).toHaveBeenCalledOnce();
+      expect(setters[2]).toHaveBeenLastCalledWith(null);
+      expect(store.updateNodeDataTransient).not.toHaveBeenCalled();
+      expect(store.commitToHistory).not.toHaveBeenCalled();
     },
   );
 
@@ -1310,7 +1362,7 @@ describe('critical canvas node interactions', () => {
   });
 
   it('supports keyboard resizing with a bounded width', async () => {
-    const { handle, store } = await setupShotlistWidths(undefined, [], undefined, {
+    const { handle, store } = await setupShotlistWidths(undefined, [], {
       shotlistColumnRatios: { shotNo: 1, frame: 1, video: 1, shotSize: 2, camera: 2, cinematography: 2, dialogue: 2, content: 94 },
     });
     (handle.props.onKeyDown as (event: unknown) => void)({
@@ -1330,7 +1382,7 @@ describe('critical canvas node interactions', () => {
   });
 
   it('keeps shot numbers fixed at 48px and excludes them from resizing and percentage settings', async () => {
-    const { tree, table } = await setupShotlistWidths({ shotNo: 300, content: 300 }, [], undefined, {
+    const { tree, table } = await setupShotlistWidths({ shotNo: 300, content: 300 }, [], {
       shotlistColumnRatios: { shotNo: 90, content: 30 },
     });
     expect((table.props.style as Record<string, string>)['--shotlist-columns']).toMatch(/^26px 48px /);
@@ -1338,7 +1390,7 @@ describe('critical canvas node interactions', () => {
   });
 
   it('restores persisted ratios while keeping hidden column preferences', async () => {
-    const { tree, store } = await setupShotlistWidths(undefined, [], undefined, {
+    const { tree, store } = await setupShotlistWidths(undefined, [], {
       shotlistColumnRatios: { shotNo: 5, frame: 10, shotSize: 10, camera: 15, cinematography: 20, content: 30, dialogue: 30, note: 20 },
     });
     const stepper = findElement(tree, (element) => componentName(element) === 'NumberStepper'
