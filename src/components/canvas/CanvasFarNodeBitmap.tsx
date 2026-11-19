@@ -1,11 +1,15 @@
 import { memo, useLayoutEffect, useRef } from 'react';
 import type { useStoreApi } from '@xyflow/react';
 import type { CanvasNodeLodRuntime } from '../../services/canvasNodeLodRuntime';
+import { CANVAS_NEAR_MEDIA_MAX_ZOOM } from '../../services/canvasFarNodeMode';
 import { getPerformanceModeBudget, getPerformanceModeEnabled, subscribePerformanceMode } from '../../services/performanceModeRuntime';
 import { createFrameCoalescer } from '../../utils/frameCoalescer';
 import { CANVAS_NODE_Z_INDEX } from '../../utils/canvasElementLayering';
 import { acquireCachedCanvasImagePreview, acquireCanvasImagePreview } from '../nodes/shared/image/canvasImagePreviewCache';
+import { canvasImageTier } from '../nodes/shared/image/canvasImageDisplay';
+import NodeLabel from '../nodes/shared/NodeLabel';
 import { acquireCanvasVideoPoster } from '../nodes/shared/video/canvasVideoPreviewCache';
+import { CANVAS_MEDIA_TITLE_HEIGHT, drawCanvasNearMedia, readCanvasNearMediaStyle, type CanvasMediaDetails } from './canvasNearMediaStyle';
 import type { FarNodeGpuCard, FarNodeWebGpu } from './canvasFarNodeWebGpu';
 
 export interface CanvasFarNodeCard {
@@ -16,6 +20,7 @@ export interface CanvasFarNodeCard {
   height: number;
   source: string;
   image: boolean;
+  detail?: CanvasMediaDetails;
 }
 
 interface Props {
@@ -23,6 +28,7 @@ interface Props {
   store: ReturnType<typeof useStoreApi>;
   projectId: string | null;
   runtime: CanvasNodeLodRuntime;
+  near: boolean;
   webGpuRequested: boolean;
   onUnavailable(): void;
   onPreviewError(source: string, image: boolean): void;
@@ -57,6 +63,8 @@ const SETTLED_REDRAW_MIN_ZOOM = 0.35;
 const SETTLED_REDRAW_MAX_ZOOM = 0.55;
 const SETTLED_REDRAW_SCALE = 1.10;
 const SETTLED_REDRAW_DELAY_MS = 150;
+const NEAR_SETTLED_REDRAW_SCALE = 1.005;
+const DEFAULT_PREVIEW_EDGE = 256;
 const GPU_INIT_TIMEOUT_MS = 8000;
 const BITMAP_CLASS = 'pointer-events-none absolute left-0 top-0 origin-top-left';
 
@@ -97,11 +105,12 @@ function drawCard(
 
 /** The viewport moves and scales one reusable world-space bitmap between rasterizations. */
 export default memo(function CanvasFarNodeBitmap({
-  cards, store, projectId, runtime, webGpuRequested, onUnavailable, onPreviewError,
+  cards, store, projectId, runtime, near, webGpuRequested, onUnavailable, onPreviewError,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gpuCanvasRef = useRef<HTMLCanvasElement>(null);
   const probeRef = useRef<HTMLDivElement>(null);
+  const nearProbeRef = useRef<HTMLDivElement>(null);
   const cardsRef = useRef(cards);
   const redrawRef = useRef<(() => void) | null>(null);
 
@@ -122,6 +131,7 @@ export default memo(function CanvasFarNodeBitmap({
     const previews = new Map<string, Preview>();
     const wanted = new Set<string>();
     let style: CardStyle | null = null;
+    let nearStyle: ReturnType<typeof readCanvasNearMediaStyle> | null = null;
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
     let resolution: MediaQueryList | undefined;
     let stopped = false;
@@ -213,7 +223,7 @@ export default memo(function CanvasFarNodeBitmap({
       }
     };
 
-    const requestPreview = (key: string, card: CanvasFarNodeCard, now: number): Preview => {
+    const requestPreview = (key: string, card: CanvasFarNodeCard, now: number, edge = DEFAULT_PREVIEW_EDGE): Preview => {
       const previous = previews.get(key);
       if (previous) {
         previous.lastUsed = now;
@@ -224,10 +234,17 @@ export default memo(function CanvasFarNodeBitmap({
       const { signal } = entry.controller;
       entry.cancel = runtime.prepareDisplay(entry, async () => {
         try {
-          const lease = card.image
-            ? acquireCachedCanvasImagePreview(card.source, 256, signal, projectId)
-              ?? await acquireCanvasImagePreview(card.source, 256, signal, projectId)
-            : await acquireCanvasVideoPoster(card.source, signal);
+          let lease;
+          if (card.image) {
+            let cached = acquireCachedCanvasImagePreview(card.source, edge, signal, projectId);
+            if (cached && cached.maxEdge !== edge) {
+              cached.release();
+              cached = null;
+            }
+            lease = cached ?? await acquireCanvasImagePreview(card.source, edge, signal, projectId);
+          } else {
+            lease = await acquireCanvasVideoPoster(card.source, signal);
+          }
           if (stopped || signal.aborted) { lease?.release(); return; }
           if (!lease) throw new Error('Preview is unavailable');
           entry.release = lease.release;
@@ -244,11 +261,16 @@ export default memo(function CanvasFarNodeBitmap({
         } catch {
           if (stopped || signal.aborted) return;
           disposePreview(key, entry);
+          if (edge > DEFAULT_PREVIEW_EDGE) {
+            // A failed upgrade keeps the low-resolution lease and stays quiet until it leaves the raster.
+            previews.set(key, { controller: new AbortController(), ready: false, lastUsed: now });
+            return;
+          }
           if (cardsRef.current.some((candidate) => candidate.source === card.source && candidate.image === card.image)) {
             onPreviewError(card.source, card.image);
           }
         }
-      }, card.id);
+      }, card.id, edge > DEFAULT_PREVIEW_EDGE ? SETTLED_REDRAW_DELAY_MS : 0);
       return entry;
     };
 
@@ -263,7 +285,7 @@ export default memo(function CanvasFarNodeBitmap({
       const cancel = runtime.enqueueDisplay(settledRedrawKey, () => {
         settledRedraw = undefined;
         const size = store.getState();
-        if (stopped || bitmap !== cached || viewport.style.transform !== transform || !getPerformanceModeEnabled()
+        if (stopped || bitmap !== cached || viewport.style.transform !== transform || (!near && !getPerformanceModeEnabled())
           || size.width !== width || size.height !== height || (view.devicePixelRatio || 1) !== cached.ratio) return;
         // Reuse the existing backing canvas and decoded previews at the settled viewport scale.
         bitmap = undefined;
@@ -292,9 +314,10 @@ export default memo(function CanvasFarNodeBitmap({
         const covered = bitmap && bitmap.ratio === ratio && zoom >= bitmap.zoom * 0.6 && zoom <= bitmap.zoom * 1.55
           && left - guard >= bitmap.left && top - guard >= bitmap.top
           && right + guard <= bitmap.right && bottom + guard <= bitmap.bottom;
-        if (covered && bitmap && !webGpuRequested && getPerformanceModeEnabled()
-          && zoom >= SETTLED_REDRAW_MIN_ZOOM && zoom <= SETTLED_REDRAW_MAX_ZOOM
-          && zoom > bitmap.zoom * SETTLED_REDRAW_SCALE) {
+        const refineNear = near && zoom > SETTLED_REDRAW_MAX_ZOOM;
+        if (covered && bitmap && !webGpuRequested && (near || getPerformanceModeEnabled())
+          && zoom >= SETTLED_REDRAW_MIN_ZOOM && zoom <= (near ? CANVAS_NEAR_MEDIA_MAX_ZOOM : SETTLED_REDRAW_MAX_ZOOM)
+          && zoom > bitmap.zoom * (refineNear ? NEAR_SETTLED_REDRAW_SCALE : SETTLED_REDRAW_SCALE)) {
           refineAfterZoom(bitmap, transform, width, height);
         } else {
           cancelSettledRedraw();
@@ -346,17 +369,35 @@ export default memo(function CanvasFarNodeBitmap({
           keyedCards = projectedCards.map((card) => ({ card, key: `${card.image ? 'image' : 'video'}:${card.source}` }));
         }
         const now = Date.now();
-        let rendered = 0, ready = 0;
+        let rendered = 0, ready = 0, detailTarget = 0, detailReady = 0;
+        const cap = near ? getPerformanceModeBudget().imagePreviewMaxEdge || 1024 : DEFAULT_PREVIEW_EDGE;
         wanted.clear();
         for (const { card, key } of keyedCards) {
           const cardRight = card.x + card.width, cardBottom = card.y + card.height;
+          const cardTop = card.detail?.title ? card.y - CANVAS_MEDIA_TITLE_HEIGHT : card.y;
           if (cardRight <= raster.left || card.x >= raster.right
-            || cardBottom <= raster.top || card.y >= raster.bottom) continue;
-          wanted.add(key);
-          const entry = requestPreview(key, card, now);
+            || cardBottom <= raster.top || cardTop >= raster.bottom) continue;
+          const edge = card.detail && card.image
+            ? Math.min(cap, canvasImageTier(Math.max(card.width, card.height) * raster.zoom * renderRatio) || cap)
+            : DEFAULT_PREVIEW_EDGE;
+          let entry: Preview | undefined;
+          if (edge > DEFAULT_PREVIEW_EDGE) {
+            const detailKey = `${edge}:${key}`;
+            wanted.add(detailKey);
+            entry = requestPreview(detailKey, card, now, edge);
+            detailTarget++;
+            if (entry.ready) detailReady++;
+          }
+          if (!entry?.ready) {
+            wanted.add(key);
+            entry = requestPreview(key, card, now);
+          }
           const image = entry.ready ? entry.image : undefined;
           if (gpuCards) gpuCards.push({ ...card, textureKey: key, image });
-          else drawCard(ctx, card, cardStyle, image);
+          else if (card.detail && nearProbeRef.current) {
+            nearStyle ??= readCanvasNearMediaStyle(view, nearProbeRef.current);
+            drawCanvasNearMedia(ctx, { ...card, detail: card.detail }, nearStyle, image);
+          } else drawCard(ctx, card, cardStyle, image);
           rendered++;
           if (entry.ready) ready++;
         }
@@ -389,6 +430,10 @@ export default memo(function CanvasFarNodeBitmap({
           presentedCanvas.dataset.previewTargetCount = renderedCount;
         }
         if (presentedCanvas.dataset.previewReadyCount !== readyCount) presentedCanvas.dataset.previewReadyCount = readyCount;
+        if (near) {
+          presentedCanvas.dataset.detailTargetCount = String(detailTarget);
+          presentedCanvas.dataset.detailReadyCount = String(detailReady);
+        }
         presentedCanvas.dataset.bitmapRasterCount = String(++rasterCount);
         dirty = false;
       } catch { fail(); }
@@ -410,7 +455,7 @@ export default memo(function CanvasFarNodeBitmap({
     });
     const viewportObserver = new MutationObserver(schedule);
     viewportObserver.observe(viewport, { attributes: true, attributeFilter: ['style'] });
-    const appearanceObserver = new MutationObserver(() => { style = null; dirty = true; schedule(); });
+    const appearanceObserver = new MutationObserver(() => { style = nearStyle = null; dirty = true; schedule(); });
     appearanceObserver.observe(canvas.ownerDocument.documentElement, {
       attributes: true, attributeFilter: ['style', 'data-theme', 'data-appearance-id'],
     });
@@ -475,7 +520,7 @@ export default memo(function CanvasFarNodeBitmap({
         delete gpuCanvas.dataset.canvasFarLayer;
       }
     };
-  }, [onPreviewError, onUnavailable, projectId, runtime, store, webGpuRequested]);
+  }, [near, onPreviewError, onUnavailable, projectId, runtime, store, webGpuRequested]);
 
   useLayoutEffect(() => {
     cardsRef.current = cards;
@@ -489,5 +534,10 @@ export default memo(function CanvasFarNodeBitmap({
     {import.meta.env.DEV && webGpuRequested && <canvas ref={gpuCanvasRef} className={BITMAP_CLASS}
       style={{ zIndex: CANVAS_NODE_Z_INDEX }} width={0} height={0} hidden aria-hidden="true" />}
     <div ref={probeRef} className="canvas-node-lod-preview hidden" aria-hidden="true" />
+    {near && <div ref={nearProbeRef} className="hidden" aria-hidden="true">
+      <NodeLabel kind="ai-image" nodeId="" label="M" displayId={0} onRename={() => {}} />
+      <div className="node image-node"><div className="node-preview compact" /></div>
+      <div className="node video-node"><div className="node-preview compact has-media" /></div>
+    </div>}
   </>;
 });

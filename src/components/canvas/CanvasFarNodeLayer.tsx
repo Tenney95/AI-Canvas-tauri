@@ -1,17 +1,19 @@
 import { useCallback, useContext, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { useStore, useStoreApi, type Node, type ReactFlowState, type Rect } from '@xyflow/react';
-import { CanvasNodeLodContext } from '../../hooks/useCanvasNodeLod';
+import { CanvasNodeLodContext, CanvasNodeLodInteractiveContext } from '../../hooks/useCanvasNodeLod';
 import { useReferencedImageRevisions, withPreviewRevision } from '../../hooks/useReferencedImageWatcher';
+import { useT } from '../../i18n';
 import type { CanvasNodeLodRuntime } from '../../services/canvasNodeLodRuntime';
 import {
-  readCanvasFarNodeMode, subscribeCanvasFarNodeMode, type CanvasFarNodeMode,
+  CANVAS_NEAR_MEDIA_MAX_ZOOM, readCanvasFarNodeMode, subscribeCanvasFarNodeMode, type CanvasFarNodeMode,
 } from '../../services/canvasFarNodeMode';
 import { useAppStore } from '../../store/useAppStore';
 import { isAssetNodeConnectionDragging, subscribeAssetNodeConnectionDrag } from '../../utils/assetNodeConnection';
 import { needsNativeCanvasEdge } from '../../utils/canvasEdgeModels';
 import { CANVAS_NODE_Z_INDEX } from '../../utils/canvasElementLayering';
 import CanvasFarNodeBitmap, { type CanvasFarNodeCard } from './CanvasFarNodeBitmap';
+import { CANVAS_MEDIA_TITLE_HEIGHT } from './canvasNearMediaStyle';
 
 interface Props {
   nodeIds: string[];
@@ -54,7 +56,8 @@ function findTarget(cards: readonly HitCard[], surface: HTMLElement, viewport: H
     const card = cards[index];
     const dx = x - card.x;
     const dy = y - card.y;
-    const inside = dx >= 0 && dx <= card.width && dy >= 0 && dy <= card.height;
+    const top = card.detail?.title ? -CANVAS_MEDIA_TITLE_HEIGHT : 0;
+    const inside = dx >= 0 && dx <= card.width && dy >= top && dy <= card.height;
     const atHandle = card.handles.some((handle) => dx >= handle.x && dy >= handle.y
       && dx <= handle.x + handle.width && dy <= handle.y + handle.height);
     if (inside || atHandle) return card;
@@ -62,6 +65,7 @@ function findTarget(cards: readonly HitCard[], surface: HTMLElement, viewport: H
 }
 
 function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props & { runtime: CanvasNodeLodRuntime }) {
+  const t = useT();
   const store = useStoreApi();
   const surface = useStore((state) => state.domNode);
   const connectionInProgress = useStore((state) => state.connection.inProgress);
@@ -73,6 +77,9 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
   const lodRevision = useSyncExternalStore(runtime.subscribeRepresentation, runtime.getRepresentationRevision);
   const mode = useSyncExternalStore(subscribeCanvasFarNodeMode, readCanvasFarNodeMode, (): CanvasFarNodeMode => 'dom');
   const enabled = mode !== 'dom';
+  const near = mode === 'near';
+  const withinNearRange = useStore((state) => near && state.transform[2] <= CANVAS_NEAR_MEDIA_MAX_ZOOM);
+  const labelsVisible = useAppStore((state) => near && state.config.nodeLabelVisible !== false);
   const nodes = useAppStore((state) => state.nodes);
   const edges = useAppStore((state) => state.edges);
   const selected = useAppStore((state) => state.selectedNodeIds);
@@ -95,7 +102,8 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
     if (mode === 'dom') return { models: [], fallbackReason: 'requested-dom' };
     if (!surface || !projectId) return { models: [], fallbackReason: 'canvas-not-ready' };
     if (nativeOnly) return { models: [], fallbackReason: 'bitmap-unavailable' };
-    if (!runtime.isFar()) return { models: [], fallbackReason: 'near-zoom' };
+    const far = runtime.isFar();
+    if (!far && !withinNearRange) return { models: [], fallbackReason: 'near-zoom' };
     if (keyboard) return { models: [], fallbackReason: 'keyboard-focus' };
     if (connectionInProgress || assetConnectionInProgress) {
       return { models: [], fallbackReason: 'connection-drag' };
@@ -126,19 +134,22 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
       const { x, y } = internal.internals.positionAbsolute;
       const { width, height } = geometry.getNodeDimensions(internal);
       if (width <= 0 || height <= 0 || ![x, y, width, height].every(Number.isFinite)) continue;
-      const rect = { x, y, width, height };
+      const rect = withinNearRange && !far && labelsVisible
+        ? { x, y: y - CANVAS_MEDIA_TITLE_HEIGHT, width, height: height + CANVAS_MEDIA_TITLE_HEIGHT }
+        : { x, y, width, height };
       const data = node?.data;
       const bounds = internal.internals.handleBounds;
+      const video = node?.type?.endsWith('video') === true;
       if (!node || !data || !MEDIA_TYPES.has(node.type ?? '') || node.parentId || state.parentLookup.has(id)
         || internal.internals.z !== CANVAS_NODE_Z_INDEX || node.dragHandle || node.className || node.domAttributes || node.style
         || selectedIds.has(id) || activeId === id || node.selected || internal.selected || internal.dragging || runtime.isPinned(id)
         || nativeEndpoints.has(id) || !bounds || !geometry.nodeHasDimensions(internal)
         || data.nodeWidth !== width || data.nodeHeight !== height || data.mattingMask || data.annotation || data.annotationLayer
-        || data.status === 'loading' || data.status === 'error' || data.error) {
+        || data.status === 'loading' || data.status === 'error' || data.error
+        || (withinNearRange && !far && video && (data.mediaTaskState || data.videoTaskState === 'paused'))) {
         if (internal.internals.z === CANVAS_NODE_Z_INDEX) native.push(rect);
         continue;
       }
-      const video = node.type?.endsWith('video');
       const imageSource = video
         ? (data.thumbnailUrl !== data.videoUrl && data.thumbnailUrl !== data.sourceUrl ? data.thumbnailUrl : undefined)
         : data.imageUrl || data.thumbnailUrl;
@@ -147,14 +158,25 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
         native.push(rect);
         continue;
       }
-      cards.push({ id, ...rect, source, image: !!imageSource, handles: [...(bounds.source ?? []), ...(bounds.target ?? [])] });
+      const detail = withinNearRange && !far ? {
+        video,
+        title: labelsVisible ? data.displayLabel || data.fileName || data.label || t(video ? '粘贴视频' : '粘贴图像') : '',
+        displayId: data.displayId,
+      } : undefined;
+      cards.push({ id, x, y, width, height, source, image: !!imageSource, detail,
+        handles: [...(bounds.source ?? []), ...(bounds.target ?? [])] });
     }
     // A shared layer is below native nodes at equal z. Keep ambiguous overlaps native.
-    const models = cards.filter((card) => !native.some((rect) => intersects(card, rect)));
+    const models = cards.filter((card) => {
+      const rect = card.detail?.title ? {
+        ...card, y: card.y - CANVAS_MEDIA_TITLE_HEIGHT, height: card.height + CANVAS_MEDIA_TITLE_HEIGHT,
+      } : card;
+      return !native.some((other) => intersects(rect, other));
+    });
     return { models, fallbackReason: models.length ? null : 'no-eligible-cards' };
   }, [activeId, assetConnectionInProgress, clickConnectionSource, connectionInProgress, edges, failed, flowRevision,
-    geometry, keyboard, lodRevision, mode, nativeOnly, nodeGesturesEnabled, nodes, projectId, resolveRevision,
-    runtime, selected, store, surface]);
+    geometry, keyboard, labelsVisible, lodRevision, mode, nativeOnly, nodeGesturesEnabled, nodes, projectId,
+    resolveRevision, runtime, selected, store, surface, t, withinNearRange]);
 
   const input = useRef({ models, hoverId, contactId, keyboard });
   useLayoutEffect(() => { input.current = { models, hoverId, contactId, keyboard }; }, [models, hoverId, contactId, keyboard]);
@@ -165,6 +187,8 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
     if (!view || !viewport) return;
     const captured = new WeakSet<Event>();
     let contactPointerId: number | undefined;
+    let canvasHandleMousePointer: number | undefined;
+    let suppressHandleDragClick = false;
     let touchRoute: { touch: Touch; target: Element; wrapper: Element } | undefined;
     let contactTimer: number | undefined;
     let focusFrame: number | undefined;
@@ -199,11 +223,12 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
       return node && surface.contains(node) ? node.getAttribute('data-id') ?? undefined : undefined;
     };
     const elementAt = (point: HitPoint) => view.document.elementFromPoint(point.clientX, point.clientY);
-    const contactTarget = (point: HitPoint) => {
-      if (!input.current.contactId || !isFarPaneTarget(surface, point.target)) return;
+    const restoredTarget = (point: HitPoint, id: string | undefined) => {
+      if (!id || !isFarPaneTarget(surface, point.target)) return;
       const target = elementAt(point);
-      if (getMountedNodeId(target) === input.current.contactId) return target;
+      if (getMountedNodeId(target) === id) return target;
     };
+    const contactTarget = (point: HitPoint) => restoredTarget(point, input.current.contactId);
     const restoreCard = (point: HitPoint, contact: boolean) => {
       const hit = findTarget(input.current.models, surface, viewport, point);
       if (!hit) return;
@@ -248,19 +273,38 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
       const press = pointer?.type === 'pointerdown';
       const direct = pointer?.pointerType === 'touch' || pointer?.pointerType === 'pen';
       if (press && pointer) {
+        canvasHandleMousePointer = undefined;
+        suppressHandleDragClick = false;
         if (direct && !pointer.isPrimary) return;
         if (pointer.isTrusted && event.target instanceof Element && surface.contains(event.target)
           && leaveKeyboardMode(event)) return;
       }
+      if (suppressHandleDragClick && event.type === 'click' && event.isTrusted && event.detail > 0) {
+        suppressHandleDragClick = false;
+        if (event.target instanceof Element && surface.contains(event.target)) {
+          event.stopImmediatePropagation();
+          event.preventDefault();
+          return;
+        }
+      }
       const target = press
         ? restoreCard(event, direct)
-        : contactTarget(event) ?? (direct ? undefined : restoreCard(event, false));
+        : contactTarget(event) ?? (direct ? undefined
+          : (near ? restoredTarget(event, input.current.hoverId) : undefined) ?? restoreCard(event, false));
       if (!target) return;
       if (press && direct) contactPointerId = pointer?.pointerId;
+      if (near && press && pointer?.isTrusted && pointer.pointerType === 'mouse'
+        && target.closest('.react-flow__handle')) canvasHandleMousePointer = pointer.pointerId;
       // Route the first press to the restored wrapper before the pane can begin a selection.
       forward(event, pointer ? new PointerEvent(event.type, pointer) : new MouseEvent(event.type, event), target);
     };
     const onPointerEnd = (event: PointerEvent) => {
+      if (event.pointerId === canvasHandleMousePointer) {
+        canvasHandleMousePointer = undefined;
+        // React Flow still has the drag at pointerup. Its later mouseup completes the connection.
+        // A click targeted at the original pane must not become a fresh click on the drop handle.
+        suppressHandleDragClick = event.type === 'pointerup' && store.getState().connection.inProgress;
+      }
       if (event.pointerId !== contactPointerId) return;
       contactPointerId = undefined;
       if (!touchRoute) releaseContact(event.type === 'pointercancel');
@@ -306,6 +350,8 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
     const onBlur = () => {
       const route = touchRoute;
       contactPointerId = undefined;
+      canvasHandleMousePointer = undefined;
+      suppressHandleDragClick = false;
       touchRoute = undefined;
       if (route?.wrapper.isConnected) {
         dispatchReplay(route.target.isConnected ? route.target : route.wrapper, new TouchEvent('touchcancel', {
@@ -367,7 +413,7 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
       surface.removeEventListener('focusout', onFocusOut);
       view.removeEventListener('keydown', onKey, true);
     };
-  }, [enabled, nativeOnly, projectId, surface]);
+  }, [enabled, nativeOnly, near, projectId, store, surface]);
 
   // Mouse zoom can resume the bitmap while a node still holds keyboard focus.
   const staticCards = useMemo(() => models.filter((card) => card.id !== hoverId && card.id !== focusedId && card.id !== contactId),
@@ -387,9 +433,13 @@ function CanvasFarNodeContent({ nodeIds, renderNode, geometry, runtime }: Props 
   useLayoutEffect(() => () => runtime.setVisibleFarNodeIds(EMPTY_NODE_IDS), [runtime]);
   return <>
     {staticCards.length > 0 && projectId && <CanvasFarNodeBitmap cards={staticCards} store={store} projectId={projectId}
-      runtime={runtime} webGpuRequested={import.meta.env.DEV && mode === 'webgpu'}
+      runtime={runtime} near={near} webGpuRequested={import.meta.env.DEV && mode === 'webgpu'}
       onUnavailable={onUnavailable} onPreviewError={onPreviewError} />}
-    {nodeIds.map((id) => staticIds.has(id) ? null : renderNode(id))}
+    {nodeIds.map((id) => staticIds.has(id) ? null : near
+      ? <CanvasNodeLodInteractiveContext.Provider key={id} value={id === hoverId || id === contactId || id === focusedId}>
+        {renderNode(id)}
+      </CanvasNodeLodInteractiveContext.Provider>
+      : renderNode(id))}
   </>;
 }
 

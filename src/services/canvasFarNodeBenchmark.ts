@@ -11,11 +11,13 @@ const PHASES = [[190, 0, 1], [-140, 120, 1], [120, 60, 1.4], [0, 0, 1]] as const
 const PHASE_MS = 650;
 const LONG_FRAME_MS = 50;
 const READY_TIMEOUT_MS = 30_000;
-type Mode = 'dom' | 'canvas' | 'webgpu';
+type Mode = 'dom' | 'canvas' | 'webgpu' | 'near';
 type Viewport = Parameters<CanvasViewportController['setViewport']>[0];
 
 function assertMode(mode: Mode) {
-  if (mode !== 'dom' && mode !== 'canvas' && mode !== 'webgpu') throw new Error('请选择 dom、canvas 或 webgpu');
+  if (mode !== 'dom' && mode !== 'canvas' && mode !== 'webgpu' && mode !== 'near') {
+    throw new Error('请选择 dom、canvas、webgpu 或 near');
+  }
 }
 
 function selectMode(mode: Mode) {
@@ -60,7 +62,7 @@ function status() {
 const wait = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 
 function expectedBackend(mode: Mode) {
-  return mode === 'canvas' ? 'canvas2d' : mode;
+  return mode === 'canvas' || mode === 'near' ? 'canvas2d' : mode;
 }
 
 function matchesBackend(mode: Mode, snapshot: ReturnType<typeof status>) {

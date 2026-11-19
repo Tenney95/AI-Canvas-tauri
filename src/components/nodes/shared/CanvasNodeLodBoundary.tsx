@@ -5,7 +5,9 @@ import { memo, useCallback, useContext, useLayoutEffect, useRef, useState, useSy
 import type { NodeProps } from '@xyflow/react';
 import type { BaseNodeData } from '../../../types';
 import { useAppStore } from '../../../store/useAppStore';
-import { CanvasNodeLodContext, CanvasNodeLodPreviewRevisionContext, useCanvasNodeLodProtection } from '../../../hooks/useCanvasNodeLod';
+import {
+  CanvasNodeLodContext, CanvasNodeLodInteractiveContext, CanvasNodeLodPreviewRevisionContext, useCanvasNodeLodProtection,
+} from '../../../hooks/useCanvasNodeLod';
 import { useReferencedImageRevisions } from '../../../hooks/useReferencedImageWatcher';
 import CanvasNodeLodPreview from './CanvasNodeLodPreview';
 
@@ -26,6 +28,7 @@ function isSelected(ids: readonly string[], id: string) {
 
 function LodBoundary({ node, data, video, children, projectId }: Props & { projectId: string | null }) {
   const runtime = useContext(CanvasNodeLodContext);
+  const interactive = useContext(CanvasNodeLodInteractiveContext);
   const revisionFor = useReferencedImageRevisions([data.filePath]);
   const selection = useAppStore((state) => (
     (isSelected(state.selectedNodeIds, node.id) ? 1 : 0)
@@ -53,7 +56,7 @@ function LodBoundary({ node, data, video, children, projectId }: Props & { proje
   const protectedState = keepFull || selection !== 0 || !!node.selected || !!node.dragging
     || data.status === 'loading' || data.status === 'error' || !!data.error || !eligible;
   useCanvasNodeLodProtection(node.id, protectedState);
-  const lite = !full && !protectedState;
+  const lite = !full && !protectedState && !interactive;
   const [previousLite, setPreviousLite] = useState(lite);
   if (previousLite !== lite) { setPreviousLite(lite); setCover(!lite); }
   // 单选会挂载业务工具条，保留其状态；普通多选仅临时保护，取消全选后仍可降级。
