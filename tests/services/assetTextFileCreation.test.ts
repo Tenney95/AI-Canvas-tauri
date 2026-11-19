@@ -25,6 +25,7 @@ vi.mock('../../src/services/fs/core', () => ({
 }));
 
 import { createAssetTextFile } from '../../src/services/fs/assetTextFiles';
+import { NATIVE_EPISODE_SCRIPT_VERSION_DIRECTORY } from '../../src/utils/manuscriptFileReference';
 
 const directory = '/project/series';
 const path = `${directory}/原文.md`;
@@ -125,6 +126,21 @@ describe('createAssetTextFile 首次保存原文', () => {
     expect(driver.resolveUniqueDestPath).not.toHaveBeenCalled();
     expect(driver.writeFile).not.toHaveBeenCalled();
     expect(driver.files.size).toBe(0);
+  });
+
+  it('版本目录逐层创建，imports 父目录是链接时不会创建后续目录', async () => {
+    const imports = `${directory}/imports`, versions = `${directory}/${NATIVE_EPISODE_SCRIPT_VERSION_DIRECTORY}`;
+    const fileName = `第一集--v-${'a'.repeat(24)}.txt`, destination = `${versions}/${fileName}`;
+    const options = { projectSubdirectory: NATIVE_EPISODE_SCRIPT_VERSION_DIRECTORY } as const;
+    driver.symlinks.add(imports);
+    await expect(createAssetTextFile('series-a', '正文', fileName, options)).rejects.toThrow('稿件目录必须是普通文件夹');
+    expect(driver.mkdir).not.toHaveBeenCalled();
+    expect(driver.writeFile).not.toHaveBeenCalled();
+    driver.symlinks.clear();
+    driver.resolveUniqueDestPath.mockResolvedValue(destination);
+    const created = await createAssetTextFile('series-a', '正文', fileName, options);
+    expect(driver.mkdir.mock.calls.map(([target]) => target)).toEqual([imports, versions]);
+    expect(created.relativePath).toBe(`${NATIVE_EPISODE_SCRIPT_VERSION_DIRECTORY}/${fileName}`);
   });
 
   it('复用同名同内容的剧本版本，冲突时新建而不覆盖该文件', async () => {

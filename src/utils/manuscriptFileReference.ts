@@ -11,6 +11,19 @@ const safeSegment = (value: string) => !!value && value !== '.' && value !== '..
   && !hasControl(value) && !/[. ]$/.test(value) && !reservedName.test(value);
 const textFileName = (value: string) => value.length > 4 && /\.txt$/i.test(value) && safeSegment(value);
 
+export const NATIVE_EPISODE_SCRIPT_VERSION_DIRECTORY = 'imports/episode-script-versions';
+
+/** 原生版本可经多次复制落在发布子目录内，仍由稿件引用决定是否归档。 */
+export function isNativeEpisodeScriptVersionPath(path: string): boolean {
+  const parts = path.split('/');
+  const fileName = parts.at(-1) ?? '';
+  if (parts.slice(-3, -1).join('/') !== NATIVE_EPISODE_SCRIPT_VERSION_DIRECTORY
+    || !textFileName(fileName) || !/--v-[a-f0-9]{24}(?:_[1-9][0-9]*)?\.txt$/.test(fileName)) return false;
+  const publications = parts.slice(0, -3);
+  return publications.length % 2 === 0 && publications.every((part, index) => index % 2 === 0
+    ? part === 'imports' : /^[A-Za-z0-9][A-Za-z0-9-]{0,127}-root-(?:0|[1-9][0-9]*)$/.test(part));
+}
+
 /** 目录和文件名都可跨设备；归档发布后的 imports 子目录同样保留。 */
 export function normalizeProjectTextFileReference(value: unknown): ProjectTextFileReference | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
@@ -36,9 +49,9 @@ export function buildEpisodeScriptFileName(name: string): string {
   return `${reservedName.test(stem) ? '_' : ''}${stem}.txt`;
 }
 
-/** 文件导入后或分集改名时，下次显式保存将正文同步到 manuscripts 目录。 */
+/** 已绑定的版本沿用原文件，普通导入稿或分集改名时可显式同步。 */
 export function needsEpisodeScriptFileSync(project: { name: string; episodeScriptFile?: ProjectTextFileReference }): boolean {
   const reference = normalizeProjectTextFileReference(project.episodeScriptFile);
-  return !reference || reference.relativePath.split('/').length !== 2 || !reference.relativePath.startsWith('manuscripts/')
+  return !reference || !(/^manuscripts\/[^/]+$/.test(reference.relativePath) || isNativeEpisodeScriptVersionPath(reference.relativePath))
     || (reference.sourceName ?? reference.fileName) !== buildEpisodeScriptFileName(project.name);
 }

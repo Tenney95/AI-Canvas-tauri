@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AssetTextSnapshot } from '../../src/services/fileService';
 import type { ProjectTextFileReference } from '../../src/types';
 import type { EpisodeScriptFileReceipt, EpisodeScriptFileWriteOptions } from '../../src/services/episodeScriptFileService';
+import { NATIVE_EPISODE_SCRIPT_VERSION_DIRECTORY } from '../../src/utils/manuscriptFileReference';
 
 const mocks = vi.hoisted(() => ({
   desktop: true, label: 'main', read: vi.fn(), save: vi.fn(), create: vi.fn(), stat: vi.fn(), directory: vi.fn(), subroot: vi.fn(),
@@ -51,12 +52,15 @@ beforeEach(() => {
     if (mocks.files.get(path)?.digest !== baseline.digest) throw new Error('磁盘文件已被修改');
     const saved = snapshot(content); mocks.files.set(path, saved); return structuredClone(saved);
   });
-  mocks.create.mockImplementation(async (_projectId: string, content: string, name: string, options?: { nativeManuscriptRootRef?: string }) => {
+  mocks.create.mockImplementation(async (_projectId: string, content: string, name: string, options?: {
+    nativeManuscriptRootRef?: string; projectSubdirectory?: string;
+  }) => {
     const fileName = name.replace(/\.txt$/, '_1.txt');
     const directory = options?.nativeManuscriptRootRef ? `/project/roots/${options.nativeManuscriptRootRef}` : '/project';
-    const filePath = `${directory}/manuscripts/${fileName}`;
+    const relativePath = `${options?.projectSubdirectory ?? 'manuscripts'}/${fileName}`;
+    const filePath = `${directory}/${relativePath}`;
     const saved = snapshot(content); mocks.files.set(filePath, saved);
-    return { fileName, filePath, relativePath: `manuscripts/${fileName}`, snapshot: saved };
+    return { fileName, filePath, relativePath, snapshot: saved };
   });
 });
 
@@ -108,11 +112,24 @@ describe('分集剧本 TXT 同步', () => {
     expect(rebuilt.reference.relativePath).not.toBe(bound.relativePath);
     expect(rebuilt.reference.digest).toBe(bound.digest);
     expect(mocks.create).toHaveBeenCalledWith('series', '旧剧本', expect.stringContaining('--v-'), expect.objectContaining({
-      projectSubdirectory: 'manuscripts', nativeManuscriptRootRef: rootRef, reuseMatchingName: true,
+      projectSubdirectory: NATIVE_EPISODE_SCRIPT_VERSION_DIRECTORY, nativeManuscriptRootRef: rootRef, reuseMatchingName: true,
     }));
     expect(mocks.files.get(`/project/roots/${rootRef}/${rebuilt.reference.relativePath}`)?.content).toBe('旧剧本');
     expect(mocks.files.get(originalPath)?.content).toBe('外部修改');
     expect(mocks.save).not.toHaveBeenCalled();
+  });
+
+  it('复制后的已绑定版本可以打开和原样保存，修改后生成自己的版本', async () => {
+    const fileName = `第一集--v-${'a'.repeat(24)}.txt`;
+    const relativePath = `imports/prior-copy-root-0/${NATIVE_EPISODE_SCRIPT_VERSION_DIRECTORY}/${fileName}`;
+    const bound = { ...reference(), fileName, relativePath };
+    mocks.files.set(`/project/${relativePath}`, snapshot('旧剧本'));
+    const input = options({ text: '旧剧本', reference: bound, preserveBoundFile: true });
+    expect(receipt(await prepareEpisodeScriptFileWrite(input)).reference).toEqual(bound);
+    expect(mocks.create).not.toHaveBeenCalled();
+    const changed = receipt(await prepareEpisodeScriptFileWrite({ ...input, text: '修改正文' }));
+    expect(changed.reference.relativePath).toMatch(/^imports\/episode-script-versions\//);
+    expect(mocks.files.get(`/project/${relativePath}`)?.content).toBe('旧剧本');
   });
 
   it('分集改名后另存新的 TXT，原名字的文件继续保留', async () => {
@@ -193,7 +210,7 @@ describe('分集剧本 TXT 同步', () => {
     let current = true;
     const prepared = vi.fn();
     mocks.create.mockImplementation(async (_projectId: string, content: string, fileName: string) => {
-      const relativePath = `manuscripts/${fileName}`, filePath = `/project/${relativePath}`;
+      const relativePath = `${NATIVE_EPISODE_SCRIPT_VERSION_DIRECTORY}/${fileName}`, filePath = `/project/${relativePath}`;
       const saved = mocks.files.get(filePath) ?? snapshot(content);
       mocks.files.set(filePath, saved);
       current = false;

@@ -4,6 +4,7 @@
 import { exists, lstat, mkdir, open, writeFile } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { isNativeProjectBindingFile } from '../../utils/nativeProjectBindingFile';
+import { NATIVE_EPISODE_SCRIPT_VERSION_DIRECTORY } from '../../utils/manuscriptFileReference';
 import { mediaFileAllocationKey, retiredMediaPaths } from '../indexedDb/mediaRelocations';
 import { ensureProjectDataDir, getFileCategory, invalidateTextPreview, isTauriEnv, joinPath, notifyProjectDiskChanged, resolveUniqueDestPath, sanitizeFileName, stripVerbatimPrefix } from './core';
 
@@ -28,7 +29,8 @@ export async function resolveNativeManuscriptRoot(projectId: string, rootRef: st
 
 /** 首次保存时在目标项目内创建唯一 UTF-8 文本文件，不覆盖同名文件。 */
 export async function createAssetTextFile(projectId: string, content: string, suggestedName: string, options: {
-  signal?: AbortSignal; assertCurrent?: () => void; projectSubdirectory?: 'manuscripts' | 'outline-documents';
+  signal?: AbortSignal; assertCurrent?: () => void;
+  projectSubdirectory?: 'manuscripts' | 'outline-documents' | typeof NATIVE_EPISODE_SCRIPT_VERSION_DIRECTORY;
   nativeManuscriptRootRef?: string;
   /** 调用方以项目、稿件身份和正文确定文件名时，可复用经过读回复核的同一版本。 */
   reuseMatchingName?: boolean;
@@ -36,8 +38,11 @@ export async function createAssetTextFile(projectId: string, content: string, su
   if (!isTauriEnv()) throw new Error('请在桌面应用中保存原文');
   const check = () => { checkAbort(options.signal); options.assertCurrent?.(); };
   if (options.projectSubdirectory !== undefined && options.projectSubdirectory !== 'manuscripts'
-    && options.projectSubdirectory !== 'outline-documents') throw new Error('稿件目录无效');
-  if (options.nativeManuscriptRootRef && options.projectSubdirectory !== 'manuscripts') throw new Error('分集稿件目录无效');
+    && options.projectSubdirectory !== 'outline-documents' && options.projectSubdirectory !== NATIVE_EPISODE_SCRIPT_VERSION_DIRECTORY) {
+    throw new Error('稿件目录无效');
+  }
+  if (options.nativeManuscriptRootRef && options.projectSubdirectory !== 'manuscripts'
+    && options.projectSubdirectory !== NATIVE_EPISODE_SCRIPT_VERSION_DIRECTORY) throw new Error('分集稿件目录无效');
   const fileName = sanitizeFileName(suggestedName) || '原文.txt';
   if (/[\\/]/.test(fileName)) throw new Error('文本文件名不能包含目录');
   if (isNativeProjectBindingFile(fileName)) throw new Error('项目归属标记由应用管理');
@@ -51,8 +56,8 @@ export async function createAssetTextFile(projectId: string, content: string, su
     : await ensureProjectDataDir(projectId, { throwOnError: true });
   check();
   if (!directory) throw new Error('剧集素材目录不可用，请重新打开剧集');
-  if (options.projectSubdirectory !== undefined) {
-    directory = joinPath(directory, options.projectSubdirectory);
+  for (const segment of options.projectSubdirectory?.split('/') ?? []) {
+    directory = joinPath(directory, segment);
     const present = await exists(directory);
     check();
     if (!present) {

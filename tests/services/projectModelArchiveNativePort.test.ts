@@ -7,6 +7,7 @@ import { createProjectExchangeRevisionV2 } from '../../src/services/projectExcha
 import type { ProjectArchiveBusinessV4, ValidatedProjectArchiveV4 } from '../../src/types/projectArchiveV4';
 import type { ProjectModelTransferCapture, ProjectModelTransferExchange, ProjectModelTransferImportJournal, ProjectModelTransferExportJournal } from '../../src/types/projectModelTransfer';
 import type { ProjectModelFixtureBusinessSession } from '../../src/types/projectModelBusiness';
+import { NATIVE_EPISODE_SCRIPT_VERSION_DIRECTORY } from '../../src/utils/manuscriptFileReference';
 
 const native = vi.hoisted(() => ({ invoke: vi.fn(), existing: new Set<string>(), loadSharedAssetSyncState: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: native.invoke }));
@@ -287,6 +288,43 @@ describe('P5 native file projection', () => {
     await expect(frozen.inspectAssets(capture)).rejects.toThrow(outline);
     capture.aggregate.content.originalWork = { fileName: '旧稿.docx', relativePath: outline, addedAt: 1 };
     await expect(port.inspectAssets(capture)).rejects.toThrow(outline);
+  });
+
+  it('原生稿件只收录当前版本和冻结原操作的版本，普通手工稿照常收录', async () => {
+    const { capture } = await setup();
+    const projectId = 'p2-00000000-0000-4000-8000-000000000001';
+    const root = 'r2-00000000-0000-4000-8000-000000000002', child = 'r2-00000000-0000-4000-8000-000000000003';
+    const folder = `project-${projectId}`, physicalRoot = 'authorized/native', physicalChild = `${physicalRoot}/roots/${child}`;
+    capture.aggregate.project = { ...capture.aggregate.project, id: projectId, dataFolder: folder, storageRootRef: root,
+      storageBindings: [{ rootRef: root, folderName: folder, sourceRecordIds: [], source: 'project-managed' },
+        { rootRef: child, folderName: `${folder}/roots/${child}`, sourceRecordIds: [], source: 'project-managed' }] };
+    capture.aggregate.content.projectId = projectId;
+    capture.exchange!.identities.find((item) => item.sourceId === 'A')!.localId = root;
+    capture.exchange!.identities.find((item) => item.sourceId === 'B')!.localId = child;
+    const versions = NATIVE_EPISODE_SCRIPT_VERSION_DIRECTORY;
+    const previous = `imports/previous-copy-root-1/${versions}/第一集--v-${'a'.repeat(24)}.txt`;
+    const fileName = `第一集--v-${'b'.repeat(24)}.txt`;
+    const current = `${versions}/${fileName}`, manual = 'manuscripts/手工稿.txt';
+    capture.exchange!.fileBindings[1].localRelativePath = previous;
+    capture.aggregate.episodeContents.push({ episodeId: 'episode', storageRootRef: child, revision: 1,
+      scriptFile: { fileName, relativePath: current, sourceName: '第一集.txt' } });
+    native.existing.add(physicalRoot); native.existing.add(physicalChild);
+    let previousExists = true;
+    native.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+      if (command === 'resolve_native_project_media_root') return physicalRoot;
+      if (command === 'resolve_native_project_media_subroot') return physicalChild;
+      if (command === 'inspect_project_archive_assets') return [
+        ...(args.includeImportPaths as string[]).filter((path) => path !== previous || previousExists),
+        ...(args.assetsDir === physicalChild ? [manual] : []),
+      ].map((path) => ({ path, bytes: 3, sha256: hash }));
+      throw new Error('unexpected command');
+    });
+    const assets = await createBoundProjectModelArchiveExportPort(projectId, '').inspectAssets(capture);
+    expect(assets.filter((asset) => asset.rootRef === child).map((asset) => asset.path).sort()).toEqual([current, manual]);
+    const frozen = createBoundProjectModelArchiveExportPort(projectId, '', [], true, [{ rootRef: child, path: previous }]);
+    expect((await frozen.inspectAssets(capture)).map((asset) => asset.path).sort()).toEqual([current, previous, manual]);
+    previousExists = false;
+    await expect(frozen.inspectAssets(capture)).rejects.toThrow(previous);
   });
 
   it.each(['readable', 'existing-id'] as const)('bound导入%s物理目录沿原journal续接，逻辑目录不重算且重启不重发已发布子操作', async (binding) => {

@@ -17,6 +17,7 @@ import { sha256BytesHex } from './mediaDataUrl';
 import { assertNativeFileMissing, type NativeMissingAssetProof } from './nativeMissingAssetBackup';
 import { configValuesEqual } from './configPatch';
 import { nativeChatImagePaths, parseChatImageReferences } from '../utils/chatImageReference';
+import { isNativeEpisodeScriptVersionPath } from '../utils/manuscriptFileReference';
 
 interface SourceRoot { rootRef: string; directory: string }
 type NativeAsset = ArchiveAssetDigest & { sourceRootRef?: string; sourceRelativePath?: string; destinationPath?: string };
@@ -395,7 +396,9 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
       }
       for (const root of activeRoots) {
         let assetsDir = directories.get(root.rootRef)!;
-        if (options.currentFilesOnly && !current.get(root.rootRef)?.size && !await exists(assetsDir)) continue;
+        const frozenManuscripts = (options.frozenPaths ?? [])
+          .filter((item) => item.rootRef === root.rootRef && isNativeEpisodeScriptVersionPath(item.path)).map((item) => safeExchangePath(item.path));
+        if (options.currentFilesOnly && !current.get(root.rootRef)?.size && !frozenManuscripts.length && !await exists(assetsDir)) continue;
         if (options.currentFilesOnly) assetsDir = await directory(root.folderName);
         const logicalRoot = capture.exchange?.identities.find((item) => item.kind === 'storage-root' && item.localId === root.rootRef)?.sourceId;
         const required = (head?.files ?? []).filter((item) => item.rootRef === logicalRoot).map((file) => {
@@ -407,6 +410,8 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
           return path;
         }).filter((path) => {
           if (current.get(root.rootRef)?.has(path)) return true;
+          // 应用生成的旧稿只由当前引用或原操作冻结清单收录，不能逐次继承进新 head。
+          if (options.nativeProjectId && isNativeEpisodeScriptVersionPath(path)) return false;
           // 已失效的只读聊天附件保留原消息；已有冻结归档继续要求相同文件。
           if (chatPaths.get(root.rootRef)?.has(path)
             && !options.frozenPaths?.some((item) => item.rootRef === root.rootRef && item.path === path)) return false;
@@ -419,10 +424,10 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
             && !options.frozenPaths?.some((item) => item.rootRef === root.rootRef && item.path === path));
         });
         if (!(await exists(assetsDir))) {
-          if (required.length || current.get(root.rootRef)?.size) throw new Error('项目引用的素材根缺失，无法安全导出');
+          if (required.length || frozenManuscripts.length || current.get(root.rootRef)?.size) throw new Error('项目引用的素材根缺失，无法安全导出');
           continue;
         }
-        const referencePaths = [...new Set([...required, ...(current.get(root.rootRef) ?? [])])];
+        const referencePaths = [...new Set([...required, ...(current.get(root.rootRef) ?? []), ...frozenManuscripts])];
         const virtual = projected.get(root.rootRef);
         const nativeReferences = referencePaths.filter((path) => !virtual?.has(path)
           && !(options.nativeProjectId && sharedSyncPath.test(path) && !sharedSyncMediaPath.test(path))
