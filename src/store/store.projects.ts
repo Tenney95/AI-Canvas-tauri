@@ -35,7 +35,7 @@ import { normalizeTeamProfile } from '../services/chat/teams/teamProfileService'
 import { captureCurrentCanvasSnapshot } from '../services/projectSnapshotService';
 import { prepareScriptWorkbenchStartPage } from '../services/scriptWorkbenchAppClose';
 import { stopProjectAgentTasks } from '../services/chat/agentTaskControl';
-import { cancelProjectCanvasDerivations, completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasImport } from '../services/canvasDerivationGuard';
+import { cancelProjectCanvasDerivations, completeCanvasDerivation, hasPendingCanvasMediaImport, isCanvasDerivationFresh, registerCanvasImport } from '../services/canvasDerivationGuard';
 import { clearConversationFileGrants } from '../services/chat/fileGrantService';
 import { reassignProjectMemories } from '../services/chat/projectMemoryService';
 import { duplicateProjectArchive, exportProjectArchive, importProjectArchive } from '../services/projectTransferService';
@@ -66,7 +66,8 @@ import type { ProjectMergeSide } from '../services/projectMergeService';
 import type { TeamEpisodeTarget } from '../types/agentTeam';
 import { sha256BytesHex } from '../services/mediaDataUrl';
 import { projectModelSourceToken } from '../services/projectModelComparisonMaterial';
-import { finalizeNativeSharedAssetSync, prepareNativeSharedAssetSync } from '../services/indexedDb/nativeSharedAssetSyncRepository';
+import { abortNativeSharedAssetSync, finalizeNativeSharedAssetSync, prepareNativeSharedAssetSync,
+  readNativeSharedAssetSync } from '../services/indexedDb/nativeSharedAssetSyncRepository';
 import { episodeTeamSourceSnapshot } from '../services/seriesCreativeService';
 import { readEpisodeWorkspaceScope } from '../services/episodeWorkspaceScope';
 import { assertEpisodeEditorReady } from '../services/episodeEditorSessionService';
@@ -101,9 +102,9 @@ import { cleanupFinalizedNativeProjectImportSources, importNativeProjectArchive,
 import type { CharacterVisualReferencePlan } from '../services/characterVisualReferencePlan';
 
 type ProjectLoadStatus = 'loading' | 'ready' | 'readonly' | 'error';
-type NativeProjectWriteBlock = Extract<NativeProjectPendingTransfer, { kind: 'update' | 'restore' }> & { projectId: string };
-const NATIVE_PROJECT_READONLY = '项目更新尚未结算，当前画布为只读';
-const NATIVE_PROJECT_PENDING_EDITS = '当前项目有未保存的编辑，请先处理原更新操作，编辑仍保留';
+type NativeProjectWriteBlock = Exclude<NativeProjectPendingTransfer, { kind: 'export' }> & { projectId: string };
+const NATIVE_PROJECT_READONLY = '项目有待处理的操作，当前画布为只读';
+const NATIVE_PROJECT_PENDING_EDITS = '当前项目有未保存的编辑，请先处理原操作，编辑仍保留';
 type NativeCatalog = Extract<ProjectCatalogEntry, { dataModel: 'native' }>;
 type NativeLoaded = NonNullable<Awaited<ReturnType<typeof readNativeProjectView>>>;
 interface NativeRuntime {
@@ -130,9 +131,13 @@ function nativeCanvasHasUnsavedEdits(runtime: NativeRuntime | undefined, state: 
   return !runtime || runtime.library !== state.dramaAssets || nativeCanvasDocumentChanged(runtime.savedView, state);
 }
 
+function nativeLibraryContentChanged(saved: DramaAssetLibrary, current: DramaAssetLibrary): boolean {
+  return saved !== current && !configValuesEqual({ ...saved, lastViewedAt: undefined }, { ...current, lastViewedAt: undefined });
+}
+
 async function readNativeProjectWriteBlock(projectId: string): Promise<NativeProjectWriteBlock | null> {
-  const transfer = (await listNativeProjectPendingTransfers(projectId)).find((item) => item.kind === 'update' || item.kind === 'restore');
-  return transfer?.kind === 'update' || transfer?.kind === 'restore' ? { projectId, ...transfer } : null;
+  const transfer = (await listNativeProjectPendingTransfers(projectId)).find((item) => item.kind !== 'export');
+  return transfer ? { projectId, ...transfer } : null;
 }
 
 function hasNativeProjectDrafts(state: AppState, runtime: NativeRuntime | undefined, projectId: string): boolean {
@@ -224,10 +229,13 @@ async function activateNativeProject(set: ProjectSliceSet, get: ProjectSliceGet,
     }
     if (previousView.library !== current.dramaAssets) {
       if (previousView.loaded.content.revisions.assets !== loaded.content.revisions.assets) {
-        throw new Error('共享素材已变化，当前编辑已保留');
+        if (nativeLibraryContentChanged(previousView.library, current.dramaAssets)) throw new Error('共享素材已变化，当前编辑已保留');
+        const lastViewedAt = current.dramaAssets.lastViewedAt ?? 0;
+        if (lastViewedAt > (loadedLibrary.lastViewedAt ?? 0)) dramaAssets = { ...loadedLibrary, lastViewedAt };
+      } else {
+        library = previousView.library;
+        dramaAssets = current.dramaAssets;
       }
-      library = previousView.library;
-      dramaAssets = current.dramaAssets;
     }
   }
   nativeRuntime.set(get, { loaded, activeId, library, savedView, tail: Promise.resolve(), episodeReads: new Map() });
@@ -1102,10 +1110,11 @@ async function noteSaveError(
   return noteSaveFailure(set, get, { kind, reason, notify }, attempt);
 }
 
-/** 另一窗口也可能在画布打开后登记更新；首次写入拒绝时对齐真实状态。 */
-async function recognizePendingNativeUpdate(set: ProjectSliceSet, get: ProjectSliceGet, projectId: string | undefined,
+/** 画布打开后也可能登记待处理操作；首次写入拒绝时对齐真实状态。 */
+async function recognizeNativeProjectWriteBlock(set: ProjectSliceSet, get: ProjectSliceGet, projectId: string | undefined,
   error: unknown, attempt: ProjectSaveAttempt): Promise<boolean> {
-  if (!projectId || !(error instanceof Error) || !error.message.endsWith('project-update-pending')) return false;
+  if (!projectId || !(error instanceof Error)
+    || !(error.message.endsWith('project-update-pending') || error.message.endsWith('project-shared-sync-pending'))) return false;
   const block = await readNativeProjectWriteBlock(projectId).catch(() => null);
   if (!block || !isProjectSaveAttemptCurrent(get, attempt)) return false;
   set({ projectLoadStatus: 'readonly', projectExecutionContext: null, nativeProjectWriteBlock: block });
@@ -3173,31 +3182,63 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     if (!binding) throw new Error('无法确认原操作所属项目');
     const projectId = binding.projectId;
     const repository = await import('../services/indexedDb/nativeProjectRepository');
-    const operation = (await repository.listNativeProjectPendingTransfers(projectId)).find((item) => item.operationId === operationId);
+    const pending = await repository.listNativeProjectPendingTransfers(projectId);
+    const before = get(), block = before.nativeProjectWriteBlock;
+    const pendingOperation = pending.find((item) => item.operationId === operationId);
+    // 已结算但前次重读失败时，只允许当前只读画布重试原操作的投影。
+    const operation = pendingOperation
+      ?? (block?.kind === 'shared-sync' && block.projectId === projectId && block.operationId === operationId ? block : undefined);
     if (!operation) throw new Error('原操作已结束或不属于当前项目，请刷新');
     if (projectImportsApplying.has(projectId) || projectAssetSyncBarriers.has(projectId)) throw new Error('该项目正在处理其它操作');
     if (operation.kind === 'export') {
       await (await import('../services/nativeProjectArchiveService')).settleNativeProjectArchiveExport(projectId, operationId, action);
       return;
     }
-    const before = get();
-    if (action === 'abandon') {
+    if (action === 'abandon' || operation.kind === 'shared-sync') {
       const runtime = nativeRuntime.get(get), sequence = projectSwitchSequence;
-      await repository.abortNativeProjectUpdate(operationId);
-      if (before.projectLoadStatus === 'readonly' && before.nativeProjectWriteBlock?.projectId === projectId && before.currentProjectId) {
-        const activeId = before.currentProjectId;
-        if (!runtime) throw new Error('原更新已撤销，请从项目库重新打开');
-        const assertCurrent = () => {
-          const latest = get();
-          if (latest.currentProjectId !== activeId || projectSwitchSequence !== sequence || nativeRuntime.get(get) !== runtime) {
-            throw new Error('当前项目已切换，原更新已撤销');
-          }
-        };
-        const catalog = await loadProjectCatalog(), entry = catalog.native.find((item) => item.project.id === projectId);
-        assertCurrent();
-        if (!entry) throw new Error('原更新已撤销，但项目目录无法重新读取');
-        await activateNativeProject(set, get, entry, activeId, assertCurrent, true, runtime);
+      const activeId = before.currentProjectId;
+      const sharedOnReadyCanvas = operation.kind === 'shared-sync' && before.projectLoadStatus === 'ready'
+        && nativeBinding(before.projects.find((item) => item.id === activeId))?.projectId === projectId;
+      if (sharedOnReadyCanvas && (before.switchingProjectName !== null || before.isCreatingProject || before.isReturningToStartPage
+        || hasPendingCanvasMediaImport(before))) {
+        throw new Error('当前项目正在切换或导入素材，请稍后处理原操作');
       }
+      const active = sharedOnReadyCanvas || before.nativeProjectWriteBlock?.projectId === projectId && before.projectLoadStatus === 'readonly';
+      projectImportsApplying.add(projectId);
+      try {
+        if (sharedOnReadyCanvas) {
+          set({ projectLoadStatus: 'readonly', projectExecutionContext: null, nativeProjectWriteBlock: { projectId, ...operation } });
+        }
+        if (operation.kind === 'shared-sync') {
+          if (active && runtime) await runtime.tail;
+          const journal = await readNativeSharedAssetSync(operationId);
+          if (journal?.projectId !== projectId) throw new Error('原共享同步已结束或不属于当前项目，请刷新');
+          if (journal.phase === 'prepared') {
+            if (!pendingOperation) throw new Error('原共享同步仍在待处理，请刷新后核对');
+            if (action === 'continue') {
+              const latest = get();
+              if (active && latest.currentProjectId === activeId && nativeRuntime.get(get) === runtime
+                && journal.hasLibraryUpdate && runtime && nativeLibraryContentChanged(runtime.library, latest.dramaAssets)) {
+                throw new Error('当前有未保存的素材库编辑，已保留原同步操作和编辑');
+              }
+              await finalizeNativeSharedAssetSync(journal);
+            } else await abortNativeSharedAssetSync(operationId);
+          }
+        } else await repository.abortNativeProjectUpdate(operationId);
+        if (active && activeId && get().currentProjectId === activeId && projectSwitchSequence === sequence) {
+          if (!runtime) throw new Error('原操作已处理，请从项目库重新打开');
+          const assertCurrent = () => {
+            const latest = get();
+            if (latest.currentProjectId !== activeId || projectSwitchSequence !== sequence || nativeRuntime.get(get) !== runtime) {
+              throw new Error('原操作已处理，当前项目已切换');
+            }
+          };
+          const catalog = await loadProjectCatalog(), entry = catalog.native.find((item) => item.project.id === projectId);
+          assertCurrent();
+          if (!entry) throw new Error('原操作已处理，但项目目录无法重新读取');
+          await activateNativeProject(set, get, entry, activeId, assertCurrent, true, runtime);
+        }
+      } finally { projectImportsApplying.delete(projectId); }
       return;
     }
     if (nativeBinding(before.projects.find((item) => item.id === before.currentProjectId))?.projectId === projectId
@@ -3816,7 +3857,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       }
       return record.id;
     } catch (error) {
-      if (await recognizePendingNativeUpdate(set, get, native?.projectId, error, attempt)) return undefined;
+      if (await recognizeNativeProjectWriteBlock(set, get, native?.projectId, error, attempt)) return undefined;
       console.error('Save failed:', error);
       // 手动保存本来就每次都给反馈，交给 toast 自己说，不走去重逻辑
       const failure = await noteSaveError(set, get, error, false, attempt);
@@ -3855,7 +3896,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       applyProjectSaveSuccess(set, get, attempt, record);
       return record.id;
     } catch (error) {
-      if (await recognizePendingNativeUpdate(set, get, native?.projectId, error, attempt)) return undefined;
+      if (await recognizeNativeProjectWriteBlock(set, get, native?.projectId, error, attempt)) return undefined;
       console.warn('[自动保存] 保存失败:', error);
       await noteSaveError(set, get, error, true, attempt);
       return undefined;
@@ -4041,10 +4082,13 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           return result;
         } catch (error) {
           if (journalPrepared) {
+            const block = await readNativeProjectWriteBlock(native.projectId).catch(() => null);
             if (get().currentProjectId === input.originProjectId && nativeRuntime.get(get) === runtime) {
-              set({ projectLoadStatus: 'error', projectExecutionContext: null });
+              set({ projectLoadStatus: block ? 'readonly' : 'error', projectExecutionContext: null, nativeProjectWriteBlock: block });
             }
-            get().showToast(`共享同步状态未完成，原操作 ${input.commit.operationId} 已保留；请在存储健康中恢复后重新打开项目`, 'error');
+            get().showToast(block
+              ? t('共享素材同步尚未完成，请通过「处理原操作」恢复')
+              : t('共享素材同步状态需要核对，请从项目库重新打开项目'), 'error');
           }
           throw error;
         }

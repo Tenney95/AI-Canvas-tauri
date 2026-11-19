@@ -1569,6 +1569,7 @@ export const NATIVE_PENDING_IMPORT_PHASES = ['prepared', 'media_publishing', 'me
 export type NativeProjectPendingTransfer = { operationId: string; updatedAt: number } & (
   { kind: 'export'; phase: typeof PENDING_EXPORT_PHASES[number] }
   | { kind: 'update' | 'restore'; phase: typeof NATIVE_PENDING_IMPORT_PHASES[number] }
+  | { kind: 'shared-sync'; phase: 'prepared' }
 );
 
 /** 逐条投影摘要，避免同时持有多个待续接操作的完整画布和归档。 */
@@ -1622,6 +1623,15 @@ export async function listNativeProjectPendingTransfers(projectId: string, optio
         rows.push(await collectTransferSummaries<Candidate, NativeProjectPendingTransfer>(index, [projectId, 'project-model-import', phase], (row) => isOwned(row) && isProjectReplacement(row)
           ? { operationId: row.operationId, updatedAt: row.updatedAt, kind: row.mode === 'update-existing' ? 'update' : 'restore', phase } : undefined));
       }
+      rows.push(await collectTransferSummaries<
+        { projectId: string; operationId: string; sourceOperationId: string; createdAt: number },
+        NativeProjectPendingTransfer
+      >(index, [projectId, 'native-shared-sync', 'prepared'], (row) =>
+        row.projectId === projectId && typeof row.sourceOperationId === 'string'
+        && /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(row.sourceOperationId) && row.operationId === `shared-${row.sourceOperationId}`
+        && Number.isSafeInteger(row.createdAt) && row.createdAt >= 0
+          ? { operationId: row.sourceOperationId, updatedAt: row.createdAt, kind: 'shared-sync', phase: 'prepared' }
+          : undefined));
       return rows.flat().sort((left, right) => right.updatedAt - left.updatedAt
         || (left.operationId < right.operationId ? -1 : 1));
     }, [TRANSFER]);

@@ -7,9 +7,11 @@ vi.mock('../../src/services/indexedDb/schema', async () => ({
   ...await vi.importActual<typeof import('../../src/services/indexedDb/schema')>('../../src/services/indexedDb/schema'),
   openDB: mocks.openDB,
 }));
-import { createNativeProject, readNativeProjectContent, saveNativeProjectContent } from '../../src/services/indexedDb/nativeProjectRepository';
+import { createNativeProject, listNativeProjectPendingTransfers, readNativeProjectContent,
+  saveNativeProjectContent } from '../../src/services/indexedDb/nativeProjectRepository';
 import { abortNativeSharedAssetSync, finalizeNativeSharedAssetSync, listPendingNativeSharedAssetSync, nativeSharedAssetReceiptKey,
   prepareNativeSharedAssetSync } from '../../src/services/indexedDb/nativeSharedAssetSyncRepository';
+import { STORE_SHARED_ASSET_OUTBOX } from '../../src/services/indexedDb/schema';
 
 const projectId = 'p2-11111111-1111-4111-8111-111111111111';
 const canvasId = 'c2-22222222-2222-4222-8222-222222222222';
@@ -18,7 +20,10 @@ beforeEach(async () => {
   factory = new IDBFactory();
   legacy = await new Promise<IDBDatabase>((resolve, reject) => {
     const open = factory.open('old-fixture', 1);
-    open.onupgradeneeded = () => { open.result.createObjectStore('metadata', { keyPath: 'id' }); };
+    open.onupgradeneeded = () => {
+      open.result.createObjectStore('metadata', { keyPath: 'id' });
+      open.result.createObjectStore(STORE_SHARED_ASSET_OUTBOX, { keyPath: 'id' }).createIndex('operationId', 'operationId', { unique: true });
+    };
     open.onsuccess = () => resolve(open.result); open.onerror = () => reject(open.error);
   });
   mocks.openDB.mockReset().mockResolvedValue(legacy);
@@ -42,6 +47,9 @@ describe('新项目共享同步跨库收据', () => {
     const journal = await prepareNativeSharedAssetSync(input, { factory });
     expect(journal.memberIds).toEqual(expect.arrayContaining([projectId, canvasId]));
     expect(await listPendingNativeSharedAssetSync(projectId, { factory })).toHaveLength(1);
+    expect(await listNativeProjectPendingTransfers(projectId, { factory })).toEqual([
+      { operationId, updatedAt: journal.createdAt, kind: 'shared-sync', phase: 'prepared' },
+    ]);
     await expect(saveNativeProjectContent({ projectId, expectedProjectEpoch: initial.project.epoch,
       expectedRevisions: { script: 0 }, patch: { script: '不能抢写' } }, { factory })).rejects.toThrow('project-shared-sync-pending');
     await expect(finalizeNativeSharedAssetSync(journal, { factory })).rejects.toThrow();
@@ -67,12 +75,22 @@ describe('新项目共享同步跨库收据', () => {
     const initial = await createNativeProject({ projectId, canvasId, name: '新项目' }, { factory });
     const base = { projectId, operationId: 'op-abort', expectedProjectEpoch: initial.project.epoch,
       expectedAssetsRevision: 0, expectedLibrary: undefined, receiptDigest: 'd'.repeat(64) };
+    await new Promise<void>((resolve, reject) => {
+      const tx = legacy.transaction(STORE_SHARED_ASSET_OUTBOX, 'readwrite');
+      tx.objectStore(STORE_SHARED_ASSET_OUTBOX).add({ id: 'job', operationId: base.operationId, ownerId: projectId, phase: 'applying' });
+      tx.oncomplete = () => resolve(); tx.onabort = () => reject(tx.error);
+    });
     const journal = await prepareNativeSharedAssetSync(base, { factory });
     expect((await abortNativeSharedAssetSync(base.operationId, { factory })).phase).toBe('aborted');
     expect((await abortNativeSharedAssetSync(base.operationId, { factory })).phase).toBe('aborted');
     await expect(finalizeNativeSharedAssetSync(journal, { factory })).rejects.toThrow();
     await expect(prepareNativeSharedAssetSync(base, { factory })).rejects.toThrow('已撤销');
     expect(await listPendingNativeSharedAssetSync(projectId, { factory })).toEqual([]);
+    expect(await listNativeProjectPendingTransfers(projectId, { factory })).toEqual([]);
+    const outbox = legacy.transaction(STORE_SHARED_ASSET_OUTBOX).objectStore(STORE_SHARED_ASSET_OUTBOX).get('job');
+    await expect(new Promise((resolve, reject) => {
+      outbox.onsuccess = () => resolve(outbox.result); outbox.onerror = () => reject(outbox.error);
+    })).resolves.toMatchObject({ phase: 'completed', errorCode: 'local_apply_aborted' });
     await saveNativeProjectContent({ projectId, expectedProjectEpoch: initial.project.epoch,
       expectedRevisions: { script: 0 }, patch: { script: '恢复编辑' } }, { factory });
     expect((await readNativeProjectContent(projectId, { factory }))?.content.script).toBe('恢复编辑');

@@ -1,10 +1,11 @@
 /** 新项目共享素材跨库提交的持久写锁；不持久化原生授权令牌。 */
 import type { DramaAssetLibrary } from '../../types/dramaAssets';
+import type { SharedAssetOutboxEntry } from '../../types/assetSync';
 import type { EpisodeRecord, ProjectContent, ProjectRecord } from '../../types/project';
 import { configValuesEqual } from '../configPatch';
 import { EXCHANGE } from './nativeProjectRepository';
 import { validateNativeAsset, type NativeAssetRecord } from './nativeAssetRepository';
-import { openDB, STORE_METADATA } from './schema';
+import { openDB, STORE_METADATA, STORE_SHARED_ASSET_OUTBOX } from './schema';
 import { assertNoPendingNativeSharedSync, CANVASES, CONTENTS, isNativeCanvasId, isNativeEpisodeId, isNativeProjectId, openNativeProjectDatabase,
   REVISIONS, ROOTS, TRANSFER, transact, validateContentSlice, type NativeProjectOptions } from './nativeProjectRepository';
 
@@ -178,7 +179,7 @@ export async function abortNativeSharedAssetSync(operationId: string, options: N
   if (journal.phase !== 'prepared') throw new Error('原共享同步已经完成，不能撤销本机应用');
   const legacy = await openDB();
   await new Promise<void>((resolve, reject) => {
-    const tx = legacy.transaction(STORE_METADATA, 'readwrite', { durability: 'strict' });
+    const tx = legacy.transaction([STORE_METADATA, STORE_SHARED_ASSET_OUTBOX], 'readwrite', { durability: 'strict' });
     requireStrict(tx);
     const store = tx.objectStore(STORE_METADATA);
     let reason: Error | undefined;
@@ -195,6 +196,22 @@ export async function abortNativeSharedAssetSync(operationId: string, options: N
         return;
       }
       if (!existing) store.put({ id: receiptKey(operationId), projectId: journal.projectId, digest: journal.receiptDigest, status: 'aborted' });
+      // 本机未提交时结束对应待办，后续同步重新比较本机和云端，不再重放被撤销的操作身份。
+      const outbox = tx.objectStore(STORE_SHARED_ASSET_OUTBOX);
+      const read = outbox.index('operationId').get(operationId);
+      read.onsuccess = () => {
+        const entry = read.result as SharedAssetOutboxEntry | undefined;
+        if (!entry) return;
+        if (entry.ownerId !== journal.projectId || entry.operationId !== operationId || entry.phase === 'applied'
+          || (entry.phase === 'completed' && entry.errorCode !== 'local_apply_aborted')) {
+          reason = fail();
+          tx.abort();
+          return;
+        }
+        if (entry.errorCode !== 'local_apply_aborted') {
+          outbox.put({ ...entry, phase: 'completed', errorCode: 'local_apply_aborted', updatedAt: Date.now() } satisfies SharedAssetOutboxEntry);
+        }
+      };
     };
   });
   const db = await openNativeProjectDatabase(false, options); if (!db) throw fail();

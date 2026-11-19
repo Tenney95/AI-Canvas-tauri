@@ -1,4 +1,4 @@
-/** 归档更新恢复点；恢复前再次确认，并保留当前状态作为新的恢复点。 */
+/** 处理项目待完成操作与归档恢复点。 */
 import { useEffect, useState } from 'react';
 import { useAppStore } from '../../store/useAppStore';
 import { listProjectImportRecoveries } from '../../services/indexedDb/projectImportRepository';
@@ -24,6 +24,7 @@ export default function ProjectImportRecoveryDialog({ ownerId, onClose }: { owne
   const t = useT(), restore = useAppStore((state) => state.restoreProjectImport);
   const settle = useAppStore((state) => state.settleProjectTransfer);
   const project = useAppStore((state) => state.projects.find((item) => item.id === ownerId));
+  const writeBlock = useAppStore((state) => state.nativeProjectWriteBlock);
   const binding = project && 'nativeView' in project ? (project as NativeProjectViewItem).nativeView : undefined;
   // 恢复可能替换原画布 ID，已打开的窗口仍指向同一作品。
   const [nativeProjectId] = useState(binding?.projectId);
@@ -32,6 +33,8 @@ export default function ProjectImportRecoveryDialog({ ownerId, onClose }: { owne
   const [readError, setReadError] = useState('');
   const [operationId, setOperationId] = useState(''), [operationStatus, setOperationStatus] = useState('');
   const [pending, setPending] = useState<NativeProjectPendingTransfer[]>([]);
+  const retrySharedReload = !loading && !readError && writeBlock?.kind === 'shared-sync' && writeBlock.projectId === nativeProjectId
+    && !pending.some((operation) => operation.operationId === writeBlock.operationId) ? writeBlock : null;
   useEffect(() => {
     let active = true;
     void Promise.allSettled([
@@ -98,7 +101,8 @@ export default function ProjectImportRecoveryDialog({ ownerId, onClose }: { owne
       {pending.length > 0 && <section aria-label={t('待处理操作')} className="space-y-2">
         <h3 className="font-medium text-canvas-text">{t('待处理操作')}</h3>
         {pending.map((operation) => <div key={operation.operationId} className="ui-card space-y-2 p-2">
-          <p>{t(operation.kind === 'export' ? '导出' : operation.kind === 'update' ? '导入更新' : '恢复项目')}
+          <p>{t(operation.kind === 'export' ? '导出' : operation.kind === 'update' ? '导入更新'
+            : operation.kind === 'shared-sync' ? '共享素材同步' : '恢复项目')}
             {operation.phase === 'db_committed' && ` · ${t('数据已提交，待收尾')}`}</p>
           <p className="break-all">{new Date(operation.updatedAt).toLocaleString()} · {operation.operationId}</p>
           <div className="flex flex-wrap gap-2">
@@ -110,6 +114,8 @@ export default function ProjectImportRecoveryDialog({ ownerId, onClose }: { owne
         </div>)}
         {pending.some((operation) => operation.kind === 'export') && <p>{t('结束导出登记会解除项目阻塞，保留原导出文件和回执。')}</p>}
       </section>}
+      {retrySharedReload && <button type="button" className="ui-btn ui-btn--secondary" disabled={busy}
+        onClick={() => void settleOperation(retrySharedReload, 'continue')}>{t('重新读取项目')}</button>}
       {operationStatus && <p role="status">{operationStatus}</p>}
       {loading ? <p role="status">{t('正在读取…')}</p> : !rows.length && !readError ? <p>{t('此项目尚无导入恢复点')}</p> : rows.map((row) => <label key={row.id} className="ui-card flex items-center gap-2 p-3">
         <input type="radio" name="project-import-recovery" disabled={busy} checked={selected === row.id} onChange={() => setSelected(row.id)} />

@@ -396,14 +396,14 @@ export default function App() {
             const latest = checkCanvas();
             if (!latest) return;
             const failure = latest.projectLoadStatus === 'readonly'
-              ? (latest.hasUnsavedNativeProjectWriteBlock() ? { count: 1, reason: t('项目更新尚未结算，当前编辑未保存。') } : null)
+              ? (latest.hasUnsavedNativeProjectWriteBlock() ? { count: 1, reason: t('项目有待处理的操作，当前编辑未保存。') } : null)
               : latest.autoSaveFailure ?? (savingState.currentProjectId && savingState.projectLoadStatus === 'ready'
                 && savedId !== savingState.currentProjectId ? { count: 1, reason: t('项目保存尚未完成') } : null);
             if (failure) {
               const { ask } = await import('@tauri-apps/plugin-dialog');
               const detail = failure.count > 1 ? t('已连续失败 {count} 次。', { count: failure.count }) : '';
               const message = latest.projectLoadStatus === 'readonly'
-                ? t('项目更新尚未结算，当前编辑未保存。现在退出会丢失这些编辑。取消退出后，可通过「处理原操作」核对更新。')
+                ? t('项目有待处理的操作，当前编辑未保存。现在退出会丢失这些编辑。取消退出后，可通过「处理原操作」核对。')
                 : t('{detail}{reason}\n\n现在退出会丢失未保存的改动。建议先取消退出，再用「导出项目」把内容备份出去。', { detail, reason: failure.reason });
               const quitAnyway = await ask(
                 message,
