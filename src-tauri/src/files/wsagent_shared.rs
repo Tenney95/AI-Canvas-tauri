@@ -317,7 +317,9 @@ enum PeerReply {
 }
 
 fn plain_directory(path: &Path) -> SharedResult<()> {
-    let mut builder = DirBuilder::new();
+    let builder = DirBuilder::new();
+    #[cfg(unix)]
+    let mut builder = builder;
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;

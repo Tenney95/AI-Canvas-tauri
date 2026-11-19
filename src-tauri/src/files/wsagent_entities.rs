@@ -65,9 +65,12 @@ pub struct EntityReceipt {
 #[derive(Serialize)]
 #[serde(rename_all = "lowercase")]
 enum EntityErrorCode {
+    #[cfg(target_os = "macos")]
     Conflict,
+    #[cfg(target_os = "macos")]
     Unavailable,
     Pairing,
+    #[cfg(target_os = "macos")]
     Invalid,
     Unsupported,
 }
@@ -83,6 +86,7 @@ impl EntitySyncError {
         Self { code, message }
     }
 
+    #[cfg(target_os = "macos")]
     fn invalid() -> Self {
         Self::new(
             EntityErrorCode::Invalid,

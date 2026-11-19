@@ -38,9 +38,12 @@ pub struct ScriptReply {
 #[derive(Serialize)]
 #[serde(rename_all = "lowercase")]
 enum ScriptErrorCode {
+    #[cfg(target_os = "macos")]
     Conflict,
+    #[cfg(target_os = "macos")]
     Unavailable,
     Pairing,
+    #[cfg(target_os = "macos")]
     Invalid,
     Unsupported,
 }

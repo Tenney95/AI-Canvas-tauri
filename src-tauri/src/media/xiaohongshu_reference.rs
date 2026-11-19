@@ -337,7 +337,9 @@ struct OpenWindow {
 
 fn ensure_profile_directory(path: &Path) -> Result<(), String> {
     const UNAVAILABLE: &str = "小红书独立浏览器目录不可用";
-    let mut builder = std::fs::DirBuilder::new();
+    let builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    let mut builder = builder;
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
