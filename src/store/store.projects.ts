@@ -82,11 +82,11 @@ import { isProjectExpectedContextCurrent } from '../services/projectExecutionCon
 import { videoInputFingerprintMaterial } from '../services/videoBatchPlanning';
 import { nativeMediaInputMaterial } from '../services/nativeMediaInput';
 import { createNativeProject, saveNativeProjectView, saveNativeProjectContent, convertNativeProjectToSeries,
-  createNativeEpisode, saveNativeEpisodeContent, readNativeProjectCapture, reorderNativeEpisodes,
+  appendNativeEpisodesInOrder, saveNativeEpisodeContent, readNativeProjectCapture, reorderNativeEpisodes,
   deleteNativeEpisode, deleteNativeProject, updateNativeProjectMetadata, updateNativeEpisodeMetadata,
   updateNativeEpisodeComposite, readNativeEpisodeContent, readNativeProjectContent, saveNativeCanvasPreview,
   saveNativeProjectTextModel, listNativeProjectPendingTransfers, type NativeProjectPendingTransfer } from '../services/indexedDb/nativeProjectRepository';
-import { listProjectCatalog, resolveProjectModel, type ProjectCatalogEntry } from '../services/projectModelRouter';
+import { listProjectCatalog, readOccupiedProjectIds, resolveProjectModel, type ProjectCatalogEntry } from '../services/projectModelRouter';
 import { readNativeProjectView } from '../services/nativeProjectNavigation';
 import { applyNativeEpisodeContent, hydrateNativeProjectView, nativeEpisodeDisplayNumbers, needsNativeEpisodeContent,
   projectNativeCatalogEntry, type NativeProjectViewItem } from './nativeProjectView';
@@ -2145,7 +2145,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     const runtime = native ? nativeRuntime.get(get) : undefined;
     const sequence = projectSwitchSequence;
     const isCurrent = () => get().currentProjectId === currentId && projectSwitchSequence === sequence
-      && nativeRuntime.get(get) === runtime;
+      && get().projectLoadStatus === 'ready' && nativeRuntime.get(get) === runtime;
     if (native && (!runtime || runtime.activeId !== currentId || state.switchingProjectName !== null
       || state.isCreatingProject || state.isReturningToStartPage)) return [];
     // 当前画布必须先落盘：转成剧集和切集都会动到它，未保存的改动会丢。
@@ -2186,33 +2186,29 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       try {
         await runtime.tail;
         assertCurrent();
-        const selection = runtime.loaded.selection;
-        let project = selection.project;
-        let nextNo = project.kind === 'standalone' ? 1
+        const { selection } = runtime.loaded;
+        const { project, canvas } = selection;
+        const lastNo = project.kind === 'standalone' ? 1
           : nativeEpisodeDisplayNumbers(selection.episodes).reduce((max, number) => Math.max(max, number), 0);
-        for (const input of entries) {
-          const episodeId = `e2-${crypto.randomUUID()}`, canvasId = `c2-${crypto.randomUUID()}`;
-          const [episodeIdentity, canvasIdentity] = await Promise.all([resolveProjectModel(episodeId), resolveProjectModel(canvasId)]);
-          if (episodeIdentity.dataModel !== 'missing' || canvasIdentity.dataModel !== 'missing') throw new Error('分集身份已被占用');
-          assertCurrent();
-          nextNo += 1;
-          const newEpisode = { episodeId, canvasId, displayNo: nextNo, name: input.name?.trim() || `第 ${nextNo} 集`, outline: input.outline };
-          const identity = { projectId: native.projectId, expectedProjectEpoch: project.epoch };
-          if (project.kind === 'standalone') {
-            const canvas = selection.canvas;
-            if (!canvas) throw new Error('原画布不可用');
-            const originalEpisodeId = `e2-${crypto.randomUUID()}`;
-            if ((await resolveProjectModel(originalEpisodeId)).dataModel !== 'missing') throw new Error('分集身份已被占用');
-            assertCurrent();
-            ({ project } = await convertNativeProjectToSeries({ ...identity, expectedCanvasId: canvas.id,
-              expectedCanvasEpoch: canvas.epoch, expectedCanvasRevision: canvas.revision,
-              expectedStandaloneRevision: runtime.loaded.content.standaloneCreative?.revision ?? 0,
-              episodeId: originalEpisodeId, name: project.name, appendEpisode: newEpisode }));
-          } else {
-            ({ project } = await createNativeEpisode({ ...identity, ...newEpisode }));
-          }
+        const append = entries.map((input, index) => ({ ...input, episodeId: `e2-${crypto.randomUUID()}`,
+          canvasId: `c2-${crypto.randomUUID()}`, displayNo: lastNo + index + 1 }));
+        if (project.kind === 'standalone' && !canvas) throw new Error('原画布不可用');
+        const conversion = project.kind === 'standalone' && canvas ? { expectedCanvasId: canvas.id, expectedCanvasEpoch: canvas.epoch,
+          expectedCanvasRevision: canvas.revision, expectedStandaloneRevision: runtime.loaded.content.standaloneCreative?.revision ?? 0,
+          episodeId: `e2-${crypto.randomUUID()}`, name: project.name } : undefined;
+        const candidates = append.flatMap((input) => [input.episodeId, input.canvasId]);
+        if (conversion) candidates.push(conversion.episodeId);
+        const occupied = await readOccupiedProjectIds(candidates);
+        assertCurrent();
+        if (conversion && occupied.has(conversion.episodeId)) throw new Error('分集身份已被占用');
+        const conflict = append.findIndex((input) => occupied.has(input.episodeId) || occupied.has(input.canvasId));
+        const prefix = conflict < 0 ? append : append.slice(0, conflict);
+        for await (const canvasId of appendNativeEpisodesInOrder({ projectId: native.projectId, expectedProjectEpoch: project.epoch,
+          episodes: prefix, conversion })) {
           created.push(canvasId);
+          assertCurrent();
         }
+        if (conflict >= 0) throw new Error('分集身份已被占用');
       } catch (error) {
         if (isCurrent()) {
           const reason = error instanceof Error ? error.message : '新增分集失败';

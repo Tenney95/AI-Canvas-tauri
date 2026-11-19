@@ -13,7 +13,7 @@ vi.mock('../../src/services/indexedDb/nativeProjectRepository', () => ({
   readNativeProjectIdentityCatalog: mocks.readNativeProjectIdentityCatalog, readNativeProject: mocks.readNativeProject,
 }));
 
-import { listProjectCatalog, resolveProjectModel } from '../../src/services/projectModelRouter';
+import { listProjectCatalog, readOccupiedProjectIds, resolveProjectModel } from '../../src/services/projectModelRouter';
 
 const native = { project: { id: 'native-root', name: '新作品', kind: 'series', createdAt: 1, updatedAt: 1 },
   content: {}, canvas: null, episodes: [{ id: 'native-episode' }], episodeContents: [], canvases: [{ id: 'native-canvas' }] } as unknown as NativeProjectAggregate;
@@ -40,10 +40,12 @@ beforeEach(async () => {
 });
 afterEach(() => database.close());
 
-async function occupy(id: string): Promise<void> {
+async function occupy(id: string, deleted = false): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const transaction = database.transaction('projects', 'readwrite');
-    transaction.objectStore('projects').put({ id, nodes: [{ id: 'legacy-node' }] });
+    const store = deleted ? 'metadata' : 'projects';
+    const transaction = database.transaction(store, 'readwrite');
+    transaction.objectStore(store).put(deleted ? { id: `project-deleted:${id}`, retainedAudit: true }
+      : { id, nodes: [{ id: 'legacy-node' }] });
     transaction.oncomplete = () => resolve(); transaction.onabort = () => reject(transaction.error);
   });
 }
@@ -89,13 +91,21 @@ describe('新旧项目只读路由', () => {
   });
 
   it('旧目标已删除但保留墓碑时仍不能重用该身份', async () => {
-    await new Promise<void>((resolve, reject) => {
-      const transaction = database.transaction('metadata', 'readwrite');
-      transaction.objectStore('metadata').put({ id: 'project-deleted:native-canvas', retainedAudit: true });
-      transaction.oncomplete = () => resolve(); transaction.onabort = () => reject(transaction.error);
-    });
+    await occupy('native-canvas', true);
     await expect(listProjectCatalog()).rejects.toThrow('身份冲突');
     await expect(resolveProjectModel('native-root')).rejects.toThrow('身份冲突');
+  });
+
+  it('批量分配前只核对一次目录与旧库主键，保留损坏身份、旧记录与删除墓碑的占用', async () => {
+    await occupy('old-owner');
+    await occupy('retired-owner', true);
+    mocks.readNativeProjectIdentityCatalog.mockResolvedValue({ entries: [directory], unavailableIds: new Set(['quarantined-canvas']) });
+    await expect(readOccupiedProjectIds(['free', 'native-episode', 'old-owner', 'retired-owner', 'quarantined-canvas', 'free']))
+      .resolves.toEqual(new Set(['native-episode', 'old-owner', 'retired-owner', 'quarantined-canvas']));
+    expect(mocks.openDB).toHaveBeenCalledOnce();
+    expect(mocks.readNativeProjectIdentityCatalog).toHaveBeenCalledOnce();
+    expect(mocks.getProjectById).not.toHaveBeenCalled();
+    expect(mocks.readNativeProject).not.toHaveBeenCalled();
   });
 
   it('旧项目即使使用类似新项目的 ID 也按旧仓储真实存在性判断', async () => {

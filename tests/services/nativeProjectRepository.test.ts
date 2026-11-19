@@ -1,9 +1,9 @@
 /** 仓储测试仅使用独立 fake IndexedDB，不操作真实项目。 */
 import { webcrypto } from 'node:crypto';
-import { IDBFactory, IDBIndex, IDBKeyRange } from 'fake-indexeddb';
+import { IDBFactory, IDBIndex, IDBKeyRange, IDBObjectStore } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createNativeProject, readNativeProject, readNativeProjectByCanvasId, listNativeProjectIdentities, readNativeProjectIdentityCatalog,
-  listNativeEpisodes, convertNativeProjectToSeries, createNativeEpisode, saveNativeCanvas, saveNativeEpisodeContent,
+  listNativeEpisodes, convertNativeProjectToSeries, createNativeEpisode, appendNativeEpisodesInOrder, saveNativeCanvas, saveNativeEpisodeContent,
   reorderNativeEpisodes, deleteNativeEpisode, readNativeProjectCapture, readNativeProjectSelection, readNativeProjectContent,
   readNativeEpisodeContent, saveNativeProjectContent, saveNativeProjectView, deleteNativeProject, transitionNativeProjectRecycle,
   openNativeProjectDatabase, transact, assertNoPendingNativeSharedSync, ROOTS, CONTENTS, CANVASES, EPISODES, EPISODE_CONTENTS, RETIRED,
@@ -619,6 +619,44 @@ describe('独立新项目仓储', () => {
       canvasId: initial.canvas!.id, episodeId: null, expectedCanvasEpoch: initial.canvas!.epoch, expectedCanvasRevision: 0,
       document: { nodes: [], edges: [], groups: [] } }, { factory })).rejects.toThrow('project-version-conflict');
     expect((await listNativeEpisodes(initial.project.id, { factory })).map((episode) => episode.id)).toEqual([id('e2', '3')]);
+  });
+
+  it('批量增集只在首集读取整剧画布和正文，第三集无效时保留已提交的前两集', async () => {
+    const root = await createNativeProject({ name: '原剧集', kind: 'series' }, { factory });
+    const initial = await createNativeEpisode({ projectId: root.project.id, expectedProjectEpoch: root.project.epoch,
+      episodeId: id('e2', '1'), canvasId: id('c2', '1'), name: '第一集', outline: '原稿' }, { factory });
+    const episodes = ['2', '3', '4', '5'].map((digit, index) => ({ episodeId: id('e2', digit), canvasId: id('c2', digit),
+      displayNo: index + 2, outline: digit === '4' ? 42 as unknown as string : `大纲 ${digit}` }));
+    const indexReads = vi.spyOn(IDBIndex.prototype, 'getAll');
+    const leafReads = vi.spyOn(IDBObjectStore.prototype, 'get');
+    const created: string[] = [];
+    const append = async () => {
+      for await (const canvasId of appendNativeEpisodesInOrder({ projectId: root.project.id,
+        expectedProjectEpoch: initial.project.epoch, episodes }, { factory })) created.push(canvasId);
+    };
+
+    await expect(append()).rejects.toThrow('invalid-creative-content');
+    expect(created).toEqual([id('c2', '2'), id('c2', '3')]);
+    expect(indexReads.mock.contexts.filter((index) => index instanceof IDBIndex && index.objectStore.name === 'canvasDocuments')).toHaveLength(1);
+    expect(leafReads.mock.contexts.filter((store) => store instanceof IDBObjectStore && store.name === 'episodeContents')).toHaveLength(1);
+    indexReads.mockRestore(); leafReads.mockRestore();
+    const capture = (await readNativeProjectCapture(root.project.id, { factory }))!;
+    expect(capture.changeRevision).toBe(3);
+    expect(capture.aggregate.episodes.map(({ name, orderRank }) => [name, orderRank])).toEqual([['第一集', 0], ['第 2 集', 1], ['第 3 集', 2]]);
+    expect(capture.aggregate.episodeContents.map(({ outline }) => outline)).toEqual(['原稿', '大纲 2', '大纲 3']);
+  });
+
+  it('批次提交间已有另一结构写入时拒绝用旧代际和序号新增下一集', async () => {
+    const root = await createNativeProject({ name: '空剧集', kind: 'series' }, { factory });
+    const batch = appendNativeEpisodesInOrder({ projectId: root.project.id, expectedProjectEpoch: root.project.epoch,
+      episodes: ['1', '2'].map((digit, index) => ({ episodeId: id('e2', digit), canvasId: id('c2', digit), displayNo: index + 1 })) }, { factory });
+    await expect(batch.next()).resolves.toMatchObject({ done: false, value: id('c2', '1') });
+    await createNativeEpisode({ projectId: root.project.id, expectedProjectEpoch: root.project.epoch + 1,
+      episodeId: id('e2', '3'), canvasId: id('c2', '3'), name: '其他窗口新增' }, { factory });
+
+    await expect(batch.next()).rejects.toThrow('project-version-conflict');
+    expect((await listNativeEpisodes(root.project.id, { factory })).map(({ canvasId, orderRank }) => [canvasId, orderRank]))
+      .toEqual([[id('c2', '1'), 0], [id('c2', '3'), 1]]);
   });
 
   it('分集大纲、分集和画布原子创建，首次拆分失败也不提前转换普通项目', async () => {

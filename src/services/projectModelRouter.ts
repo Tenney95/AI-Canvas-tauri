@@ -58,6 +58,18 @@ async function occupiedLegacyIds(ids: readonly string[]): Promise<Set<string>> {
   });
 }
 
+/** 批量核对待分配身份。保留损坏记录的占用，实际新库写入仍须在事务里再次验证。 */
+export async function readOccupiedProjectIds(ids: readonly string[]): Promise<Set<string>> {
+  const candidates = new Set(ids);
+  if (!candidates.size) return new Set();
+  const [occupied, catalog] = await Promise.all([occupiedLegacyIds([...candidates]), readNativeCatalog(true)]);
+  for (const id of catalog.unavailableIds) if (candidates.has(id)) occupied.add(id);
+  for (const entry of catalog.entries) {
+    for (const id of nativeEntryIds(entry)) if (candidates.has(id)) occupied.add(id);
+  }
+  return occupied;
+}
+
 export async function listProjectCatalog(options: { isolateInvalidNativeProjects?: boolean } = {}): Promise<ProjectCatalogEntry[]> {
   const isolate = options.isolateInvalidNativeProjects === true;
   const [legacy, native] = await Promise.all([getAllProjects(), readNativeCatalog(isolate)]);
