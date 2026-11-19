@@ -267,6 +267,33 @@ describe('独立新项目仓储', () => {
     expect(cleared.episode.creationProfile).toBeUndefined();
     expect(cleared.content.outline).toBe('新大纲');
   });
+
+  it('保存分集正文与配置只核验目标画布和正文，别集正文缺失时当前集仍可保存', async () => {
+    const root = await createNativeProject({ name: '作品', kind: 'series' }, { factory });
+    const first = await createNativeEpisode({ projectId: root.project.id, expectedProjectEpoch: root.project.epoch, name: '第一集' }, { factory });
+    const second = await createNativeEpisode({ projectId: root.project.id, expectedProjectEpoch: first.project.epoch, name: '第二集' }, { factory });
+    const [target, unrelated] = second.episodes;
+    const db = (await openNativeProjectDatabase(false, { factory }))!;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction('episodeContents', 'readwrite');
+        tx.objectStore('episodeContents').delete(unrelated.id);
+        tx.oncomplete = () => resolve(); tx.onabort = () => reject(tx.error);
+      });
+      const input = { projectId: root.project.id, expectedProjectEpoch: second.project.epoch, episodeId: target.id,
+        expectedCanvasId: target.canvasId, expectedEpisodeRevision: 0, expectedContentRevision: 0,
+        contentPatch: { outline: '第一集已保存' }, creationProfile: { id: 'profile', version: '1.0.0', sha256: 'a'.repeat(64) } };
+      await expect(updateNativeEpisodeComposite(input, { factory })).resolves.toMatchObject({
+        episode: { revision: 1, creationProfile: input.creationProfile }, content: { revision: 1, outline: '第一集已保存' },
+      });
+      await expect(updateNativeEpisodeComposite(input, { factory })).rejects.toThrow('episode-version-conflict');
+      await expect(readNativeEpisodeContent(root.project.id, target.id, { factory })).resolves.toMatchObject({
+        episode: { revision: 1 }, content: { revision: 1, outline: '第一集已保存' },
+      });
+      await expect(readNativeProject(root.project.id, { factory })).rejects.toThrow('incomplete-project');
+    } finally { db.close(); }
+  });
+
   it('每个逻辑素材根只允许映射到其专属固定分区', async () => {
     const initial = await createNativeProject({ name: '素材分区', projectId: id('p2', '1'), canvasId: id('c2', '2') }, { factory });
     const secondary = `r2-${id('p2', '3').slice(3)}`, other = `r2-${id('p2', '4').slice(3)}`;

@@ -938,40 +938,53 @@ options: NativeProjectOptions = {}): Promise<NativeProjectAggregate> {
   });
 }
 
-/** 分集正文与创作配置一起条件提交，避免只保存其中一部分。 */
+/** 分集正文与创作配置一起条件提交，只读取目标分集的画布和正文。 */
 export async function updateNativeEpisodeComposite(input: { projectId: string; expectedProjectEpoch: number;
   episodeId: string; expectedCanvasId: string; expectedEpisodeRevision: number; expectedContentRevision: number;
   contentPatch?: Partial<Pick<EpisodeContent, 'outline' | 'script' | 'scriptFile' | 'creative' | 'assetRoster'>>;
   creationProfile?: CreationProfileSelection | null; teamProfileOverride?: AgentTeamProfile | null; now?: number },
 options: NativeProjectOptions = {}): Promise<{ episode: EpisodeRecord; content: EpisodeContent }> {
   const fixed = structuredClone(input), now = timestamp(fixed.now);
+  if (!isNativeProjectId(fixed.projectId) || !Number.isSafeInteger(fixed.expectedProjectEpoch) || fixed.expectedProjectEpoch < 0) return fail('invalid-identity');
   if (!isNativeEpisodeId(fixed.episodeId) || !isNativeCanvasId(fixed.expectedCanvasId)
     || !Number.isSafeInteger(fixed.expectedEpisodeRevision) || fixed.expectedEpisodeRevision < 0
     || !Number.isSafeInteger(fixed.expectedContentRevision) || fixed.expectedContentRevision < 0
     || fixed.contentPatch !== undefined && (!fixed.contentPatch || typeof fixed.contentPatch !== 'object' || Array.isArray(fixed.contentPatch)
       || Object.keys(fixed.contentPatch).some((key) => !['outline', 'script', 'scriptFile', 'creative', 'assetRoster'].includes(key)))
     || !Object.keys(fixed.contentPatch ?? {}).length && fixed.creationProfile === undefined && fixed.teamProfileOverride === undefined) return fail('invalid-episode-mutation');
-  return mutate(fixed.projectId, fixed.expectedProjectEpoch, options, async (tx, current) => {
-    const previous = current.episodes.find((item) => item.id === fixed.episodeId);
-    const body = current.episodeContents.find((item) => item.episodeId === fixed.episodeId);
-    if (!previous || !body || previous.canvasId !== fixed.expectedCanvasId
-      || previous.revision !== fixed.expectedEpisodeRevision || body.revision !== fixed.expectedContentRevision) return fail('episode-version-conflict');
-    const updateMetadata = fixed.creationProfile !== undefined || fixed.teamProfileOverride !== undefined;
-    const episode: EpisodeRecord = { ...previous, ...(updateMetadata ? { revision: increment(previous.revision), updatedAt: now } : {}) };
-    if (fixed.creationProfile === null) delete episode.creationProfile;
-    else if (fixed.creationProfile !== undefined) episode.creationProfile = fixed.creationProfile;
-    if (fixed.teamProfileOverride === null) delete episode.teamProfileOverride;
-    else if (fixed.teamProfileOverride !== undefined) episode.teamProfileOverride = fixed.teamProfileOverride;
-    const content: EpisodeContent = Object.keys(fixed.contentPatch ?? {}).length
-      ? { ...body, ...fixed.contentPatch, revision: increment(body.revision) } : body;
-    const project = { ...current.project, updatedAt: now };
-    const next = validateAggregate(project, current.content, current.episodes.map((item) => item.id === episode.id ? episode : item),
-      current.episodeContents.map((item) => item.episodeId === content.episodeId ? content : item), current.canvases);
-    await Promise.all([request(tx.objectStore(ROOTS).put(next.project)),
-      ...(updateMetadata ? [request(tx.objectStore(EPISODES).put(episode))] : []),
-      ...(content !== body ? [request(tx.objectStore(EPISODE_CONTENTS).put(content))] : [])]);
-    return { episode, content };
-  });
+  const database = await openNativeProjectDatabase(false, options);
+  if (!database) return fail('project-not-found');
+  try {
+    return await transact(database, 'readwrite', options, async (tx) => {
+      await assertNoPendingNativeSharedSync(tx, fixed.projectId);
+      const { project, canvas, episode: previous } = await readCanvasTarget(tx, fixed.projectId, fixed.expectedCanvasId);
+      const [body, revision] = await Promise.all([
+        request(tx.objectStore(EPISODE_CONTENTS).get(fixed.episodeId)) as Promise<EpisodeContent | undefined>,
+        request(tx.objectStore(REVISIONS).get(fixed.projectId)) as Promise<{ projectId: string; changeRevision: number } | undefined>,
+      ]);
+      if (project.epoch !== fixed.expectedProjectEpoch) return fail('project-version-conflict');
+      if (!revision || revision.projectId !== fixed.projectId || !Number.isSafeInteger(revision.changeRevision)
+        || revision.changeRevision < 0) return fail('invalid-project-revision');
+      if (!previous || previous.id !== fixed.episodeId || !body || body.episodeId !== fixed.episodeId
+        || previous.revision !== fixed.expectedEpisodeRevision || body.revision !== fixed.expectedContentRevision) return fail('episode-version-conflict');
+      validateEpisodeTarget(project, canvas, previous, body);
+      const updateMetadata = fixed.creationProfile !== undefined || fixed.teamProfileOverride !== undefined;
+      const episode: EpisodeRecord = { ...previous, ...(updateMetadata ? { revision: increment(previous.revision), updatedAt: now } : {}) };
+      if (fixed.creationProfile === null) delete episode.creationProfile;
+      else if (fixed.creationProfile !== undefined) episode.creationProfile = fixed.creationProfile;
+      if (fixed.teamProfileOverride === null) delete episode.teamProfileOverride;
+      else if (fixed.teamProfileOverride !== undefined) episode.teamProfileOverride = fixed.teamProfileOverride;
+      const content: EpisodeContent = Object.keys(fixed.contentPatch ?? {}).length
+        ? { ...body, ...fixed.contentPatch, revision: increment(body.revision) } : body;
+      const updatedProject = { ...project, updatedAt: now };
+      validateEpisodeTarget(updatedProject, canvas, episode, content);
+      await Promise.all([request(tx.objectStore(ROOTS).put(updatedProject)),
+        request(tx.objectStore(REVISIONS).put({ projectId: fixed.projectId, changeRevision: increment(revision.changeRevision) })),
+        ...(updateMetadata ? [request(tx.objectStore(EPISODES).put(episode))] : []),
+        ...(content !== body ? [request(tx.objectStore(EPISODE_CONTENTS).put(content))] : [])]);
+      return { episode, content };
+    }, [ROOTS, EPISODES, EPISODE_CONTENTS, CANVASES, REVISIONS, TRANSFER]);
+  } finally { database.close(); }
 }
 
 /** 单集操作只读取目标画布；其余分集只读轻量元数据和画布主键。 */
@@ -1010,6 +1023,15 @@ export function validateCanvasTarget(project: ProjectRecord, episode: EpisodeRec
     canvases: [canvas], previews: [], bindings: [] };
   const prior = previous ? { ...frame, canvases: [previous] } : undefined;
   return validateProjectModelTransferAggregate(frame, prior).canvases[0];
+}
+
+function validateEpisodeTarget(project: ProjectRecord, canvas: CanvasDocument, episode: EpisodeRecord,
+  episodeContent: EpisodeContent, previousContent?: EpisodeContent): EpisodeContent {
+  const content: ProjectContent = { projectId: project.id, revisions: { source: 0, script: 0, storyGraph: 0, assets: 0 } };
+  const frame = { project: { ...project, lastOpenedCanvasId: canvas.id }, content, episodes: [episode],
+    episodeContents: [episodeContent], canvases: [canvas], previews: [], bindings: [] };
+  const prior = previousContent ? { ...frame, episodeContents: [previousContent] } : undefined;
+  return validateProjectModelTransferAggregate(frame, prior).episodeContents[0];
 }
 
 interface NativeEpisodeSeed {
@@ -1186,10 +1208,7 @@ export async function saveNativeProjectView(input: {
         if (!episode || episode.id !== fixed.episodeId || !body || body.episodeId !== fixed.episodeId
           || episode.revision !== episodeUpdate.expectedEpisodeRevision || body.revision !== episodeUpdate.expectedContentRevision) return fail('episode-version-conflict');
         const updated: EpisodeContent = { ...body, ...episodeUpdate.patch, revision: increment(body.revision) };
-        const scopedProject: ProjectRecord = { ...project, lastOpenedCanvasId: canvas.id };
-        const blank: ProjectContent = { projectId: fixed.projectId, revisions: { source: 0, script: 0, storyGraph: 0, assets: 0 } };
-        const frame = { project: scopedProject, content: blank, episodes: [episode], episodeContents: [updated], canvases: [canvas], previews: [], bindings: [] };
-        nextEpisode = validateProjectModelTransferAggregate(frame, { ...frame, episodeContents: [body] }).episodeContents[0];
+        nextEpisode = validateEpisodeTarget(project, canvas, episode, updated, body);
       }
       const changeRevision = increment(revision.changeRevision);
       await Promise.all([request(tx.objectStore(ROOTS).put({ ...project, updatedAt: now })), request(tx.objectStore(CANVASES).put(nextCanvas)),
@@ -1223,10 +1242,7 @@ export async function saveNativeEpisodeContent(input: { projectId: string; expec
       if (!episode || episode.id !== fixed.episodeId || !body || body.episodeId !== fixed.episodeId
         || episode.revision !== fixed.expectedEpisodeRevision || body.revision !== fixed.expectedContentRevision) return fail('episode-version-conflict');
       const updated: EpisodeContent = { ...body, ...fixed.patch, revision: increment(body.revision) };
-      const scopedProject: ProjectRecord = { ...project, lastOpenedCanvasId: canvas.id };
-      const blank: ProjectContent = { projectId: fixed.projectId, revisions: { source: 0, script: 0, storyGraph: 0, assets: 0 } };
-      const frame = { project: scopedProject, content: blank, episodes: [episode], episodeContents: [updated], canvases: [canvas], previews: [], bindings: [] };
-      const checked = validateProjectModelTransferAggregate(frame, { ...frame, episodeContents: [body] }).episodeContents[0];
+      const checked = validateEpisodeTarget(project, canvas, episode, updated, body);
       await Promise.all([request(tx.objectStore(ROOTS).put({ ...project, updatedAt: now })), request(tx.objectStore(EPISODE_CONTENTS).put(checked)),
         request(tx.objectStore(REVISIONS).put({ projectId: fixed.projectId, changeRevision: increment(revision.changeRevision) }))]);
       return checked;
