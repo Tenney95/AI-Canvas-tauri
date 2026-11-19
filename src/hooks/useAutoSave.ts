@@ -182,6 +182,9 @@ export function useAutoSave() {
       return operation;
     }
 
+    const isNavigating = (state: ReturnType<typeof useAppStore.getState>) => state.switchingProjectName != null
+      || state.isCreatingProject || state.isReturningToStartPage;
+
     // 真正的结构指纹计算 + 保存判断，只在合并窗口到时执行一次，
     // 拖拽期间每帧只做一次极廉价的引用比较（见下方 subscribe 回调），
     // 不再每帧 map/sort/join 分配数组（消除 GC 抖动）。
@@ -202,6 +205,11 @@ export function useAutoSave() {
       }
 
       if (pausedProjectRef.current === state.currentProjectId) return;
+      if (isNavigating(state)) {
+        // 导航刷新完成后再记录保存基线，分集结构事务期间的迟到编辑仍会落盘。
+        timerRef.current = setTimeout(checkAndSave, 2000);
+        return;
+      }
 
       const structFp = structureFingerprint(state);
       const structChanged = structFp !== fingerprintRef.current;
@@ -234,7 +242,7 @@ export function useAutoSave() {
     async function flushCurrentProject(projectId: string): Promise<boolean> {
       const state = useAppStore.getState();
       if (!active || autoSaveRuntime.owner !== owner || state.currentProjectId !== projectId
-        || projectIdRef.current !== projectId || state.projectLoadStatus !== 'ready'
+        || projectIdRef.current !== projectId || state.projectLoadStatus !== 'ready' || isNavigating(state)
         || retryAtRef.current !== null || pausedProjectRef.current === projectId) return false;
       const fingerprint = structureFingerprint(state);
       const dataRefs = captureNodeDataReferences(state.nodes);
@@ -246,7 +254,7 @@ export function useAutoSave() {
       const afterSave = useAppStore.getState();
       // 点击前已存在的新输入可以接在旧在途保存后提交；等待中新来的编辑仍交回合并窗口。
       if (active && autoSaveRuntime.owner === owner && afterSave.currentProjectId === projectId
-        && pausedProjectRef.current !== projectId && retryAtRef.current === null && forceSaveRef.current
+        && !isNavigating(afterSave) && pausedProjectRef.current !== projectId && retryAtRef.current === null && forceSaveRef.current
         && diskVersionRef.current === diskVersion && structureFingerprint(afterSave) === fingerprint
         && !hasNodeDataReferenceChanges(afterSave.nodes, dataRefs)) {
         if (timerRef.current) clearTimeout(timerRef.current);
@@ -258,7 +266,7 @@ export function useAutoSave() {
       const latest = useAppStore.getState();
       // 等待中新来的改动留给原定时器，旧点击不能一边追存一边打开重预览。
       return active && autoSaveRuntime.owner === owner && latest.currentProjectId === projectId
-        && latest.projectLoadStatus === 'ready' && !latest.autoSaveFailure && retryAtRef.current === null && pausedProjectRef.current !== projectId
+        && latest.projectLoadStatus === 'ready' && !isNavigating(latest) && !latest.autoSaveFailure && retryAtRef.current === null && pausedProjectRef.current !== projectId
         && !forceSaveRef.current && diskVersionRef.current === diskVersion
         && structureFingerprint(latest) === fingerprint && !hasNodeDataReferenceChanges(latest.nodes, dataRefs);
     }

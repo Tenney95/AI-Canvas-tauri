@@ -67,8 +67,11 @@ function createNodeFromNumberShortcut(shortcutIndex: number, isSource: boolean) 
 export function useKeyboardShortcuts() {
   useEffect(() => {
     let active = true; // guard against callbacks firing after unmount / HMR reload
+    const isNavigating = (state: ReturnType<typeof useAppStore.getState>) => state.switchingProjectName != null
+      || state.isCreatingProject || state.isReturningToStartPage || state.projectLoadStatus === 'loading';
     const saveActiveWorkspace = () => {
       const state = useAppStore.getState();
+      if (isNavigating(state)) return;
       if (state.projectWorkspaceView === 'script') {
         window.dispatchEvent(new Event('script-workbench-save'));
         return;
@@ -78,10 +81,13 @@ export function useKeyboardShortcuts() {
 
     // ── Web fallback: JS keyboard events ──
     async function handleKeyDown(e: KeyboardEvent) {
+      // 加载遮罩期间，捕获阶段的全局监听也不能操作底下的画布。
+      const state = useAppStore.getState();
+      if (e.key !== 'F12' && isNavigating(state)) return;
       const target = e.target as HTMLElement;
       const isEditing = isEditableTarget(target);
       // 剧本整页保留编辑器原生按键，保存交由工作台当前页签；不操作未显示的画布。
-      if (useAppStore.getState().projectWorkspaceView === 'script') {
+      if (state.projectWorkspaceView === 'script') {
         if ((e.ctrlKey || e.metaKey || e.altKey) && e.key.toLowerCase() === 's') {
           e.preventDefault();
           e.stopPropagation();

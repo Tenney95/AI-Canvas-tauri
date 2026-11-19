@@ -126,6 +126,19 @@ describe('useAutoSave node data tracking', () => {
 });
 
 describe('useAutoSave with the group file Store', () => {
+  it('分集结构更新期间暂缓自动保存，解除遮罩后仍提交迟到编辑', async () => {
+    const save = vi.mocked(useAppStore.getState().saveCurrentProjectSilent);
+    mount();
+    useAppStore.setState({ switchingProjectName: '正在更新分集' });
+    useAppStore.getState().updateNodeDataTransient('a', { output: '迟到编辑' });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(save).not.toHaveBeenCalled();
+    await expect(flushPendingAutoSave('p1')).resolves.toBe(false);
+    useAppStore.setState({ switchingProjectName: null });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(save).toHaveBeenCalledOnce();
+  });
+
   it('does not sync or save during continuous pure selection and position changes', async () => {
     mount();
     await vi.advanceTimersByTimeAsync(0);

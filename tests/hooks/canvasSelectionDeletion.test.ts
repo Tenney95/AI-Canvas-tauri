@@ -72,4 +72,15 @@ describe('键盘选区删除入口', () => {
     expect(useAppStore.getState().deleteSelectedCanvasElements).not.toHaveBeenCalled();
     expect(event.preventDefault).not.toHaveBeenCalled();
   });
+
+  it('导航遮罩期间的全局快捷键不更改仍在保存或等待替换的画布', async () => {
+    const addNode = vi.fn(), saveCurrentProject = vi.fn(async () => 'project');
+    useAppStore.setState({ switchingProjectName: '正在切集', addNode, saveCurrentProject });
+    await driver.keydown!({ ...keyEvent('1'), code: 'Digit1' });
+    await driver.keydown!(keyEvent());
+    await driver.keydown!({ ...keyEvent('s'), ctrlKey: true });
+    expect(addNode).not.toHaveBeenCalled();
+    expect(useAppStore.getState().deleteSelectedCanvasElements).not.toHaveBeenCalled();
+    expect(saveCurrentProject).not.toHaveBeenCalled();
+  });
 });
