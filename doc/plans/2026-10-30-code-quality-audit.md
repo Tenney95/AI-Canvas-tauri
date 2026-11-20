@@ -957,7 +957,10 @@ cargo test --lib blender_runtime::result::tests
 
 ## 2026-11-20 旧画布控件、分组改名与视频能力 Schema 精简
 
-本次未运行测试，待用户验收。
+已实现，按范围分别提交。本次未运行测试，待用户验收。
 
 - 删除 React Flow 旧缩放控件的专属样式，保留自定义工具栏、小地图样式和长按防误触判断。Tauri 桌面端在含节点的项目中切换深浅主题，通过右下角工具栏试放大、缩小、适应视图和锁定缩放，再用小地图定位。长按菜单仍可从空白画布打开，从节点和控件上操作时不误触。现有回归见 [useCanvasViewportPreferences.test.ts](../../tests/hooks/useCanvasViewportPreferences.test.ts) 和 [useCanvasLongPressRadialMenuPointer.test.ts](../../tests/hooks/useCanvasLongPressRadialMenuPointer.test.ts#L179)。
 - 删除无生产调用的整目录改名函数。现行分组改名仍逐文件迁移项目引用，保存成功后清理旧空目录。「同名改名」用例改为观察现用建目录及文件同步入口。Tauri 桌面端在测试项目中对含本地图片或分镜帧的分组改名，核对标签、媒体路径和重开项目后的可用性。再提交同名及已占用名称，核对没有产生第二份文件或改写引用。用例还覆盖保存失败保留源文件。见 [groupFolders.test.ts](../../tests/store/groupFolders.test.ts)。
+- 厂商配置预览工具在注册时共用输入模式和生成操作的能力覆盖 Schema 构造。静态展开确认两组键的顺序、约束和嵌套对象隔离保持原样。Tauri 桌面端通过对话助手预览自定义视频模型，用合法的 `keyframe` 和 `video-to-video` 覆盖核对画幅、默认画幅、是否必选画幅及仅自动时长的声明。再传入未知操作键或空画幅数组，预期仍在草稿生成前拒绝。已连接 MCP 的客户端可核对同一工具的声明顺序。现有接受和拒绝用例见 [providerConfigTools.test.ts](../../tests/services/chat/providerConfigTools.test.ts#L545)。
+
+在仓库根目录可运行 `npm test -- tests/hooks/useCanvasViewportPreferences.test.ts tests/hooks/useCanvasLongPressRadialMenuPointer.test.ts tests/store/groupFolders.test.ts tests/services/chat/providerConfigTools.test.ts`。

@@ -95,6 +95,28 @@ function numberRangeInputSchema(): AgentToolSchema {
   };
 }
 
+function videoCapabilityOverridesInputSchema(keys: readonly string[]): AgentToolSchema {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: Object.fromEntries(
+      keys.map((key) => [key, {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ratios: {
+            type: 'array', minItems: 1, maxItems: 12,
+            items: { type: 'string', minLength: 1, maxLength: 24 },
+          },
+          defaultRatio: { type: 'string', minLength: 1, maxLength: 24 },
+          requiresRatio: { type: 'boolean' },
+          automaticDurationOnly: { type: 'boolean' },
+        },
+      }]),
+    ),
+  };
+}
+
 function providerDocsError(error: unknown) {
   // Tauri invoke 的拒绝是纯字符串而非 Error，直接丢弃会把真实原因（如域名解析、
   // 大小超限、内容类型）都吞成无意义的通用文案，这里保留原始 native 错误信息。
@@ -580,42 +602,8 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
                     defaultResolution: { type: 'string', maxLength: 24 },
                     ratios: { type: 'array', items: { type: 'string' }, maxItems: 12 },
                     defaultRatio: { type: 'string', maxLength: 24 },
-                    inputModeCapabilities: {
-                      type: 'object',
-                      additionalProperties: false,
-                      properties: Object.fromEntries(
-                        ['text', 'keyframe', 'reference', 'mixed'].map((mode) => [mode, {
-                          type: 'object',
-                          additionalProperties: false,
-                          properties: {
-                            ratios: {
-                              type: 'array',
-                              minItems: 1,
-                              maxItems: 12,
-                              items: { type: 'string', minLength: 1, maxLength: 24 },
-                            },
-                            defaultRatio: { type: 'string', minLength: 1, maxLength: 24 },
-                            requiresRatio: { type: 'boolean' },
-                            automaticDurationOnly: { type: 'boolean' },
-                          },
-                        }]),
-                      ),
-                    },
-                    operationCapabilities: {
-                      type: 'object', additionalProperties: false,
-                      properties: Object.fromEntries(
-                        ['text-to-video', 'image-to-video', 'video-to-video'].map((operation) => [operation, {
-                          type: 'object', additionalProperties: false,
-                          properties: {
-                            ratios: { type: 'array', minItems: 1, maxItems: 12,
-                              items: { type: 'string', minLength: 1, maxLength: 24 } },
-                            defaultRatio: { type: 'string', minLength: 1, maxLength: 24 },
-                            requiresRatio: { type: 'boolean' },
-                            automaticDurationOnly: { type: 'boolean' },
-                          },
-                        }]),
-                      ),
-                    },
+                    inputModeCapabilities: videoCapabilityOverridesInputSchema(['text', 'keyframe', 'reference', 'mixed']),
+                    operationCapabilities: videoCapabilityOverridesInputSchema(['text-to-video', 'image-to-video', 'video-to-video']),
                     frameRates: {
                       type: 'array',
                       items: { type: 'number', minimum: 1, maximum: 240 },
