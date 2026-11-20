@@ -186,7 +186,10 @@ registry.set('deleteNodes', async (plan) => {
     };
   }
 
-  store.deleteNodesBatch(targetIds);
+  if (store.currentProjectId !== plan.projectId || !await store.deleteNodesBatch(targetIds, plan.baseRevision)) {
+    return { planId: plan.id, status: 'rejected', affectedNodeIds: [],
+      message: '项目或待删除节点已变化，请重新选择', errorCode: 'DELETE_TARGET_CHANGED' };
+  }
 
   return {
     planId: plan.id,

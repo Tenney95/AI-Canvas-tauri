@@ -73,6 +73,14 @@ function isNativePreviewSnapshot(value: unknown): value is string {
   return isProjectSnapshotDataUrl(value) && /^data:image\/(?:webp|png|jpeg);base64,/.test(value);
 }
 
+export function isNativeCanvasPreviewRow(value: unknown): value is NativeCanvasPreviewRow {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return row.kind === 'native-canvas-preview-v1' && isNativeProjectId(row.ownerProjectId) && isNativeCanvasId(row.canvasId)
+    && row.projectId === canvasPreviewKey(row.canvasId) && isNativePreviewSnapshot(row.snapshot)
+    && typeof row.updatedAt === 'number' && Number.isSafeInteger(row.updatedAt) && row.updatedAt >= 0;
+}
+
 function obsoleteCanvasPreviewKeys(previous: CanvasDocument[], next: CanvasDocument[]): string[] {
   const remaining = new Map(next.map((canvas) => [canvas.id, canvas]));
   return previous.filter((canvas) => {
@@ -282,11 +290,10 @@ export async function readNativeCanvasPreviews(targets: readonly { projectId: st
         const key = canvasPreviewKey(canvasId);
         const [project, canvas, row] = await Promise.all([
           request(tx.objectStore(ROOTS).getKey(projectId)), request(tx.objectStore(CANVASES).getKey(canvasId)),
-          request(tx.objectStore(EXCHANGE).get(key)) as Promise<NativeCanvasPreviewRow | undefined>,
+          request<unknown>(tx.objectStore(EXCHANGE).get(key)),
         ]);
-        if (project === projectId && canvas === canvasId && row?.kind === 'native-canvas-preview-v1'
-          && row.projectId === key && row.ownerProjectId === projectId && row.canvasId === canvasId
-          && isNativePreviewSnapshot(row.snapshot) && Number.isSafeInteger(row.updatedAt) && row.updatedAt >= 0) {
+        if (project === projectId && canvas === canvasId && isNativeCanvasPreviewRow(row)
+          && row.ownerProjectId === projectId && row.canvasId === canvasId) {
           previews.set(canvasId, { canvasId, snapshot: row.snapshot, updatedAt: row.updatedAt });
         }
       }));

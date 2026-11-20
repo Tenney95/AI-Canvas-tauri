@@ -1,6 +1,6 @@
 /** 新项目存储清理的只读引用材料；不创建数据库、不补写历史或回执。 */
 import {
-  EXCHANGE, TRANSFER, RETIRED, isNativeProjectId, isNativeCanvasId, isNativeEpisodeId,
+  EXCHANGE, TRANSFER, RETIRED, isNativeProjectId, isNativeCanvasId, isNativeEpisodeId, isNativeCanvasPreviewRow,
   openNativeProjectDatabase, transact,
 } from '../indexedDb/nativeProjectRepository';
 import { safeExchangePath } from '../projectExchangeDomain';
@@ -77,8 +77,10 @@ export async function readNativeStorageSnapshot(options: { signal?: AbortSignal 
       const stores = [EXCHANGE, TRANSFER, RETIRED].map((name) => tx.objectStore(name));
       const counts = await Promise.all(stores.map((store) => request(store.count())));
       if (counts.some((count) => !Number.isSafeInteger(count) || count < 0) || counts.reduce((sum, count) => sum + count, 0) > MAX_ROWS) return unavailable();
-      const [exchange, transfers, rawRetired] = await Promise.all(stores.map((store) => request<unknown[]>(store.getAll())));
-      if ([exchange, transfers, rawRetired].some((rows, index) => rows.length !== counts[index])) return unavailable();
+      const [rawExchange, transfers, rawRetired] = await Promise.all(stores.map((store) => request<unknown[]>(store.getAll())));
+      if ([rawExchange, transfers, rawRetired].some((rows, index) => rows.length !== counts[index])) return unavailable();
+      // 仅含六个已知字段的内嵌封面没有磁盘引用；保留带扩展字段的记录供保护检查。
+      const exchange = rawExchange.filter((row) => !(isNativeCanvasPreviewRow(row) && Object.keys(row).length === 6));
       assertBoundedMaterial([exchange, transfers, rawRetired], true);
       const retired = rawRetired.map((value): NativeStorageRetiredIdentity => {
         const row = object(value);

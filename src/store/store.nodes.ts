@@ -31,7 +31,7 @@ import { isWsagentSharedImagesNode, type WsagentProjectMediaTarget } from '../ty
 import { generateId, getNextDisplayId } from './store.utils';
 import { BATCH_NODE_LIMIT } from './store.chat';
 import * as fileService from '../services/fileService';
-import { playNodeExit } from '../utils/nodeAnimations';
+import { playNodeExit, trackNodeExitPreparation } from '../utils/nodeAnimations';
 import { cancelNodePolling } from '../services/pollManager';
 import { applyProjectDefaultsToNodeData, getImageNodeDimensionsForAspectRatio, resolveImageGenerationParameters } from '../services/projectSettingsService';
 import { getCanvasPointerPosition } from '../services/canvasPointerService';
@@ -40,7 +40,7 @@ import { clearGroupLayoutData, detachGroupLayoutNodes } from '../utils/groupColl
 import { getCanvasNodeById } from '../utils/canvasRenderProjection';
 import { resolveDirectorRuntime } from '../services/directorRuntimeRegistry';
 import { copyNodeMedia, needsNodeMediaCopy, discardCopiedNodeMedia } from '../services/nodeMediaCopy';
-import { registerCanvasDerivation, isCanvasDerivationFresh, completeCanvasDerivation } from '../services/canvasDerivationGuard';
+import { registerCanvasDerivation, isCanvasDerivationFresh, completeCanvasDerivation, pendingNodeMediaImports } from '../services/canvasDerivationGuard';
 import { AI_APP_COPY_MESSAGE, AI_APP_CREATION_MESSAGE, assertAiAppNodeInsertion, isAiAppNode } from '../services/aiApps/aiAppCreation';
 import { getGenerationNodeType } from '../utils/nodeGeneration';
 import { pickImageOutputParameters } from '../services/ai/imageOutputParameters';
@@ -947,7 +947,7 @@ export interface NodeSlice {
   ) => string[];
   deleteNode: (nodeId: string) => void;
   /** 原子批量删除多个节点（一次 commitToHistory，一次退场动画） */
-  deleteNodesBatch: (nodeIds: string[]) => void;
+  deleteNodesBatch: (nodeIds: string[], expectedRevision?: number) => boolean | Promise<boolean>;
   /** 手工删除完整选区（不限节点数，包含独立选边）；有目标时立即清选择。 */
   deleteSelectedCanvasElements: () => boolean;
   onConnect: (connection: Connection) => void;
@@ -1029,16 +1029,17 @@ export function createNodeDuplicateDrag(getState: () => AppState, sourceId: stri
 /** 三种删除入口共用文件保护与退场生命周期；运行时登记只存在于本次调用。 */
 function deleteCanvasElements(
   set: Parameters<StateCreator<AppState>>[0], get: () => AppState, api: StoreApi<AppState>,
-  nodeIds: string[], selectedEdges: Edge[] = [], clearSelection = false,
-): boolean {
+  nodeIds: string[], selectedEdges: Edge[] = [], clearSelection = false, expectedRevision?: number,
+): boolean | Promise<boolean> {
   const initial = get();
   const existingIds = new Set(initial.nodes.map((node) => node.id));
   const roots = nodeIds.filter((id) => existingIds.has(id));
   if (roots.length === 0 && selectedEdges.length === 0) return false;
   const idsToDelete = collectCanvasDescendantIds(initial.nodes, roots);
+  const imports = pendingNodeMediaImports(initial.currentProjectId, idsToDelete);
   const edgesToDelete = new Map(selectedEdges.map((edge) => [edge.id, edge]));
   if (clearSelection) set({ selectedNodeIds: [], edges: initial.edges.map((edge) => edge.selected ? { ...edge, selected: false } : edge) });
-  get().commitToHistory();
+  if (!imports) get().commitToHistory();
 
   const origin = initial;
   const projectId = origin.currentProjectId;
@@ -1057,6 +1058,8 @@ function deleteCanvasElements(
   };
   let invalidated = false;
   let applied = false;
+  let cancelWait: (() => void) | undefined;
+  let committingImportCheckpoint = false;
   const retiredNodeIds = new Set<string>();
   const retiredEdgeIds = new Set<string>();
   // 只观察本操作的存续；普通历史追加、节点进度和位置变化不会取消合法删除。
@@ -1066,16 +1069,18 @@ function deleteCanvasElements(
     const targetChanged = state.currentProjectId !== previous.currentProjectId
       || state.projectExecutionContext !== previous.projectExecutionContext || state.projects !== previous.projects;
     const historyChanged = state.history !== previous.history;
-    if (targetChanged && !sameTarget(state) || state.historyIndex !== previous.historyIndex
+    if (targetChanged && !sameTarget(state) || !committingImportCheckpoint && (state.historyIndex !== previous.historyIndex
       && (!historyChanged || state.historyIndex < previous.historyIndex)
-      || historyChanged && !state.history.some((entry) => previous.history.includes(entry))) {
+      || historyChanged && !state.history.some((entry) => previous.history.includes(entry)))) {
       invalidated = true;
+      cancelWait?.();
       unsubscribe();
       return;
     }
     if (!applied && idsToDelete.size > 0 && state.nodes !== previous.nodes) {
       const present = new Set(state.nodes.map((node) => node.id));
       for (const id of idsToDelete) if (!present.has(id)) retiredNodeIds.add(id);
+      if (retiredNodeIds.size) cancelWait?.();
     }
     if (!applied && edgesToDelete.size > 0 && state.edges !== previous.edges) {
       const present = new Set(state.edges.map((edge) => edge.id));
@@ -1104,21 +1109,43 @@ function deleteCanvasElements(
       selectedNodeIds: state.selectedNodeIds.filter((id) => pruned.nodes.some((node) => node.id === id)),
     };
   });
-  try {
-    for (const id of idsToDelete) cancelNodePolling(id);
-    const files = fileService.deleteNodeFiles(
-      initial.nodes.filter((node) => idsToDelete.has(node.id) && !node.data.artifactId).map((node) => node.data),
-      collectKeepPaths(initial.nodes, idsToDelete, initial.messages), projectId,
-      fileService.deletedGroupFolderNames(initial.groups, deletedGroupIds),
-      createNodeFileDeletionContext(get, initial.nodes, idsToDelete, projectId, isCurrent),
-    ).catch((error) => console.warn('[删除节点] 文件清理失败:', error));
-    const exit = playNodeExit([...idsToDelete]).then(applyDeletion, applyDeletion);
-    void Promise.allSettled([files, exit]).then(unsubscribe);
-  } catch (error) {
-    invalidated = true;
-    unsubscribe();
-    throw error;
+  const startDeletion = (snapshot: AppState) => {
+    try {
+      for (const id of idsToDelete) cancelNodePolling(id);
+      const files = fileService.deleteNodeFiles(
+        snapshot.nodes.filter((node) => idsToDelete.has(node.id) && !node.data.artifactId).map((node) => node.data),
+        collectKeepPaths(snapshot.nodes, idsToDelete, snapshot.messages), projectId,
+        fileService.deletedGroupFolderNames(snapshot.groups, deletedGroupIds),
+        createNodeFileDeletionContext(get, snapshot.nodes, idsToDelete, projectId, isCurrent),
+      ).catch((error) => console.warn('[删除节点] 文件清理失败:', error));
+      const exit = playNodeExit([...idsToDelete]).then(applyDeletion, applyDeletion);
+      void Promise.allSettled([files, exit]).then(unsubscribe);
+      return exit;
+    } catch (error) {
+      invalidated = true;
+      unsubscribe();
+      throw error;
+    }
+  };
+  if (imports) {
+    const cancelled = new Promise<void>((resolve) => { cancelWait = resolve; });
+    const preparation = Promise.race([imports, cancelled]).then(async () => {
+      cancelWait = undefined;
+      const snapshot = get();
+      const members = collectCanvasDescendantIds(snapshot.nodes, roots);
+      if (!isCurrent() || retiredNodeIds.size || members.size !== idsToDelete.size
+        || expectedRevision !== undefined && snapshot.getCurrentRevision() !== expectedRevision
+        || [...idsToDelete].some((id) => !members.has(id))) { unsubscribe(); return false; }
+      // 回填后的文件身份必须同时进入删除历史和暂存，撤销才能恢复可用节点。
+      committingImportCheckpoint = true;
+      try { snapshot.commitToHistory({ refreshImportedMedia: true }); } finally { committingImportCheckpoint = false; }
+      await startDeletion(snapshot);
+      return applied && isCurrent();
+    }).catch(() => { unsubscribe(); console.warn('[删除节点] 导入后未完成删除'); return false; });
+    trackNodeExitPreparation(preparation);
+    return preparation;
   }
+  startDeletion(initial);
   return true;
 }
 
@@ -1701,11 +1728,11 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
 
   deleteNode: (nodeId) => { deleteCanvasElements(set, get, api, [nodeId]); },
 
-  deleteNodesBatch: (nodeIds) => { deleteCanvasElements(set, get, api, nodeIds.slice(0, BATCH_NODE_LIMIT)); },
+  deleteNodesBatch: (nodeIds, revision) => deleteCanvasElements(set, get, api, nodeIds.slice(0, BATCH_NODE_LIMIT), [], false, revision),
 
   deleteSelectedCanvasElements: () => {
     const state = get();
-    return deleteCanvasElements(set, get, api, state.selectedNodeIds, state.edges.filter((edge) => edge.selected), true);
+    return deleteCanvasElements(set, get, api, state.selectedNodeIds, state.edges.filter((edge) => edge.selected), true) !== false;
   },
 
   bindShotlistVideo: (shotlistId, rowId, sourceNodeId) => {

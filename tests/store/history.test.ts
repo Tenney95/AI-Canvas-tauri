@@ -8,6 +8,8 @@ import { createCanvasNoteData } from '../../src/types';
 import { saveModelPreference } from '../../src/services/modelPreferenceService';
 import { workflowExecution } from '../../src/services/workflowExecutionService';
 import { createWorkflowApiDraft } from '../../src/services/workflowApi/workflowApiDefinition';
+import { trackCanvasMediaImport } from '../../src/services/canvasDerivationGuard';
+import { executeCommand } from '../../src/services/chat/commandRegistry';
 
 const fileMocks = vi.hoisted(() => ({
   copyFileToProjectData: vi.fn(async () => ({ filePath: 'project/copy.png', assetUrl: 'asset://project/copy.png' })),
@@ -40,7 +42,7 @@ const fileMocks = vi.hoisted(() => ({
   isFileMissing: vi.fn(async () => false),
 }));
 const nodeExitMocks = vi.hoisted(() => {
-  const pending = new Set<Promise<void>>();
+  const pending = new Set<Promise<unknown>>();
   return {
     pending,
     playNodeExit: vi.fn<(_ids: string[]) => Promise<void>>(async () => undefined),
@@ -66,6 +68,10 @@ vi.mock('../../src/services/pollManager', () => ({
 vi.mock('../../src/utils/nodeAnimations', () => ({
   playNodeExit: nodeExitMocks.playNodeExit,
   waitForPendingNodeExits: nodeExitMocks.waitForPendingNodeExits,
+  trackNodeExitPreparation: (work: Promise<unknown>) => {
+    nodeExitMocks.pending.add(work);
+    void work.finally(() => nodeExitMocks.pending.delete(work));
+  },
 }));
 
 import { useAppStore } from '../../src/store/useAppStore';
@@ -235,6 +241,100 @@ describe('shared canvas deletion', () => {
     expect(fileMocks.deleteNodeFiles).toHaveBeenCalledWith([removed.data], new Set(['project/shared.png', 'project/artifact.png']),
       'project-1', [], expect.objectContaining({ deletedNodeIds: [removed.id, artifact.id] }));
     await Promise.resolve();
+  });
+
+  it.each(['single', 'selection', 'group'] as const)('stages the completed import and restores it on immediate undo (%s)', async (mode) => {
+    const group = groupNode('folder');
+    const child = { ...node('incoming', { status: 'loading' }), parentId: group.id };
+    useAppStore.setState({ currentProjectId: 'project-1', nodes: [group, child], selectedNodeIds: [child.id] });
+    useAppStore.getState().commitToHistory();
+    let finish!: () => void;
+    const copy = new Promise<void>((resolve) => { finish = resolve; }).then(() => {
+      useAppStore.getState().updateNodeDataTransient(child.id, { filePath: 'project/import.png', status: 'success' });
+    });
+    void trackCanvasMediaImport('project-1', copy, child.id);
+    if (mode === 'single') useAppStore.getState().deleteNode(child.id);
+    else if (mode === 'selection') useAppStore.getState().deleteSelectedCanvasElements();
+    else useAppStore.getState().deleteNodesBatch([group.id]);
+    expect(fileMocks.deleteNodeFiles).not.toHaveBeenCalled();
+    expect(useAppStore.getState().history).toHaveLength(1);
+    const undo = useAppStore.getState().undo();
+    finish();
+    expect(await undo).toBe(true);
+    expect(fileMocks.deleteNodeFiles.mock.calls[0][0]).toContainEqual(expect.objectContaining({ filePath: 'project/import.png' }));
+    expect(useAppStore.getState().nodes.find((item) => item.id === child.id)?.data).toMatchObject({
+      status: 'success', filePath: 'project/import.png',
+    });
+    expect(fileMocks.restoreFromUndoTrash).toHaveBeenCalledWith('project/import.png', 'project-1');
+    expect(useAppStore.getState().history).toHaveLength(2);
+  });
+
+  it.each(['switch-back', 'reused-node'] as const)('cancels a delayed deletion when its target changes (%s)', async (boundary) => {
+    const child = node('incoming', { status: 'loading' });
+    useAppStore.setState({ currentProjectId: 'project-1', nodes: [child] });
+    let finish!: () => void;
+    void trackCanvasMediaImport('project-1', new Promise<void>((resolve) => { finish = resolve; }), child.id);
+    useAppStore.getState().deleteNode(child.id);
+    if (boundary === 'switch-back') useAppStore.setState({ currentProjectId: 'other' });
+    else useAppStore.setState({ nodes: [] });
+    const replacement = node(child.id, { filePath: 'project/replacement.png' });
+    useAppStore.setState({ currentProjectId: 'project-1', nodes: [replacement] });
+    finish();
+    await nodeExitMocks.waitForPendingNodeExits();
+    expect(fileMocks.deleteNodeFiles).not.toHaveBeenCalled();
+    expect(useAppStore.getState().nodes).toEqual([replacement]);
+  });
+
+  it.each([false, true])('等待导入的删除命令在原画布版本上完成，版本变化则保留节点：%s', async (changeRevision) => {
+    const child = node('incoming', { status: 'loading' });
+    useAppStore.setState({ currentProjectId: 'project-1', nodes: [child] });
+    let finish!: () => void;
+    void trackCanvasMediaImport('project-1', new Promise<void>((resolve) => { finish = resolve; }), child.id);
+    const result = executeCommand({ id: 'delete', commandId: 'deleteNodes', projectId: 'project-1',
+      baseRevision: useAppStore.getState().getCurrentRevision(), targetNodeIds: [child.id],
+      params: {}, summary: '删除拖入的图片', risk: 'destructive', requiresConfirm: false });
+    if (changeRevision) useAppStore.getState().incrementRevision();
+    else useAppStore.getState().updateNodeDataTransient(child.id, { status: 'success', filePath: 'project/copied.png' });
+    finish();
+    expect((await result).status).toBe(changeRevision ? 'rejected' : 'success');
+    expect(useAppStore.getState().nodes.some((item) => item.id === child.id)).toBe(changeRevision);
+  });
+
+  it('ignores unrelated imports and removes a failed placeholder without staging the external source', async () => {
+    let fail!: () => void;
+    const failedCopy = new Promise<void>((_resolve, reject) => { fail = () => reject(new Error('copy failed')); });
+    const imported = node('incoming', { status: 'loading' });
+    const ready = node('ready', { filePath: 'project/ready.png' });
+    useAppStore.setState({ currentProjectId: 'project-1', nodes: [imported, ready] });
+    void trackCanvasMediaImport('project-1', failedCopy, imported.id);
+    useAppStore.getState().deleteNode(ready.id);
+    expect(fileMocks.deleteNodeFiles.mock.calls[0][0]).toEqual([ready.data]);
+    await Promise.resolve();
+    useAppStore.getState().deleteNode(imported.id);
+    expect(fileMocks.deleteNodeFiles).toHaveBeenCalledTimes(1);
+    fail();
+    await nodeExitMocks.waitForPendingNodeExits();
+    expect(useAppStore.getState().nodes).toEqual([]);
+    expect(fileMocks.deleteNodeFiles.mock.calls[1][0].every((item) => item.filePath === undefined)).toBe(true);
+  });
+
+  it.each(['undo', 'redo'] as const)('keeps queued %s out of a switched and reopened canvas', async (action) => {
+    const child = node('incoming', { status: 'loading' });
+    useAppStore.setState({ currentProjectId: 'project-1', nodes: [child] });
+    let finish!: () => void;
+    void trackCanvasMediaImport('project-1', new Promise<void>((resolve) => { finish = resolve; }), child.id);
+    useAppStore.getState().deleteNode(child.id);
+    const transition = useAppStore.getState()[action]();
+    await Promise.resolve();
+    useAppStore.setState({ currentProjectId: 'other' });
+    const replacement = node('replacement');
+    const replacementHistory = [[], [replacement], []].map((nodes) => ({ nodes, groups: [], edges: [] }));
+    useAppStore.setState({ currentProjectId: 'project-1', nodes: [replacement], history: replacementHistory, historyIndex: 0 });
+    try {
+      expect(await transition).toBe(false);
+      expect(useAppStore.getState().history).toBe(replacementHistory);
+      expect(useAppStore.getState().nodes).toEqual([replacement]);
+    } finally { finish(); }
   });
 
   it.each(['switch-back', 'import', 'exchange-epoch', 'native-runtime'] as const)('rejects a stale exit after same-ID canvas replacement (%s)', async (boundary) => {

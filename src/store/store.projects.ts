@@ -1141,6 +1141,8 @@ export interface ProjectSlice {
   projects: CanvasProject[];
   currentProjectId: string | null;
   projectExecutionContext?: ProjectExpectedContext | null;
+  /** 只读运行期身份；离开后重开同一项目也会更换。 */
+  getProjectSessionToken: () => object;
   projectName: string;
   projectLoadStatus: ProjectLoadStatus;
   nativeProjectWriteBlock: NativeProjectWriteBlock | null;
@@ -1465,6 +1467,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   ],
   currentProjectId: 'default',
   projectExecutionContext: undefined,
+  getProjectSessionToken: () => projectSaveOutcomes.get(get)!.session,
   projectName: '新项目',
   projectLoadStatus: 'loading',
   nativeProjectWriteBlock: live?.nativeProjectWriteBlock ?? null,

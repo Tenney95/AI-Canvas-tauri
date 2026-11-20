@@ -2,7 +2,9 @@ import { webcrypto } from 'node:crypto';
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { convertNativeProjectToSeries, createNativeProject, deleteNativeEpisode, readNativeCanvasPreviews,
-  readNativeProjectCapture, saveNativeCanvasPreview } from '../../src/services/indexedDb/nativeProjectRepository';
+  EXCHANGE, openNativeProjectDatabase, readNativeProjectCapture, saveNativeCanvasPreview,
+  transact } from '../../src/services/indexedDb/nativeProjectRepository';
+import { nativeStorageProjectProtected, readNativeStorageSnapshot } from '../../src/services/fs/nativeStorageReferences';
 
 let factory: IDBFactory;
 const image = 'data:image/webp;base64,AAAA';
@@ -13,6 +15,30 @@ beforeEach(() => {
   vi.stubGlobal('IDBKeyRange', IDBKeyRange);
 });
 afterEach(() => vi.unstubAllGlobals());
+
+it('项目封面创建、刷新及清空都不改变文件回收依据，未识别的附加引用仍受保护', async () => {
+  vi.stubGlobal('indexedDB', factory);
+  const { project, canvas } = await createNativeProject({ name: '拖入图片' });
+  const write = { projectId: project.id, canvasId: canvas!.id, expectedCanvasEpoch: canvas!.epoch };
+  const before = await readNativeStorageSnapshot();
+  for (const snapshot of [image, 'data:image/png;base64,AAAB', undefined]) {
+    await saveNativeCanvasPreview({ ...write, snapshot });
+    const current = await readNativeStorageSnapshot();
+    expect(nativeStorageProjectProtected(current, project.id)).toBe(false);
+    expect(current).toEqual(before);
+  }
+
+  await saveNativeCanvasPreview({ ...write, snapshot: image });
+  const db = (await openNativeProjectDatabase(false, { factory }))!;
+  try {
+    await transact(db, 'readwrite', {}, async (tx) => {
+      tx.objectStore(EXCHANGE).put({ projectId: `canvas-preview:${write.canvasId}`, ownerProjectId: project.id,
+        canvasId: write.canvasId, kind: 'native-canvas-preview-v1', updatedAt: 1, snapshot: image, relativePath: 'shared.png' });
+    }, [EXCHANGE]);
+    expect(nativeStorageProjectProtected(await readNativeStorageSnapshot(), project.id)).toBe(true);
+    expect((await readNativeCanvasPreviews([write])).get(write.canvasId)?.snapshot).toBe(image);
+  } finally { db.close(); }
+});
 
 it('封面保存后可在新连接上读回，独立于正文和交换版本，并能清空', async () => {
   const { project, canvas } = await createNativeProject({ name: '封面' }, { factory });

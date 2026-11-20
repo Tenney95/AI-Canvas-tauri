@@ -11,8 +11,15 @@
 const NODE_EXIT_MS = 130;
 /** 定位到节点后的聚焦脉冲时长（ms） */
 const NODE_FOCUS_PULSE_MS = 520;
-const pendingNodeExits = new Set<Promise<void>>();
+const pendingNodeExits = new Set<Promise<unknown>>();
 const activeElementExits = new WeakMap<HTMLElement, number>();
+
+/** 删除占位节点要等导入回填；撤销和重做沿用同一个退场等待队列。 */
+export function trackNodeExitPreparation(work: Promise<unknown>): void {
+  pendingNodeExits.add(work);
+  const finish = () => { pendingNodeExits.delete(work); };
+  void work.then(finish, finish);
+}
 
 function prefersReducedMotion(): boolean {
   return (

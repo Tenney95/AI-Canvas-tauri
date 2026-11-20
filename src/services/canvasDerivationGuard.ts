@@ -76,6 +76,14 @@ export function createOrReuseCanvasDerivationRuntime(
     return false;
   }
 
+  function pendingNodeMediaImports(projectId: string | null, nodeIds: ReadonlySet<string>): Promise<unknown> | undefined {
+    const pending = [];
+    for (const [work, target] of mediaImports) {
+      if (target.projectId === projectId && target.nodeId && nodeIds.has(target.nodeId)) pending.push(work);
+    }
+    return pending.length ? Promise.allSettled(pending) : undefined;
+  }
+
   function pauseCanvasMediaImports(): () => void {
     runtime.mediaImportPauses = (runtime.mediaImportPauses ?? 0) + 1;
     return () => { runtime.mediaImportPauses = (runtime.mediaImportPauses ?? 1) - 1; };
@@ -148,11 +156,11 @@ export function createOrReuseCanvasDerivationRuntime(
 
   return { registerCanvasDerivation, registerCanvasImport, isCanvasDerivationFresh,
     completeCanvasDerivation, cancelCanvasDerivation, cancelProjectCanvasDerivations,
-    trackCanvasMediaImport, hasPendingCanvasMediaImport, pauseCanvasMediaImports, canvasMediaImportsPaused };
+    trackCanvasMediaImport, hasPendingCanvasMediaImport, pendingNodeMediaImports, pauseCanvasMediaImports, canvasMediaImportsPaused };
 }
 
 export const {
   registerCanvasDerivation, registerCanvasImport, isCanvasDerivationFresh,
   completeCanvasDerivation, cancelCanvasDerivation, cancelProjectCanvasDerivations,
-  trackCanvasMediaImport, hasPendingCanvasMediaImport, pauseCanvasMediaImports, canvasMediaImportsPaused,
+  trackCanvasMediaImport, hasPendingCanvasMediaImport, pendingNodeMediaImports, pauseCanvasMediaImports, canvasMediaImportsPaused,
 } = createOrReuseCanvasDerivationRuntime(import.meta.hot?.data);

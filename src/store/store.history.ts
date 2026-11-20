@@ -505,13 +505,19 @@ function enqueueHistoryTransition(operation: () => Promise<boolean>): Promise<bo
 function appendHistoryCheckpoint(
   state: Pick<AppState, 'nodes' | 'edges' | 'groups' | 'history' | 'historyIndex'>,
   characterVisualChanges?: readonly CharacterVisualReferenceChange[],
+  refreshImportedMedia = false,
 ) {
   const { nodes, edges, groups, history, historyIndex } = state;
   // 撤销／重做后当前画布对应 index + 1 的已恢复检查点，纯展示提交不能截断剩余重做。
   const restoredCheckpoint = history[historyIndex + 1]?.characterVisualChanges ? undefined : history[historyIndex + 1];
   const previous = restoredCheckpoint ?? (historyIndex >= 0 ? history[Math.min(historyIndex, history.length - 1)] : undefined);
   if (!characterVisualChanges?.length && previous && !previous.characterVisualChanges
-    && !history[historyIndex + 1]?.characterVisualChanges && isSameStructure(previous, { nodes, edges, groups })) return;
+    && !history[historyIndex + 1]?.characterVisualChanges && isSameStructure(previous, { nodes, edges, groups })) {
+    if (!refreshImportedMedia) return;
+    // 结构相同的旧检查点可能仍是 loading 占位。替换基线，避免多出一次空撤销。
+    const index = restoredCheckpoint ? historyIndex + 1 : historyIndex;
+    return { history: [...history.slice(0, index), createSnapshot(nodes, edges, groups)], historyIndex: index };
+  }
   const snapshot = createSnapshot(nodes, edges, groups);
   if (characterVisualChanges?.length) snapshot.characterVisualChanges = structuredClone(characterVisualChanges);
   // 真实修改发生后保留恢复基线，使新分支仍能撤销回该检查点。
@@ -526,24 +532,31 @@ export interface HistorySlice {
   historyIndex: number;
   undo: (options?: { isCurrent?: () => boolean }) => Promise<boolean>;
   redo: () => Promise<boolean>;
-  commitToHistory: () => void;
+  commitToHistory(options: { refreshImportedMedia: true }): void;
+  commitToHistory(): void;
   commitCharacterVisualHistory: (changes: readonly CharacterVisualReferenceChange[]) => void;
 }
 
 export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = (set, get, api) => {
   let stopWatchingRestore: (() => void) | undefined;
+  function inCurrentProject(operation: (isCurrent: () => boolean) => Promise<boolean>) {
+    const { currentProjectId, getProjectSessionToken } = get();
+    const session = getProjectSessionToken?.();
+    const isCurrent = () => get().currentProjectId === currentProjectId && getProjectSessionToken?.() === session;
+    return enqueueHistoryTransition(() => isCurrent() ? operation(isCurrent) : Promise.resolve(false));
+  }
   return {
   history: [],
   historyIndex: -1,
 
-  undo: (options) => enqueueHistoryTransition(async () => {
+  undo: (options) => inCurrentProject(async (isCurrent) => {
     if (options?.isCurrent?.() === false) return false;
     // 删除会在退场动画结束后落状态。先等待，确保捕获到真实的删除后状态，避免回调覆盖撤销结果。
     await waitForPendingNodeExits();
     // 文件暂存不等动画，必须单独等：还原跑在暂存前面的话，文件会在节点复活之后才进 .trash
     await fileService.waitForPendingNodeFileDeletions();
 
-    if (options?.isCurrent?.() === false) return false;
+    if (!isCurrent() || options?.isCurrent?.() === false) return false;
 
     const { historyIndex, history, nodes, edges, groups, currentProjectId } = get();
     if (history.length === 0) return false;
@@ -609,7 +622,7 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
 
     const latest = get();
     const latestSnapshot = createSnapshot(latest.nodes, latest.edges, latest.groups);
-    if (options?.isCurrent?.() === false || latest.currentProjectId !== currentProjectId || latest.history !== history
+    if (!isCurrent() || options?.isCurrent?.() === false || latest.history !== history
       || latest.historyIndex !== historyIndex || !isSameStructure(latestSnapshot, current)) return false;
 
     const restored = restoreStructuralSnapshot(entry, latestSnapshot);
@@ -623,8 +636,9 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
     return true;
   }),
 
-  redo: () => enqueueHistoryTransition(async () => {
+  redo: () => inCurrentProject(async (isCurrent) => {
     await waitForPendingNodeExits();
+    if (!isCurrent()) return false;
 
     const { historyIndex, history, nodes, edges, groups, currentProjectId } = get();
     const referenceChanges = history[historyIndex + 1]?.characterVisualChanges;
@@ -665,12 +679,12 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
     await fileService.deleteNodeFiles(
       removedNodes.filter((node) => !node.data.artifactId).map((node) => node.data), keepReferences, projectId,
       fileService.deletedGroupFolderNames(groups, new Set(removedNodes.map((node) => node.id))),
-      createNodeFileDeletionContext(get, nodes, new Set(removedNodes.map((node) => node.id)), projectId),
+      createNodeFileDeletionContext(get, nodes, new Set(removedNodes.map((node) => node.id)), projectId, isCurrent),
     );
 
     const latest = get();
     const latestSnapshot = createSnapshot(latest.nodes, latest.edges, latest.groups);
-    if (latest.currentProjectId !== currentProjectId || latest.history !== history
+    if (!isCurrent() || latest.history !== history
       || latest.historyIndex !== historyIndex || !isSameStructure(latestSnapshot, current)) return false;
 
     const restored = restoreStructuralSnapshot(entry, latestSnapshot);
@@ -683,11 +697,11 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
     return true;
   }),
 
-  commitToHistory: () => {
+  commitToHistory: (options?: { refreshImportedMedia: true }) => {
     stopWatchingRestore?.();
     stopWatchingRestore = undefined;
     set((state) => {
-      const patch = appendHistoryCheckpoint(state);
+      const patch = appendHistoryCheckpoint(state, undefined, options?.refreshImportedMedia === true);
       const checkpoint = state.history[state.historyIndex + 1];
       if (!patch && checkpoint && !checkpoint.characterVisualChanges && state.history[state.historyIndex + 2]) {
         // 动作前的重复提交先保留 redo；真实结构变化后再复用基线，让界面立即可以撤销新动作。
