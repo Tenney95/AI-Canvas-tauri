@@ -1,0 +1,15 @@
+{
+    "bundle": {
+        "fileAssociations": [
+            {
+                "ext": ["aicwsagent"],
+                "name": "AI Canvas WSAGENT Plugin Request",
+                "role": "Viewer",
+                "exportedType": {
+                    "identifier": "com.aicanvas.wsagent-plugin-request",
+                    "conformsTo": ["public.data"]
+                }
+            }
+        ]
+    }
+}

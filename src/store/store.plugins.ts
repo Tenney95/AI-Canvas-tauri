@@ -15,6 +15,7 @@ import { createInstalledPlugin, parsePluginBundle } from '../services/plugins/pl
 import { clearPluginResources as clearPluginResourceHandles } from '../services/plugins/pluginResourceService';
 import { revokePluginProtocolPresets } from '../services/plugins/pluginProtocolPresetService';
 import { affectedPluginIds, resolvePluginDependencies } from '../services/plugins/pluginDependencyService';
+import { WSAGENT_PLUGIN_ID } from '../types/wsagentShared';
 import {
   deletePluginFromDb,
   getAllPlugins,
@@ -36,6 +37,10 @@ export interface PluginSlice {
       resourcePayloads?: PluginPackageResourcePayload[];
     },
   ) => Promise<InstalledPlugin>;
+  installBundledWsagentPlugin: (manifestText: string, source: string, uiSource: string) => Promise<{
+    changed: boolean;
+    revisionDigest: string;
+  }>;
   setPluginEnabled: (
     id: string,
     enabled: boolean,
@@ -58,6 +63,7 @@ function clearPluginResources(id: string): void {
 }
 
 const SOURCE_DIGEST_RE = /^[0-9a-f]{64}$/u;
+const WSAGENT_BUNDLED_SOURCE_DIGEST = '57dcceab6a129ca97257b75a20c66098455b4e6476ab4aaaba96e943fe0e3066';
 const pluginMutationQueues = new Map<string, Promise<void>>();
 let pluginGraphMutationQueue = Promise.resolve();
 let graphMutationReservations = 0;
@@ -411,6 +417,41 @@ export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (s
         () => installPluginBundleCore(manifest, source, options),
         Boolean(manifest.dependencies?.length || get().installedPlugins.some((plugin) => plugin.manifest.dependencies?.length)),
       );
+    },
+
+    installBundledWsagentPlugin: async (manifestText, source, uiSource) => {
+      const manifest = parsePluginBundle(manifestText, source);
+      const ui = manifest.ui;
+      if (manifest.id !== WSAGENT_PLUGIN_ID || manifest.version !== '0.1.0'
+        || manifest.runtime !== 'javascript' || !ui) {
+        throw new Error('WSAGENT 互联安装包不受支持');
+      }
+      return enqueuePluginMutation(WSAGENT_PLUGIN_ID, async () => {
+        const previous = get().installedPlugins.find((plugin) => plugin.id === WSAGENT_PLUGIN_ID);
+        if (previous && previous.manifest.version !== manifest.version) {
+          throw new Error('已安装其他版本的 WSAGENT 互联。请在 AI Canvas 的插件设置中确认现有版本。');
+        }
+        const alreadyInstalled = previous?.sourceDigest === WSAGENT_BUNDLED_SOURCE_DIGEST
+          && previous.uiDigest === normalizeUiIntegrity(ui.integrity)
+          && JSON.stringify(previous.manifest) === JSON.stringify(manifest)
+          && Boolean(previous.revisionDigest);
+        if (!alreadyInstalled) {
+          const plugin = await installPluginBundleCore(manifest, source, {
+            uiSource,
+            expectedSourceDigest: WSAGENT_BUNDLED_SOURCE_DIGEST,
+          });
+          if (!plugin.enabled) await setPluginEnabledCore(plugin.id, true);
+          return { changed: true, revisionDigest: pluginExecutionIdentity(plugin).revisionDigest };
+        }
+        const identity = pluginExecutionIdentity(previous);
+        await invoke('ensure_plugin_registration', {
+          pluginId: previous.id,
+          ...identity,
+          enabled: previous.enabled,
+        });
+        if (!previous.enabled) await setPluginEnabledCore(previous.id, true);
+        return { changed: !previous.enabled, revisionDigest: identity.revisionDigest };
+      }, get().installedPlugins.some((plugin) => Boolean(plugin.manifest.dependencies?.length)));
     },
 
     setPluginEnabled: async (id, enabled, options) => enqueuePluginMutation(

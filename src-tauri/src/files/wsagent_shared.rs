@@ -25,6 +25,8 @@ use tokio::{net::TcpListener, sync::Semaphore, task::JoinHandle};
 
 #[path = "wsagent_media.rs"]
 pub(crate) mod media;
+#[path = "wsagent_plugin_install.rs"]
+pub(crate) mod plugin_install;
 #[cfg(target_os = "macos")]
 #[path = "wsagent_peer.rs"]
 mod peer;
@@ -94,6 +96,8 @@ pub struct WsagentSharedState {
     storage: Mutex<Option<Arc<SharedStorage>>>,
     listener: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     pairing: tokio::sync::Mutex<()>,
+    #[cfg(target_os = "macos")]
+    plugin_install: plugin_install::PluginInstallRequests,
 }
 
 pub(crate) fn on_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
