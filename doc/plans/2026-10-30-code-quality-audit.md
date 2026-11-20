@@ -940,3 +940,4 @@ cargo test --lib blender_runtime::result::tests
 本次未运行测试，待用户验收。
 
 - 移除已无业务调用的旧 Seedance 能力适配函数及其专用测试。现行通用能力解析和 APIMart 请求构造保持原样。Tauri 桌面端重开一个含已保存通用视频模型的项目，核对显式声明的时长、画幅、分辨率和音频开关。分别选择未声明能力的通用模型和已配置的 APIMart Seedance，核对原有参数、参考素材限制和请求预览。现行回归入口见 [videoModelCapabilityResolver.test.ts](../../tests/services/videoModelCapabilityResolver.test.ts)、[videoParamSelectorProtocol.test.ts](../../tests/components/videoParamSelectorProtocol.test.ts) 和 [apimartGen.test.ts](../../tests/services/apimartGen.test.ts)。
+- 删除无组件消费者的旧全屏关闭、Markdown 预览与工具栏、视频播放器样式。保留当前视频封面、节点圆角和全屏文本框、标题区及绝对关闭按钮。Tauri 桌面端在深浅主题下打开 Markdown 和纯文本全屏，核对编辑、预览和关闭。用含本地视频的节点核对紧凑预览、播放中拖动节点及全屏关闭后回到画布。现有交互入口见 [fullscreenOverlay.test.tsx](../../tests/components/fullscreenOverlay.test.tsx)、[markdownEditor.test.tsx](../../tests/components/markdownEditor.test.tsx) 和 [videoNodePreviewLifecycle.test.tsx](../../tests/components/videoNodePreviewLifecycle.test.tsx)。
