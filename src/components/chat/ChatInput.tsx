@@ -598,6 +598,7 @@ export default function ChatInput({
     ...visibleMediaModels.map((model) => {
       const available = isModelAvailable(model);
       const index = referenceSuggestionIndexes.get(`model:${model.mediaKind}:${model.value}`);
+      const detail = available ? model.description : t('请先配置对应供应商');
       return {
         key: `model:${model.mediaKind}:${model.value}`,
         domId: index == null ? undefined : `chat-reference-suggestion-${index}`,
@@ -605,7 +606,8 @@ export default function ChatInput({
         icon: MEDIA_KIND_ICONS[model.mediaKind],
         badge: available ? t(MEDIA_KIND_LABELS[model.mediaKind]) : t('未配置'),
         disabled: !available,
-        title: available ? model.description : t('请先配置对应供应商'),
+        title: detail,
+        tooltip: model.workflowId ? [model.label, detail].filter(Boolean).join('\n') : undefined,
         onSelect: () => insertModelMention(model),
       };
     }),

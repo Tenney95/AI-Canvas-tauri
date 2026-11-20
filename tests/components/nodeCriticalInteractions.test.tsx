@@ -450,13 +450,17 @@ describe('audio node clock and waveform ownership', () => {
       '../../src/components/nodes/shared/MediaTaskStatus', '../../src/components/shared/CanvasAudioPreview',
       '../../src/components/shared/ModelDownloadDialog', '../../src/components/shared/FullscreenOverlay']) vi.doUnmock(path);
   });
-  async function setup() {
+  async function setupAudioNode(data: TestNode['data'] = { type: 'ai-audio', audioUrl: 'asset://tone.wav' }) {
     const effects: Array<() => void | (() => void)> = [];
     const setters: Array<ReturnType<typeof vi.fn>> = [];
     await installReactHookDriver(undefined, effects, undefined, setters);
-    const node: TestNode = { id: 'audio', type: 'ai-audio', position: { x: 0, y: 0 }, data: { type: 'ai-audio', audioUrl: 'asset://tone.wav' } };
+    const node: TestNode = { id: 'audio', type: 'ai-audio', position: { x: 0, y: 0 }, data };
     const store = createStore([node], () => 1);
     installStoreMock(store); installCommonNodeMocks();
+    const upload = vi.fn<() => Promise<{ dataUrl: string; filePath: string; fileName: string } | null>>().mockResolvedValue(null);
+    vi.doMock('../../src/components/nodes/shared/useSourceFileUpload', () => ({
+      useSourceFileUpload: () => ({ isUploading: false, handleUpload: upload }),
+    }));
     vi.doMock('@xyflow/react', () => ({ Handle: () => null, Position: { Left: 'left', Right: 'right' } }));
     vi.doMock('../../src/hooks/useViewportMediaSource', () => ({ useViewportMediaSource: (source?: string) => source }));
     vi.doMock('../../src/components/nodes/shared/audio/useAudioNodeAsr', () => ({ useAudioNodeAsr: () => ({}) }));
@@ -476,6 +480,12 @@ describe('audio node clock and waveform ownership', () => {
     vi.stubGlobal('window', {});
     const AudioNode = (await import('../../src/components/nodes/AudioNode')).default as unknown as (props: { id: string; data: Record<string, unknown>; selected: boolean }) => unknown;
     const tree = AudioNode({ id: node.id, data: node.data, selected: true });
+    return { tree, store, upload, effects, setters, frames, pending, acquire };
+  }
+
+  async function setup() {
+    const node = await setupAudioNode();
+    const { tree } = node;
     const audio = { currentTime: 1.875, duration: 60, paused: true,
       play: vi.fn(async () => { audio.paused = false; }), pause: vi.fn(() => { audio.paused = true; }) };
     const context = { clearRect: vi.fn() };
@@ -483,8 +493,37 @@ describe('audio node clock and waveform ownership', () => {
     (findElement(tree, (element) => element.type === 'audio').props.ref as { current: unknown }).current = audio;
     (findElement(tree, (element) => element.type === 'canvas').props.ref as { current: unknown }).current = canvas;
     const waveform = findElement(tree, (element) => element.props.className === 'audio-waveform-wrapper');
-    return { effects, setters, frames, audio, canvas, waveform, pending, acquire };
+    return { ...node, audio, canvas, waveform };
   }
+
+  it('opens source audio upload from the center and the selected toolbar through one handler', async () => {
+    const { tree, store, upload } = await setupAudioNode({ type: 'ai-audio', role: 'source' });
+    const placeholder = findElement(tree, (element) => element.type === 'button'
+      && String(element.props.className).includes('node-preview-placeholder'));
+    const toolbar = findElement(tree, (element) => typeof element.props.onUpload === 'function');
+    const toolbarShell = findElement(tree, (element) => element.props.children === toolbar);
+    expect(placeholder.props.className).toContain('nodrag nopan');
+    expect(toolbar.props.hasAudio).toBe(false);
+    expect(toolbarShell.props.visible).toBe(true);
+    expect(() => findElement(tree, (element) => element.props.className === 'node-upload-btn')).toThrow('Element not found');
+
+    const result = { dataUrl: 'asset://tone.wav', filePath: '/project/tone.wav', fileName: 'tone.wav' };
+    const pending = deferred<typeof result>();
+    upload.mockReturnValueOnce(pending.promise);
+    const stopPropagation = vi.fn();
+    (placeholder.props.onClick as (event: unknown) => void)({ stopPropagation });
+    await (toolbar.props.onUpload as () => Promise<void>)();
+    expect(stopPropagation).toHaveBeenCalledOnce();
+    expect(upload).toHaveBeenCalledOnce();
+
+    pending.resolve(result);
+    await pending.promise;
+    expect(store.updateNodeData).toHaveBeenCalledWith('audio', {
+      audioUrl: result.dataUrl, filePath: result.filePath, fileName: result.fileName, label: result.fileName, status: 'success',
+    });
+    await (toolbar.props.onUpload as () => Promise<void>)();
+    expect(upload).toHaveBeenCalledTimes(2);
+  });
 
   it('publishes whole display seconds while fullscreen keeps the exact playback position', async () => {
     const { waveform, frames, audio, setters } = await setup();

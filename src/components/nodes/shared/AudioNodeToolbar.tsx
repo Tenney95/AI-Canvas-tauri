@@ -15,6 +15,8 @@ import { useAppStore } from '../../../store/useAppStore';
 
 interface AudioNodeToolbarProps {
   nodeId: string;
+  hasAudio: boolean;
+  uploadDisabled: boolean;
   isPlaying?: boolean;
   isTranscribing?: boolean;
   isAsrRunning?: boolean;
@@ -29,6 +31,8 @@ interface AudioNodeToolbarProps {
 
 function AudioNodeToolbar({
   nodeId,
+  hasAudio,
+  uploadDisabled,
   isPlaying,
   isTranscribing,
   isAsrRunning,
@@ -127,29 +131,34 @@ function AudioNodeToolbar({
     }
 
     return (
-      <AnimatedButton key={key} className={`ftb-btn icon-only${isPreset ? ' act-preset' : ''}`}
-        data-tooltip={resolvedDef.label} aria-label={resolvedDef.label} onClick={clickHandler}>
+      <AnimatedButton key={key} type="button" className={`ftb-btn icon-only${isPreset ? ' act-preset' : ''}`}
+        data-tooltip={resolvedDef.label} aria-label={resolvedDef.label}
+        disabled={key === 'upload' && uploadDisabled} onClick={clickHandler}>
         <Icon icon={resolvedDef.icon} width={14} height={14} />
       </AnimatedButton>
     );
   };
 
-  if (edit.isEditing) {
+  if (hasAudio && edit.isEditing) {
     return <ToolbarEditor edit={edit} nodeType={nodeType} />;
   }
 
   return (
     <>
-      <div className="node-floating-toolbar img-toolbar nodrag" {...edit.longPressHandlers}>
+      <div className="node-floating-toolbar img-toolbar nodrag" {...(hasAudio ? edit.longPressHandlers : {})}>
         <div className="img-toolbar-main nodrag">
-          <ToolbarZones
-            zones={edit.layout.zones}
-            hiddenButtons={hiddenDefaultButtons}
-            renderButton={renderActionButton}
-          />
+          {hasAudio ? (
+            <ToolbarZones
+              zones={edit.layout.zones}
+              hiddenButtons={hiddenDefaultButtons}
+              renderButton={renderActionButton}
+            />
+          ) : (
+            <div className="img-toolbar-zone nodrag">{renderActionButton('upload')}</div>
+          )}
         </div>
       </div>
-      {pluginToolbar.dialog}
+      {hasAudio && pluginToolbar.dialog}
     </>
   );
 }

@@ -112,7 +112,7 @@ export default function CanvasImagePreview({ nodeId, openingProjectId, src, onCl
   if (!isCurrentProject || !activeNode || !displaySrc) return null;
 
   const comparisonControls = <div className="flex max-w-full flex-wrap items-center justify-center gap-1 border-r border-canvas-border pr-2">
-    <button type="button" className="ui-btn ui-btn--sm whitespace-nowrap" aria-expanded={pickerOpen} onClick={() => setPickerOpen((open) => !open)}>
+    <button type="button" className="ui-btn ui-btn--link ui-btn--sm whitespace-nowrap" aria-expanded={pickerOpen} onClick={() => setPickerOpen((open) => !open)}>
       {comparison ? t('更换对比图片') : t('对比图片')}
     </button>
     {comparison && <>

@@ -125,6 +125,8 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
 
   // ── Upload state ──
   const { isUploading, handleUpload: doUpload } = useSourceFileUpload('.mp3,.wav,.ogg,.flac,.aac,.m4a,.wma');
+  const uploadPendingRef = useRef(false);
+  const uploadDisabled = isUploading || data.status === 'loading';
   const [isTranscribing, setIsTranscribing] = useState(false);
 
   // ── Audio playback state ──
@@ -453,16 +455,23 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
 
   // ── Upload handler ──
   const handleUpload = useCallback(async () => {
-    const result = await doUpload();
-    if (!result) return;
-    updateNodeData(id, {
-      audioUrl: result.dataUrl,
-      filePath: result.filePath,
-      fileName: result.fileName,
-      label: result.fileName,
-      status: 'success',
-    } as Partial<BaseNodeData>);
-  }, [doUpload, id, updateNodeData]);
+    if (uploadDisabled || uploadPendingRef.current) return;
+    uploadPendingRef.current = true;
+    const projectId = useAppStore.getState().currentProjectId;
+    try {
+      const result = await doUpload();
+      if (!result || useAppStore.getState().currentProjectId !== projectId) return;
+      updateNodeData(id, {
+        audioUrl: result.dataUrl,
+        filePath: result.filePath,
+        fileName: result.fileName,
+        label: result.fileName,
+        status: 'success',
+      });
+    } finally {
+      uploadPendingRef.current = false;
+    }
+  }, [doUpload, id, updateNodeData, uploadDisabled]);
 
   // ── Render ──
   return (
@@ -474,10 +483,12 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         nodeId={id}
         onRename={handleRename}
       />
-      {data.audioUrl && (
+      {(isSource || data.audioUrl) && (
         <NodeToolbarShell visible={selected && isSingleSelection}>
           <AudioNodeToolbar
             nodeId={id}
+            hasAudio={!!data.audioUrl}
+            uploadDisabled={uploadDisabled}
             isPlaying={isPlaying}
             isTranscribing={isTranscribing}
             isAsrRunning={isAsrRunning}
@@ -496,20 +507,6 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         onContextMenu={(e) => e.preventDefault()}
       >
         <div className="node-preview compact relative">
-          {isSource && (
-            <button
-              className="node-upload-btn"
-              onClick={(e) => { e.stopPropagation(); handleUpload(); }}
-              data-tooltip={t('上传音频')}
-              aria-label={t('上传音频')}
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="12" height="12">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="17 8 12 3 7 8" />
-                <line x1="12" y1="3" x2="12" y2="15" />
-              </svg>
-            </button>
-          )}
           {data.audioUrl ? (
             <div
               className="audio-waveform-wrapper"
@@ -557,22 +554,28 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             </div>
           ) : data.status === 'loading' ? (
             <NodeGenerationProgress nodeId={id} fallbackLabel={t(data.mediaTaskStage === 'saving' ? '保存中' : '生成音频中...')} compactSpinner />
+          ) : isSource ? (
+            <button
+              type="button"
+              className="node-preview-placeholder nodrag nopan border-0 bg-transparent p-0 cursor-pointer transition-[color,transform] duration-100 hover:text-canvas-text-secondary active:scale-[0.98] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-canvas-border"
+              data-tooltip={t('上传音频')}
+              onClick={(event) => { event.stopPropagation(); void handleUpload(); }}
+            >
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+              <span>{t('上传音频文件')}</span>
+            </button>
           ) : (
             <div className="node-preview-placeholder">
-              {isSource ? (
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <polyline points="17 8 12 3 7 8" />
-                  <line x1="12" y1="3" x2="12" y2="15" />
-                </svg>
-              ) : (
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1">
-                  <path d="M9 18V5l12-2v13" />
-                  <circle cx="6" cy="18" r="3" />
-                  <circle cx="18" cy="16" r="3" />
-                </svg>
-              )}
-              <span>{isSource ? t('上传音频文件') : t('TTS 文本转语音')}</span>
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" aria-hidden="true">
+                <path d="M9 18V5l12-2v13" />
+                <circle cx="6" cy="18" r="3" />
+                <circle cx="18" cy="16" r="3" />
+              </svg>
+              <span>{t('TTS 文本转语音')}</span>
             </div>
           )}
           {data.audioUrl && data.status === 'loading' && (

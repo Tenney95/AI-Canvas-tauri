@@ -92,6 +92,19 @@ describe('MentionPicker 滚动定位', () => {
     expect(selectVideo).toHaveBeenCalledOnce();
   });
 
+  it('工作流卡片在外层提供可换行的完整悬停提示，避免与原生标题重复', () => {
+    hooks.refCursor = 0;
+    hooks.layoutCursor = 0;
+    const label = '角色参考图转多镜头角色一致性工作流完整版';
+    const tooltip = `${label}\n请先配置对应供应商`;
+    const tree = MentionPicker({ tabs: [], activeTab: 'models', onTabChange: vi.fn(), items: [
+      { key: 'workflow', label, tooltip, title: '请先配置对应供应商', disabled: true, onSelect: vi.fn() },
+    ] });
+    const wrapper = elements(tree).find((element) => element.props['data-tooltip'] === tooltip);
+    const option = elements(wrapper?.props.children).find((element) => element.props.role === 'option');
+    expect(option?.props).toMatchObject({ disabled: true, title: undefined });
+  });
+
   it('切换分类复位滚动，单独改变高亮项不会复位', () => {
     render();
     const grid = { scrollTop: 200 };

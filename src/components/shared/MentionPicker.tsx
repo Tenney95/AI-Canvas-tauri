@@ -41,6 +41,8 @@ export interface MentionPickerItem {
   disabled?: boolean;
   audioPreviewUrl?: string;
   title?: string;
+  /** 使用应用浮层展示需要换行的完整提示。 */
+  tooltip?: string;
   /** 供 aria-activedescendant 引用；不需要键盘导航时可省略 */
   domId?: string;
   onSelect: () => void;
@@ -231,7 +233,7 @@ export default function MentionPicker({
           <div className="mention-picker-empty">{emptyText ?? t('没有可引用的内容')}</div>
         ) : (
           items.map((item) => (
-            <div key={item.key} className="relative min-w-0" role="presentation">
+            <div key={item.key} className="relative min-w-0" role="presentation" data-tooltip={item.tooltip}>
             <button
               ref={item.key === activeKey ? activeItemRef : undefined}
               key={item.key}
@@ -241,7 +243,7 @@ export default function MentionPicker({
               tabIndex={search?.expanded ? -1 : undefined}
               aria-selected={item.key === activeKey}
               disabled={item.disabled}
-              title={item.title ?? item.label}
+              title={item.tooltip ? undefined : (item.title ?? item.label)}
               className={`mention-picker-card w-full${item.key === activeKey ? ' active' : ''}`}
               onMouseEnter={() => onItemHover?.(item.key)}
               onMouseDown={(e) => {
