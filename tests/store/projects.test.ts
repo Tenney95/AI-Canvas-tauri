@@ -133,7 +133,8 @@ import { createOrRefreshHotStore } from '../../src/store/store.hotReload';
 import type { AppState } from '../../src/store/useAppStore';
 
 beforeEach(() => {
-  vi.useFakeTimers();
+  // 控制保存和跳转的时间，保留 fake-indexeddb 依赖的 setImmediate 调度。
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
   vi.stubGlobal('crypto', webcrypto);
   vi.stubGlobal('window', { dispatchEvent: vi.fn() });
   vi.stubGlobal('CustomEvent', class TestCustomEvent {
