@@ -101,6 +101,7 @@ const assetSyncMocks = vi.hoisted(() => ({ applySharedAssetSyncCommit: vi.fn() }
 
 vi.mock('../../src/services/fileService', () => ({
   ...fileMocks,
+  isTauriEnv: () => false,
   setBaseDataDir: vi.fn(),
   syncAuthorizedDirectories: vi.fn(async () => undefined),
 }));

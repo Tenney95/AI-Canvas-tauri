@@ -228,14 +228,13 @@ describe('global asset folder browsing', () => {
   });
 
   it('creates a real child only under a registered directory and refuses names and collisions', async () => {
-    mocks.exists.mockResolvedValue(false);
+    mocks.exists.mockImplementation(async (path: string) => path === '/library/人物/existing');
     const selection = { kind: 'folder' as const, rootPath: '/library', relativePath: '人物' };
     await expect(createAssetSubfolder(selection, ['/library'], ' 表情 ')).resolves.toBe('/library/人物/表情');
     expect(mocks.mkdir).toHaveBeenCalledExactlyOnceWith('/library/人物/表情');
     for (const name of ['../escape', 'a/b', 'a\\b', '..', 'CON', 'NUL.txt', 'folder.', '']) {
       await expect(createAssetSubfolder(selection, ['/library'], name)).rejects.toThrow('名称无效');
     }
-    mocks.exists.mockResolvedValue(true);
     await expect(createAssetSubfolder(selection, ['/library'], 'existing')).rejects.toThrow('已存在');
     expect(mocks.mkdir).toHaveBeenCalledTimes(1);
     await expect(resolveAssetFolderDirectory(selection, [])).rejects.toThrow('已移除');

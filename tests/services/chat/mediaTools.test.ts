@@ -325,6 +325,8 @@ describe('keyed media operation progress', () => {
     let row: nativeMedia.NativeMediaTaskRecord | undefined;
     let currentDraft: BaseNodeData | undefined;
     vi.spyOn(nativeMedia, 'listNativeMediaTasks').mockImplementation(async () => row ? [row] : []);
+    vi.spyOn(nativeMedia, 'readAvailableNativeMediaTask').mockImplementation(async (projectId, canvasId, operationId) =>
+      row?.ownerProjectId === projectId && row.canvasId === canvasId && row.operationId === operationId ? row : undefined);
     vi.spyOn(recoverySummary, 'readNativeMediaRecoverySummary').mockImplementation(async (record) => recoverySummary.describeNativeMediaRecovery(record));
     vi.spyOn(operationProgress, 'recordMcpOperationProgress').mockResolvedValue(undefined);
     const fetch = vi.spyOn(globalThis, 'fetch');

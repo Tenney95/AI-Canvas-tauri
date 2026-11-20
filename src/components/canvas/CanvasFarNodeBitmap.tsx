@@ -171,7 +171,7 @@ export default memo(function CanvasFarNodeBitmap({
       reportGpuStatus();
     };
 
-    const useCanvas2d = (reason: string) => {
+    const fallbackToCanvas2d = (reason: string) => {
       if (stopped || gpuAbort.signal.aborted) return;
       gpuAbort.abort();
       view.clearTimeout(gpuTimeout);
@@ -413,7 +413,7 @@ export default memo(function CanvasFarNodeBitmap({
               drawCard(tile, { ...item, x: 0, y: 0 }, cardStyle, item.image);
             });
           } catch {
-            useCanvas2d('gpu-render');
+            fallbackToCanvas2d('gpu-render');
             return;
           }
           if (gpu !== candidate) return;
@@ -478,17 +478,17 @@ export default memo(function CanvasFarNodeBitmap({
         gpuReason = 'webgpu-unavailable';
       } else {
         gpuStatus = 'initializing';
-        gpuTimeout = view.setTimeout(() => useCanvas2d('gpu-init-timeout'), GPU_INIT_TIMEOUT_MS);
+        gpuTimeout = view.setTimeout(() => fallbackToCanvas2d('gpu-init-timeout'), GPU_INIT_TIMEOUT_MS);
         void import('./canvasFarNodeWebGpu')
           .then(({ createFarNodeWebGpu }) =>
-            createFarNodeWebGpu(gpuCanvas, gpuAbort.signal, () => useCanvas2d('gpu-device-error')))
+            createFarNodeWebGpu(gpuCanvas, gpuAbort.signal, () => fallbackToCanvas2d('gpu-device-error')))
           .then((backend) => {
             view.clearTimeout(gpuTimeout);
             if (stopped || gpuAbort.signal.aborted) { backend.destroy(); return; }
             gpu = backend;
             dirty = true;
             schedule();
-          }, () => useCanvas2d('gpu-init'));
+          }, () => fallbackToCanvas2d('gpu-init'));
       }
     }
     reportGpuStatus();

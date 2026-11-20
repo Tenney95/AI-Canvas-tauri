@@ -1118,7 +1118,7 @@ describe('critical canvas node interactions', () => {
       { id: 'row-2', shotNo: '2', frame: { nodeId: 'reference', kind: 'image', url: 'asset://reference.png' },
         video: { nodeId: 'shot-video', kind: 'video', url: 'asset://old.mp4' } },
       { id: 'row-3', shotNo: '3', video: { nodeId: 'pending-video', kind: 'video', url: 'asset://stale.mp4' } },
-    ], undefined, {}, { nodes: [
+    ], undefined, { nodes: [
       { id: 'shot-video', type: 'ai-video', position: { x: 0, y: 0 }, data: { videoUrl: 'asset://ready.mp4' } },
       { id: 'pending-video', type: 'ai-video', position: { x: 0, y: 0 }, data: {} },
     ] });

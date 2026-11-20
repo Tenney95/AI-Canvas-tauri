@@ -26,7 +26,7 @@ const projectImport: Record<string, string> = {
   '请取消“只看冲突”，调整关联节点、分组、连线或素材的选择。': 'Turn off “Conflicts only” and adjust related nodes, groups, edges or assets.',
   '导入更新恢复点': 'Import recovery points', '项目导入恢复点': 'Project import recovery points', '此项目尚无导入恢复点': 'No import recovery points yet',
   '恢复会替换整部剧的画布、分集、设置与创作资产。当前状态会另存恢复点，聊天和记忆保留。': 'Restore all canvases, episodes, settings and creative assets in the series. Save the current state as another recovery point. Keep chats and memories.',
-  '确认将当前项目恢复为所选时间点？': 'Restore this project to the selected point?', '确认恢复': 'Confirm restore', '正在恢复…': 'Restoring…',
+  '确认将当前项目恢复为所选时间点？': 'Restore this project to the selected point?', '确认恢复': 'Confirm restore',
   '导入更新前': 'Before import update', '恢复操作前': 'Before restore', '项目与分集': 'Project and episodes', '画布节点': 'Canvas node', '镜头行': 'Shot row', '素材文件': 'Asset file',
 };
 export default projectImport;

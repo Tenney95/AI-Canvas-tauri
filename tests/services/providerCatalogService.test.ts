@@ -218,8 +218,8 @@ describe('LibAPI 内置目录与连接身份', () => {
     expect(fetchMock.mock.calls[1][1]).not.toHaveProperty('headers');
     expect(result).toMatchObject({ source: 'remote', resolvedBaseUrl: 'https://libapi.cc/v1' });
     expect(result.models.map(({ id, category, provider }) => ({ id, category, provider }))).toEqual([
-      { id: 'gt-6.1-sol', category: 'text', provider: 'libapi' },
       { id: 'gpt-image-2.5-flare', category: 'image', provider: 'libapi' },
+      { id: 'gt-6.1-sol', category: 'text', provider: 'libapi' },
       { id: 'vo-3.1', category: 'video', provider: 'libapi' },
     ]);
     expect(result.models.filter((model) => model.category !== 'text').every((model) => model.executionProfile)).toBe(true);

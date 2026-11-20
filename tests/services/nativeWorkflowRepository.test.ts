@@ -84,8 +84,8 @@ it('最后一个已确认远端任务结束后可在原节点重新提交，原�
   const initial = await fixture(), { context, prepare } = initial;
   let { record, receipt } = initial;
   ({ record, receipt } = await beginNativeWorkflowSubmission(record, receipt.submissions[0].id, { factory }));
-  ({ record, receipt } = await retainNativeWorkflowSubmission(record, receipt.submissions[0].id, { taskId: 'cancelled-task' }, { factory }));
-  ({ record, receipt } = await retainNativeWorkflowTaskOutputs(record, 'cancelled-task', { failed: true }, { factory }));
+  ({ record } = await retainNativeWorkflowSubmission(record, receipt.submissions[0].id, { taskId: 'cancelled-task' }, { factory }));
+  ({ record } = await retainNativeWorkflowTaskOutputs(record, 'cancelled-task', { failed: true }, { factory }));
   expect(record.status).toBe('prepared');
   await expect(prepare()).rejects.toThrow('未结算');
   ({ record, receipt } = await sealNativeWorkflowSubmissions(record, context, { factory }));
@@ -103,7 +103,7 @@ it('只记录已确认结束的远端任务，未知提交仍保持防重', asyn
   let { record, receipt } = initial;
   ({ record, receipt } = await beginNativeWorkflowSubmission(record, receipt.submissions[0].id, { factory }));
   ({ record, receipt } = await retainNativeWorkflowSubmission(record, receipt.submissions[0].id, { taskId: 'first-task' }, { factory }));
-  ({ record, receipt } = await beginNativeWorkflowSubmission(record, receipt.submissions[1].id, { factory }));
+  ({ record } = await beginNativeWorkflowSubmission(record, receipt.submissions[1].id, { factory }));
   ({ record, receipt } = await retainNativeWorkflowTaskOutputs(record, 'first-task', { failed: true }, { factory }));
   expect(record.status).toBe('outcome-unknown');
   expect(receipt.submissions[1].state).toBe('unknown');

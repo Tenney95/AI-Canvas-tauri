@@ -70,7 +70,7 @@ it('新分集 ID 与画布别名指向同一分集，写入仍使用画布作用
   useAppStore.setState((state) => ({
     updateEpisodeCreative,
     projects: state.projects.map((item) => item.id === 'ep-1' ? { ...item,
-      nativeView: { projectId: 'series', episodeId: 'episode-1', canvasId: 'ep-1', episodeRevision: 1 },
+      nativeView: { projectId: 'series', episodeId: 'episode-1', canvasId: 'ep-1', episodeRevision: 1, episodeContentRevision: 1 },
       episodeScript: '原稿',
     } : item),
   }));
