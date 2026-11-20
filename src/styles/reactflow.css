@@ -144,41 +144,6 @@
   border-radius: 8px;
 }
 
-/* Controls */
-.react-flow__controls {
-  border-radius: 10px !important;
-  overflow: hidden !important;
-  background:
-    linear-gradient(var(--floating-surface-bg), var(--floating-surface-bg)) padding-box,
-    var(--glass-bevel-border) border-box !important;
-  backdrop-filter: blur(var(--glass-blur-lg)) !important;
-  border: 1px solid transparent !important;
-  box-shadow: var(--glass-shadow-floating) !important;
-}
-
-.react-flow__controls-button {
-  background-color: transparent !important;
-  border-color: var(--border-subtle) !important;
-  color: var(--theme-text-secondary) !important;
-  fill: var(--theme-text-secondary) !important;
-  transition:
-    color var(--transition-base),
-    fill var(--transition-base),
-    background-color var(--transition-base),
-    border-color var(--transition-base) !important;
-}
-
-.react-flow__controls-button:hover {
-  background-color: var(--theme-hover) !important;
-  color: var(--theme-text) !important;
-  fill: var(--theme-text) !important;
-}
-
-.react-flow__controls-button svg {
-  width: 14px !important;
-  height: 14px !important;
-}
-
 /* ============================================
    MiniMap
    ============================================ */
@@ -652,8 +617,7 @@
    it. grab/grabbing are left to the vendor - the cursor pack has no hand glyph. */
 .react-flow .react-flow__pane.selection,
 .react-flow .react-flow__edge.selectable,
-.react-flow .react-flow__node.selectable,
-.react-flow .react-flow__controls-button {
+.react-flow .react-flow__node.selectable {
   cursor: var(--cursor-pointer, pointer);
 }
 

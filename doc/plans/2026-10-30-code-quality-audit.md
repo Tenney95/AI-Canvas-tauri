@@ -954,3 +954,9 @@ cargo test --lib blender_runtime::result::tests
 - RunningHub Topaz 六个图像端点共用输出宽高构造，五个视频端点共用参考视频和输出宽高构造。各端点只在目录初始化时创建独立字段和嵌套 schema，目录静态展开后与原源码逐字节一致。Tauri 桌面端在已配置的 RunningHub 连接中，核对图像端点仍是选填宽高、默认 1920×1080，视频端点仍需参考视频和宽高、默认 1280×720。检查边界 1 和 32000 及越界拒绝，核对字段顺序、各增强模式的其余选项。目录摘要、对象隔离和请求构造用例见 [runninghubModelManifest.test.ts](../../tests/services/runninghubModelManifest.test.ts#L14) 和 [runninghubMedia.test.ts](../../tests/services/runninghubMedia.test.ts#L173)。
 
 在仓库根目录可运行 `npm test -- tests/services/assetFolderNavigation.test.ts tests/services/projectThumbnailExclusion.test.ts tests/services/configSecretStorage.test.ts tests/components/selectPortalBoundary.test.ts tests/services/runninghubModelManifest.test.ts tests/services/runninghubMedia.test.ts`。
+
+## 2026-11-20 旧画布控件、分组改名与视频能力 Schema 精简
+
+本次未运行测试，待用户验收。
+
+- 删除 React Flow 旧缩放控件的专属样式，保留自定义工具栏、小地图样式和长按防误触判断。Tauri 桌面端在含节点的项目中切换深浅主题，通过右下角工具栏试放大、缩小、适应视图和锁定缩放，再用小地图定位。长按菜单仍可从空白画布打开，从节点和控件上操作时不误触。现有回归见 [useCanvasViewportPreferences.test.ts](../../tests/hooks/useCanvasViewportPreferences.test.ts) 和 [useCanvasLongPressRadialMenuPointer.test.ts](../../tests/hooks/useCanvasLongPressRadialMenuPointer.test.ts#L179)。
