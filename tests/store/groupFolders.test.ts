@@ -8,9 +8,8 @@ import { createCanvasNoteData } from '../../src/types';
 
 const PROJECT_DIR = 'D:/data/proj-1';
 
-const { ensureGroupFolder, renameGroupFolder, moveProjectFileToFolder } = vi.hoisted(() => ({
+const { ensureGroupFolder, moveProjectFileToFolder } = vi.hoisted(() => ({
   ensureGroupFolder: vi.fn(async () => null),
-  renameGroupFolder: vi.fn(async () => true),
   // 假磁盘：只按目标目录算出新路径，已在目标目录时返回 null（不移动）
   moveProjectFileToFolder: vi.fn(async (filePath: string | undefined, dir: string, folder: string | null, options?: { preserveSource?: boolean; forceCopy?: boolean }) => {
     if (!filePath) return null;
@@ -30,7 +29,6 @@ vi.mock('../../src/services/fileService', () => ({
   setBaseDataDir: vi.fn(),
   syncAuthorizedDirectories: vi.fn(async () => undefined),
   ensureGroupFolder,
-  renameGroupFolder,
   moveProjectFileToFolder,
   removeEmptyProjectGroupFolder: vi.fn(async () => undefined),
   finishProjectFileRelocation: vi.fn(async () => undefined),
@@ -80,7 +78,6 @@ beforeEach(() => {
     nodes: [node('a'), node('b'), node('c'), node('d')] });
   useAppStore.setState({ saveCurrentProjectSilent: vi.fn(async () => 'p1') });
   ensureGroupFolder.mockClear();
-  renameGroupFolder.mockClear();
   moveProjectFileToFolder.mockClear();
   vi.mocked(finishProjectFileRelocation).mockClear();
   vi.mocked(getProjectDataDir).mockClear();
@@ -1073,14 +1070,13 @@ describe('分组与本地文件夹同步', () => {
     ]);
   });
 
-  it('改名时同步重命名文件夹并更新分组节点标签', async () => {
+  it('改名时准备目标文件夹、更新分组标签并清理旧空目录', async () => {
     createGroup(['a', 'b']);
     const groupId = useAppStore.getState().groups[0].id;
 
     useAppStore.getState().renameGroup(groupId, '镜头一');
 
     expect(ensureGroupFolder).toHaveBeenCalledWith('p1', '镜头一');
-    expect(renameGroupFolder).not.toHaveBeenCalled();
     expect(useAppStore.getState().groups[0].name).toBe('镜头一');
     expect(useAppStore.getState().nodes.find((n) => n.id === groupId)?.data.label).toBe('镜头一');
     await vi.waitFor(() => expect(removeEmptyProjectGroupFolder).toHaveBeenCalledWith(PROJECT_DIR, '分组'));
@@ -1156,13 +1152,18 @@ describe('分组与本地文件夹同步', () => {
     expect(data.storyboardOverrides?.[0]?.url).toBe(`asset://${PROJECT_DIR}/Na/cell.png`);
   });
 
-  it('同名改名不触发文件夹操作', () => {
+  it('同名改名不创建目录或发起文件同步', async () => {
     createGroup(['a', 'b']);
     const groupId = useAppStore.getState().groups[0].id;
+    ensureGroupFolder.mockClear();
+    const syncGroupFiles = vi.fn(async () => undefined);
+    useAppStore.setState({ syncGroupFiles });
 
     useAppStore.getState().renameGroup(groupId, '分组');
+    await Promise.resolve();
 
-    expect(renameGroupFolder).not.toHaveBeenCalled();
+    expect(ensureGroupFolder).not.toHaveBeenCalled();
+    expect(syncGroupFiles).not.toHaveBeenCalled();
   });
 });
 

@@ -960,3 +960,4 @@ cargo test --lib blender_runtime::result::tests
 本次未运行测试，待用户验收。
 
 - 删除 React Flow 旧缩放控件的专属样式，保留自定义工具栏、小地图样式和长按防误触判断。Tauri 桌面端在含节点的项目中切换深浅主题，通过右下角工具栏试放大、缩小、适应视图和锁定缩放，再用小地图定位。长按菜单仍可从空白画布打开，从节点和控件上操作时不误触。现有回归见 [useCanvasViewportPreferences.test.ts](../../tests/hooks/useCanvasViewportPreferences.test.ts) 和 [useCanvasLongPressRadialMenuPointer.test.ts](../../tests/hooks/useCanvasLongPressRadialMenuPointer.test.ts#L179)。
+- 删除无生产调用的整目录改名函数。现行分组改名仍逐文件迁移项目引用，保存成功后清理旧空目录。「同名改名」用例改为观察现用建目录及文件同步入口。Tauri 桌面端在测试项目中对含本地图片或分镜帧的分组改名，核对标签、媒体路径和重开项目后的可用性。再提交同名及已占用名称，核对没有产生第二份文件或改写引用。用例还覆盖保存失败保留源文件。见 [groupFolders.test.ts](../../tests/store/groupFolders.test.ts)。

@@ -621,31 +621,6 @@ export async function ensureGroupFolder(
   }
 }
 
-/** 分组改名时同步重命名其本地文件夹；目标已存在或改名失败时返回 false */
-export async function renameGroupFolder(
-  projectId: string | null,
-  oldName: string,
-  newName: string,
-): Promise<boolean> {
-  if (!isTauriEnv() || !projectId) return true;
-  const dataDir = await getProjectDataDir(projectId);
-  if (!dataDir) return true;
-  const oldPath = joinPath(dataDir, sanitizeFolderName(oldName));
-  const newPath = joinPath(dataDir, sanitizeFolderName(newName));
-  if (oldPath === newPath) return true;
-  try {
-    if (await exists(newPath)) return false;
-    // 旧文件夹不存在（如旧项目的分组）时直接建新的
-    if (await exists(oldPath)) await rename(oldPath, newPath);
-    else await mkdir(newPath, { recursive: true });
-    notifyProjectDiskChanged();
-    return true;
-  } catch (err) {
-    console.warn('[fileService] renameGroupFolder failed:', oldPath, '→', newPath, err);
-    return false;
-  }
-}
-
 function isRelocatableProjectPart(part: string): boolean {
   return !!part && !part.startsWith('.') && !/[\\/\0]/.test(part)
     && !/^(?:appdata|agent-private|plugin-private|blender-private|secrets)$/i.test(part);
