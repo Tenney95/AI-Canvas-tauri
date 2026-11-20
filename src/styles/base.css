@@ -1237,39 +1237,3 @@ select option:disabled {
     var(--glass-bevel-border) border-box;
   box-shadow: var(--glass-shadow-floating, var(--tw-shadow));
 }
-
-.canvas-zoom-slider {
-  width: 80px;
-  height: 4px;
-  -webkit-appearance: none;
-  appearance: none;
-  border-radius: 2px;
-  background: var(--separator-color);
-  cursor: var(--cursor-pointer, pointer);
-}
-
-.canvas-zoom-slider::-webkit-slider-thumb {
-  width: 14px;
-  height: 14px;
-  -webkit-appearance: none;
-  appearance: none;
-  border: 2px solid var(--theme-surface);
-  border-radius: 50%;
-  background: var(--brand);
-  box-shadow: 0 1px 4px var(--black-alpha-30);
-}
-
-.canvas-zoom-slider::-moz-range-track {
-  height: 4px;
-  border-radius: 2px;
-  background: var(--separator-color);
-}
-
-.canvas-zoom-slider::-moz-range-thumb {
-  width: 10px;
-  height: 10px;
-  border: 2px solid var(--theme-surface);
-  border-radius: 50%;
-  background: var(--brand);
-  box-shadow: 0 1px 4px var(--black-alpha-30);
-}

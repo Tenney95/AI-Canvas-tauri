@@ -425,59 +425,6 @@
 .rh-v5-fps-seg .img-rp-quality-item {
   font-size: 11px;
 }
-.rh-stepper {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.rh-v5-source-framecount {
-  font-size: 12px;
-  color: var(--theme-text-muted);
-  min-width: 20px;
-  text-align: center;
-}
-.rh-stepper-value {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 48px;
-  padding: 4px 10px;
-  background: var(--theme-bg);
-  border: 1px solid var(--theme-card);
-  border-radius: 6px;
-  font-size: 12px;
-  color: var(--theme-text);
-  cursor: var(--cursor-text, text);
-  font-family: inherit;
-  outline: none;
-  transition: border-color 0.15s;
-}
-.rh-stepper-value:hover {
-  border-color: var(--border-secondary);
-}
-.rh-stepper-value:focus {
-  border-color: var(--brand);
-}
-.rh-stepper-input {
-  display: inline-flex;
-  align-items: center;
-  min-width: 48px;
-  padding: 4px 10px;
-  background: var(--theme-bg);
-  border: 1px solid var(--brand);
-  border-radius: 6px;
-  font-size: 12px;
-  color: var(--theme-text);
-  font-family: inherit;
-  outline: none;
-  -moz-appearance: textfield;
-  appearance: textfield;
-}
-.rh-stepper-input::-webkit-outer-spin-button,
-.rh-stepper-input::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
 
 /* ════════════════════════════════════════════
    Seedance 时长拖拽滑块

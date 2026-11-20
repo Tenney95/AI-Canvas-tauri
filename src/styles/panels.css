@@ -1871,36 +1871,6 @@ button.wf-ionode-badge.is-default {
 }
 .assets-add-menu button:hover { background: var(--theme-hover); color: var(--theme-text); }
 
-/* 外部文件夹行 */
-.assets-folder-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 6px 3px 9px;
-  font-size: 11px;
-  color: var(--theme-text-secondary);
-  background: var(--theme-card);
-  border: 1px solid var(--theme-border);
-  border-radius: 999px;
-  max-width: 180px;
-}
-.assets-folder-chip button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 10px;
-  height: 10px;
-  border: none;
-  border-radius: 50%;
-  background: var(--white-alpha-08);
-  color: var(--theme-text-muted);
-  cursor: var(--cursor-pointer, pointer);
-  font-size: 13px;
-  line-height: 1;
-  transition: background var(--transition-base), color var(--transition-base);
-}
-.assets-folder-chip button:hover { background: var(--danger-bg); color: var(--danger-light); }
-
 /* 分类/标签分隔符 + 标签 chip */
 .assets-chip-sep {
   width: 1px;
@@ -2007,8 +1977,7 @@ button.wf-ionode-badge.is-default {
   border-bottom-color: var(--assets-light-control-border);
 }
 [data-theme='light'] .assets-cat-chip,
-[data-theme='light'] .assets-filter-more,
-[data-theme='light'] .assets-folder-chip {
+[data-theme='light'] .assets-filter-more {
   color: var(--assets-light-muted);
 }
 [data-theme='light'] .assets-cat-chip.active {
@@ -2017,8 +1986,7 @@ button.wf-ionode-badge.is-default {
 [data-theme='light'] .assets-cat-chip,
 [data-theme='light'] .assets-search,
 [data-theme='light'] .assets-column-stepper,
-[data-theme='light'] .ui-select--custom .assets-project-select.ui-select__trigger,
-[data-theme='light'] .assets-folder-chip {
+[data-theme='light'] .ui-select--custom .assets-project-select.ui-select__trigger {
   background-color: var(--assets-light-control-bg);
   border-color: var(--assets-light-control-border);
 }

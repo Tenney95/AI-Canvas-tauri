@@ -914,3 +914,9 @@ cargo test --lib blender_runtime::result::tests
 - 提示词编辑器和只读预览共用节点样式、工作流样式及工作流图标三张表。两侧保留各自的默认样式、解析、编号和交互。Tauri 桌面端在节点提示词中放入文本及图片引用和工作流输入，打开对应只读预览，核对类型样式、图标、编号和点击行为。再用缺失引用和未闭合的工作流值复核各自原回退。现有用例见 [promptChipViewer.test.tsx](../../tests/components/promptChipViewer.test.tsx) 和 [mentionEditorImageIndices.test.ts](../../tests/components/mentionEditorImageIndices.test.ts)。
 
 在仓库根目录可运行 `npm test -- tests/services/runninghubModelManifest.test.ts tests/components/appearanceSettings.test.tsx tests/components/promptChipViewer.test.tsx tests/components/mentionEditorImageIndices.test.ts tests/components/richTextChipSafety.test.ts`。
+
+## 2026-11-20 退役控件、RunningHub 字段与旧单图入口精简
+
+已实现，按范围分别提交。本次未运行测试，待用户验收。
+
+- 清理旧视频帧数控件、旧画布缩放滑块和旧资产文件夹标签样式。浅色主题的联合选择器继续覆盖其他成员。Tauri 桌面端在深浅主题分别打开视频参数、画布缩放和外部文件夹导航，核对秒数输入、缩放加减及锁定、文件夹层级和浅色筛选控件。现有入口见 [videoParamSelectorProtocol.test.ts](../../tests/components/videoParamSelectorProtocol.test.ts)、[useCanvasWheelZoom.test.ts](../../tests/hooks/useCanvasWheelZoom.test.ts) 与 [assetsPanelDrawer.test.tsx](../../tests/components/assetsPanelDrawer.test.tsx)。
