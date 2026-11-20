@@ -865,3 +865,9 @@ cargo test --lib blender_runtime::result::tests
 3. ComfyUI 分别使用图片、`video` / `file` 视频槽和音频槽，检查显式素材与普通引用的上传、去重与槽位不足提示。无素材的可选分支仍可摘除，必填分支/独立输出及未知结构保留；主机路径或连线不能被上传文件名覆盖。旧资产索引标签迁移和存储健康占用/压力展示一并回归。
 
 供用户执行，运行目录为仓库根目录：`npx vitest run tests/services/comfyDefaultIONodes.test.ts tests/services/comfyWorkflowAudioIO.test.ts tests/services/comfyMediaRouting.test.ts tests/components/distributionGapHandles.test.tsx tests/services/indexedDbService.test.ts tests/services/storageHealth.test.ts`；按需执行 `npm run typecheck` 与 `npm run test:typecheck`。本轮均未运行，自动化不能代替上述桌面和真实 ComfyUI 验收。回滚仅恢复本批 6 个文件的删除块及键表引用和相关文档，不回退前批提交或用户数据。
+
+## 2026-11-20 外观、模型能力与图片编辑局部精简
+
+已实现，按范围分别提交。本次未运行测试，待用户验收。
+
+- 外观主题的导入校验、迁移和导出共用同一组有序图片槽位，导入和导出复用图片引用替换。原始主题仍先校验再规范化，缺图、损坏及摘要不符均在写入前拒绝。Tauri 桌面端从外观设置导出带共享及独立面板背景的主题，再导入并应用，核对图片和设置。异常与旧版主题的既有覆盖见 [appearanceThemeService.test.ts](../../tests/services/appearanceThemeService.test.ts)。

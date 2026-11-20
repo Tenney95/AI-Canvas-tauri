@@ -8,21 +8,46 @@ import { bytePartsToBase64Async, isTauriEnv } from '../fs/core';
 import { isEmbeddedThemeImage, isThemeImageReference, MAX_THEME_IMAGE_BYTES, readThemeImage, storeThemeImage, validateThemeImage } from '../fs/themeAssets';
 import { decodeDataUrlBytesAsync, sha256BytesHex } from '../mediaDataUrl';
 
-// 既有八个槽位 + 关联背景与四个独立区域，每张 5MB；总文件仍限制 64MB。
+// 每张图片最多 5MB，整个主题文件最多 64MB。
 export const MAX_APPEARANCE_THEME_BYTES = 64 * 1024 * 1024;
-const MAX_THEME_IMAGES = 13;
 
-function imageSlots(theme: AppearanceTheme): { imageDataUrl?: string }[] {
-  return [theme.canvas, theme.handle, theme.node.backgroundImage, theme.ui.surfaceImage,
-    theme.ui.button.normal.backgroundImage, theme.ui.button.normal.hoverBackgroundImage,
-    theme.ui.button.primary.backgroundImage, theme.ui.button.primary.hoverBackgroundImage,
-    theme.ui.canvasPanels.shared?.backgroundImage,
-    ...APPEARANCE_CANVAS_PANEL_IDS.map((id) => theme.ui.canvasPanels.overrides[id]?.backgroundImage),
-  ].filter((slot): slot is NonNullable<typeof slot> => Boolean(slot));
+const IMAGE_SLOT_PATHS = [
+  ['canvas'],
+  ['handle'],
+  ['node', 'backgroundImage'],
+  ['ui', 'surfaceImage'],
+  ['ui', 'button', 'normal', 'backgroundImage'],
+  ['ui', 'button', 'normal', 'hoverBackgroundImage'],
+  ['ui', 'button', 'primary', 'backgroundImage'],
+  ['ui', 'button', 'primary', 'hoverBackgroundImage'],
+  ['ui', 'canvasPanels', 'shared', 'backgroundImage'],
+  ...APPEARANCE_CANVAS_PANEL_IDS.map((id) => ['ui', 'canvasPanels', 'overrides', id, 'backgroundImage']),
+];
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+function* imageSlots(theme: unknown): Generator<Record<string, unknown>> {
+  for (const path of IMAGE_SLOT_PATHS) {
+    let slot = theme;
+    for (const key of path) slot = isRecord(slot) ? slot[key] : undefined;
+    if (isRecord(slot)) yield slot;
+  }
 }
 
-function imageSources(theme: AppearanceTheme): string[] {
-  return [...new Set(imageSlots(theme).map((slot) => slot.imageDataUrl).filter((source): source is string => Boolean(source)))];
+function imageSources(slots: readonly Record<string, unknown>[]): Set<string> {
+  const sources = new Set<string>();
+  for (const { imageDataUrl } of slots) {
+    if (typeof imageDataUrl === 'string' && imageDataUrl) sources.add(imageDataUrl);
+  }
+  return sources;
+}
+
+function replaceImageSources(slots: readonly Record<string, unknown>[], replacements: ReadonlyMap<string, string>): void {
+  for (const slot of slots) {
+    const source = slot.imageDataUrl;
+    if (typeof source === 'string' && source) slot.imageDataUrl = replacements.get(source);
+  }
 }
 
 async function embeddedImageBlob(source: string): Promise<Blob> {
@@ -39,7 +64,7 @@ async function blobReference(blob: Blob): Promise<string> {
 
 /** 仅桌面端迁移旧图片；全部落盘成功才返回新快照，失败时调用方保留原配置。 */
 export async function persistAppearanceImages(theme: AppearanceTheme): Promise<AppearanceTheme> {
-  if (!isTauriEnv() || !imageSources(theme).some(isEmbeddedThemeImage)) return theme;
+  if (!isTauriEnv() || ![...imageSlots(theme)].some(({ imageDataUrl }) => isEmbeddedThemeImage(imageDataUrl))) return theme;
   const next = structuredClone(theme);
   const migrated = new Map<string, string>();
   for (const slot of imageSlots(next)) {
@@ -71,10 +96,11 @@ export async function deleteAppearanceTheme(id: string): Promise<void> {
 /** 导出时才读取文件并携带图片；同图只携带一次，不把资源正文写回 Store。 */
 export async function exportAppearanceTheme(input: AppearanceTheme): Promise<Blob> {
   const theme = structuredClone(normalizeAppearanceTheme(input));
+  const slots = [...imageSlots(theme)];
   const replacements = new Map<string, string>();
   const exported = new Set<string>();
   const imageParts: BlobPart[] = [];
-  for (const source of imageSources(theme)) {
+  for (const source of imageSources(slots)) {
     const blob = isThemeImageReference(source) ? await readThemeImage(source) : await embeddedImageBlob(source);
     const reference = isThemeImageReference(source) ? source : await blobReference(blob);
     replacements.set(source, reference);
@@ -83,9 +109,7 @@ export async function exportAppearanceTheme(input: AppearanceTheme): Promise<Blo
     const dataUrl = `data:${blob.type};base64,${await bytePartsToBase64Async([new Uint8Array(await blob.arrayBuffer())])}`;
     imageParts.push(`${imageParts.length ? ',' : ''}${JSON.stringify(reference)}:${JSON.stringify(dataUrl)}`);
   }
-  for (const slot of imageSlots(theme)) {
-    if (slot.imageDataUrl) slot.imageDataUrl = replacements.get(slot.imageDataUrl);
-  }
+  replaceImageSources(slots, replacements);
   const blob = new Blob([
     `{"format":"ai-canvas-theme","version":2,"theme":${JSON.stringify(theme)},"images":{`,
     ...imageParts, '}}',
@@ -93,9 +117,6 @@ export async function exportAppearanceTheme(input: AppearanceTheme): Promise<Blo
   if (blob.size > MAX_APPEARANCE_THEME_BYTES) throw new Error('主题文件不能超过 64MB');
   return blob;
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 export async function importAppearanceTheme(file: File): Promise<AppearanceTheme> {
   if (file.size > MAX_APPEARANCE_THEME_BYTES) throw new Error('主题文件不能超过 64MB');
@@ -113,24 +134,18 @@ export async function importAppearanceTheme(file: File): Promise<AppearanceTheme
     throw new Error('主题文件格式不受支持');
   }
   // 运行时规范化可以退回底色；导入不能把不受支持的图片静默丢弃。
-  for (const path of ['canvas', 'handle', 'node.backgroundImage', 'ui.surfaceImage',
-    'ui.button.normal.backgroundImage', 'ui.button.normal.hoverBackgroundImage',
-    'ui.button.primary.backgroundImage', 'ui.button.primary.hoverBackgroundImage',
-    'ui.canvasPanels.shared.backgroundImage',
-    ...APPEARANCE_CANVAS_PANEL_IDS.map((id) => `ui.canvasPanels.overrides.${id}.backgroundImage`)]) {
-    let value: unknown = raw;
-    for (const key of path.split('.')) value = isRecord(value) ? value[key] : undefined;
-    if (isRecord(value) && value.imageDataUrl != null && !isThemeImageReference(value.imageDataUrl) && !isEmbeddedThemeImage(value.imageDataUrl)) {
+  for (const { imageDataUrl } of imageSlots(raw)) {
+    if (imageDataUrl != null && !isThemeImageReference(imageDataUrl) && !isEmbeddedThemeImage(imageDataUrl)) {
       throw new Error('主题包含不受支持的图片引用，请重新导出完整主题');
     }
   }
   const theme = normalizeAppearanceTheme(raw);
-  const sources = imageSources(theme);
+  const slots = [...imageSlots(theme)];
   const images = packaged && isRecord(document.images) ? document.images : {};
-  if (Object.keys(images).length > MAX_THEME_IMAGES) throw new Error('主题图片数量超过限制');
+  if (Object.keys(images).length > IMAGE_SLOT_PATHS.length) throw new Error('主题图片数量超过限制');
   // 全部校验完成后再写入本地目录，损坏/缺失资源不得激活半成品主题。
   const blobs = new Map<string, Blob>();
-  for (const source of sources) {
+  for (const source of imageSources(slots)) {
     const embedded = isThemeImageReference(source) ? images[source] : source;
     if (typeof embedded !== 'string') throw new Error('主题文件缺少背景图片，请从原设备重新导出');
     const blob = await embeddedImageBlob(embedded);
@@ -140,9 +155,7 @@ export async function importAppearanceTheme(file: File): Promise<AppearanceTheme
   }
   const replacements = new Map<string, string>();
   for (const [source, blob] of blobs) replacements.set(source, await storeThemeImage(blob));
-  for (const slot of imageSlots(theme)) {
-    if (slot.imageDataUrl) slot.imageDataUrl = replacements.get(slot.imageDataUrl);
-  }
+  replaceImageSources(slots, replacements);
   const now = Date.now();
   return {
     ...theme,
