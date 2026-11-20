@@ -117,6 +117,48 @@ const PointEditEditor = lazy(async () => {
   };
 });
 
+function startEditedImage({ id, label, nodeWidth, operation, pending, t }: {
+  id: string;
+  label: BaseNodeData['label'];
+  nodeWidth: number;
+  operation: 'crop' | 'compose';
+  pending: { current: CanvasDerivationGuard | null };
+  t: ReturnType<typeof useT>;
+}): boolean {
+  const store = useAppStore.getState();
+  const currentPos = store.nodes.find((node) => node.id === id)?.position || { x: 0, y: 0 };
+  const newNodeId = `node-${generateId()}`;
+  const projectId = store.currentProjectId;
+  const derivation = registerCanvasDerivation(store, id, {
+    placeholderNodeId: newNodeId,
+    onCancel: () => {
+      const liveStore = useAppStore.getState();
+      if (liveStore.currentProjectId !== projectId) return;
+      liveStore.setNodes(liveStore.nodes.filter((node) => node.id !== newNodeId));
+    },
+  });
+  if (!derivation) {
+    store.showToast(t('图片节点已失效，请重试'), 'error');
+    return false;
+  }
+  pending.current = derivation;
+
+  store.addNode({
+    id: newNodeId,
+    type: 'ai-image',
+    position: { x: currentPos.x + nodeWidth + 40, y: currentPos.y },
+    data: {
+      label: t(operation === 'crop' ? '{name} 裁切' : '{name} 合成', { name: label || t('图像') }),
+      type: 'ai-image',
+      role: 'source',
+      status: 'loading',
+      nodeWidth,
+      nodeHeight: 158,
+    },
+  });
+  return true;
+}
+
 /* ════════════════════════════════════════════
    AIImageNode
    ════════════════════════════════════════════ */
@@ -296,43 +338,10 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     setIsCrop(false);
   }, []);
 
-  /** 确认裁切时立即调用：创建 loading 状态的新节点并关闭弹窗 */
   const handleCropStart = useCallback(() => {
-    const store = useAppStore.getState();
-    const currentNodes = store.nodes;
-    const currentPos = currentNodes.find((n) => n.id === id)?.position || { x: 0, y: 0 };
-
-    const newNodeId = `node-${generateId()}`;
-    const projectId = store.currentProjectId;
-    const derivation = registerCanvasDerivation(store, id, {
-      placeholderNodeId: newNodeId,
-      onCancel: () => {
-        const liveStore = useAppStore.getState();
-        if (liveStore.currentProjectId !== projectId) return;
-        liveStore.setNodes(liveStore.nodes.filter((node) => node.id !== newNodeId));
-      },
-    });
-    if (!derivation) {
-      store.showToast(t('图片节点已失效，请重试'), 'error');
-      return;
+    if (startEditedImage({ id, label: data.label, nodeWidth, operation: 'crop', pending: pendingCropDerivation, t })) {
+      setIsCrop(false);
     }
-    pendingCropDerivation.current = derivation;
-
-    const newNode: Node<BaseNodeData> = {
-      id: newNodeId,
-      type: 'ai-image',
-      position: { x: currentPos.x + nodeWidth + 40, y: currentPos.y },
-      data: {
-        label: t('{name} 裁切', { name: (data.label as string) || t('图像') }),
-        type: 'ai-image',
-        role: 'source',
-        status: 'loading',
-        nodeWidth,
-        nodeHeight: 158,
-      } as BaseNodeData,
-    };
-    store.addNode(newNode);
-    setIsCrop(false);
   }, [id, data.label, nodeWidth, t]);
 
   /** 裁切和合成共用保存流程，各自保留独立的派生任务。 */
@@ -524,42 +533,10 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     setIsCompose(false);
   }, []);
 
-  /** 确认合成：立即创建 loading 新节点并关闭弹窗 */
   const handleComposeStart = useCallback(() => {
-    const store = useAppStore.getState();
-    const currentPos = store.nodes.find((n) => n.id === id)?.position || { x: 0, y: 0 };
-
-    const newNodeId = `node-${generateId()}`;
-    const projectId = store.currentProjectId;
-    const derivation = registerCanvasDerivation(store, id, {
-      placeholderNodeId: newNodeId,
-      onCancel: () => {
-        const liveStore = useAppStore.getState();
-        if (liveStore.currentProjectId !== projectId) return;
-        liveStore.setNodes(liveStore.nodes.filter((node) => node.id !== newNodeId));
-      },
-    });
-    if (!derivation) {
-      store.showToast(t('图片节点已失效，请重试'), 'error');
-      return;
+    if (startEditedImage({ id, label: data.label, nodeWidth, operation: 'compose', pending: pendingComposeDerivation, t })) {
+      setIsCompose(false);
     }
-    pendingComposeDerivation.current = derivation;
-
-    const newNode: Node<BaseNodeData> = {
-      id: newNodeId,
-      type: 'ai-image',
-      position: { x: currentPos.x + nodeWidth + 40, y: currentPos.y },
-      data: {
-        label: t('{name} 合成', { name: (data.label as string) || t('图像') }),
-        type: 'ai-image',
-        role: 'source',
-        status: 'loading',
-        nodeWidth,
-        nodeHeight: 158,
-      } as BaseNodeData,
-    };
-    store.addNode(newNode);
-    setIsCompose(false);
   }, [id, data.label, nodeWidth, t]);
 
   const handleComposeSave = useCallback(

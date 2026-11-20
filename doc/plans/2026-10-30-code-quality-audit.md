@@ -872,3 +872,6 @@ cargo test --lib blender_runtime::result::tests
 
 - 外观主题的导入校验、迁移和导出共用同一组有序图片槽位，导入和导出复用图片引用替换。原始主题仍先校验再规范化，缺图、损坏及摘要不符均在写入前拒绝。Tauri 桌面端从外观设置导出带共享及独立面板背景的主题，再导入并应用，核对图片和设置。异常与旧版主题的既有覆盖见 [appearanceThemeService.test.ts](../../tests/services/appearanceThemeService.test.ts)。
 - APIMart 的三项 MiniMax-H3 能力记录和两项 Seedance 1.0 Pro 能力记录分别在模块初始化时共用本组构造。静态展开后与原能力表一致，包括型号 ID、能力字段顺序、首尾帧和素材限制。Tauri 桌面端在已配置 APIMart 的项目打开视频参数，核对 H3 与 Seedance 1.0 Fast／Quality 的选项和默认值。在旧项目打开过往 H3 特殊型号节点，确认原型号仍可解析。请求体与目录回归入口见 [apimartGen.test.ts](../../tests/services/apimartGen.test.ts) 和 [providerCatalogService.test.ts](../../tests/services/providerCatalogService.test.ts)。
+- 图片节点的裁切和合成共用启动占位逻辑，沿用独立的任务引用、项目／修订守卫和既有保存流程。Tauri 桌面端准备一张项目图片，分别确认裁切和合成，核对对应弹窗关闭、原图右侧出现一个带对应名称的占位、结果保存及撤销行为。处理中撤销、删除占位或切换项目，核对失效结果不再回填。两种操作交错和切项目仍需在桌面验收。已有参数化用例见 [nodeCriticalInteractions.test.tsx](../../tests/components/nodeCriticalInteractions.test.tsx#L1592)。
+
+在仓库根目录可运行 `npm test -- tests/services/appearanceThemeService.test.ts tests/services/apimartGen.test.ts tests/services/providerCatalogService.test.ts tests/services/generateVideo.test.ts`，图片编辑可运行 `npm test -- tests/components/nodeCriticalInteractions.test.tsx -t 'ImageNode (crop|compose) result saving'`。
