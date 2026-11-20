@@ -40,7 +40,6 @@ import { getPromptSubmitShortcutHint } from '../../utils/promptSubmitShortcut';
 
 const MetalFx = lazy(() => import('../nodes/shared/PolishMetalFx'));
 
-type ReferenceScope = 'all' | 'nodes' | 'models' | 'assets';
 type PickerTab = 'nodes' | 'assets' | 'models';
 const PICKER_TAB_ORDER: readonly PickerTab[] = ['nodes', 'assets', 'models'];
 type DramaMentionItem = ReturnType<typeof resolveDramaMentionItems>[number];
@@ -124,12 +123,12 @@ function groupSkillPickerOptions(options: SkillPickerOption[]): SkillPickerGroup
   });
 }
 
-function parseReferenceQuery(query: string): { scope: ReferenceScope; query: string } {
+function parseReferenceQuery(query: string): { shortcutTab: PickerTab | null; query: string } {
   const shortcut = query.toLocaleLowerCase();
-  if (shortcut === 'n') return { scope: 'nodes', query: '' };
-  if (shortcut === 'm') return { scope: 'models', query: '' };
-  if (shortcut === 'a') return { scope: 'assets', query: '' };
-  return { scope: 'all', query };
+  if (shortcut === 'n') return { shortcutTab: 'nodes', query: '' };
+  if (shortcut === 'm') return { shortcutTab: 'models', query: '' };
+  if (shortcut === 'a') return { shortcutTab: 'assets', query: '' };
+  return { shortcutTab: null, query };
 }
 
 function fuzzyMatchModel(model: MediaModelOption, rawQuery: string): boolean {
@@ -244,8 +243,9 @@ export default function ChatInput({
   const [shortcutMenuAnchor, setShortcutMenuAnchor] = useState<HTMLElement | null>(null);
   const closeShortcutMenu = useCallback(() => setShortcutMenuAnchor(null), []);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
-  const [modelQuery, setModelQuery] = useState('');
-  const [pickerTab, setPickerTab] = useState<PickerTab>('nodes');
+  const [referenceQuery, setReferenceQuery] = useState('');
+  const [pickerTab, setPickerTab] = useState<PickerTab | null>(null);
+  const { shortcutTab, query: modelQuery } = parseReferenceQuery(referenceQuery);
   const [mediaKind, setMediaKind] = useState<string>('all');
   const [assetKind, setAssetKind] = useState<string>('all');
   const [skillMenuOpen, setSkillMenuOpen] = useState(false);
@@ -346,15 +346,13 @@ export default function ChatInput({
     [assetKind, filteredDramaAssets],
   );
 
-  // 当前 Tab 空而别的 Tab 有内容时自动切过去（输入 @关键词 时不至于对着空网格）
+  // 自动模式优先展示有结果的分类；显式选择的分类即使为空也保持选中。
   const tabCounts: Record<PickerTab, number> = {
     nodes: filteredCanvasNodes.length,
     assets: filteredDramaAssets.length,
     models: filteredMediaModels.length,
   };
-  const effectiveTab: PickerTab = tabCounts[pickerTab] > 0
-    ? pickerTab
-    : PICKER_TAB_ORDER.find((tab) => tabCounts[tab] > 0) ?? pickerTab;
+  const effectiveTab = pickerTab ?? shortcutTab ?? PICKER_TAB_ORDER.find((tab) => tabCounts[tab] > 0) ?? 'nodes';
   const visibleCanvasNodes = useMemo(
     () => effectiveTab === 'nodes' ? filteredCanvasNodes : [],
     [filteredCanvasNodes, effectiveTab],
@@ -416,8 +414,8 @@ export default function ChatInput({
       label: model.label,
     });
     setModelMenuOpen(false);
-    setModelQuery('');
-    setPickerTab('nodes');
+    setReferenceQuery('');
+    setPickerTab(null);
     setMediaKind('all');
     setActiveSuggestionIndex(0);
   }, [disabled]);
@@ -431,8 +429,8 @@ export default function ChatInput({
       displayId,
     });
     setModelMenuOpen(false);
-    setModelQuery('');
-    setPickerTab('nodes');
+    setReferenceQuery('');
+    setPickerTab(null);
     setMediaKind('all');
     setActiveSuggestionIndex(0);
   }, [disabled]);
@@ -442,8 +440,8 @@ export default function ChatInput({
     if (disabled) return;
     inputRef.current?.insertReference({ kind: 'drama', id: item.id, label: item.name });
     setModelMenuOpen(false);
-    setModelQuery('');
-    setPickerTab('nodes');
+    setReferenceQuery('');
+    setPickerTab(null);
     setAssetKind('all');
     setActiveSuggestionIndex(0);
   }, [disabled]);
@@ -527,9 +525,9 @@ export default function ChatInput({
     if (event.key === 'Escape') {
       setModelMenuOpen(false);
       setSkillMenuOpen(false);
-      setModelQuery('');
+      setReferenceQuery('');
       setSkillQuery('');
-      setPickerTab('nodes');
+      setPickerTab(null);
       setMediaKind('all');
       return true;
     }
@@ -649,7 +647,7 @@ export default function ChatInput({
       setSkillQuery('');
       setPickerTab('models');
       setMediaKind('all');
-      setModelQuery('');
+      setReferenceQuery('');
       setModelMenuOpen(true);
       setActiveSuggestionIndex(0);
       requestAnimationFrame(() => inputRef.current?.focus());
@@ -722,13 +720,13 @@ export default function ChatInput({
               if (disabled) return;
               setModelMenuOpen(query != null);
               setActiveSuggestionIndex(0);
-              const parsedQuery = parseReferenceQuery(query ?? '');
-              // @n / @a / @m 直接落到对应 Tab；关闭时归位到「节点」
-              if (query == null || parsedQuery.scope === 'nodes') setPickerTab('nodes');
-              else if (parsedQuery.scope === 'assets') setPickerTab('assets');
-              else if (parsedQuery.scope === 'models') setPickerTab('models');
-              if (query == null) { setMediaKind('all'); setAssetKind('all'); }
-              setModelQuery(parsedQuery.query);
+              const nextQuery = query ?? '';
+              if (query == null || parseReferenceQuery(nextQuery).shortcutTab) setPickerTab(null);
+              if (query == null) {
+                setMediaKind('all');
+                setAssetKind('all');
+              }
+              setReferenceQuery(nextQuery);
               if (query != null) setSkillMenuOpen(false);
             }}
             onSlashQueryChange={(query) => {
@@ -903,8 +901,8 @@ export default function ChatInput({
                 type="button"
                 disabled={disabled}
                 onClick={() => {
-                  setModelQuery('');
-                  setPickerTab('nodes');
+                  setReferenceQuery('');
+                  setPickerTab(null);
                   setMediaKind('all');
                   setSkillMenuOpen(false);
                   setActiveSuggestionIndex(0);
