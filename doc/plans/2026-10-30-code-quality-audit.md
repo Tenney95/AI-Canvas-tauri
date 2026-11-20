@@ -924,3 +924,9 @@ cargo test --lib blender_runtime::result::tests
 - 移除无调用的旧单图捕获入口和两处专用导入。Tauri 桌面端在新项目复核引用本地图片的视频节点及已有任务恢复，确认有效图片仍可读取，引用丢失或图片内容变化仍按原验证逻辑处理。现有边界回归见 [nativeVideoImageReference.test.ts](../../tests/services/nativeVideoImageReference.test.ts) 和 [nativeMediaStoppedProjection.test.ts](../../tests/services/nativeMediaStoppedProjection.test.ts)。
 
 在仓库根目录可运行 `npm test -- tests/components/videoParamSelectorProtocol.test.ts tests/hooks/useCanvasWheelZoom.test.ts tests/components/assetsPanelDrawer.test.tsx tests/services/runninghubModelManifest.test.ts tests/services/runninghubMedia.test.ts tests/services/nativeVideoImageReference.test.ts tests/services/nativeMediaStoppedProjection.test.ts`。
+
+## 2026-11-20 扩图、模型菜单与 Qwen 参数精简
+
+本次未运行测试，待用户验收。
+
+- 移除已被统一生成流程替代的 APIMart 专用扩图模块及其专用测试引用。保留图像节点的扩图入口和 APIMart 厂商适配器。Tauri 桌面端从已加载图片的图像节点进入扩图，选定画幅和已配置的 APIMart 模型后生成。核对只创建一个生成节点、原图不变、失败后重试继续使用原垫图。创建、项目切换和未知提交的回归入口见 [imageOutpaintService.test.ts](../../tests/services/imageOutpaintService.test.ts)，APIMart 请求与轮询行为见 [apimartGen.test.ts](../../tests/services/apimartGen.test.ts)。

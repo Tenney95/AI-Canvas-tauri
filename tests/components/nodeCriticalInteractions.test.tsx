@@ -542,7 +542,6 @@ async function setupImageFullscreen() {
   vi.doMock('../../src/components/nodes/shared/image/imageUtils', () => ({ computeImageNodeDimensions: vi.fn() }));
   vi.doMock('../../src/services/fileService', () => ({ buildNodeFileName: vi.fn(), saveDataUrlToProjectData: vi.fn() }));
   vi.doMock('../../src/services/clipboardService', () => ({ copyImage: vi.fn() }));
-  vi.doMock('../../src/services/apimartService', () => ({ generateOutpaintImage: vi.fn() }));
   vi.doMock('../../src/services/generationService', () => ({ executeGeneration: vi.fn() }));
   vi.doMock('../../src/services/imagePromptOverflowService', () => ({ executeGenerationWithImagePromptChoice: vi.fn() }));
   vi.doMock('../../src/store/store.utils', () => ({ blobToDataUrl: vi.fn() }));
@@ -571,7 +570,7 @@ describe('image fullscreen save barrier', () => {
       '../../src/components/shared/ModelDownloadDialog', '../../src/components/nodes/shared/image/CanvasPreviewImage',
       '../../src/hooks/useCanvasNodeLod', '../../src/components/nodes/shared/image/useImageNodeOnnxActions',
       '../../src/components/nodes/shared/image/imageUtils', '../../src/services/fileService',
-      '../../src/services/clipboardService', '../../src/services/apimartService',
+      '../../src/services/clipboardService',
       '../../src/services/generationService', '../../src/services/imagePromptOverflowService', '../../src/store/store.utils',
       '../../src/components/nodes/shared/toolbar/presetAction',
     ]) vi.doUnmock(path);
@@ -1577,7 +1576,6 @@ describe('critical canvas node interactions', () => {
       vi.doMock('../../src/components/nodes/shared/image/imageUtils', () => ({ computeImageNodeDimensions: dimensions }));
       vi.doMock('../../src/services/fileService', () => ({ buildNodeFileName: buildName, saveDataUrlToProjectData: saveFile }));
       vi.doMock('../../src/services/clipboardService', () => ({ copyImage: vi.fn() }));
-      vi.doMock('../../src/services/apimartService', () => ({ generateOutpaintImage: vi.fn() }));
       vi.doMock('../../src/services/onnxService', () => ({
         imageUpscale: vi.fn(), subjectMatting: vi.fn(), checkModelExists: vi.fn(), downloadModel: vi.fn(),
       }));
