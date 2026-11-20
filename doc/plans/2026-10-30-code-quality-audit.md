@@ -901,3 +901,6 @@ cargo test --lib blender_runtime::result::tests
 
 - FLUX.2、Qwen 和 Grok 的十项基础生图能力在模块初始化时按系列复用构造，保留分辨率、参考图张数、Data URL 支持和旧别名。APIMart 专属覆盖及请求构造沿用原路径。Tauri 桌面端在已配置渠道的图像节点选择这些型号，核对分辨率、批量张数和参考图上限，重点验收 Qwen 2.0／3.0 的不同限制及 Grok 渠道覆盖。已有请求回归见 [mediaModelCapabilities.test.ts](../../tests/services/mediaModelCapabilities.test.ts) 和 [apimartGen.test.ts](../../tests/services/apimartGen.test.ts)。
 - 横版和竖版的四个内置故事分镜模板分别复用固定段落。静态展开后的 UTF-8 字节逐一相同，包括原空格、换行、编号及输入占位符。Tauri 桌面端在图像节点填入测试正文，从快捷指令与预设工具栏检查四个入口、顺序和填充结果。相关菜单行为见 [slashCommandFolders.test.tsx](../../tests/components/slashCommandFolders.test.tsx)。
+- 自定义视频模型的参考视频与参考音频共用单件时长字段的更新逻辑，六个控件沿用原解析、禁用条件和提交入口。Tauri 桌面端从厂商设置展开一个自定义视频模型的能力编辑器，为两类素材设置不同最短和最长值，分别填写 0、清空输入并切换严格上限，核对未编辑的另一类、宽度及总时长等字段。保存后重开检查生效值与清空状态。已有归一化回归见 [providerVideoCapabilityEditor.test.ts](../../tests/components/providerVideoCapabilityEditor.test.ts)，六个控件的直接交互仍待桌面验收。
+
+在仓库根目录可运行 `npm test -- tests/services/mediaModelCapabilities.test.ts tests/services/apimartGen.test.ts tests/components/slashCommandFolders.test.tsx tests/components/providerVideoCapabilityEditor.test.ts`。

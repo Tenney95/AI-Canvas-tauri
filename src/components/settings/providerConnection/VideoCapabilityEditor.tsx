@@ -11,7 +11,7 @@ import NumberStepper from '../../shared/NumberStepper';
 import { Icon } from '@iconify/react';
 import { useId, useState } from 'react';
 import type { ProviderModelSelection } from '../../../types';
-import type { VideoInputConstraints, VideoModelCapability } from '../../../types/aiTypes';
+import type { NumericInputConstraint, VideoInputConstraints, VideoModelCapability } from '../../../types/aiTypes';
 import {
   SEEDANCE_QUICK_ADAPT_OPTIONS,
   type SeedanceModelVariant,
@@ -138,6 +138,20 @@ export default function VideoCapabilityEditor({
   const commitInputConstraints = (next: VideoInputConstraints) => commit({
     ...capability,
     inputConstraints: next,
+  });
+  const commitReferenceDuration = <Field extends 'min' | 'max' | 'maxExclusive'>(
+    reference: 'referenceVideo' | 'referenceAudio',
+    field: Field,
+    value: NumericInputConstraint[Field],
+  ) => commitInputConstraints({
+    ...inputConstraints,
+    [reference]: {
+      ...inputConstraints[reference],
+      durationSeconds: {
+        ...inputConstraints[reference]?.durationSeconds,
+        [field]: value,
+      },
+    },
   });
   const toggleStringOption = (
     field: 'ratios' | 'resolutions',
@@ -593,16 +607,7 @@ export default function VideoCapabilityEditor({
                   className="h-8 w-full rounded-md border border-canvas-border bg-canvas-card px-2 text-[11px] text-canvas-text outline-none focus:border-indigo-400/60"
                   value={inputConstraints.referenceVideo?.durationSeconds?.min ?? ''}
                   placeholder={t("不限")}
-                  onChange={(event) => commitInputConstraints({
-                    ...inputConstraints,
-                    referenceVideo: {
-                      ...inputConstraints.referenceVideo,
-                      durationSeconds: {
-                        ...inputConstraints.referenceVideo?.durationSeconds,
-                        min: optionalNumber(event.target.value),
-                      },
-                    },
-                  })}
+                  onChange={(event) => commitReferenceDuration('referenceVideo', 'min', optionalNumber(event.target.value))}
                 />
               </label>
               <label className="space-y-1 text-[10px] text-canvas-text-secondary">
@@ -614,16 +619,7 @@ export default function VideoCapabilityEditor({
                   className="h-8 w-full rounded-md border border-canvas-border bg-canvas-card px-2 text-[11px] text-canvas-text outline-none focus:border-indigo-400/60"
                   value={inputConstraints.referenceVideo?.durationSeconds?.max ?? ''}
                   placeholder={t("不限")}
-                  onChange={(event) => commitInputConstraints({
-                    ...inputConstraints,
-                    referenceVideo: {
-                      ...inputConstraints.referenceVideo,
-                      durationSeconds: {
-                        ...inputConstraints.referenceVideo?.durationSeconds,
-                        max: optionalNumber(event.target.value),
-                      },
-                    },
-                  })}
+                  onChange={(event) => commitReferenceDuration('referenceVideo', 'max', optionalNumber(event.target.value))}
                 />
               </label>
             </div>
@@ -637,16 +633,7 @@ export default function VideoCapabilityEditor({
                   className="h-8 w-full rounded-md border border-canvas-border bg-canvas-card px-2 text-[11px] text-canvas-text outline-none focus:border-indigo-400/60"
                   value={inputConstraints.referenceAudio?.durationSeconds?.min ?? ''}
                   placeholder={t("不限")}
-                  onChange={(event) => commitInputConstraints({
-                    ...inputConstraints,
-                    referenceAudio: {
-                      ...inputConstraints.referenceAudio,
-                      durationSeconds: {
-                        ...inputConstraints.referenceAudio?.durationSeconds,
-                        min: optionalNumber(event.target.value),
-                      },
-                    },
-                  })}
+                  onChange={(event) => commitReferenceDuration('referenceAudio', 'min', optionalNumber(event.target.value))}
                 />
               </label>
               <label className="space-y-1 text-[10px] text-canvas-text-secondary">
@@ -658,16 +645,7 @@ export default function VideoCapabilityEditor({
                   className="h-8 w-full rounded-md border border-canvas-border bg-canvas-card px-2 text-[11px] text-canvas-text outline-none focus:border-indigo-400/60"
                   value={inputConstraints.referenceAudio?.durationSeconds?.max ?? ''}
                   placeholder={t("不限")}
-                  onChange={(event) => commitInputConstraints({
-                    ...inputConstraints,
-                    referenceAudio: {
-                      ...inputConstraints.referenceAudio,
-                      durationSeconds: {
-                        ...inputConstraints.referenceAudio?.durationSeconds,
-                        max: optionalNumber(event.target.value),
-                      },
-                    },
-                  })}
+                  onChange={(event) => commitReferenceDuration('referenceAudio', 'max', optionalNumber(event.target.value))}
                 />
               </label>
             </div>
@@ -678,16 +656,7 @@ export default function VideoCapabilityEditor({
                   className="h-3.5 w-3.5 accent-indigo-500"
                   checked={inputConstraints.referenceVideo?.durationSeconds?.maxExclusive ?? false}
                   disabled={inputConstraints.referenceVideo?.durationSeconds?.max === undefined}
-                  onChange={(event) => commitInputConstraints({
-                    ...inputConstraints,
-                    referenceVideo: {
-                      ...inputConstraints.referenceVideo,
-                      durationSeconds: {
-                        ...inputConstraints.referenceVideo?.durationSeconds,
-                        maxExclusive: event.target.checked,
-                      },
-                    },
-                  })}
+                  onChange={(event) => commitReferenceDuration('referenceVideo', 'maxExclusive', event.target.checked)}
                 />
                 {t("视频最长严格小于")}
               </label>
@@ -697,16 +666,7 @@ export default function VideoCapabilityEditor({
                   className="h-3.5 w-3.5 accent-indigo-500"
                   checked={inputConstraints.referenceAudio?.durationSeconds?.maxExclusive ?? false}
                   disabled={inputConstraints.referenceAudio?.durationSeconds?.max === undefined}
-                  onChange={(event) => commitInputConstraints({
-                    ...inputConstraints,
-                    referenceAudio: {
-                      ...inputConstraints.referenceAudio,
-                      durationSeconds: {
-                        ...inputConstraints.referenceAudio?.durationSeconds,
-                        maxExclusive: event.target.checked,
-                      },
-                    },
-                  })}
+                  onChange={(event) => commitReferenceDuration('referenceAudio', 'maxExclusive', event.target.checked)}
                 />
                 {t("音频最长严格小于")}
               </label>
