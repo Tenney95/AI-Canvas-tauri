@@ -944,3 +944,9 @@ cargo test --lib blender_runtime::result::tests
 - RunningHub Wan 2.7 和 Spicy 六个端点只在目录初始化时复用 `promptExtend`、`seed` 的构造，仍各自创建字段与嵌套 schema。目录静态展开后与原源码逐字节一致。Tauri 桌面端在已配置的 RunningHub 连接中切换这六个端点，核对两字段仍位于列表末尾，提示词扩展默认开启，种子无默认值，`0` 与 `2147483647` 可用且越界值被拒绝。各端点独有的时长、画幅和参考素材限制照原定义显示。目录摘要、对象隔离和请求构造回归见 [runninghubModelManifest.test.ts](../../tests/services/runninghubModelManifest.test.ts#L14) 和 [runninghubMedia.test.ts](../../tests/services/runninghubMedia.test.ts#L173)。
 
 在仓库根目录可运行 `npm test -- tests/services/videoModelCapabilityResolver.test.ts tests/components/videoParamSelectorProtocol.test.ts tests/services/apimartGen.test.ts tests/components/fullscreenOverlay.test.tsx tests/components/markdownEditor.test.tsx tests/components/videoNodePreviewLifecycle.test.tsx tests/services/runninghubModelManifest.test.ts tests/services/runninghubMedia.test.ts`。
+
+## 2026-11-20 旧目录枚举、下拉样式与 Topaz 参数精简
+
+本次未运行测试，待用户验收。
+
+- 移除无生产调用的旧单层目录枚举和两个无用导入。原专用测试的磁盘删除断言移到现用扫描的三种来源用例，保留对过滤、计数和流式结果的覆盖。Tauri 桌面端在测试项目及可丢弃目录中核对项目、全局和外部素材列表。普通素材、普通 `.pending` 文件和点文件继续列出，新旧原生暂存件在列表隐藏、磁盘文件保留。现有扫描回归见 [assetFolderNavigation.test.ts](../../tests/services/assetFolderNavigation.test.ts#L107) 和 [projectThumbnailExclusion.test.ts](../../tests/services/projectThumbnailExclusion.test.ts)。

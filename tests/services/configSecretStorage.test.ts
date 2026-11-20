@@ -22,7 +22,6 @@ vi.mock('../../src/services/fs/core', () => ({
   isTauriEnv: () => secretStore.isTauri,
   getProjectDataDir: vi.fn(async () => null),
   joinPath: (...parts: string[]) => parts.join('/'),
-  listDirectoryFiles: vi.fn(async () => []),
   getAssetUrlFromPath: vi.fn(async (path: string) => `asset://${path}`),
 }));
 vi.mock('../../src/services/fs/assetIndex', () => ({

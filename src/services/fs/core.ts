@@ -12,7 +12,6 @@ import {
   readDir,
   readFile,
   rename,
-  stat,
   watch,
   writeFile,
   type DebouncedWatchOptions,
@@ -21,7 +20,6 @@ import {
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { appDataDir, executableDir } from '@tauri-apps/api/path';
 import { mediaFileAllocationKey, retiredMediaPaths } from '../indexedDb/mediaRelocations';
-import { isNativeMediaPendingFile } from '../../utils/nativeMediaPendingFile';
 
 /** 检测是否运行在 Tauri 桌面环境中 */
 export function isTauriEnv(): boolean {
@@ -946,51 +944,4 @@ export interface AssetFileEntry {
   tags?: string[];                                  // 合并自 assetMeta
   source?: 'project' | 'global' | 'folder';         // 来源：项目永久 / 全局 file / 外部文件夹
   folderRoot?: string;                              // source=folder 时所属的登记文件夹
-}
-
-/** 列出目录中的所有文件 */
-export async function listDirectoryFiles(dirPath: string): Promise<AssetFileEntry[]> {
-  if (!isTauriEnv()) return [];
-  try {
-    const entries = await readDir(dirPath);
-    const files: AssetFileEntry[] = [];
-
-    for (const entry of entries) {
-      if (!entry.isFile || isNativeMediaPendingFile(entry.name)) continue;
-      try {
-        const filePath = joinPath(dirPath, entry.name);
-        const fileStat = await stat(filePath);
-        const convertFileSrc = await getConvertFileSrc();
-        const fileSize = fileStat.size ?? 0;
-        const createdAt = fileStat.birthtime?.getTime();
-        const modifiedAt = fileStat.mtime?.getTime();
-        const ext = `.${entry.name.split('.').pop()?.toLowerCase()}`;
-        const extLower = ext.toLowerCase();
-
-        // Only generate assetUrl for image types
-        let assetUrl: string | undefined;
-        if (CATEGORY_EXTENSIONS.image.includes(extLower) && convertFileSrc) {
-          assetUrl = convertFileSrc(filePath);
-        }
-
-        files.push({
-          name: entry.name,
-          path: filePath,
-          assetUrl,
-          size: fileSize,
-          createdAt: Number.isFinite(createdAt) ? createdAt : undefined,
-          modifiedAt: Number.isFinite(modifiedAt) ? modifiedAt : undefined,
-          category: getFileCategory(entry.name),
-        });
-      } catch {
-        // Skip files we can't stat
-      }
-    }
-
-    // Sort by name
-    files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-    return files;
-  } catch {
-    return [];
-  }
 }

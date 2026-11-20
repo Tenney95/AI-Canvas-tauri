@@ -7,13 +7,14 @@ const mocks = vi.hoisted(() => ({
   directories: new Map<string, Array<{ name: string; isDirectory: boolean; isFile: boolean; isSymlink?: boolean }>>(),
   readDir: vi.fn(),
   stat: vi.fn(),
+  remove: vi.fn(),
   tauri: true,
   exists: vi.fn(), mkdir: vi.fn(),
   open: vi.fn(), readFile: vi.fn(), writeFile: vi.fn(), uniquePath: vi.fn(),
   copyStream: vi.fn(),
 }));
 vi.mock('@tauri-apps/plugin-fs', () => ({
-  readDir: mocks.readDir, stat: mocks.stat, exists: mocks.exists,
+  readDir: mocks.readDir, stat: mocks.stat, remove: mocks.remove, exists: mocks.exists,
   writeFile: mocks.writeFile, readFile: mocks.readFile, mkdir: mocks.mkdir,
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: mocks.open }));
@@ -24,7 +25,7 @@ vi.mock('../../src/services/fs/core', async (importOriginal) => ({
   joinPath: (...parts: string[]) => parts.join('/'),
   getBaseDir: async () => '/global',
   getConvertFileSrc: async () => (path: string) => `asset://${path}`,
-  resolveUniqueDestPath: mocks.uniquePath, listDirectoryFiles: vi.fn(),
+  resolveUniqueDestPath: mocks.uniquePath,
   getFileCategory: () => 'image', CATEGORY_EXTENSIONS: { image: ['.png'] },
 }));
 vi.mock('../../src/services/fs/assetIndex', async (importOriginal) => ({
@@ -54,6 +55,7 @@ function directory(path: string, names: string[]) {
 }
 beforeEach(() => {
   mocks.tauri = true;
+  mocks.remove.mockClear();
   mocks.exists.mockReset().mockImplementation(async (path: string) => !path.endsWith(`/${NATIVE_PROJECT_BINDING_FILE}`)
     || !!mocks.directories.get(path.slice(0, path.lastIndexOf('/')))?.some((entry) => entry.name === NATIVE_PROJECT_BINDING_FILE));
   mocks.mkdir.mockReset().mockResolvedValue(undefined);
@@ -116,6 +118,7 @@ describe('global asset folder browsing', () => {
     expect(batches).toEqual(files);
     for (const name of pending) expect(mocks.stat).not.toHaveBeenCalledWith(`/scan/${name}`);
     expect(mocks.directories.get('/scan')).toHaveLength(pending.length + visible.length);
+    expect(mocks.remove).not.toHaveBeenCalled();
   });
 
   it('全局、外部和聚合目录选择同时过滤旧内存列表中的原生暂存项', () => {
