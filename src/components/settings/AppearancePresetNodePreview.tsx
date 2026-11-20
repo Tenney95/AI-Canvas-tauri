@@ -1,5 +1,6 @@
 import { Icon } from '@iconify/react';
 import type { Node } from '@xyflow/react';
+import type { ReactNode } from 'react';
 import { getNodeTypeConfig, type AppearanceTheme, type BaseNodeData } from '../../types';
 import { isTransparentColor, resolveAppearanceBackground, resolveAppearanceTheme } from '../../services/appearance/appearanceRuntime';
 import { useT } from '../../i18n';
@@ -134,6 +135,42 @@ export default function PresetSingleNodePreview({
   const innerBg = isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.04)';
   const innerBorder = isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.08)';
 
+  const renderMediaThumbnail = (src: string, overlay: ReactNode) => (
+    <div
+      className="w-full h-full relative overflow-hidden flex items-center justify-center"
+      style={{
+        borderRadius: `${innerRadius}px`,
+        backgroundColor: innerBg,
+        borderColor: innerBorder,
+        borderWidth: '1px',
+      }}
+    >
+      <img
+        src={src}
+        alt=""
+        className="w-full h-full object-cover"
+        onError={(e) => { e.currentTarget.style.display = 'none'; }}
+      />
+      {overlay}
+    </div>
+  );
+
+  const renderPromptRow = (text: string, indicator: string) => (
+    <div
+      className="px-2 py-0.5 text-[9px] flex items-center justify-between"
+      style={{
+        borderRadius: `${Math.max(0, innerRadius - 2)}px`,
+        backgroundColor: innerBg,
+        borderColor: innerBorder,
+        borderWidth: '1px',
+        color: themeResolved.ui.text,
+      }}
+    >
+      <span className="truncate opacity-75">{text}</span>
+      <span className="text-[8px] font-mono opacity-50 shrink-0 ml-1">{indicator}</span>
+    </div>
+  );
+
   return (
     <div className="relative flex flex-col z-10 w-[214px] max-w-[94%] mx-auto shrink-0 select-none">
       {/* Node Header Label */}
@@ -201,47 +238,20 @@ export default function PresetSingleNodePreview({
 
         {/* Inner Content */}
         {kind === 'image' && (
-          imageSrc ? (
-            <div
-              className="w-full h-full relative overflow-hidden flex items-center justify-center"
+          imageSrc ? renderMediaThumbnail(
+            imageSrc,
+            <span
+              className="absolute bottom-1 right-1 text-[7px] font-mono px-1 py-0.2 rounded font-semibold leading-tight"
               style={{
-                borderRadius: `${innerRadius}px`,
-                backgroundColor: innerBg,
-                borderColor: innerBorder,
-                borderWidth: '1px',
+                backgroundColor: isDark ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.85)',
+                color: isDark ? '#ffffff' : '#1e293b',
               }}
             >
-              <img
-                src={imageSrc}
-                alt=""
-                className="w-full h-full object-cover"
-                onError={(e) => { e.currentTarget.style.display = 'none'; }}
-              />
-              <span
-                className="absolute bottom-1 right-1 text-[7px] font-mono px-1 py-0.2 rounded font-semibold leading-tight"
-                style={{
-                  backgroundColor: isDark ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.85)',
-                  color: isDark ? '#ffffff' : '#1e293b',
-                }}
-              >
-                IMG
-              </span>
-            </div>
+              IMG
+            </span>,
           ) : (
             <div className="flex flex-col justify-between h-full space-y-1">
-              <div
-                className="px-2 py-0.5 text-[9px] flex items-center justify-between"
-                style={{
-                  borderRadius: `${Math.max(0, innerRadius - 2)}px`,
-                  backgroundColor: innerBg,
-                  borderColor: innerBorder,
-                  borderWidth: '1px',
-                  color: themeResolved.ui.text,
-                }}
-              >
-                <span className="truncate opacity-75">{promptText || t('输入提示词生成图像…')}</span>
-                <span className="text-[8px] font-mono opacity-50 shrink-0 ml-1">1:1</span>
-              </div>
+              {renderPromptRow(promptText || t('输入提示词生成图像…'), '1:1')}
               <div
                 className="flex-1 w-full border border-dashed flex items-center justify-center gap-1.5 opacity-80"
                 style={{
@@ -259,41 +269,14 @@ export default function PresetSingleNodePreview({
         )}
 
         {kind === 'video' && (
-          videoThumb ? (
-            <div
-              className="w-full h-full relative overflow-hidden flex items-center justify-center"
-              style={{
-                borderRadius: `${innerRadius}px`,
-                backgroundColor: innerBg,
-                borderColor: innerBorder,
-                borderWidth: '1px',
-              }}
-            >
-              <img
-                src={videoThumb}
-                alt=""
-                className="w-full h-full object-cover"
-                onError={(e) => { e.currentTarget.style.display = 'none'; }}
-              />
-              <div className="absolute w-5 h-5 rounded-full bg-black/60 flex items-center justify-center text-white shadow-xs">
-                <Icon icon="mdi:play" width="12" height="12" />
-              </div>
-            </div>
+          videoThumb ? renderMediaThumbnail(
+            videoThumb,
+            <div className="absolute w-5 h-5 rounded-full bg-black/60 flex items-center justify-center text-white shadow-xs">
+              <Icon icon="mdi:play" width="12" height="12" />
+            </div>,
           ) : (
             <div className="flex flex-col justify-between h-full space-y-1">
-              <div
-                className="px-2 py-0.5 text-[9px] flex items-center justify-between"
-                style={{
-                  borderRadius: `${Math.max(0, innerRadius - 2)}px`,
-                  backgroundColor: innerBg,
-                  borderColor: innerBorder,
-                  borderWidth: '1px',
-                  color: themeResolved.ui.text,
-                }}
-              >
-                <span className="truncate opacity-75">{promptText || t('输入视频运镜描述…')}</span>
-                <span className="text-[8px] font-mono opacity-50 shrink-0 ml-1">5s</span>
-              </div>
+              {renderPromptRow(promptText || t('输入视频运镜描述…'), '5s')}
               <div
                 className="flex-1 w-full border border-dashed flex items-center justify-center gap-1.5 opacity-80"
                 style={{
@@ -312,19 +295,7 @@ export default function PresetSingleNodePreview({
 
         {kind === 'text' && (
           <div className="flex flex-col justify-between h-full space-y-1">
-            <div
-              className="px-2 py-0.5 text-[9px] flex items-center justify-between"
-              style={{
-                borderRadius: `${Math.max(0, innerRadius - 2)}px`,
-                backgroundColor: innerBg,
-                borderColor: innerBorder,
-                borderWidth: '1px',
-                color: themeResolved.ui.text,
-              }}
-            >
-              <span className="truncate opacity-75">{promptText || t('输入文本提示词…')}</span>
-              <span className="text-[8px] font-mono opacity-50 shrink-0 ml-1">Text</span>
-            </div>
+            {renderPromptRow(promptText || t('输入文本提示词…'), 'Text')}
             <div className="space-y-1 px-0.5 py-0.5">
               <div
                 className="h-1.5 rounded-full"
