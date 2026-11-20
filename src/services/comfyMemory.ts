@@ -111,8 +111,8 @@ export async function releaseComfyMemory(
   await assertComfyResponse(response, '释放 ComfyUI 资源');
 }
 
-function queueHasItems(value: unknown): boolean {
-  return Array.isArray(value) && value.length > 0;
+function isEmptyQueue(value: unknown): boolean {
+  return Array.isArray(value) && value.length === 0;
 }
 
 /**
@@ -132,7 +132,7 @@ export async function maybeAutoReleaseComfyMemory(
     await assertComfyResponse(response, '读取 ComfyUI 队列');
     return await response.json() as Record<string, unknown>;
   }, signal);
-  if (queueHasItems(queue.queue_running) || queueHasItems(queue.queue_pending)) {
+  if (!isEmptyQueue(queue?.queue_running) || !isEmptyQueue(queue?.queue_pending)) {
     return 'skipped-busy';
   }
 

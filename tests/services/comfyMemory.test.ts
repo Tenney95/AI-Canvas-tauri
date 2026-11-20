@@ -77,6 +77,12 @@ describe('ComfyUI memory resources', () => {
     expect(mocks.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it('requires both local queues to confirm they are empty', async () => {
+    mocks.fetch.mockResolvedValue(json({ queue_pending: [] }));
+    await expect(maybeAutoReleaseComfyMemory('http://localhost:8188', 'free-memory')).resolves.toBe('skipped-busy');
+    expect(mocks.fetch).toHaveBeenCalledTimes(1);
+  });
+
   it('releases an idle local server according to the selected policy', async () => {
     mocks.fetch
       .mockResolvedValueOnce(json({ queue_running: [], queue_pending: [] }))

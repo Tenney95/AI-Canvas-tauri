@@ -5,7 +5,7 @@
  * 都要用同一套轮询，放进任何一侧都会形成循环 import。
  */
 import { corsSafeFetch } from './ai/httpTransport';
-import { pollTask } from './pollTask';
+import { pollTask, PollTaskFailedError } from './pollTask';
 import { assertComfyTextOutputSize, resolveComfyTextOutput, type ComfyOutputs, type ComfyTextOutput } from './comfyOutputs';
 import { withComfyQueryTimeout } from './comfyQuery';
 
@@ -113,6 +113,9 @@ export class ComfyPendingError extends Error {
   }
 }
 
+/** history 明确记录的执行错误，区别于已被清空的任务或用户中断。 */
+export class ComfyExecutionFailedError extends PollTaskFailedError {}
+
 export const COMFY_OUTPUT_UNAVAILABLE_MESSAGE = 'ComfyUI 已完成，但没有可下载的目标媒体。请检查输出类型，并使用 SaveImage、PreviewImage、SaveVideo 或 SaveAudio 等文件输出节点；仅 WebSocket 出图暂不支持取回。';
 export const COMFY_TEXT_OUTPUT_UNAVAILABLE_MESSAGE = 'ComfyUI 已完成，但选定的 SaveText 节点没有返回有效 text[] 文本。请使用支持该输出的官方 SaveText；仅 files 文件输出暂不支持取回，原任务已保留。';
 
@@ -214,7 +217,10 @@ export async function pollComfyHistory<T>(
       if (gone) return TASK_GONE_MESSAGE;
       if (!entry) return null;
       const failure = readComfyFailureMessage(entry);
-      if (failure) return failure;
+      if (failure) {
+        if (entry.status?.messages?.some((message) => Array.isArray(message) && message[0] === 'execution_interrupted')) return failure;
+        throw new ComfyExecutionFailedError(failure);
+      }
       return null;
     },
     interval: 3000,

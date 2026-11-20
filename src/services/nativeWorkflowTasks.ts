@@ -21,6 +21,9 @@ import { getHttpResponseError } from './ai/httpUtils';
 import { createMediaDownloadAccess } from './ai/mediaDownloadAccess';
 import { isSafeNativeProtocolTaskId, validateNativeProtocolContext } from './nativeProtocolContext';
 import { COMFY_AUDIO_OUTPUT_KINDS, findComfyOutputFiles, buildComfyFileUrl, type ComfyOutputFile, type ComfyOutputs } from './comfyOutputs';
+import { maybeAutoReleaseComfyMemory } from './comfyMemory';
+import { withComfyQueryTimeout } from './comfyQuery';
+import { ComfyExecutionFailedError } from './comfyPolling';
 import type { MediaDownloadAccess } from '../types/aiTypes';
 import type { CanvasContext } from '../types/project';
 
@@ -37,6 +40,12 @@ function pending(record: NativeMediaTaskRecord): Error {
 function delivered(operationId: string): never {
   const error = new Error('原工作流全部已确认产物已保存并交付'); error.name = 'NativeMediaTaskDelivered';
   Object.assign(error, { nativeOperationId: operationId }); throw error;
+}
+function releaseTerminalComfyMemory(baseUrl: string): void {
+  const policy = useAppStore.getState().config.comfyMemoryPolicy;
+  if (policy && policy !== 'smart') {
+    void withComfyQueryTimeout((signal) => maybeAutoReleaseComfyMemory(baseUrl, policy, signal)).catch(() => {});
+  }
 }
 async function currentRecord(projectId: string, operationId: string): Promise<NativeMediaTaskRecord> {
   const record = (await listNativeMediaTasks(projectId, { operationId })).find((item) => item.operationId === operationId);
@@ -359,6 +368,7 @@ export async function resumeNativeWorkflowTask(operationId: string, externalSign
         try {
           const outputs = await queryNativeWorkflowOriginal(receipt.descriptor, task, receipt.operationId, controller.signal, async (comfyOutputFiles) => {
             ({ record, receipt } = await retainNativeWorkflowTaskOutputs(record, taskId, { comfyOutputFiles }));
+            if (!controller.signal.aborted) releaseTerminalComfyMemory(receipt.descriptor.providerBase);
           });
           assertCurrent();
           await markComfyVideoSaving();
@@ -370,7 +380,11 @@ export async function resumeNativeWorkflowTask(operationId: string, externalSign
           } else ({ record, receipt } = await retainNativeWorkflowTaskOutputs(record, taskId, { outputs: files }));
         } catch (error) {
           if (!task.outputs && error instanceof PollTaskFailedError) {
-            ({ record, receipt } = await retainNativeWorkflowTaskOutputs(record, taskId, { failed: true })); continue;
+            ({ record, receipt } = await retainNativeWorkflowTaskOutputs(record, taskId, { failed: true }));
+            if (receipt.descriptor.adapter === 'comfyui' && !controller.signal.aborted && error instanceof ComfyExecutionFailedError) {
+              releaseTerminalComfyMemory(receipt.descriptor.providerBase);
+            }
+            continue;
           }
           throw error;
         }

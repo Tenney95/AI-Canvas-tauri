@@ -6,7 +6,7 @@ import type { CanvasContext } from '../../src/types/project';
 import type { ComfyOutputs } from '../../src/services/comfyOutputs';
 import type { NativeMediaSubmissionPreparation } from '../../src/types/media';
 const driver = vi.hoisted(() => ({ state: {} as Record<string, unknown>, listeners: new Set<() => void>(), persist: vi.fn(),
-  read: vi.fn(), capture: vi.fn(), query: vi.fn(), project: vi.fn(), beginPreparation: vi.fn(),
+  read: vi.fn(), capture: vi.fn(), query: vi.fn(), memoryFetch: vi.fn(), project: vi.fn(), beginPreparation: vi.fn(),
   preparations: [] as Array<NativeMediaSubmissionPreparation & { release: ReturnType<typeof vi.fn> }> }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => driver.state,
   subscribe: (listener: () => void) => { driver.listeners.add(listener); return () => driver.listeners.delete(listener); } } }));
@@ -18,7 +18,9 @@ vi.mock('../../src/services/nativeVideoSubmission', () => ({ isNativeVideoSubmis
   }, assertNativeVideoSubmissionInput: async () => {} }));
 vi.mock('../../src/services/nativeMediaLocalResult', () => ({ readNativeMediaLocalResult: driver.read, captureNativeMediaLocalResult: driver.capture }));
 vi.mock('../../src/services/nativeMediaMessages', () => ({ projectNativeMediaMessages: driver.project }));
-vi.mock('../../src/services/comfyPolling', () => ({ pollComfyHistory: driver.query, comfyFetch: vi.fn() }));
+vi.mock('../../src/services/comfyPolling', async (original) => ({
+  ...await original<typeof import('../../src/services/comfyPolling')>(), pollComfyHistory: driver.query, comfyFetch: driver.memoryFetch,
+}));
 
 import { createNativeProject, readNativeProjectCapture, saveNativeProjectView } from '../../src/services/indexedDb/nativeProjectRepository';
 import { claimNativeMediaRecovery, prepareNativeMediaTask, listNativeMediaTasks } from '../../src/services/indexedDb/nativeMediaTaskRepository';
@@ -40,6 +42,7 @@ function preparation(context: CanvasContext, canvasRevision = 0) {
 beforeEach(() => {
   vi.stubGlobal('indexedDB', new IDBFactory()); vi.stubGlobal('IDBKeyRange', IDBKeyRange); vi.stubGlobal('crypto', webcrypto); releases = [];
   driver.listeners.clear(); driver.read.mockReset().mockResolvedValue(undefined); driver.project.mockReset().mockResolvedValue(undefined);
+  driver.memoryFetch.mockReset();
   driver.preparations = []; driver.beginPreparation.mockReset().mockImplementation(async (context: CanvasContext) => preparation(context));
   driver.capture.mockReset().mockImplementation(async (_canvas: string, path: string) => output(path.includes('b') ? 'b' : 'a'));
   driver.persist.mockReset().mockImplementation(async (url: string) => ({ filePath: url.includes('b.png') ? 'b' : 'a' }));
@@ -47,18 +50,18 @@ beforeEach(() => {
     extract({ save: { images: [{ filename: 'a.png', type: 'output' }, { filename: 'b.png', type: 'output' }] } }));
 });
 afterEach(() => { for (const release of releases) release(); vi.unstubAllGlobals(); });
-async function fixture() {
+async function fixture(category: 'image' | 'video' | 'audio' = 'image') {
   const aggregate = await createNativeProject({ name: '合成工作流恢复' });
   const context: CanvasContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'first-runtime', projectId: aggregate.project.id,
     canvasId: aggregate.canvas!.id, episodeId: null, projectEpoch: aggregate.project.epoch, canvasEpoch: aggregate.canvas!.epoch, canvasRevision: 0 };
-  const workflow = { id: 'workflow-fixture', name: '合成图片', category: 'ai-image', adapterType: 'comfyui', fileContent: '{}' };
+  const workflow = { id: 'workflow-fixture', name: '测试工作流', category: `ai-${category}`, adapterType: 'comfyui', fileContent: '{}' };
   driver.state = { currentProjectId: context.canvasId, projectExecutionContext: context, projectLoadStatus: 'ready', nodes: [], edges: [],
     workflows: [workflow], config: { comfyUIUrl: base, providers: {} }, projects: [], beginNativeMediaSubmissionPreparation: driver.beginPreparation };
   const nodeId = `media-message-${crypto.randomUUID()}`;
   releases.push(bindNativeMediaOrigin(context.canvasId, nodeId, { conversationId: 'original-conversation', messageId: 'original-message', deliveryMode: 'chat' },
     { material: 'original-input', assertCurrent: () => {} }));
-  const descriptor = { adapter: 'comfyui' as const, connectionId: 'comfyui', providerBase: base, category: 'image' as const, workflowId: workflow.id,
-    digest: await nativeWorkflowDigest(['comfyui-native-media-v1', workflow.id, workflow.fileContent, undefined, 'image']) };
+  const descriptor = { adapter: 'comfyui' as const, connectionId: 'comfyui', providerBase: base, category, workflowId: workflow.id,
+    digest: await nativeWorkflowDigest(['comfyui-native-media-v1', workflow.id, workflow.fileContent, undefined, category]) };
   return { context, nodeId, descriptor };
 }
 it('正常提交后自动查询全部候选并交付原对话，不要求再点恢复且只提交一次', async () => {
@@ -117,8 +120,50 @@ it('新项目 ComfyUI 视频在落盘前切换保存中，保存失败且 histor
   expect(driver.query).toHaveBeenCalledTimes(1);
   expect(submit).toHaveBeenCalledOnce();
 });
+it.each([['image', 'images', 'png'], ['video', 'videos', 'mp4'], ['audio', 'audio', 'wav']] as const)(
+  '新项目 %s 确认远端产物后按设置释放本机显存，释放响应不阻塞交付', async (category, key, extension) => {
+    const { context, nodeId, descriptor } = await fixture(category);
+    driver.state.config = { providers: {}, comfyUIUrl: base, comfyMemoryPolicy: 'unload-models' };
+    driver.query.mockImplementationOnce(async (_base: string, _id: string, _message: string, extract: (outputs: ComfyOutputs) => unknown) =>
+      extract({ save: { [key]: [{ filename: `output.${extension}`, type: 'output' }] } }));
+    driver.capture.mockResolvedValue({ ...output('a'), category, relativePath: `media/${'a'.repeat(64)}.${extension}` });
+    let finishRelease!: (response: Response) => void;
+    driver.memoryFetch.mockResolvedValueOnce(Response.json({ queue_running: [], queue_pending: [] }))
+      .mockReturnValueOnce(new Promise<Response>((resolve) => { finishRelease = resolve; }));
+    try {
+      await expect(submitNativeWorkflowTask({ nodeId, descriptor, requestMaterial: {}, beforeSubmit: () => {},
+        submit: async () => ({ taskId: 'original-prompt' }) })).rejects.toMatchObject({ name: 'NativeMediaTaskDelivered' });
+      expect((await listNativeMediaTasks(context.projectId))[0].status).toBe('delivered');
+      expect(driver.memoryFetch.mock.calls.map(([url]) => url)).toEqual([`${base}/queue`, `${base}/free`]);
+      expect(driver.memoryFetch.mock.calls[1][1]).toMatchObject({ method: 'POST', body: JSON.stringify({ unload_models: true, free_memory: false }) });
+    } finally { finishRelease(new Response()); }
+  },
+);
+it.each(['execution_error', 'execution_interrupted', 'http-error'] as const)(
+  '按原 history 的 %s 判断是否释放显存', async (event) => {
+    const { context, nodeId, descriptor } = await fixture();
+    driver.state.config = { providers: {}, comfyUIUrl: base, comfyMemoryPolicy: 'free-memory' };
+    const { pollComfyHistory } = await vi.importActual<typeof import('../../src/services/comfyPolling')>('../../src/services/comfyPolling');
+    driver.query.mockImplementationOnce(pollComfyHistory);
+    const transport = await import('../../src/services/ai/httpTransport');
+    const request = vi.spyOn(transport, 'corsSafeFetch').mockResolvedValueOnce(event === 'http-error' ? new Response(null, { status: 401 })
+      : Response.json({ original: { status: { status_str: 'error', messages: [[event, { exception_message: 'fixture' }]] } } }));
+    driver.memoryFetch.mockResolvedValueOnce(Response.json({ queue_running: [], queue_pending: [] })).mockResolvedValueOnce(new Response());
+    try {
+      await expect(submitNativeWorkflowTask({ nodeId, descriptor, requestMaterial: {}, beforeSubmit: () => {},
+        submit: async () => ({ taskId: 'original' }) })).rejects.toThrow();
+      expect(request.mock.calls[0][0]).toBe(`${base}/history/original`);
+      expect((await listNativeMediaTasks(context.projectId))[0].status).toBe(event === 'http-error' ? 'submitted' : 'failed');
+      expect(driver.memoryFetch.mock.calls.map(([url]) => url)).toEqual(event === 'execution_error' ? [`${base}/queue`, `${base}/free`] : []);
+    } finally { request.mockRestore(); }
+  },
+);
 it('首次下载前已登记全部安全文件描述，重启后只从原 ComfyUI 地址续取同一候选集合', async () => {
   const { context, nodeId, descriptor } = await fixture();
+  const config = { providers: {}, comfyUIUrl: base, comfyMemoryPolicy: 'free-memory' };
+  driver.state.config = config;
+  driver.memoryFetch.mockResolvedValueOnce(Response.json({ queue_running: [], queue_pending: [] }))
+    .mockRejectedValueOnce(new Error('释放显存失败'));
   const originalFiles = [{ filename: 'a.png', subfolder: '生成图', type: 'output' }, { filename: 'b.png', type: 'output' }];
   const historyFiles = [{ ...originalFiles[0], url: 'ignored' }, originalFiles[1], { filename: '../outside.png', type: 'output' }];
   driver.query.mockImplementationOnce(async (_base: string, _taskId: string, _message: string, extract: (outputs: ComfyOutputs) => unknown) =>
@@ -139,16 +184,18 @@ it('首次下载前已登记全部安全文件描述，重启后只从原 ComfyU
     projectExecutionContext: { ...context, runtimeEpoch: 'restarted-runtime' } };
   await expect(resumeNativeWorkflowTask(record.operationId)).rejects.toThrow('原 ComfyUI 工作流或服务已变化');
   expect(driver.persist).toHaveBeenCalledTimes(1);
-  driver.state.config = { comfyUIUrl: base, providers: {} };
+  driver.state.config = config;
   await resumeNativeWorkflowTask(record.operationId);
   expect(driver.persist.mock.calls.slice(1).map(([url]) => url)).toEqual([
     `${base}/view?filename=a.png&subfolder=${encodeURIComponent('生成图')}&type=output`, `${base}/view?filename=b.png&type=output`]);
   expect((await listNativeMediaTasks(context.projectId))[0]).toMatchObject({ status: 'delivered', localResults: [output('a'), output('b')] });
   expect(driver.query).toHaveBeenCalledOnce();
+  expect(driver.memoryFetch.mock.calls.map(([url]) => url)).toEqual([`${base}/queue`, `${base}/free`]);
   expect(submit).toHaveBeenCalledOnce();
 });
 it('history 返回时租约已被接管，过期任务不能写入文件描述或开始下载', async () => {
   const { context, nodeId, descriptor } = await fixture();
+  driver.state.config = { providers: {}, comfyUIUrl: base, comfyMemoryPolicy: 'free-memory' };
   driver.query.mockImplementationOnce(async (_base: string, _id: string, _message: string, extract: (outputs: ComfyOutputs) => unknown) => {
     const [record] = await listNativeMediaTasks(context.projectId);
     await claimNativeMediaRecovery(record.operationId, { ...context, runtimeEpoch: 'new-runtime' });
@@ -159,6 +206,7 @@ it('history 返回时租约已被接管，过期任务不能写入文件描述�
   const [record] = await listNativeMediaTasks(context.projectId);
   expect((await readNativeWorkflowReceipt(record.operationId))?.tasks).toEqual([{ taskId: 'original-prompt', state: 'submitted' }]);
   expect(driver.persist).not.toHaveBeenCalled();
+  expect(driver.memoryFetch).not.toHaveBeenCalled();
 });
 it('任务候选已保存后重启可在原workflow和凭据均移除时离线交付，不重复POST或查询', async () => {
   const { context, nodeId, descriptor } = await fixture();
