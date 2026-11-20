@@ -41,6 +41,7 @@ import {
   listProviderDocGrants,
   releaseProviderDocRead,
 } from '../providerDocsGrantService';
+import type { AgentToolSchema } from '../agentToolSchemas';
 import {
   registerAgentTool,
   type AgentToolContext,
@@ -80,6 +81,19 @@ const IMAGE_REFERENCE_REQUEST_MODES: ImageReferenceRequestMode[] = [
   'generation-json-image-data-urls',
   'edits-multipart',
 ];
+
+function numberRangeInputSchema(): AgentToolSchema {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      min: { type: 'number' },
+      max: { type: 'number' },
+      minExclusive: { type: 'boolean' },
+      maxExclusive: { type: 'boolean' },
+    },
+  };
+}
 
 function providerDocsError(error: unknown) {
   // Tauri invoke 的拒绝是纯字符串而非 Error，直接丢弃会把真实原因（如域名解析、
@@ -630,62 +644,17 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
                           type: 'object',
                           additionalProperties: false,
                           properties: {
-                            width: {
-                              type: 'object',
-                              additionalProperties: false,
-                              properties: {
-                                min: { type: 'number' },
-                                max: { type: 'number' },
-                                minExclusive: { type: 'boolean' },
-                                maxExclusive: { type: 'boolean' },
-                              },
-                            },
-                            durationSeconds: {
-                              type: 'object',
-                              additionalProperties: false,
-                              properties: {
-                                min: { type: 'number' },
-                                max: { type: 'number' },
-                                minExclusive: { type: 'boolean' },
-                                maxExclusive: { type: 'boolean' },
-                              },
-                            },
-                            totalDurationSeconds: {
-                              type: 'object',
-                              additionalProperties: false,
-                              properties: {
-                                min: { type: 'number' },
-                                max: { type: 'number' },
-                                minExclusive: { type: 'boolean' },
-                                maxExclusive: { type: 'boolean' },
-                              },
-                            },
+                            width: numberRangeInputSchema(),
+                            durationSeconds: numberRangeInputSchema(),
+                            totalDurationSeconds: numberRangeInputSchema(),
                           },
                         },
                         referenceAudio: {
                           type: 'object',
                           additionalProperties: false,
                           properties: {
-                            durationSeconds: {
-                              type: 'object',
-                              additionalProperties: false,
-                              properties: {
-                                min: { type: 'number' },
-                                max: { type: 'number' },
-                                minExclusive: { type: 'boolean' },
-                                maxExclusive: { type: 'boolean' },
-                              },
-                            },
-                            totalDurationSeconds: {
-                              type: 'object',
-                              additionalProperties: false,
-                              properties: {
-                                min: { type: 'number' },
-                                max: { type: 'number' },
-                                minExclusive: { type: 'boolean' },
-                                maxExclusive: { type: 'boolean' },
-                              },
-                            },
+                            durationSeconds: numberRangeInputSchema(),
+                            totalDurationSeconds: numberRangeInputSchema(),
                           },
                         },
                       },
