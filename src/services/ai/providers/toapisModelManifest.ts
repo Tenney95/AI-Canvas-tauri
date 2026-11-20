@@ -170,6 +170,10 @@ const IMAGE_MODELS: ProviderModelSelection[] = [
 /** 保留数组元素与角色，不把第二张普通参考图当成尾帧。 */
 const videoRoles = [{ $forEach: '{{referenceVideoUrls}}', $value: { url: '{{referenceVideoUrls}}', role: 'reference_video' } }];
 const audioRoles = [{ $forEach: '{{referenceAudioUrls}}', $value: { url: '{{referenceAudioUrls}}', role: 'reference_audio' } }];
+const VIDEO_ROLE_REFERENCE_FIELDS: Body = {
+  image_with_roles: '{{imageWithRoles}}', video_with_roles: videoRoles, audio_with_roles: audioRoles,
+};
+const SEEDANCE_VIDEO_REFERENCE_FIELDS: Body = { ...VIDEO_ROLE_REFERENCE_FIELDS, generate_audio: '{{generateAudio}}' };
 const videoList = [{ $forEach: '{{referenceVideoUrls}}', $value: { video_url: '{{referenceVideoUrls}}' } }];
 const firstFrame = [{ $whenPresent: '{{firstImage}}', $value: '{{firstImage}}' }];
 const framePair = [...firstFrame, { $whenPresent: '{{lastImage}}', $value: '{{lastImage}}' }];
@@ -183,6 +187,11 @@ const FRAME_RATIOS: Pick<VideoModelCapability, 'inputModeCapabilities'> = {
     text: { ratios: SEEDANCE_RATIOS.filter((ratio) => ratio !== 'adaptive'), defaultRatio: '16:9' },
     keyframe: { ratios: ['adaptive'], defaultRatio: 'adaptive' },
   },
+};
+const SEEDANCE_20_STANDARD_FAST_OVERRIDES: VideoModelCapability = {
+  ratios: SEEDANCE_RATIOS, ...FRAME_RATIOS, automaticDurationValue: -1,
+  supportsStandaloneAudio: false, allowFrameAndReferenceMix: false,
+  maxVideoReferences: undefined, maxAudioReferences: undefined,
 };
 
 function channelVideoCapability(
@@ -207,24 +216,16 @@ function videos(ids: string[], capability: VideoModelCapability, overrides: Mode
 }
 
 const VIDEO_MODELS: ProviderModelSelection[] = [
-  ...videos(['seedance-2'], channelVideoCapability('seedance-2.0', {
-    ratios: SEEDANCE_RATIOS, ...FRAME_RATIOS, automaticDurationValue: -1,
-    supportsStandaloneAudio: false, allowFrameAndReferenceMix: false,
-    maxVideoReferences: undefined, maxAudioReferences: undefined,
-  }), { image_with_roles: '{{imageWithRoles}}', video_with_roles: videoRoles, audio_with_roles: audioRoles, generate_audio: '{{generateAudio}}' }),
-  ...videos(['seedance-2-fast'], channelVideoCapability('seedance-2.0-fast', {
-    ratios: SEEDANCE_RATIOS, ...FRAME_RATIOS, automaticDurationValue: -1,
-    supportsStandaloneAudio: false, allowFrameAndReferenceMix: false,
-    maxVideoReferences: undefined, maxAudioReferences: undefined,
-  }), { image_with_roles: '{{imageWithRoles}}', video_with_roles: videoRoles, audio_with_roles: audioRoles, generate_audio: '{{generateAudio}}' }),
+  ...videos(['seedance-2'], channelVideoCapability('seedance-2.0', SEEDANCE_20_STANDARD_FAST_OVERRIDES), SEEDANCE_VIDEO_REFERENCE_FIELDS),
+  ...videos(['seedance-2-fast'], channelVideoCapability('seedance-2.0-fast', SEEDANCE_20_STANDARD_FAST_OVERRIDES), SEEDANCE_VIDEO_REFERENCE_FIELDS),
   ...videos(['seedance-2-mini'], channelVideoCapability('seedance-2.0-mini', {
     ratios: SEEDANCE_RATIOS, ...FRAME_RATIOS,
     supportsStandaloneAudio: false, allowFrameAndReferenceMix: false,
-  }), { image_with_roles: '{{imageWithRoles}}', video_with_roles: videoRoles, audio_with_roles: audioRoles, generate_audio: '{{generateAudio}}' }),
+  }), SEEDANCE_VIDEO_REFERENCE_FIELDS),
   ...videos(['seedance-2-5'], channelVideoCapability('seedance-2.5', {
     ratios: SEEDANCE_RATIOS, ...FRAME_RATIOS,
     defaultDuration: 5, allowFrameAndReferenceMix: false,
-  }), { image_with_roles: '{{imageWithRoles}}', video_with_roles: videoRoles, audio_with_roles: audioRoles, generate_audio: '{{generateAudio}}' }),
+  }), SEEDANCE_VIDEO_REFERENCE_FIELDS),
   ...videos(['seedance-2.5-ext'], channelVideoCapability('seedance-2.5', {
     resolutions: ['720p'], ratios: VIDEO_RATIOS, minDuration: 10, defaultDuration: 10,
     automaticDurationValue: undefined, inputModeCapabilities: undefined,
@@ -239,11 +240,11 @@ const VIDEO_MODELS: ProviderModelSelection[] = [
   ...videos(['MiniMax-H3'], channelVideoCapability('minimax-h3', {
     resolutions: ['768p', '2K'], ratios: SEEDANCE_RATIOS, ...FRAME_RATIOS,
     supportsAudio: undefined, supportsStandaloneAudio: false,
-  }), { image_with_roles: '{{imageWithRoles}}', video_with_roles: videoRoles, audio_with_roles: audioRoles }),
+  }), VIDEO_ROLE_REFERENCE_FIELDS),
   ...videos(['MiniMax-H3-Max'], channelVideoCapability('minimax-h3-max', {
     ratios: SEEDANCE_RATIOS, ...FRAME_RATIOS,
     supportsAudio: undefined, supportsStandaloneAudio: false,
-  }), { image_with_roles: '{{imageWithRoles}}', video_with_roles: videoRoles, audio_with_roles: audioRoles }),
+  }), VIDEO_ROLE_REFERENCE_FIELDS),
   ...videos(['MiniMax-H3-Max-Turbo'], channelVideoCapability('minimax-h3-max', {
     operations: ['text-to-video', 'image-to-video'],
     ratios: SEEDANCE_RATIOS, ...FRAME_RATIOS,
