@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-plugin-delivery"
+description = "Allows the main window to claim and complete local OS-open plugin deliveries."
+commands.allow = ["plugin_delivery_take", "plugin_delivery_check", "plugin_delivery_finish"]

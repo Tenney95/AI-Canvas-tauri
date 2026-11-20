@@ -1,6 +1,7 @@
 /**
  * plugins — 回归测试：插件由用户安装。
  */
+import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppState } from '../../src/store/useAppStore';
 import type { InstalledPlugin } from '../../src/types/plugin';
@@ -53,21 +54,22 @@ const SOURCE_DIGEST_A = 'a'.repeat(64);
 const SOURCE_DIGEST_B = 'b'.repeat(64);
 const REVISION_DIGEST_A = 'c'.repeat(64);
 const REVISION_DIGEST_B = 'd'.repeat(64);
-const bundledWsagentSourceDigest = '57dcceab6a129ca97257b75a20c66098455b4e6476ab4aaaba96e943fe0e3066';
-const bundledWsagentManifest = JSON.stringify({
+const deliveredSourceDigest = SOURCE_DIGEST_B;
+const deliveredUiDigest = createHash('sha256').update('ui source').digest('hex');
+const deliveredManifest = JSON.stringify({
   apiVersion: 2,
-  id: 'ai-canvas.wsagent',
+  id: 'example.desktop-delivery',
   runtime: 'javascript',
-  name: 'WSAGENT 互联',
+  name: '桌面插件',
   version: '0.1.0',
   category: 'workflow',
   entry: 'main.js',
   permissions: ['ui.custom', 'node.read', 'node.write'],
-  ui: { entry: 'ui.js', integrity: SOURCE_DIGEST_B, exports: { sharedImages: 'SharedImages' } },
+  ui: { entry: 'ui.js', integrity: deliveredUiDigest, exports: { exampleAction: 'ExampleAction' } },
   contributes: { nodeTools: [{
-    id: 'shared-images',
-    title: 'WSAGENT 共享图片',
-    dialog: { fields: [], ui: 'sharedImages' },
+    id: 'example-action',
+    title: '示例工具',
+    dialog: { fields: [], ui: 'exampleAction' },
     placements: ['node-context-menu'],
     nodeTypes: ['ai-text'],
     inputFields: ['output'],
@@ -141,40 +143,71 @@ beforeEach(() => {
 });
 
 describe('插件由用户安装', () => {
-  it('installs the bundled WSAGENT revision once, then reuses or re-enables it', async () => {
+  it('installs the delivered revision once, then reuses or re-enables it', async () => {
     const { slice, getState } = createSlice();
-    mockNativeSuccess(bundledWsagentSourceDigest);
-    const install = () => slice.installBundledWsagentPlugin(bundledWsagentManifest, 'source', 'ui source');
+    mockNativeSuccess(deliveredSourceDigest);
+    const install = () => slice.installDeliveredPluginBundle(deliveredManifest, 'source', {
+      expectedSourceDigest: deliveredSourceDigest, uiSource: 'ui source',
+    });
     await expect(install()).resolves.toEqual({ changed: true, revisionDigest: REVISION_DIGEST_A });
     await expect(install()).resolves.toEqual({ changed: false, revisionDigest: REVISION_DIGEST_A });
     expect(nativeMocks.invoke.mock.calls.filter(([command]) => command === 'stage_plugin_revision')).toHaveLength(1);
-    await slice.setPluginEnabled('ai-canvas.wsagent', false);
+    await slice.setPluginEnabled('example.desktop-delivery', false);
     await expect(install()).resolves.toEqual({ changed: true, revisionDigest: REVISION_DIGEST_A });
     expect(getState().installedPlugins[0].enabled).toBe(true);
   });
 
-  it('keeps a different installed WSAGENT version intact', async () => {
-    const existing = createInstalledPluginFixture('ai-canvas.wsagent');
+  it('keeps a different installed version intact', async () => {
+    const existing = createInstalledPluginFixture('example.desktop-delivery');
     const { slice, getState } = createSlice([existing]);
-    await expect(slice.installBundledWsagentPlugin(bundledWsagentManifest, 'source', 'ui source'))
+    await expect(slice.installDeliveredPluginBundle(deliveredManifest, 'source', {
+      expectedSourceDigest: deliveredSourceDigest, uiSource: 'ui source',
+    }))
       .rejects.toThrow('已安装其他版本');
     expect(getState().installedPlugins).toEqual([existing]);
     expect(nativeMocks.invoke).not.toHaveBeenCalled();
   });
 
-  it('replaces an older build of WSAGENT 0.1.0 through the native activation flow', async () => {
-    const existing = createInstalledPluginFixture('ai-canvas.wsagent');
+  it('checks the delivered UI before re-enabling an identical disabled revision', async () => {
+    const { slice, getState } = createSlice();
+    mockNativeSuccess(deliveredSourceDigest);
+    await slice.installDeliveredPluginBundle(deliveredManifest, 'source', {
+      expectedSourceDigest: deliveredSourceDigest, uiSource: 'ui source',
+    });
+    await slice.setPluginEnabled('example.desktop-delivery', false);
+    nativeMocks.invoke.mockClear();
+    await expect(slice.installDeliveredPluginBundle(deliveredManifest, 'source', {
+      expectedSourceDigest: deliveredSourceDigest, uiSource: 'different UI',
+    })).rejects.toThrow('界面文件与清单不一致');
+    expect(getState().installedPlugins[0].enabled).toBe(false);
+    expect(nativeMocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it('replaces an older build of the same plugin version through the native activation flow', async () => {
+    const existing = createInstalledPluginFixture('example.desktop-delivery');
     existing.manifest.version = '0.1.0';
     const { slice, getState } = createSlice([existing]);
-    mockNativeSuccess(bundledWsagentSourceDigest, REVISION_DIGEST_B);
-    await expect(slice.installBundledWsagentPlugin(bundledWsagentManifest, 'source', 'ui source'))
+    mockNativeSuccess(deliveredSourceDigest, REVISION_DIGEST_B);
+    await expect(slice.installDeliveredPluginBundle(deliveredManifest, 'source', {
+      expectedSourceDigest: deliveredSourceDigest, uiSource: 'ui source',
+    }))
       .resolves.toEqual({ changed: true, revisionDigest: REVISION_DIGEST_B });
     expect(getState().installedPlugins).toMatchObject([{
-      installedAt: existing.installedAt, sourceDigest: bundledWsagentSourceDigest, enabled: true,
+      installedAt: existing.installedAt, sourceDigest: deliveredSourceDigest, enabled: true,
     }]);
     expect(nativeMocks.invoke).toHaveBeenCalledWith('activate_plugin_revision', {
-      pluginId: existing.id, sourceDigest: bundledWsagentSourceDigest, revisionDigest: REVISION_DIGEST_B, enabled: true,
+      pluginId: existing.id, sourceDigest: deliveredSourceDigest, revisionDigest: REVISION_DIGEST_B, enabled: true,
     });
+  });
+
+  it('refuses a delivery when its reviewed revision changed before the installation transaction', async () => {
+    const existing = createInstalledPluginFixture('example.desktop-delivery');
+    const { slice, getState } = createSlice([existing]);
+    await expect(slice.installDeliveredPluginBundle(deliveredManifest, 'source', {
+      expectedSourceDigest: deliveredSourceDigest, uiSource: 'ui source', reviewedRevision: REVISION_DIGEST_B,
+    })).rejects.toThrow('在确认后发生变化');
+    expect(getState().installedPlugins).toEqual([existing]);
+    expect(nativeMocks.invoke).not.toHaveBeenCalled();
   });
 
   it('installs protocol-only packages and revokes calls before disable, uninstall, repair and reload', async () => {

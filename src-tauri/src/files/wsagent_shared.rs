@@ -27,6 +27,9 @@ use tokio::{net::TcpListener, sync::Semaphore, task::JoinHandle};
 pub(crate) mod media;
 #[path = "wsagent_plugin_install.rs"]
 pub(crate) mod plugin_install;
+#[cfg(windows)]
+#[path = "wsagent_windows_discovery.rs"]
+mod windows_discovery;
 #[cfg(target_os = "macos")]
 #[path = "wsagent_peer.rs"]
 mod peer;
@@ -96,8 +99,6 @@ pub struct WsagentSharedState {
     storage: Mutex<Option<Arc<SharedStorage>>>,
     listener: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     pairing: tokio::sync::Mutex<()>,
-    #[cfg(target_os = "macos")]
-    plugin_install: plugin_install::PluginInstallRequests,
 }
 
 pub(crate) fn on_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
@@ -175,13 +176,13 @@ struct PendingPairing {
 }
 
 /// Staging only lasts for this command, including cancellation before the peer responds.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 struct PendingPairingLease {
     storage: Arc<SharedStorage>,
     token_digest: String,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl Drop for PendingPairingLease {
     fn drop(&mut self) {
         if let Ok(mut pending) = self.storage.pending_pairing.lock() {
@@ -220,7 +221,7 @@ struct SharedPair {
     peer_project_id: String,
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AutoPairReceipt {
@@ -440,7 +441,7 @@ impl SharedStorage {
         project_status(&self.db()?, owner_id)
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", windows, test))]
     fn stage_pairing(
         &self,
         scope: &ActiveOwner,
@@ -508,7 +509,7 @@ impl SharedStorage {
         })))
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", windows, test))]
     fn commit_pairing(
         &self,
         scope: &ActiveOwner,
@@ -1092,7 +1093,7 @@ fn ipc<T>(result: SharedResult<T>) -> Result<T, String> {
     result.map_err(|error| error.1.into())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PairingDiscovery {
@@ -1100,6 +1101,38 @@ struct PairingDiscovery {
     port: u16,
     token: String,
 }
+
+#[cfg(any(target_os = "macos", windows))]
+const PAIRING_DISCOVERY_LIMIT: u64 = 4096;
+
+#[cfg(any(target_os = "macos", windows))]
+fn invalid_pairing_discovery() -> SharedError {
+    SharedError(
+        StatusCode::FORBIDDEN,
+        "WSAGENT 本机连接凭据无效，请重新打开 WSAGENT",
+    )
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn pairing_discovery_unavailable() -> SharedError {
+    SharedError(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "请先打开支持自动连接的 WSAGENT 桌面版",
+    )
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn decode_pairing_discovery(bytes: &[u8]) -> SharedResult<PairingDiscovery> {
+    let value: PairingDiscovery =
+        serde_json::from_slice(bytes).map_err(|_| invalid_pairing_discovery())?;
+    if value.version != 1 || value.port == 0 || value.port == PORT || !is_digest(&value.token) {
+        return Err(invalid_pairing_discovery());
+    }
+    Ok(value)
+}
+
+#[cfg(windows)]
+use windows_discovery::read_pairing_discovery;
 
 #[cfg(target_os = "macos")]
 fn read_pairing_discovery(base: &Path) -> SharedResult<PairingDiscovery> {
@@ -1118,23 +1151,12 @@ fn read_pairing_discovery(base: &Path) -> SharedResult<PairingDiscovery> {
     const DIRECTORY: c_int = 0x100000;
     const CLOEXEC: c_int = 0x1000000;
     const NONBLOCK: c_int = 0x4;
-    const LIMIT: u64 = 4096;
     extern "C" {
         fn openat(directory: c_int, path: *const c_char, flags: c_int, ...) -> c_int;
         fn geteuid() -> u32;
     }
-    let unavailable = || {
-        SharedError(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "请先打开支持自动连接的 WSAGENT 桌面版",
-        )
-    };
-    let unsafe_discovery = || {
-        SharedError(
-            StatusCode::FORBIDDEN,
-            "WSAGENT 本机连接凭据无效，请重新打开 WSAGENT",
-        )
-    };
+    let unavailable = pairing_discovery_unavailable;
+    let unsafe_discovery = invalid_pairing_discovery;
     let open = |dir: &fs::File, name: &str, extra| -> SharedResult<fs::File> {
         let component = CString::new(name).map_err(|_| unsafe_discovery())?;
         // Both names are fixed path components; openat pins the already-open parent.
@@ -1179,26 +1201,22 @@ fn read_pairing_discovery(base: &Path) -> SharedResult<PairingDiscovery> {
         || metadata.uid() != uid
         || metadata.nlink() != 1
         || metadata.mode() & 0o777 != 0o600
-        || !(1..=LIMIT).contains(&metadata.len())
+        || !(1..=PAIRING_DISCOVERY_LIMIT).contains(&metadata.len())
     {
         return Err(unsafe_discovery());
     }
     let mut bytes = Vec::new();
     descriptor
-        .take(LIMIT + 1)
+        .take(PAIRING_DISCOVERY_LIMIT + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| unsafe_discovery())?;
     if bytes.len() as u64 != metadata.len() {
         return Err(unsafe_discovery());
     }
-    let value: PairingDiscovery = serde_json::from_slice(&bytes).map_err(|_| unsafe_discovery())?;
-    if value.version != 1 || value.port == 0 || value.port == PORT || !is_digest(&value.token) {
-        return Err(unsafe_discovery());
-    }
-    Ok(value)
+    decode_pairing_discovery(&bytes)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 async fn request_auto_pairing(
     discovery: PairingDiscovery,
     owner_id: &str,
@@ -1294,7 +1312,7 @@ pub async fn wsagent_shared_connect(
     name: String,
 ) -> Result<SharedStatus, String> {
     let storage = main_storage(&webview, &app, &state, &owner_id)?;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         if !owner_id
             .bytes()
@@ -1354,10 +1372,10 @@ pub async fn wsagent_shared_connect(
         drop(lease);
         status
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (storage, name);
-        Err("WSAGENT 自动连接目前仅支持 macOS".into())
+        Err("WSAGENT 自动连接目前仅支持 macOS 和 Windows".into())
     }
 }
 

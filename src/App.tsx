@@ -276,8 +276,11 @@ export default function App() {
     if (!isTauri || !projectBootReady) return;
     let disposed = false;
     let unobserve: (() => void) | undefined;
-    void import('./services/wsagentPluginInstallService').then(({ observeWsagentPluginInstall }) => {
-      if (!disposed) unobserve = observeWsagentPluginInstall();
+    void Promise.all([
+      import('./services/plugins/pluginDeliveryService'),
+      import('./services/wsagentPluginInstallService'),
+    ]).then(([{ observePluginDelivery }, { wsagentPluginPlacement }]) => {
+      if (!disposed) unobserve = observePluginDelivery([wsagentPluginPlacement]);
     }).catch(() => undefined);
     return () => {
       disposed = true;

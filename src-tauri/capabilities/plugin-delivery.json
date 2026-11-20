@@ -1,0 +1,6 @@
+{
+  "identifier": "plugin-delivery",
+  "description": "Only the main application window can process external plugin deliveries.",
+  "windows": ["main"],
+  "permissions": ["allow-plugin-delivery"]
+}

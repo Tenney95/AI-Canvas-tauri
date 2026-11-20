@@ -15,29 +15,31 @@ import { createInstalledPlugin, parsePluginBundle } from '../services/plugins/pl
 import { clearPluginResources as clearPluginResourceHandles } from '../services/plugins/pluginResourceService';
 import { revokePluginProtocolPresets } from '../services/plugins/pluginProtocolPresetService';
 import { affectedPluginIds, resolvePluginDependencies } from '../services/plugins/pluginDependencyService';
-import { WSAGENT_PLUGIN_ID } from '../types/wsagentShared';
 import {
   deletePluginFromDb,
   getAllPlugins,
   savePluginToDb,
 } from '../services/indexedDbService';
 
+interface PluginInstallOptions {
+  trustedPythonConfirmed?: boolean;
+  expectedSourceDigest?: string;
+  /** 自定义界面产物源码；manifest 声明了 ui 时必填。 */
+  uiSource?: string;
+  /** Manifest 声明的包资源字节；仅进入 Rust 私有快照。 */
+  resourcePayloads?: PluginPackageResourcePayload[];
+}
+
 export interface PluginSlice {
   installedPlugins: InstalledPlugin[];
   pluginRegistryRepairRequired: boolean;
-  installPluginBundle: (
-    manifestText: string,
-    source: string,
-    options?: {
-      trustedPythonConfirmed?: boolean;
-      expectedSourceDigest?: string;
-      /** 自定义界面产物源码；manifest 声明了 ui 时必填。 */
-      uiSource?: string;
-      /** Manifest 声明的包资源字节；仅进入 Rust 私有快照。 */
-      resourcePayloads?: PluginPackageResourcePayload[];
-    },
-  ) => Promise<InstalledPlugin>;
-  installBundledWsagentPlugin: (manifestText: string, source: string, uiSource: string) => Promise<{
+  installPluginBundle: (manifestText: string, source: string, options?: PluginInstallOptions) => Promise<InstalledPlugin>;
+  installDeliveredPluginBundle: (manifestText: string, source: string, options: PluginInstallOptions & {
+    expectedSourceDigest: string;
+    /** 显式确认时看到的活动版本。空字符串表示记录缺少摘要，null 表示尚未安装。 */
+    reviewedRevision?: string | null;
+    assertDeliveryCurrent?: () => Promise<void>;
+  }) => Promise<{
     changed: boolean;
     revisionDigest: string;
   }>;
@@ -63,7 +65,6 @@ function clearPluginResources(id: string): void {
 }
 
 const SOURCE_DIGEST_RE = /^[0-9a-f]{64}$/u;
-const WSAGENT_BUNDLED_SOURCE_DIGEST = '57dcceab6a129ca97257b75a20c66098455b4e6476ab4aaaba96e943fe0e3066';
 const pluginMutationQueues = new Map<string, Promise<void>>();
 let pluginGraphMutationQueue = Promise.resolve();
 let graphMutationReservations = 0;
@@ -103,6 +104,30 @@ function normalizeSourceDigest(value: unknown, label: string): string {
 function normalizeUiIntegrity(value: string): string {
   const normalized = value.trim().toLowerCase();
   return normalized.startsWith('sha256-') ? normalized.slice(7) : normalized;
+}
+
+async function verifyDeliveredArtifacts(manifest: PluginManifest, options: PluginInstallOptions): Promise<void> {
+  const { sha256Hex } = await import('../services/fs/projectFiles');
+  if (manifest.ui) {
+    const source = options.uiSource;
+    if (!source || await sha256Hex(new TextEncoder().encode(source)) !== normalizeUiIntegrity(manifest.ui.integrity)) {
+      throw new Error('交付的插件界面文件与清单不一致');
+    }
+  } else if (options.uiSource !== undefined) {
+    throw new Error('插件包包含未声明的界面文件');
+  }
+  const resources = manifest.resources ?? [];
+  const payloads = new Map((options.resourcePayloads ?? []).map((payload) => [payload.id, payload.bytes]));
+  if (resources.length !== payloads.size || payloads.size !== (options.resourcePayloads?.length ?? 0)) {
+    throw new Error('交付的插件资源与清单不一致');
+  }
+  for (const resource of resources) {
+    const bytes = payloads.get(resource.id);
+    if (!bytes || bytes.length !== resource.bytes
+      || await sha256Hex(Uint8Array.from(bytes)) !== normalizeUiIntegrity(resource.integrity)) {
+      throw new Error('交付的插件资源与清单不一致');
+    }
+  }
 }
 
 async function stagePluginRevision(
@@ -195,12 +220,7 @@ export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (s
   const installPluginBundleCore = async (
     manifest: PluginManifest,
     source: string,
-    options?: {
-      trustedPythonConfirmed?: boolean;
-      expectedSourceDigest?: string;
-      uiSource?: string;
-      resourcePayloads?: PluginPackageResourcePayload[];
-    },
+    options?: PluginInstallOptions,
   ): Promise<InstalledPlugin> => {
     if (manifest.runtime === 'python' && options?.trustedPythonConfirmed !== true) {
       throw new Error('安装可信 Python 插件前必须确认其可访问本机资源');
@@ -419,39 +439,45 @@ export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (s
       );
     },
 
-    installBundledWsagentPlugin: async (manifestText, source, uiSource) => {
+    installDeliveredPluginBundle: async (manifestText, source, options) => {
       const manifest = parsePluginBundle(manifestText, source);
-      const ui = manifest.ui;
-      if (manifest.id !== WSAGENT_PLUGIN_ID || manifest.version !== '0.1.0'
-        || manifest.runtime !== 'javascript' || !ui) {
-        throw new Error('WSAGENT 互联安装包不受支持');
-      }
-      return enqueuePluginMutation(WSAGENT_PLUGIN_ID, async () => {
-        const previous = get().installedPlugins.find((plugin) => plugin.id === WSAGENT_PLUGIN_ID);
-        if (previous && previous.manifest.version !== manifest.version) {
-          throw new Error('已安装其他版本的 WSAGENT 互联。请在 AI Canvas 的插件设置中确认现有版本。');
+      const sourceDigest = normalizeSourceDigest(options.expectedSourceDigest, '插件包源码摘要');
+      const uiDigest = manifest.ui ? normalizeUiIntegrity(manifest.ui.integrity) : undefined;
+      return enqueuePluginMutation(manifest.id, async () => {
+        const previous = get().installedPlugins.find((plugin) => plugin.id === manifest.id);
+        if (options.reviewedRevision !== undefined) {
+          const previousRevision = previous ? previous.revisionDigest ?? '' : null;
+          if (previousRevision !== options.reviewedRevision) throw new Error('已安装插件在确认后发生变化，请重试');
+        } else if (previous && previous.manifest.version !== manifest.version) {
+          throw new Error('已安装其他版本，请在 AI Canvas 的插件设置中确认后再更新');
         }
-        const alreadyInstalled = previous?.sourceDigest === WSAGENT_BUNDLED_SOURCE_DIGEST
-          && previous.uiDigest === normalizeUiIntegrity(ui.integrity)
+        const alreadyInstalled = previous?.sourceDigest === sourceDigest
+          && previous.uiDigest === uiDigest
           && JSON.stringify(previous.manifest) === JSON.stringify(manifest)
           && Boolean(previous.revisionDigest);
         if (!alreadyInstalled) {
+          await options.assertDeliveryCurrent?.();
           const plugin = await installPluginBundleCore(manifest, source, {
-            uiSource,
-            expectedSourceDigest: WSAGENT_BUNDLED_SOURCE_DIGEST,
+            ...options,
+            expectedSourceDigest: sourceDigest,
           });
-          if (!plugin.enabled) await setPluginEnabledCore(plugin.id, true);
+          if (!plugin.enabled) await setPluginEnabledCore(plugin.id, true, options);
           return { changed: true, revisionDigest: pluginExecutionIdentity(plugin).revisionDigest };
         }
+        await verifyDeliveredArtifacts(manifest, options);
+        await options.assertDeliveryCurrent?.();
         const identity = pluginExecutionIdentity(previous);
         await invoke('ensure_plugin_registration', {
           pluginId: previous.id,
           ...identity,
           enabled: previous.enabled,
         });
-        if (!previous.enabled) await setPluginEnabledCore(previous.id, true);
+        if (!previous.enabled) {
+          await options.assertDeliveryCurrent?.();
+          await setPluginEnabledCore(previous.id, true, options);
+        }
         return { changed: !previous.enabled, revisionDigest: identity.revisionDigest };
-      }, get().installedPlugins.some((plugin) => Boolean(plugin.manifest.dependencies?.length)));
+      }, Boolean(manifest.dependencies?.length || get().installedPlugins.some((plugin) => plugin.manifest.dependencies?.length)));
     },
 
     setPluginEnabled: async (id, enabled, options) => enqueuePluginMutation(

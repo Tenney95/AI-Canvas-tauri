@@ -315,6 +315,38 @@ FunctionEnd
   Call AICanvasPrepareUpdateInstall
 !macroend
 
+!define AICANVAS_PLUGIN_PACKAGE_PROGID "AICanvas.PluginPackage"
+
+!macro NSIS_HOOK_POSTINSTALL
+  Push $0
+  WriteRegStr HKCU "Software\Classes\${AICANVAS_PLUGIN_PACKAGE_PROGID}" "" "AI Canvas Plugin Package"
+  WriteRegStr HKCU "Software\Classes\${AICANVAS_PLUGIN_PACKAGE_PROGID}\shell\open\command" "" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" $\"%1$\""
+  WriteRegStr HKCU "Software\Classes\.aicplugin\OpenWithProgids" "${AICANVAS_PLUGIN_PACKAGE_PROGID}" ""
+  ReadRegStr $0 HKCR ".aicplugin" ""
+  ${If} $0 == ""
+    WriteRegStr HKCU "Software\Classes\.aicplugin" "" "${AICANVAS_PLUGIN_PACKAGE_PROGID}"
+  ${EndIf}
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+  Pop $0
+!macroend
+
 !macro NSIS_HOOK_PREUNINSTALL
   RMDir /r "$LOCALAPPDATA\com.aicanvas.app\director-desk"
+!macroend
+
+!macro NSIS_HOOK_POSTUNINSTALL
+  Push $0
+  ReadRegStr $0 HKCU "Software\Classes\${AICANVAS_PLUGIN_PACKAGE_PROGID}\shell\open\command" ""
+  ${If} $0 == "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" $\"%1$\""
+    ReadRegStr $0 HKCU "Software\Classes\.aicplugin" ""
+    ${If} $0 == "${AICANVAS_PLUGIN_PACKAGE_PROGID}"
+      DeleteRegValue HKCU "Software\Classes\.aicplugin" ""
+    ${EndIf}
+    DeleteRegValue HKCU "Software\Classes\.aicplugin\OpenWithProgids" "${AICANVAS_PLUGIN_PACKAGE_PROGID}"
+    DeleteRegKey /ifempty HKCU "Software\Classes\.aicplugin\OpenWithProgids"
+    DeleteRegKey /ifempty HKCU "Software\Classes\.aicplugin"
+    DeleteRegKey HKCU "Software\Classes\${AICANVAS_PLUGIN_PACKAGE_PROGID}"
+    System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+  ${EndIf}
+  Pop $0
 !macroend

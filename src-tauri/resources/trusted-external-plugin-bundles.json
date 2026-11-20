@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "bundles": [
+    {
+      "sha256": "b3439df2a17158a6cb458197132cabe0c7a11349ffb535ce1df4bbf9474a8ff0",
+      "publisher": "WSAGENT"
+    }
+  ]
+}

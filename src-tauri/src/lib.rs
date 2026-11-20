@@ -182,6 +182,8 @@ mod process_job;
 // 源文件按领域归类；crate 根模块名保持稳定，避免改变 IPC、测试与安全调用路径。
 #[path = "plugins/registry.rs"]
 mod plugin_registry;
+#[path = "plugins/delivery.rs"]
+mod plugin_delivery;
 #[path = "plugins/install_permissions.rs"]
 pub mod plugin_install_permissions;
 #[path = "plugins/runtime.rs"]
@@ -2096,6 +2098,18 @@ pub fn run() {
     let mut context = tauri::generate_context!();
     let maintenance_request = project_model_safety::cold_request()
         .expect("项目模型维护启动参数无效或此构建不允许维护");
+    #[cfg(target_os = "macos")]
+    let receive_plugin_delivery = maintenance_request.is_none();
+    #[cfg(windows)]
+    let windows_plugin_wake = if maintenance_request.is_none() && !tauri::is_dev() {
+        use plugin_delivery::{prepare_windows_launch, WindowsLaunch};
+        match prepare_windows_launch(&context.config().identifier) {
+            WindowsLaunch::EndPackageInvocation => return,
+            WindowsLaunch::Continue(wake) => wake,
+        }
+    } else {
+        None
+    };
     if maintenance_request.is_some() {
         // Must happen before Builder creates any configured webview, on every OS.
         for window in &mut context.config_mut().app.windows { window.create = false; }
@@ -2143,6 +2157,7 @@ pub fn run() {
         .manage(blender_runtime::production_blender_job_core())
         .manage(mcp_bridge::McpBridgeState::default())
         .manage(wsagent_shared::WsagentSharedState::default())
+        .manage(plugin_delivery::DeliveryState::default())
         .manage(mcp_client::McpClientState::default())
         .manage(codex_runtime::CodexRuntimeState::default())
         .manage(project_asset_storage::ObjectStorageState::default())
@@ -2366,8 +2381,7 @@ pub fn run() {
             wsagent_shared::scripts::wsagent_shared_scripts_list,
             wsagent_shared::scripts::wsagent_shared_scripts_read,
             wsagent_shared::scripts::wsagent_shared_scripts_apply,
-            wsagent_shared::plugin_install::wsagent_plugin_install_take,
-            wsagent_shared::plugin_install::wsagent_plugin_install_finish,
+            wsagent_shared::plugin_install::wsagent_plugin_install_project,
             wsagent_shared::wsagent_shared_revoke,
             wsagent_shared::wsagent_shared_list,
             wsagent_shared::wsagent_shared_read,
@@ -2388,6 +2402,9 @@ pub fn run() {
             codex_runtime::codex_runtime_cancel,
             codex_runtime::codex_runtime_collect,
             local_fonts::list_local_fonts,
+            plugin_delivery::plugin_delivery_take,
+            plugin_delivery::plugin_delivery_check,
+            plugin_delivery::plugin_delivery_finish,
             plugin_registry::stage_plugin_revision,
             plugin_registry::activate_plugin_revision,
             plugin_registry::ensure_plugin_registration,
@@ -2471,18 +2488,27 @@ pub fn run() {
             }
 
             #[cfg(windows)]
-            native_rendering::create_main_window(_app, main_window_config)?;
+            {
+                native_rendering::create_main_window(_app, main_window_config)?;
+                if let Some(wake) = windows_plugin_wake {
+                    wake.start(_app.handle());
+                }
+            }
             Ok(())
         })
         .build(context)
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
+        .run(move |app_handle, event| {
             path_policy::authorize_native_drop(app_handle, &event);
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Opened { urls } = &event {
-                wsagent_shared::plugin_install::on_opened(app_handle, urls);
+            if receive_plugin_delivery {
+                if let tauri::RunEvent::Opened { urls } = &event {
+                    plugin_delivery::on_opened(app_handle, urls);
+                }
             }
             if matches!(event, tauri::RunEvent::Exit) {
+                #[cfg(windows)]
+                plugin_delivery::stop_windows_wake(app_handle);
                 codex_runtime::shutdown(app_handle);
                 comfyui::progress::shutdown_progress(app_handle);
                 comfyui::installer::shutdown_installation(app_handle);
