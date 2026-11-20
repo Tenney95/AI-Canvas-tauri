@@ -23,7 +23,6 @@ import {
   useMemo,
   useRef,
   useSyncExternalStore,
-  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
@@ -37,6 +36,7 @@ import ConversationList from './ConversationList';
 import ChatHeader from './ChatHeader';
 import ChatMessages, { type ChatScrollRequest } from './ChatMessages';
 import ChatInput from './ChatInput';
+import PanelResizeHandle from '../shared/PanelResizeHandle';
 import TeamExecutionPicker from '../shared/agentTeams/TeamExecutionPicker';
 import CreationProfilePicker from '../shared/creationProfiles/CreationProfilePicker';
 import type { CreationProfileChoicePreview, CreationProfileOption, CreationProfileSelection } from '../../types/creationProfile';
@@ -119,12 +119,6 @@ const CHAT_PANEL_DEFAULT_WIDTH = 480;
 const CHAT_PANEL_MIN_WIDTH = 320;
 const CHAT_PANEL_MAX_WIDTH = 720;
 const CHAT_PANEL_VIEWPORT_GUTTER = 64;
-
-interface ChatPanelResizeGesture {
-  pointerId: number;
-  startX: number;
-  startWidth: number;
-}
 
 interface ChatPanelProps {
   detached?: boolean;
@@ -428,7 +422,6 @@ export default function ChatPanel({
   const chatPanelRef = useRef<HTMLElement | null>(null);
   const preferredChatPanelWidthRef = useRef(CHAT_PANEL_DEFAULT_WIDTH);
   const chatPanelWidthInitializedRef = useRef(false);
-  const chatPanelResizeGestureRef = useRef<ChatPanelResizeGesture | null>(null);
 
   const applyDockedChatPanelWidth = useCallback((preferredWidth: number) => {
     const shell = chatPanelRef.current?.closest<HTMLElement>('.app-shell');
@@ -465,57 +458,10 @@ export default function ChatPanel({
     return () => window.removeEventListener('resize', syncWidthToViewport);
   }, [applyDockedChatPanelWidth, chatOpen, chatPanelDetached, detached]);
 
-  useEffect(() => () => {
-    chatPanelResizeGestureRef.current = null;
-    document.body.classList.remove('chat-panel-resizing');
-  }, []);
-
-  const handleChatPanelResizePointerDown = useCallback((
-    event: ReactPointerEvent<HTMLDivElement>,
-  ) => {
-    if (detached || event.button !== 0) return;
-    const panel = chatPanelRef.current;
-    if (!panel) return;
-
-    chatPanelResizeGestureRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startWidth: panel.getBoundingClientRect().width,
-    };
-    event.currentTarget.setPointerCapture(event.pointerId);
-    document.body.classList.add('chat-panel-resizing');
-    event.preventDefault();
-  }, [detached]);
-
-  const handleChatPanelResizePointerMove = useCallback((
-    event: ReactPointerEvent<HTMLDivElement>,
-  ) => {
-    const gesture = chatPanelResizeGestureRef.current;
-    if (!gesture || gesture.pointerId !== event.pointerId) return;
-
-    const preferredWidth = Math.min(
-      CHAT_PANEL_MAX_WIDTH,
-      Math.max(
-        CHAT_PANEL_MIN_WIDTH,
-        gesture.startWidth + gesture.startX - event.clientX,
-      ),
-    );
+  const resizeDockedChatPanel = useCallback((preferredWidth: number) => {
     preferredChatPanelWidthRef.current = preferredWidth;
     applyDockedChatPanelWidth(preferredWidth);
   }, [applyDockedChatPanelWidth]);
-
-  const handleChatPanelResizePointerEnd = useCallback((
-    event: ReactPointerEvent<HTMLDivElement>,
-  ) => {
-    const gesture = chatPanelResizeGestureRef.current;
-    if (!gesture || gesture.pointerId !== event.pointerId) return;
-
-    chatPanelResizeGestureRef.current = null;
-    document.body.classList.remove('chat-panel-resizing');
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-  }, []);
   // 记忆挂在剧集项目上，分集画布要按归属项目取
   const memoryOwnerId = useAppStore((s) => (
     effectiveProjectId ? projectMemoryOwnerId(s.projects, effectiveProjectId) : null
@@ -1152,14 +1098,11 @@ export default function ChatPanel({
               : { type: 'spring', visualDuration: 0.35, bounce: 0 }}
           >
             {!detached && (
-              <div
-                aria-hidden="true"
-                className="chat-panel-resize-handle"
-                onPointerDown={handleChatPanelResizePointerDown}
-                onPointerMove={handleChatPanelResizePointerMove}
-                onPointerUp={handleChatPanelResizePointerEnd}
-                onPointerCancel={handleChatPanelResizePointerEnd}
-                onLostPointerCapture={handleChatPanelResizePointerEnd}
+              <PanelResizeHandle
+                edge="left"
+                minWidth={CHAT_PANEL_MIN_WIDTH}
+                maxWidth={CHAT_PANEL_MAX_WIDTH}
+                onResize={resizeDockedChatPanel}
               />
             )}
             {/* Header */}

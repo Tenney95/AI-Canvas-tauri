@@ -64,6 +64,7 @@ import { nativeDropClientPosition } from '../utils/nativeDropPosition';
 import { ALL_CATEGORIES, CATEGORY_ICONS, shortFolderName } from '../utils/assetFormat';
 import { sortAssetFiles } from '../utils/assetSort';
 import AssetThumb from './shared/AssetThumb';
+import PanelResizeHandle from './shared/PanelResizeHandle';
 import PopupCloseButton from './shared/PopupCloseButton';
 import Select from './shared/Select';
 import Tabs, { type TabItem } from './shared/Tabs';
@@ -130,6 +131,8 @@ const MAX_TAG_CHIPS = 24;
 const MIN_WATERFALL_COLUMNS = 2;
 const MAX_WATERFALL_COLUMNS = 6;
 const DEFAULT_WATERFALL_COLUMNS = 3;
+const ASSETS_DRAWER_MIN_WIDTH = 320;
+const ASSETS_DRAWER_MAX_WIDTH = 720;
 const FILE_SORT_OPTIONS: { value: AssetSortBy; label: string }[] = [
   { value: 'name', label: '名称' },
   { value: 'createdAt', label: '创建时间' },
@@ -268,6 +271,18 @@ export default function AssetsPanel() {
   const deferredNodeSearch = useDeferredValue(nodeSearch);
   const isDrawer = assetsPanelMode === 'drawer';
   const isPage = assetsPanelMode === 'page';
+  // 抽屉退场后会卸载 DOM，组件内保留宽度供同一会话重开。
+  const drawerWrapperRef = useRef<HTMLDivElement | null>(null);
+  const drawerWidthRef = useRef('');
+  const setDrawerWrapper = useCallback((wrapper: HTMLDivElement | null) => {
+    drawerWrapperRef.current = wrapper;
+    if (wrapper) wrapper.style.width = drawerWidthRef.current;
+  }, []);
+  const resizeDrawer = useCallback((width: number) => {
+    // 用现有侧栏偏移和窗口边距限宽，拖动时无需重渲染资产列表。
+    drawerWidthRef.current = `min(${Math.round(width)}px, calc(100vw - var(--assets-drawer-left) - 12px))`;
+    if (drawerWrapperRef.current) drawerWrapperRef.current.style.width = drawerWidthRef.current;
+  }, []);
   const waterfallColumns = isDrawer ? DEFAULT_WATERFALL_COLUMNS : normalizeWaterfallColumns(assetWaterfallColumns);
   const sortBy: AssetSortBy = assetSortBy === 'createdAt' || assetSortBy === 'modifiedAt' || assetSortBy === 'size' || assetSortBy === 'usedAt'
     ? assetSortBy : 'name';
@@ -1442,10 +1457,13 @@ export default function AssetsPanel() {
             transition={{ duration: 0.2 }}
             onClick={handleClose}
           />}
-          <div className={isPage ? 'absolute inset-0 z-40' : `assets-panel-wrapper${isDrawer ? ' assets-panel-wrapper--drawer' : ''}`}>
+          <div
+            ref={isDrawer ? setDrawerWrapper : undefined}
+            className={isPage ? 'absolute inset-0 z-40' : `assets-panel-wrapper${isDrawer ? ' assets-panel-wrapper--drawer' : ''}`}
+          >
             <motion.div
               data-resource-video-boundary
-              className={isPage ? 'assets-library-page flex h-full min-h-0 w-full flex-col overflow-hidden bg-canvas-bg pb-3' : `assets-panel glass-panel ui-dialog-surface${isDrawer ? ' assets-panel--drawer' : ''}`}
+              className={isPage ? 'assets-library-page flex h-full min-h-0 w-full flex-col overflow-hidden bg-canvas-bg pb-3' : `assets-panel glass-panel ui-dialog-surface${isDrawer ? ' assets-panel--drawer pr-2' : ''}`}
               role={isPage ? 'main' : isDrawer ? 'region' : 'dialog'}
               aria-label={isPage ? translate('资源库') : isDrawer ? translate('资产库快捷面板') : translate('资产管理')}
               aria-modal={isDrawer || isPage ? undefined : true}
@@ -1461,6 +1479,14 @@ export default function AssetsPanel() {
               initial="hidden" animate="visible" exit="exit"
               onClick={(e) => e.stopPropagation()}
             >
+              {isDrawer && (
+                <PanelResizeHandle
+                  edge="right"
+                  minWidth={ASSETS_DRAWER_MIN_WIDTH}
+                  maxWidth={ASSETS_DRAWER_MAX_WIDTH}
+                  onResize={resizeDrawer}
+                />
+              )}
               {/* Header */}
               <div data-tauri-drag-region={isPage ? true : undefined} className={isPage ? `relative flex h-11 shrink-0 items-center gap-3 pr-3 ${macWindowControls ? 'pl-28' : 'pl-3'}` : 'assets-panel-header px-2.5 py-2'}>
                 {isPage && <button type="button" autoFocus className="ui-btn ui-btn--ghost ui-btn--sm" onClick={handleClose}>
