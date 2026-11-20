@@ -283,7 +283,7 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
     return { directorDeskRuntimeRequest: { instanceId: normalized, openAfterInstall } };
   }),
   clearDirectorDeskRuntimeRequest: () => set({ directorDeskRuntimeRequest: null }),
-  setHoveredMentionNodeId: (id) => set({ hoveredMentionNodeId: id }),
+  setHoveredMentionNodeId: (id) => set((state) => state.hoveredMentionNodeId === id ? state : { hoveredMentionNodeId: id }),
   setPendingPresetAction: (action) => set({ pendingPresetAction: action }),
   setReversePromptRequest: (request) => set({ reversePromptRequest: request }),
   beginComfyNodeProgress: (progress) => set((state) => ({

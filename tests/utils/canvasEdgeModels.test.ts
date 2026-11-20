@@ -67,12 +67,17 @@ describe('canvas edge model selector', () => {
     const position = nodes[0].internals.positionAbsolute;
     const handleRead = vi.fn(() => position);
     Object.defineProperty(nodes[0].internals, 'positionAbsolute', { configurable: true, get: handleRead });
-    let published = state;
+    let published = { ...state, paneDragging: true };
+    revisions.set(published, state);
+    expect(select(published, ids, trackedGeometry, 'flow', mounted)).toBe(first);
     for (let i = 0; i < 30; i += 1) {
       published = { ...published, transform: [i + 1, 0, 1] };
       revisions.set(published, state);
       expect(select(published, ids, trackedGeometry, 'flow', mounted)).toBe(first);
     }
+    published = { ...published, paneDragging: false };
+    revisions.set(published, state);
+    expect(select(published, ids, trackedGeometry, 'flow', mounted)).toBe(first);
     expect(scan).not.toHaveBeenCalled();
     expect(handleRead).not.toHaveBeenCalled();
     nodes[0].internals.positionAbsolute.x = 90;
@@ -88,6 +93,10 @@ describe('canvas edge model selector', () => {
     const panned = { ...selected, transform: [99, 0, 1] as [number, number, number] };
     revisions.set(panned, selected);
     expect(select(panned, ids, trackedGeometry, 'flow', mounted)[0]).toMatchObject({ props: { selected: true } });
+    const ended = { ...panned, paneDragging: false };
+    revisions.set(ended, selected);
+    const remounted = select(ended, ids, trackedGeometry, 'flow', new Set(['c']));
+    expect(remounted.map((edge) => (edge as CanvasSharedEdgeModel).interactive)).toEqual([false, true]);
     scan.mockRestore();
   });
 
@@ -126,7 +135,8 @@ describe('canvas edge model selector', () => {
     const first = select(state, ids, geometry, 'flow', mounted);
     getter.mockClear();
     edges[0].selected = true;
-    const selectedState = { ...state };
+    // Unmarked paneDragging is an ordinary publish and can carry an in-place change.
+    const selectedState = { ...state, paneDragging: true };
     const selected = select(selectedState, ids, geometry, 'flow', mounted);
     expect(selected).not.toBe(first);
     expect(selected[0]).toMatchObject({ props: { selected: true } });

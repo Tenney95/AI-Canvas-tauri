@@ -169,7 +169,7 @@ export default memo(function CanvasEdgeStrokeLayer({ models, store, zIndex, onUn
     viewportObserver.observe(viewport, { attributes: true, attributeFilter: ['style'] });
     const appearanceObserver = new MutationObserver(() => { styles = null; schedule(); });
     appearanceObserver.observe(canvas.ownerDocument.documentElement, {
-      attributes: true, attributeFilter: ['style', 'class', 'data-theme', 'data-appearance-id'],
+      attributes: true, attributeFilter: ['style', 'data-theme', 'data-appearance-id'],
     });
     const watchPixelRatio = () => {
       media?.removeEventListener('change', watchPixelRatio);

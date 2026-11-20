@@ -1,6 +1,8 @@
 /** 引用编辑器的真实入口回归：订阅范围、候选准备与 DOM 同步失效。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ComponentProps, ReactElement } from 'react';
+import { createStore } from 'zustand/vanilla';
+import { createUISlice } from '../../src/store/store.ui';
 import type { AppState } from '../../src/store/useAppStore';
 import type { BaseNodeData, WorkflowDefinition } from '../../src/types';
 import { emptyDramaAssetLibrary } from '../../src/types/dramaAssets';
@@ -9,7 +11,7 @@ const driver = vi.hoisted(() => ({
   state: null as unknown as AppState, states: [] as unknown[], refs: [] as Array<{ current: unknown }>,
   memos: [] as Array<{ value: unknown; deps: readonly unknown[] }>,
   layouts: [] as Array<{ deps?: readonly unknown[]; cleanup?: () => void }>, pending: [] as Array<() => void>,
-  stateIndex: 0, refIndex: 0, memoIndex: 0, layoutIndex: 0,
+  stateIndex: 0, refIndex: 0, memoIndex: 0, layoutIndex: 0, runEffects: false, stateWrites: 0,
 }));
 vi.mock('react', async () => {
   const memo = <T,>(factory: () => T, deps: readonly unknown[]) => {
@@ -17,22 +19,23 @@ vi.mock('react', async () => {
     if (!previous || deps.length !== previous.deps.length || deps.some((dep, i) => !Object.is(dep, previous.deps[i]))) driver.memos[index] = { value: factory(), deps };
     return driver.memos[index].value as T;
   };
+  const queueEffect = (effect: () => void | (() => void), deps?: readonly unknown[]) => {
+    const index = driver.layoutIndex++; const old = driver.layouts[index];
+    if (old && deps?.length === old.deps?.length && deps?.every((dep, i) => Object.is(dep, old.deps?.[i]))) return;
+    driver.pending.push(() => { old?.cleanup?.(); driver.layouts[index] = { deps, cleanup: effect() ?? undefined }; });
+  };
   return { ...await vi.importActual<typeof import('react')>('react'),
     forwardRef: (fn: (props: unknown, ref: null) => unknown) => (props: unknown) => fn(props, null),
-    // 此 driver 只提交布局效果；浏览器监听、目录 IO 和焦点由既有独立回归与桌面验收覆盖。
-    lazy: () => 'lazy-component', useId: () => 'mention-editor', useEffect: () => {}, useImperativeHandle: () => {},
+    lazy: () => 'lazy-component', useId: () => 'mention-editor', useImperativeHandle: () => {},
+    useEffect: (effect: () => void | (() => void), deps?: readonly unknown[]) => { if (driver.runEffects) queueEffect(effect, deps); },
     useMemo: memo, useCallback: <T,>(fn: T, deps: readonly unknown[]) => memo(() => fn, deps),
     useState: <T,>(initial?: T | (() => T)) => {
-      const index = driver.stateIndex++;
-      if (!(index in driver.states)) driver.states[index] = typeof initial === 'function' ? (initial as () => T)() : initial;
-      return [driver.states[index], (next: T | ((old: T) => T)) => { driver.states[index] = typeof next === 'function' ? (next as (old: T) => T)(driver.states[index] as T) : next; }];
+      const index = driver.stateIndex++; const states = driver.states;
+      if (!(index in states)) states[index] = typeof initial === 'function' ? (initial as () => T)() : initial;
+      return [states[index], (next: T | ((old: T) => T)) => { driver.stateWrites++; states[index] = typeof next === 'function' ? (next as (old: T) => T)(states[index] as T) : next; }];
     },
     useRef: <T,>(initial: T) => driver.refs[driver.refIndex++] ??= { current: initial },
-    useLayoutEffect: (effect: () => void | (() => void), deps?: readonly unknown[]) => {
-      const index = driver.layoutIndex++; const old = driver.layouts[index];
-      if (old && deps?.length === old.deps?.length && deps?.every((dep, i) => Object.is(dep, old.deps?.[i]))) return;
-      driver.pending.push(() => { old?.cleanup?.(); driver.layouts[index] = { deps, cleanup: effect() ?? undefined }; });
-    },
+    useLayoutEffect: queueEffect,
   };
 });
 vi.mock('zustand/react/shallow', () => ({ useShallow: <T,>(selector: T) => selector }));
@@ -67,6 +70,7 @@ import { resolveCanvasMentionNodes, resolveDramaMentionItems, resolveWorkflowMen
 
 type Element = ReactElement<Record<string, unknown> & { children?: unknown; ref?: { current: unknown } }>;
 const root = { innerHTML: '', childNodes: [] as unknown[], querySelectorAll: () => [], contains: () => true, focus: () => {},
+  addEventListener: () => {}, removeEventListener: () => {},
   classList: { contains: () => false }, ownerDocument: { getSelection: () => null }, replaceChildren: vi.fn() };
 let prompt = '';
 const onChange = (value: string) => { prompt = value; };
@@ -101,7 +105,22 @@ function openMenu() {
 }
 function picker(tree: unknown) { return elements(tree).find((element) => element.type === 'mention-picker')!.props; }
 
+function setupChipHover() {
+  driver.runEffects = true;
+  vi.useFakeTimers();
+  const view = Object.assign(new EventTarget(), { getSelection: () => null, innerWidth: 1000, innerHeight: 800,
+    setTimeout: window.setTimeout, clearTimeout: window.clearTimeout });
+  vi.stubGlobal('window', view);
+  vi.stubGlobal('document', { body: {}, activeElement: null, addEventListener: vi.fn(), removeEventListener: vi.fn() });
+  const highlight = vi.fn((id: string | null) => { driver.state.hoveredMentionNodeId = id; });
+  driver.state.setHoveredMentionNodeId = highlight;
+  const chip = { getAttribute: (key: string) => key === 'data-ref-id' ? 'source' : null, isConnected: true,
+    getBoundingClientRect: () => ({ left: 10, bottom: 20 }) };
+  return { view, highlight, chip };
+}
+
 beforeEach(() => {
+  driver.runEffects = false; driver.stateWrites = 0;
   driver.states = []; driver.refs = []; driver.memos = []; driver.layouts = []; driver.pending = []; prompt = '';
   root.innerHTML = ''; root.childNodes = []; root.replaceChildren.mockClear();
   vi.stubGlobal('Node', { TEXT_NODE: 3, ELEMENT_NODE: 1 });
@@ -114,6 +133,82 @@ beforeEach(() => {
 afterEach(() => { driver.layouts.forEach((effect) => effect.cleanup?.()); vi.unstubAllGlobals(); });
 
 describe('MentionEditor subscription boundaries', () => {
+  it('publishes the global highlight only when the referenced node changes', () => {
+    const store = createStore<AppState>()((set, get, api) => createUISlice(set, get, api) as AppState);
+    const observe = vi.fn();
+    store.subscribe(observe);
+    const highlight = store.getState().setHoveredMentionNodeId;
+    highlight(null); highlight('source'); highlight('source'); highlight(null); highlight(null);
+    expect(observe).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps idle shotlist editors out of pointer updates and dismisses only the active or exiting preview', () => {
+    const { view, highlight, chip } = setupChipHover();
+    const listen = vi.spyOn(view, 'addEventListener');
+    const scope = () => ({ states: [] as typeof driver.states, refs: [] as typeof driver.refs, memos: [] as typeof driver.memos,
+      layouts: [] as typeof driver.layouts, pending: [] as typeof driver.pending });
+    const editors = Array.from({ length: 98 }, scope);
+    const open = (i: number) => { Object.assign(driver, editors[i]); return render(); };
+    const over = (i: number) => (open(i).textbox.props.onMouseOver as (e: unknown) => void)({ target: { closest: () => chip }, buttons: 0 });
+    const pointer = (type: string, buttons = 0) => view.dispatchEvent(Object.assign(new Event(type), { buttons }));
+    const presence = (i: number) => elements(open(i).tree).find((el) => el.type === 'presence')!;
+    const cleanup = (i: number) => { editors[i].layouts.splice(0).forEach((effect) => effect.cleanup?.()); };
+    try {
+      editors.forEach((_, index) => open(index));
+      expect(listen.mock.calls.filter(([type]) => type === 'pointerdown')).toHaveLength(1);
+      driver.stateWrites = 0;
+      pointer('pointerdown', 4); pointer('pointermove', 4); pointer('pointerup'); pointer('blur'); pointer('scroll');
+      expect(driver.stateWrites).toBe(0);
+      expect(highlight).not.toHaveBeenCalled();
+
+      over(0); over(1); cleanup(0);
+      expect(highlight).not.toHaveBeenCalledWith(null);
+      vi.advanceTimersByTime(121);
+      expect(elements(presence(1)).some((el) => el.props.role === 'tooltip')).toBe(true);
+      const firstKey = presence(1).key;
+      (open(1).textbox.props.onMouseLeave as () => void)();
+      expect(highlight).toHaveBeenLastCalledWith(null);
+      expect(presence(1).key).toBe(firstKey); // normal leave allows the exit animation
+      pointer('pointerdown', 1);
+      expect(presence(1).key).not.toBe(firstKey); // pressing during exit removes that presence immediately
+      pointer('dragstart'); pointer('pointercancel'); pointer('pointermove');
+      const calls = highlight.mock.calls.length;
+      over(1);
+      expect(highlight).toHaveBeenCalledTimes(calls);
+      pointer('drop'); over(1); vi.advanceTimersByTime(121);
+      expect(elements(presence(1)).some((el) => el.props.role === 'tooltip')).toBe(true);
+      pointer('pointerdown', 4);
+      expect(elements(presence(1)).some((el) => el.props.role === 'tooltip')).toBe(false);
+      driver.stateWrites = 0;
+      highlight.mockClear();
+      editors.forEach((_, index) => cleanup(index));
+      expect(driver.stateWrites).toBe(0);
+      expect(highlight).not.toHaveBeenCalled();
+    } finally {
+      editors.forEach((_, index) => cleanup(index));
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['node', 'project'])('discards the visible preview when the same editor switches %s and returns', (owner) => {
+    const { chip, highlight } = setupChipHover();
+    driver.state.nodes = [...driver.state.nodes, node('editor-b', { type: 'ai-video' })];
+    const hasTooltip = (nodeId: string) => elements(render({ nodeId }).tree).some((el) => el.props.role === 'tooltip');
+    try {
+      const { textbox } = render();
+      (textbox.props.onMouseOver as (event: unknown) => void)({ target: { closest: () => chip }, buttons: 0 });
+      vi.advanceTimersByTime(121);
+      expect(hasTooltip('editor')).toBe(true);
+      if (owner === 'project') driver.state.currentProjectId = 'project-b';
+      expect(hasTooltip(owner === 'node' ? 'editor-b' : 'editor')).toBe(false);
+      expect(highlight).toHaveBeenLastCalledWith(null);
+      driver.state.currentProjectId = 'project';
+      expect(hasTooltip('editor')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('shares the full display projection and metadata across editors without repeating movement scans', () => {
     const readDisplayId = vi.fn(() => 7);
     Object.defineProperty(driver.state.nodes[1].data, 'displayId', { get: readDisplayId, enumerable: true });

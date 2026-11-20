@@ -6,6 +6,8 @@ import type { CanvasNodeLodRuntime } from '../services/canvasNodeLodRuntime';
 
 export const CanvasNodeLodContext = createContext<CanvasNodeLodRuntime | null>(null);
 export const CanvasNodeLodPreviewRevisionContext = createContext<number | undefined>(undefined);
+/** An on-demand media wrapper needs its full controls before the first replayed pointer event. */
+export const CanvasNodeLodInteractiveContext = createContext(false);
 
 /** 图片版本由不随 LOD 卸载的边界持有，避免切回旧的内存缩略图。 */
 export function useCanvasNodeLodPreviewRevision() {

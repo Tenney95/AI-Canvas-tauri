@@ -31,13 +31,17 @@ export function useCanvasViewportPreferences(
   const initialViewPromiseRef = useRef<Promise<boolean> | null>(null);
   const viewportReadyRef = useRef(false);
   const lastViewportRef = useRef<SavedCanvasViewport | null>(null);
-  const userMovingRef = useRef(false);
+  const userMovingRef = useRef<{ zoom: number; startedAuto: boolean } | null>(null);
   const isCurrent = useCallback(() => useAppStore.getState().currentProjectId === projectId, [projectId]);
 
   const savePreference = useCallback((nextMode: CanvasViewportMode, zoom: number) => {
     const state = useAppStore.getState();
     if (!state.configHydrated || !isCurrent()) return;
-    state.updateConfig({ canvasViewportMode: nextMode, canvasViewportZoom: normalizeCanvasZoom(zoom, state.config) });
+    const nextZoom = normalizeCanvasZoom(zoom, state.config);
+    if (normalizeCanvasViewportMode(state.config.canvasViewportMode) !== nextMode
+      || normalizeCanvasZoom(state.config.canvasViewportZoom, state.config) !== nextZoom) {
+      state.updateConfig({ canvasViewportMode: nextMode, canvasViewportZoom: nextZoom });
+    }
     // 保存失败由既有配置状态展示，保留待保存修改。
     void state.saveConfig({ silent: true }).catch(() => {});
   }, [isCurrent]);
@@ -116,20 +120,32 @@ export function useCanvasViewportPreferences(
 
   const beginUserMove = useCallback(() => {
     const state = useAppStore.getState();
-    if (!state.configHydrated || !isCurrent()
-      || normalizeCanvasViewportMode(state.config.canvasViewportMode) === 'locked') return;
-    userMovingRef.current = true;
+    const currentMode = normalizeCanvasViewportMode(state.config.canvasViewportMode);
+    if (userMovingRef.current || !state.configHydrated || !isCurrent() || currentMode === 'locked') return;
+    const zoom = normalizeCanvasZoom(flow.getZoom(), state.config);
+    userMovingRef.current = { zoom, startedAuto: currentMode === 'auto' };
     // 不在每帧保存；用户平移或缩放后由手动模式接管，避免 resize 拉回视图。
-    if (normalizeCanvasViewportMode(state.config.canvasViewportMode) === 'auto') {
-      state.updateConfig({ canvasViewportMode: 'manual', canvasViewportZoom: flow.getZoom() });
+    if (currentMode === 'auto') {
+      state.updateConfig({ canvasViewportMode: 'manual', canvasViewportZoom: zoom });
     }
   }, [flow, isCurrent]);
 
   const endUserMove = useCallback(() => {
-    if (!userMovingRef.current) return;
-    userMovingRef.current = false;
-    if (normalizeCanvasViewportMode(useAppStore.getState().config.canvasViewportMode) !== 'locked') {
-      savePreference('manual', flow.getZoom());
+    const gesture = userMovingRef.current;
+    userMovingRef.current = null;
+    if (!gesture) return;
+    const state = useAppStore.getState();
+    if (normalizeCanvasViewportMode(state.config.canvasViewportMode) !== 'manual') return;
+    const currentZoom = normalizeCanvasZoom(flow.getZoom(), state.config);
+    const configuredZoom = normalizeCanvasZoom(state.config.canvasViewportZoom, state.config);
+    // 单个项目恢复的倍率可能与全局偏好不同。纯平移只记项目视口。
+    const nextZoom = currentZoom === gesture.zoom ? configuredZoom : currentZoom;
+    const retry = state.configSaveStatus === 'error' && state.configDirty && (
+      normalizeCanvasViewportMode(state.configEditBaseline.canvasViewportMode) !== 'manual'
+      || normalizeCanvasZoom(state.configEditBaseline.canvasViewportZoom, state.config) !== configuredZoom
+    );
+    if (gesture.startedAuto || nextZoom !== configuredZoom || retry) {
+      savePreference('manual', nextZoom);
     }
   }, [flow, savePreference]);
 

@@ -133,7 +133,7 @@ export function createCanvasEdgeModelSelector() {
   let publication: {
     state: ReactFlowState;
     transform: ReactFlowState['transform'];
-    fields: Values;
+    fields?: Values;
     edgeIds: readonly string[];
     geometry: CanvasEdgeGeometry;
     rfId: string;
@@ -148,20 +148,18 @@ export function createCanvasEdgeModelSelector() {
     rfId: string,
     mountedNodeIds: ReadonlySet<string>,
   ): readonly CanvasEdgeModel[] => {
-    const fields = publicationValues(state);
     const viewportRevision = geometry.getViewportRevision?.(state);
-    const sameViewportInputs = publication !== undefined
-      && state !== publication.state && state.transform !== publication.transform
-      && edgeIds === publication.edgeIds && geometry === publication.geometry
-      && rfId === publication.rfId && mountedNodeIds === publication.mountedNodeIds
-      && sameValues(publication.fields, fields);
+    const fields = viewportRevision === undefined ? publicationValues(state) : undefined;
+    const previousPublication = publication;
+    const sameInputs = previousPublication !== undefined && state !== previousPublication.state
+      && edgeIds === previousPublication.edgeIds && geometry === previousPublication.geometry
+      && rfId === previousPublication.rfId && mountedNodeIds === previousPublication.mountedNodeIds;
     const nextPublication = {
       state, transform: state.transform, fields, edgeIds, geometry, rfId, mountedNodeIds, viewportRevision,
     };
-    // Only the build adapter can attest to a transform-only publication. Other
+    // Only the build adapter can attest to a camera or paneDragging update. Other
     // callers retain scalar snapshots, including in-place RF geometry changes.
-    if (sameViewportInputs && viewportRevision !== undefined
-      && viewportRevision === publication!.viewportRevision) {
+    if (sameInputs && viewportRevision !== undefined && viewportRevision === previousPublication.viewportRevision) {
       publication = nextPublication;
       return models;
     }
@@ -174,7 +172,8 @@ export function createCanvasEdgeModelSelector() {
       nextNodes.set(id, next);
     }
     nodes = nextNodes;
-    const viewportOnly = viewportRevision === undefined && !nodesChanged && sameViewportInputs;
+    const viewportOnly = sameInputs && fields !== undefined && !nodesChanged
+      && state.transform !== previousPublication.transform && sameValues(previousPublication.fields, fields);
     // Only immutable RF publications changing transform alone take this path.
     // Direct same-object callers still inspect edge values for in-place changes.
     if (viewportOnly) {

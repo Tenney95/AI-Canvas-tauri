@@ -129,7 +129,8 @@ export default function CanvasMiniMapNodeLayer({ geometry, width, height, nodeCo
     });
     const appearance = new MutationObserver(() => { colors.clear(); schedule(); });
     appearance.observe(canvas.ownerDocument.documentElement, {
-      attributes: true, attributeFilter: ['style', 'class', 'data-theme', 'data-appearance-id'],
+      // The appearance runtime publishes colors through these attributes. Dragging toggles only a class.
+      attributes: true, attributeFilter: ['style', 'data-theme', 'data-appearance-id'],
     });
     const watchResolution = () => {
       resolution?.removeEventListener('change', onResolutionChange);
