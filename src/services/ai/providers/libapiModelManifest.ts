@@ -78,6 +78,21 @@ function pixverseVideoParams(aspectRatio: ParameterSnapshot, modes: string[]): L
   };
 }
 
+function geminiTtsParams(): LibapiModelSnapshot['params'] {
+  return {
+    voice: {
+      enum: [
+        'Zephyr', 'Puck', 'Charon', 'Kore', 'Fenrir', 'Leda', 'Orus', 'Aoede',
+        'Callirrhoe', 'Autonoe', 'Enceladus', 'Iapetus', 'Umbriel', 'Algieba', 'Despina',
+        'Erinome', 'Algenib', 'Rasalgethi', 'Laomedeia', 'Achernar', 'Alnilam', 'Schedar',
+        'Gacrux', 'Pulcherrima', 'Achird', 'Zubenelgenubi', 'Vindemiatrix', 'Sadachbia', 'Sadaltager', 'Sulafat',
+      ],
+      default: 'Zephyr',
+    },
+    response_format: { enum: ['wav'], default: 'wav' },
+  };
+}
+
 // 官方参数表的精简快照；新增型号必须核对字段语义后再加入。
 const SNAPSHOT: readonly LibapiModelSnapshot[] = [
   {"id":"seedance-2-5","public_id":"seedance-2-5","name":"Seedance 2.5 · 官方直连","type":"video","exclusive":true,"params":{"aspect_ratio":{"enum":["16:9","9:16","21:9","3:4","1:1","4:3"],"default":"16:9","available_when":{"mode":["text-to-video","reference"]}},"resolution":{"enum":["480p","720p","1080p"],"default":"480p"},"duration":seedance25Duration(),"mode":{"enum":["text-to-video","first-frame","reference","first-last","edit","extend"],"default":"first-frame"},"images":{"max_items":30,"max_items_by_mode":{"edit":30,"extend":30,"first-frame":30,"first-last":30,"reference":30,"text-to-video":0}},"videos":{"max_items":10,"max_items_by_mode":{"edit":10,"extend":1,"first-frame":0,"first-last":0,"reference":10,"text-to-video":0},"min_duration_sec":1.8,"max_total_duration_sec":30},"audios":{"max_items":10,"max_items_by_mode":{"edit":10,"extend":10,"first-frame":0,"first-last":0,"reference":10,"text-to-video":0},"min_duration_sec":1.8,"max_total_duration_sec":30}}},
@@ -143,8 +158,8 @@ const SNAPSHOT: readonly LibapiModelSnapshot[] = [
   {"id":"gemini-nano-banana-2.1-image","public_id":"gm-nano-banana-2.1-image","name":"GM NB 2.1 Image","type":"image","params":{"aspect_ratio":{"enum":["1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9","1:4","4:1","8:1"],"default":"1:1"},"size":{"enum":["1K","2K","4K"],"default":"4K"},"mode":imageModeSnapshot(),"images":{"max_items":14}}},
   {"id":"speech-2.8","public_id":"speech-2.8","name":"MiniMax Speech 2.8 (Voice Clone)","type":"audio","params":{"voice":{},"speed":{"enum":["0.5","0.75","1","1.25","1.5","2"],"default":"1"},"version":{"enum":["2.8","2.6"],"default":"2.8"}}},
   {"id":"music","public_id":"music","name":"Suno Music","type":"audio","params":{"title":{},"lyrics":{},"mode":{"enum":["song","instrumental"],"default":"song"},"version":{"enum":["chirp-v6","chirp-v6-mini","chirp-v5","chirp-v4-5"],"default":"chirp-v6"}}},
-  {"id":"gemini-3.1-flash-tts","public_id":"gm-3.1-flash-tts","name":"GM-3.1 Flash TTS","type":"audio","params":{"voice":{"enum":["Zephyr","Puck","Charon","Kore","Fenrir","Leda","Orus","Aoede","Callirrhoe","Autonoe","Enceladus","Iapetus","Umbriel","Algieba","Despina","Erinome","Algenib","Rasalgethi","Laomedeia","Achernar","Alnilam","Schedar","Gacrux","Pulcherrima","Achird","Zubenelgenubi","Vindemiatrix","Sadachbia","Sadaltager","Sulafat"],"default":"Zephyr"},"response_format":{"enum":["wav"],"default":"wav"}}},
-  {"id":"gemini-2.5-pro-tts","public_id":"gm-2.5-pro-tts","name":"GM-2.5 Pro TTS","type":"audio","params":{"voice":{"enum":["Zephyr","Puck","Charon","Kore","Fenrir","Leda","Orus","Aoede","Callirrhoe","Autonoe","Enceladus","Iapetus","Umbriel","Algieba","Despina","Erinome","Algenib","Rasalgethi","Laomedeia","Achernar","Alnilam","Schedar","Gacrux","Pulcherrima","Achird","Zubenelgenubi","Vindemiatrix","Sadachbia","Sadaltager","Sulafat"],"default":"Zephyr"},"response_format":{"enum":["wav"],"default":"wav"}}},
+  {"id":"gemini-3.1-flash-tts","public_id":"gm-3.1-flash-tts","name":"GM-3.1 Flash TTS","type":"audio","params":geminiTtsParams()},
+  {"id":"gemini-2.5-pro-tts","public_id":"gm-2.5-pro-tts","name":"GM-2.5 Pro TTS","type":"audio","params":geminiTtsParams()},
   {"id":"gpt-4o-mini-tts","public_id":"gt-4o-mini-tts","name":"GT-4o Mini TTS","type":"audio","params":{"voice":{"enum":["alloy","echo","fable","onyx","nova","shimmer"],"default":"alloy"},"response_format":{"enum":["mp3","opus","aac","flac","wav","pcm"],"default":"mp3"},"speed":{"default":"1.0"}}},
   {"id":"doubao-tts-2.0","public_id":"doubao-tts-2.0","name":"Doubao TTS 2.0","type":"audio","params":{"voice":{},"response_format":{"enum":["mp3","wav"],"default":"mp3"},"speed":{"enum":["0.5","0.75","1","1.25","1.5","2"],"default":"1"}}},
 ];

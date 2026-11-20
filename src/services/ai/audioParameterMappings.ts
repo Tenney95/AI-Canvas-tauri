@@ -28,26 +28,29 @@ export interface AudioParameterMapping {
   staticFields?: Record<string, unknown>;
 }
 
+const SPEECH_FIELDS = { input: 'input', voice: 'voice', format: 'response_format', speed: 'speed' };
+const MUSIC_FIELDS = { soundPrompt: 'sound_prompt', lyrics: 'lyrics', title: 'title', bpm: 'bpm', length: 'length' };
+
 const DEFAULT_AUDIO_MAPPING: AudioParameterMapping = {
   providerId: '*',
-  fields: { model: 'model', prompt: 'prompt', batchCount: 'n', input: 'input', voice: 'voice', format: 'response_format', speed: 'speed', soundPrompt: 'sound_prompt', lyrics: 'lyrics', title: 'title', bpm: 'bpm', length: 'length' },
+  fields: { model: 'model', prompt: 'prompt', batchCount: 'n', ...SPEECH_FIELDS, ...MUSIC_FIELDS },
 };
 
 export const AUDIO_PARAMETER_MAPPINGS: readonly AudioParameterMapping[] = [
   {
     providerId: 'apimart',
     modelPattern: /tts|speech|voice/i,
-    fields: { model: 'model', prompt: 'prompt', batchCount: 'n', input: 'input', voice: 'voice', format: 'response_format', speed: 'speed' },
+    fields: { model: 'model', prompt: 'prompt', batchCount: 'n', ...SPEECH_FIELDS },
   },
   {
     providerId: 'apimart',
     modelPattern: /flowmusic|music/i,
-    fields: { model: 'model', soundPrompt: 'sound_prompt', lyrics: 'lyrics', title: 'title', bpm: 'bpm', length: 'length' },
+    fields: { model: 'model', ...MUSIC_FIELDS },
     staticFields: { model: 'flowmusic' },
   },
   {
     providerId: 'standard',
-    fields: { model: 'model', input: 'input', voice: 'voice', format: 'response_format', speed: 'speed' },
+    fields: { model: 'model', ...SPEECH_FIELDS },
   },
 ];
 
