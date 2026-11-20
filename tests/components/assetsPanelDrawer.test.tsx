@@ -403,10 +403,13 @@ describe('项目创作资产工具条', () => {
       ] },
     });
     renderDrama();
-    const gallery = button('角色参考图');
-    expect(all(gallery, (element) => typeof element.props.src === 'string').map((element) => element.props.src)).toEqual([
+    const card = find((element) => element.props['data-asset-id'] === 'hero');
+    const gallery = all(card, (element) => element.props['aria-label'] === '角色参考图')[0];
+    const images = all(gallery, (element) => typeof element.props.src === 'string');
+    expect(images.map((element) => element.props.src)).toEqual([
       'https://example.test/avatar.png', imageUrl, 'https://example.test/expression.png',
     ]);
+    expect(images.every((element) => element.props.draggable && typeof element.props.onDragStart === 'function')).toBe(true);
     expect(all(gallery, (element) => element.props['aria-label'] === '参考图不可用')).toHaveLength(1);
     expect(all(tree, (element) => element.props.src === 'https://example.test/legacy.png')).toHaveLength(1);
     expect(button('创作资产排序方式')).toBeDefined();
@@ -417,6 +420,21 @@ describe('项目创作资产工具条', () => {
     expect(visibleText(tree)).not.toMatch(/打开角色库|新增人物|多选|清空本类/);
     click(button('打开人物：人物甲'));
     expect(driver.store!.getState().characterLibraryRequest).toMatchObject({ scope: 'project', characterId: 'hero' });
+  });
+
+  it('Tab 抽屉的道具卡优先展示可拖动的大图，整页仍使用原缩略图', () => {
+    open('drawer');
+    const { dramaAssets } = driver.store!.getState();
+    const imageUrl = 'https://example.test/prop.png';
+    driver.store!.setState({ dramaAssets: { ...dramaAssets, props: [{ ...dramaAssets.props[0], imageUrl }] } });
+    renderDrama();
+    const gallery = button('参考图');
+    expect(all(gallery, (element) => element.props.src === imageUrl)[0].props.draggable).toBe(true);
+    expect(all(gallery, (element) => String(element.props.className).includes('col-span-2'))).toHaveLength(1);
+
+    driver.store!.getState().setAssetsPanelOpen(true, 'page');
+    renderDrama();
+    expect(find((element) => element.props.src === imageUrl).props.draggable).toBe(false);
   });
 
   it('使用小尺寸控件，先保存新项目，导出完整创作资产而不受分类和搜索影响', async () => {

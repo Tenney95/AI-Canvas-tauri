@@ -18,6 +18,7 @@ import { registerCanvasImport, registerCanvasDerivation, isCanvasDerivationFresh
   canvasMediaImportsPaused, trackCanvasMediaImport } from '../services/canvasDerivationGuard';
 import { getPreferredNodeModel } from '../services/modelPreferenceService';
 import { createUiNodeData } from '../services/uiNodeCreationData';
+import { DRAMA_ASSET_IMAGE_DRAG_TYPE, dropDramaAssetImage } from '../services/dramaAssetImageDrag';
 
 import { classifyFile, MIME_MAP } from '../utils/sourceFileType';
 export { classifyFile, FILE_EXT_IMAGE, FILE_EXT_VIDEO, FILE_EXT_AUDIO, FILE_EXT_TEXT } from '../utils/sourceFileType';
@@ -104,15 +105,22 @@ export function useNodeCreation() {
   const onDrop = useCallback(
     async (e: React.DragEvent) => {
       if (cancelForScriptPage()) return;
-      if (Array.from(e.dataTransfer?.types ?? []).includes(COMFY_REFMOD_MIME)) return;
+      const types = Array.from(e.dataTransfer?.types ?? []);
+      if (types.includes(COMFY_REFMOD_MIME)) return;
       e.preventDefault();
       e.stopPropagation();
       setIsDragOver(false);
       enterCount.current = 0;
       if (useAppStore.getState().workflowPanelOpen || isExternalDropCaptured()) return;
       const dt = e.dataTransfer;
-      if (!dt || dt.files.length === 0) return;
+      if (!dt) return;
+      const isDramaImage = types.includes(DRAMA_ASSET_IMAGE_DRAG_TYPE);
+      if (!isDramaImage && dt.files.length === 0) return;
       const pos = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      if (isDramaImage) {
+        await dropDramaAssetImage(dt.getData(DRAMA_ASSET_IMAGE_DRAG_TYPE), pos);
+        return;
+      }
       await useAppStore.getState().pasteExternalFromDataTransfer(dt, pos, 20, '已拖入');
     },
     [rf, cancelForScriptPage],

@@ -7,7 +7,7 @@ type DropEvent = { payload: { type: 'enter' | 'leave' | 'drop'; paths: string[];
 const driver = vi.hoisted(() => ({
   state: {} as AppState, effects: [] as Array<() => void | (() => void)>,
   onDrag: undefined as ((event: DropEvent) => void) | undefined,
-  copy: vi.fn(), read: vi.fn(), mark: vi.fn(), ids: 0,
+  copy: vi.fn(), read: vi.fn(), mark: vi.fn(), trash: vi.fn(), ids: 0,
 }));
 vi.mock('react', async () => ({ ...await vi.importActual<typeof import('react')>('react'),
   useState: <T,>(value: T) => [value, vi.fn()], useRef: <T,>(value: T) => ({ current: value }),
@@ -20,6 +20,7 @@ vi.mock('../../src/store/useAppStore', () => ({
   generateId: () => String(++driver.ids), computeImageNodeDimensions: async () => ({ nodeWidth: 280, nodeHeight: 158 }),
 }));
 vi.mock('../../src/services/fileService', () => ({ copyFileToProjectData: driver.copy, readBinaryFile: driver.read,
+  moveToUndoTrash: driver.trash,
   arrayBufferToBase64: () => 'AA==' }));
 vi.mock('../../src/utils/dropCapture', () => ({ isExternalDropCaptured: () => false }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: async () => vi.fn() }));
@@ -28,6 +29,7 @@ vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({
 }) }));
 import { useNodeCreation } from '../../src/hooks/useNodeCreation';
 import { hasPendingCanvasMediaImport, pauseCanvasMediaImports } from '../../src/services/canvasDerivationGuard';
+import { DRAMA_ASSET_IMAGE_DRAG_TYPE, endDramaAssetImageDrag, startDramaAssetImageDrag } from '../../src/services/dramaAssetImageDrag';
 import { COMFY_REFMOD_MIME } from '../../src/utils/comfyRefmod';
 let cleanups: Array<void | (() => void)>;
 beforeEach(async () => {
@@ -35,7 +37,10 @@ beforeEach(async () => {
   driver.effects = []; driver.ids = 0; driver.onDrag = undefined;
   driver.copy.mockReset().mockResolvedValue({ assetUrl: 'asset://copied', fileName: 'copied', filePath: '/project/copied' });
   driver.read.mockReset().mockResolvedValue(new Uint8Array([0])); driver.mark.mockReset().mockResolvedValue(true);
+  driver.trash.mockReset().mockResolvedValue(undefined);
+  const projectSession = {};
   driver.state = { getCurrentRevision: () => 0, currentProjectId: 'project', projectLoadStatus: 'ready', projectWorkspaceView: 'canvas',
+    getProjectSessionToken: () => projectSession,
     projects: [{ id: 'project', name: '项目', createdAt: 1, updatedAt: 1 }, { id: 'other', name: '另一项目', createdAt: 1, updatedAt: 1 }],
     nodes: [], workflowPanelOpen: false, showToast: vi.fn(), markAssetUsed: driver.mark,
     addNode: vi.fn((node: AppState['nodes'][number]) => { driver.state.nodes = [...driver.state.nodes, node]; }),
@@ -47,10 +52,71 @@ beforeEach(async () => {
   useNodeCreation(); cleanups = driver.effects.map((effect) => effect());
   await vi.waitFor(() => expect(driver.onDrag).toBeDefined());
 });
-afterEach(() => { cleanups.forEach((cleanup) => cleanup?.()); vi.unstubAllGlobals(); });
+afterEach(() => { endDramaAssetImageDrag(); cleanups.forEach((cleanup) => cleanup?.()); vi.unstubAllGlobals(); });
 function drag(type: DropEvent['payload']['type'], path = '/external/source.mp4') {
   driver.onDrag!({ payload: { type, paths: [path], position: { x: 20, y: 30 } } });
 }
+
+function beginCreativeImageDrag() {
+  driver.state.assetsPanelOpen = true;
+  driver.state.assetsPanelMode = 'drawer';
+  const imageUrl = 'file:///library/side.png';
+  driver.state.dramaAssets = { version: 2, scenes: [], props: [], characters: [{
+    id: 'hero', kind: 'character', name: '角色', key: 'hero', summary: '', visualNotes: '', importance: 'main',
+    source: 'manual', createdAt: 1, updatedAt: 1, confirmed: true, identity: '', referenceImages: [
+      { id: 'front', kind: 'primary', imageUrl: 'file:///library/front.png', prompt: '', createdAt: 1, updatedAt: 1 },
+      { id: 'side', kind: 'turnaround', imageUrl, prompt: '', createdAt: 1, updatedAt: 1 },
+    ],
+  }] };
+  const data = new Map<string, string>();
+  const dataTransfer = {
+    files: [], get types() { return [...data.keys()]; }, clearData: () => data.clear(),
+    setData: (type: string, value: string) => data.set(type, value), getData: (type: string) => data.get(type) ?? '',
+  } as unknown as DataTransfer;
+  expect(startDramaAssetImageDrag(dataTransfer, { scope: 'project', kind: 'character', assetId: 'hero', referenceId: 'side' },
+    imageUrl, '角色 · 转面参考图')).toBe(true);
+  expect(dataTransfer.types).toEqual([DRAMA_ASSET_IMAGE_DRAG_TYPE]);
+  return { dataTransfer, clientX: 84, clientY: 120, preventDefault: vi.fn(), stopPropagation: vi.fn() } as unknown as React.DragEvent;
+}
+
+describe('创作资产参考图拖入画布', () => {
+  it('复制指定图片到项目，在落点只创建一次独立源节点', async () => {
+    const event = beginCreativeImageDrag();
+    const { onDrop } = useNodeCreation();
+    const assets = driver.state.dramaAssets;
+    await onDrop(event);
+    await onDrop(event);
+    expect(driver.copy).toHaveBeenCalledExactlyOnceWith('/library/side.png', 'project', { redactErrors: true });
+    expect(driver.state.addNode).toHaveBeenCalledOnce();
+    expect(driver.state.nodes[0]).toMatchObject({ type: 'source-image', position: { x: 84, y: 120 }, data: {
+      label: '角色 · 转面参考图', role: 'source', status: 'success', filePath: '/project/copied', imageUrl: 'asset://copied',
+    } });
+    expect(driver.state.dramaAssets).toBe(assets);
+  });
+
+  it('复制途中切换项目时清理副本，迟到结果不写入画布', async () => {
+    const event = beginCreativeImageDrag();
+    let finish!: (result: unknown) => void;
+    driver.copy.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const pending = useNodeCreation().onDrop(event);
+    await vi.waitFor(() => expect(driver.copy).toHaveBeenCalledOnce());
+    driver.state = { ...driver.state, currentProjectId: 'other' };
+    finish({ assetUrl: 'asset://copied', fileName: 'copied', filePath: '/project/copied' });
+    await pending;
+    expect(driver.state.addNode).not.toHaveBeenCalled();
+    expect(driver.trash).toHaveBeenCalledWith('/project/copied');
+  });
+
+  it('重新进入同一项目后不接受上次会话的拖动', async () => {
+    const event = beginCreativeImageDrag();
+    const nextProjectSession = {};
+    driver.state.getProjectSessionToken = () => nextProjectSession;
+    await useNodeCreation().onDrop(event);
+    expect(driver.copy).not.toHaveBeenCalled();
+    expect(driver.state.addNode).not.toHaveBeenCalled();
+  });
+});
+
 describe('成功导入后的最近使用记录', () => {
   it('剧本整页的原生及 HTML5 拖放不会往隐藏画布添加节点', async () => {
     driver.state.projectWorkspaceView = 'script';

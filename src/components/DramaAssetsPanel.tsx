@@ -11,7 +11,8 @@ import { t as translate, useT } from '../i18n';
 import { useAppStore, type AppState } from '../store/useAppStore';
 import type { DramaAsset, DramaAssetCategory, DramaAssetKind, DramaAssetWriteOptions } from '../types/dramaAssets';
 import { DRAMA_ASSET_CATEGORY_LABEL, MAX_DRAMA_REFERENCE_IMAGES, normalizeDramaVisualAsset } from '../types/dramaAssets';
-import { findDramaAssetByKind, formatDramaAssetTextBrief, resolveDramaAssetImageRef } from '../services/dramaAssetPrompt';
+import { findDramaAssetByKind, formatDramaAssetTextBrief } from '../services/dramaAssetPrompt';
+import { endDramaAssetImageDrag, getDramaAssetReferenceSrc, startDramaAssetImageDrag } from '../services/dramaAssetImageDrag';
 import { confirmAction } from '../services/confirmDialog';
 import ViewportImage from './shared/ViewportImage';
 import Select from './shared/Select';
@@ -108,7 +109,7 @@ export function DramaAssetCard({
   manageUploadedImage = false,
   creating = false,
   browseOnly = false,
-  referenceNodes = [],
+  projectReferenceNodes,
 }: {
   asset: DramaAsset;
   thumb?: string;
@@ -136,7 +137,7 @@ export function DramaAssetCard({
   manageUploadedImage?: boolean;
   creating?: boolean;
   browseOnly?: boolean;
-  referenceNodes?: AppState['nodes'];
+  projectReferenceNodes?: AppState['nodes'];
 }) {
   const t = useT();
   const selectionId = useId();
@@ -158,14 +159,18 @@ export function DramaAssetCard({
     && avatarReference.id === asset.avatarReferenceImageId
     ? asset.avatarCrop
     : undefined;
-  const referencePreviews = browseOnly && asset.kind === 'character' && asset.referenceImages?.length
-    ? asset.referenceImages.map((reference) => ({
-        id: reference.id,
-        label: t('{kind}参考图', { kind: t(CHARACTER_REFERENCE_KIND_LABELS[reference.kind]) }),
-        src: reference.imageUrl?.trim() || resolveDramaAssetImageRef(asset, referenceNodes, reference.id)?.imageUrl,
-      }))
-    : null;
-  const hasImage = referencePreviews ? referencePreviews.some((reference) => Boolean(reference.src)) : Boolean(displayThumb);
+  const referencePreviews = browseOnly
+    ? (asset.referenceImages?.length ? asset.referenceImages : [undefined]).flatMap((reference) => {
+        const src = getDramaAssetReferenceSrc(asset, projectReferenceNodes ?? [], reference?.id);
+        if (!reference && !src) return [];
+        const label = reference && 'kind' in reference
+          ? t('{kind}参考图', { kind: t(CHARACTER_REFERENCE_KIND_LABELS[reference.kind]) })
+          : reference?.label?.trim() || t('参考图');
+        return [{ id: reference?.id, label, src }];
+      })
+    : [];
+  const showReferencePreviews = referencePreviews.length > 0;
+  const hasImage = showReferencePreviews ? referencePreviews.some((reference) => Boolean(reference.src)) : Boolean(displayThumb);
 
   const handleToggleEdit = useCallback(() => {
     if (!editing) {
@@ -198,8 +203,39 @@ export function DramaAssetCard({
           disabled={uploading} onChange={onToggleSelect} />
         <label htmlFor={selectionId}>{t('选择资产「{name}」', { name: asset.name })}</label>
       </div>}
-      <div className={referencePreviews ? 'flex min-w-0 flex-col gap-2' : 'drama-asset-card-layout'}>
-        {!referencePreviews && <div className={`drama-asset-thumbnail w-20 rounded-lg overflow-hidden shrink-0 bg-canvas-hover border border-canvas-border flex items-center justify-center${asset.kind === 'character' ? ' character-avatar drama-asset-thumbnail--character' : ' h-20'}`}>
+      <div className={showReferencePreviews ? 'flex min-w-0 flex-col gap-2' : 'drama-asset-card-layout'}>
+        {showReferencePreviews ? (
+          <ul aria-label={t(asset.kind === 'character' ? '角色参考图' : '参考图')} className="relative z-20 grid grid-cols-2 gap-2">
+            {referencePreviews.map(({ id, label, src }) => {
+              const image = src ? (
+                <ViewportImage
+                  src={src}
+                  alt={label}
+                  className="h-full w-full cursor-[var(--cursor-grab,grab)] object-contain"
+                  draggable
+                  onDragStart={(event) => {
+                    const started = startDramaAssetImageDrag(event.dataTransfer, {
+                      scope: projectReferenceNodes ? 'project' : 'global', kind: asset.kind, assetId: asset.id, referenceId: id,
+                    }, src, `${asset.name} · ${label}`);
+                    if (!started) event.preventDefault();
+                  }}
+                  onDragEnd={endDramaAssetImageDrag}
+                />
+              ) : (
+                <span role="img" aria-label={t('参考图不可用')} className="text-canvas-text-muted">
+                  <Icon icon="lucide:image-off" width={18} aria-hidden="true" />
+                </span>
+              );
+              return (
+                <li key={id ?? 'main'} className={`flex min-w-0 items-center justify-center overflow-hidden rounded-lg border border-canvas-border bg-canvas-hover${referencePreviews.length === 1 ? ' col-span-2 aspect-[4/3] max-h-64' : ' aspect-square max-h-56'}`}>
+                  {onOpen && src ? (
+                    <button type="button" tabIndex={-1} onClick={onOpen} className="block h-full w-full">{image}</button>
+                  ) : image}
+                </li>
+              );
+            })}
+          </ul>
+        ) : <div className={`drama-asset-thumbnail w-20 rounded-lg overflow-hidden shrink-0 bg-canvas-hover border border-canvas-border flex items-center justify-center${asset.kind === 'character' ? ' character-avatar drama-asset-thumbnail--character' : ' h-20'}`}>
           {displayThumb ? (
             <ViewportImage
               src={displayThumb}
@@ -350,22 +386,6 @@ export function DramaAssetCard({
             </div>
           )}
         </div>
-
-        {referencePreviews && (
-          <ul aria-label={t('角色参考图')} className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,72px),1fr))] gap-2">
-            {referencePreviews.map(({ id, label, src }) => (
-              <li key={id} className="flex aspect-square min-w-0 items-center justify-center overflow-hidden rounded-lg border border-canvas-border bg-canvas-hover">
-                {src ? (
-                  <ViewportImage src={src} alt={label} className="h-full w-full object-contain" draggable={false} />
-                ) : (
-                  <span role="img" aria-label={t('参考图不可用')} className="text-canvas-text-muted">
-                    <Icon icon="lucide:image-off" width={18} aria-hidden="true" />
-                  </span>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
 
         {!creating && !browseOnly && <div className={`drama-asset-actions flex flex-wrap items-center gap-1${onOpen && !editing ? ' relative z-20' : ''}`}>
           <button
@@ -958,7 +978,7 @@ export default function DramaAssetsPanel({ compact = false }: { compact?: boolea
                     thumb={resolveThumb(asset, nodes as Array<{ id: string; data: Record<string, unknown> }>)}
                     imageNodes={imageNodes}
                     browseOnly={compact}
-                    referenceNodes={compact ? nodes : undefined}
+                    projectReferenceNodes={compact ? nodes : undefined}
                     editing={!compact && editingId === dramaAssetIdentityKey(asset)}
                     selecting={selecting} selected={selecting && list.selectedKeys.has(dramaAssetIdentityKey(asset))}
                     onToggleSelect={() => list.toggle(asset)}
