@@ -41,12 +41,12 @@ export interface ApimartSeedanceCapability {
   /** 支持 AIGC 水印字段（watermark/aigc_watermark）。 */
   watermarkField?: 'watermark' | 'aigc_watermark';
   defaultWatermark?: boolean;
-  /** Seedance 2.0/2.5 用 image_with_roles 数组传递首/尾帧（而非独立字段）。 */
+  /** 按角色收集图片，再映射到该模型使用的数组格式。 */
   imageWithRoles?: boolean;
   /** Omni 使用独立的参考素材与时长合同，不套用 Seedance 首尾帧互斥规则。 */
   omniVariant?: 'flash' | 'ext' | 'preview';
   durationMode?: 'automatic' | 'without-video';
-  requestVariant?: 'flux3' | 'happyhorse' | 'wan3' | 'kling-turbo' | 'pixverse' | 'grok';
+  requestVariant?: 'flux3' | 'happyhorse' | 'wan3' | 'kling-v3' | 'kling-turbo' | 'pixverse' | 'grok';
   inputConstraints?: VideoModelCapability['inputConstraints'];
   inputModeCapabilities?: VideoModelCapability['inputModeCapabilities'];
   operationCapabilities?: VideoModelCapability['operationCapabilities'];
@@ -154,6 +154,7 @@ const NEW_VIDEO_BASE: ApimartSeedanceCapability = {
   minDuration: 3, maxDuration: 15, defaultDuration: 5,
   operations: ['text-to-video', 'image-to-video'], maxImageReferences: 9,
 };
+const KLING_V3_MODES: Record<string, string> = { '720p': 'std', '1080p': 'pro', '4k': '4k' };
 const NEW_VIDEO_CAPABILITIES: Record<string, ApimartSeedanceCapability> = {
   'flux-3-video': {
     ...NEW_VIDEO_BASE, modelId: 'flux-3-video', requestVariant: 'flux3',
@@ -185,6 +186,11 @@ const NEW_VIDEO_CAPABILITIES: Record<string, ApimartSeedanceCapability> = {
       referenceAudio: { durationSeconds: { min: 1, max: 15 }, totalDurationSeconds: { max: 15 } },
     },
   }])),
+  'kling-v3': {
+    ...NEW_VIDEO_BASE, modelId: 'kling-v3', requestVariant: 'kling-v3',
+    resolutions: Object.keys(KLING_V3_MODES), ratios: ['16:9', '9:16', '1:1'], maxImageReferences: 2,
+    imageWithRoles: true, audioField: 'audio', defaultAudio: false,
+  },
   'kling-3.0-turbo': {
     ...NEW_VIDEO_BASE, modelId: 'kling-3.0-turbo', requestVariant: 'kling-turbo',
     ratios: ['16:9', '9:16', '1:1'], maxImageReferences: 1,
@@ -513,7 +519,7 @@ function buildUpdatedVideoRequest(
   const last = params.lastFrameUrl?.trim() || lastRoles[0]?.url.trim();
   const hasFrames = Boolean(first || last);
   if (last && !first) throw new Error('尾帧必须同时提供首帧');
-  if (hasFrames && !['happyhorse', 'wan3', 'kling-turbo', 'pixverse'].includes(variant ?? '')) throw new Error('该模型不支持显式首尾帧');
+  if (hasFrames && !['happyhorse', 'wan3', 'kling-v3', 'kling-turbo', 'pixverse'].includes(variant ?? '')) throw new Error('该模型不支持显式首尾帧');
   if (last && (variant === 'happyhorse' || variant === 'kling-turbo')) throw new Error('该模型仅支持首帧，不支持尾帧');
   if (hasFrames && (images.length || videos.length || audios.length)) throw new Error('首尾帧与参考素材不能同时使用');
   if (images.length > capability.maxImageReferences) throw new Error(`最多支持 ${capability.maxImageReferences} 张参考图`);
@@ -522,7 +528,7 @@ function buildUpdatedVideoRequest(
   if (params.operation && !capability.operations.includes(params.operation)) throw new Error(`该模型不支持 ${params.operation}`);
   const allUrls = [...images, ...videos, ...audios, ...(first ? [first] : []), ...(last ? [last] : [])];
   if (allUrls.some((url) => !isRemoteMediaUrl(url))) throw new Error('参考素材必须是可访问的 HTTP/HTTPS URL');
-  const requiresPrompt = variant === 'pixverse' || (variant === 'happyhorse' && !first) || !allUrls.length;
+  const requiresPrompt = variant === 'kling-v3' || variant === 'pixverse' || (variant === 'happyhorse' && !first) || !allUrls.length;
   if (!prompt.trim() && requiresPrompt) throw new Error('提示词不能为空');
   const resolutionInput = params.resolution?.toLowerCase();
   const resolutionAlias = variant === 'flux3' && resolutionInput
@@ -538,7 +544,8 @@ function buildUpdatedVideoRequest(
   if (!Number.isInteger(duration) || duration !== capability.automaticDurationValue
     && (duration < capability.minDuration || duration > capability.maxDuration)) throw new Error('视频时长超出模型支持范围');
   const body: Record<string, unknown> = {
-    model: capability.modelId, prompt, resolution, duration, [capability.ratioField]: ratio,
+    model: capability.modelId, prompt, duration, [capability.ratioField]: ratio,
+    ...(variant === 'kling-v3' ? { mode: KLING_V3_MODES[resolution] } : { resolution }),
   };
   if (capability.audioField) body[capability.audioField] = params.generateAudio ?? capability.defaultAudio;
   if (variant === 'wan3') {
@@ -556,6 +563,9 @@ function buildUpdatedVideoRequest(
       if (images.length > 5) throw new Error('HappyHorse 视频编辑最多支持 5 张参考图');
       body.video_url = videos[0]; delete body.duration; delete body.aspect_ratio;
     }
+  } else if (variant === 'kling-v3') {
+    const frames = first ? [first, ...(last ? [last] : [])] : images;
+    if (frames.length) body.image_urls = frames;
   } else if (variant === 'kling-turbo') {
     if (images.length) throw new Error('Kling Turbo 请将图片明确设置为首帧');
     if (first) { body.first_frame_image = first; delete body.aspect_ratio; }

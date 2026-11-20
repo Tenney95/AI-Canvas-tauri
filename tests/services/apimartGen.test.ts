@@ -914,7 +914,7 @@ describe('APIMart Seedance 2.5 video', () => {
 describe('APIMart 新视频模型', () => {
   beforeEach(() => { vi.clearAllMocks(); vi.unstubAllGlobals(); });
 
-  it.each(APIMART_UPDATED_VIDEO_MODELS.map((model) => model.id))('%s 通过 Adapter 提交视频端点并轮询', async (model) => {
+  it.each(['kling-v3', ...APIMART_UPDATED_VIDEO_MODELS.map((model) => model.id)])('%s 通过 Adapter 提交视频端点并轮询', async (model) => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ code: 200, data: [{ task_id: 'new-video', status: 'submitted' }] }))
       .mockResolvedValueOnce(jsonResponse({ code: 200, data: { status: 'completed', result: { videos: [{ url: ['https://cdn.example/result.mp4'] }] } } }));
@@ -959,6 +959,42 @@ describe('APIMart 新视频模型', () => {
     expect(() => buildApimartSeedanceRequest('pixverse-v6', 'prompt', { ...frames, duration: 6 })).toThrow('5 或 8');
     expect(buildApimartSeedanceRequest('pixverse-v6', 'prompt', { imageUrls: ['https://cdn.example/ref.png'] }))
       .toHaveProperty('img_references', ['https://cdn.example/ref.png']);
+  });
+
+  it('Kling V3 通过原视频任务取回结果，按首尾帧角色排序并发送专业模式', async () => {
+    const first = 'https://cdn.example/start.png', last = 'https://cdn.example/end.png';
+    const referenceMedia = [
+      { kind: 'image' as const, role: 'last_frame' as const, url: last, origin: 'prompt' as const },
+      { kind: 'image' as const, role: 'first_frame' as const, url: first, origin: 'prompt' as const },
+    ];
+    serviceMocks.resolveMediaReferenceUrl.mockImplementation(async (url: string) => url);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ code: 200, data: [{ task_id: 'kling-task' }] }))
+      .mockResolvedValueOnce(jsonResponse({ code: 200, data: { status: 'completed', result: { videos: [{ url: ['https://cdn.example/result.mp4'] }] } } }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(apimartMediaProviderAdapter.generateVideo?.({
+      params: { provider: 'apimart', model: 'apimart/kling-v3', prompt: 'prompt', seedanceResolution: '1080p',
+        seedanceDuration: 8, seedanceRatio: '9:16', generateAudio: true, referenceMedia },
+      prompt: 'prompt', resolveReferenceInput: async () => ({ prompt: 'prompt', references: referenceMedia,
+        imageUrls: [last, first], videoUrls: [], audioUrls: [], operation: 'image-to-video' }),
+    })).resolves.toMatchObject({ url: 'https://cdn.example/result.mp4' });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['https://api.example.com/videos/generations', 'https://api.example.com/tasks/kling-task?language=zh']);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      model: 'kling-v3', prompt: 'prompt', image_urls: [first, last], mode: 'pro', duration: 8, aspect_ratio: '9:16', audio: true,
+    });
+  });
+
+  it('Kling V3 支持文生、单首帧与顺序双帧，拒绝单尾帧及超量素材', () => {
+    const first = 'https://cdn.example/start.png', last = 'https://cdn.example/end.png';
+    expect(buildApimartSeedanceRequest('kling-v3', 'prompt', {})).toEqual({
+      model: 'kling-v3', prompt: 'prompt', duration: 5, aspect_ratio: '16:9', mode: 'std', audio: false,
+    });
+    expect(buildApimartSeedanceRequest('kling-v3', 'prompt', { firstFrameUrl: first, resolution: '4k' }))
+      .toMatchObject({ image_urls: [first], mode: '4k' });
+    expect(buildApimartSeedanceRequest('kling-v3', 'prompt', { imageUrls: [first, last] })).toHaveProperty('image_urls', [first, last]);
+    expect(() => buildApimartSeedanceRequest('kling-v3', 'prompt', { lastFrameUrl: last })).toThrow('尾帧必须同时提供首帧');
+    expect(() => buildApimartSeedanceRequest('kling-v3', 'prompt', { imageUrls: [first, last, first] })).toThrow('最多支持 2 张');
+    expect(() => buildApimartSeedanceRequest('kling-v3', '', { imageUrls: [first] })).toThrow('提示词不能为空');
   });
 
   it('Seedance 新 ID 支持自动时长，旧 ID 保持可用', () => {
