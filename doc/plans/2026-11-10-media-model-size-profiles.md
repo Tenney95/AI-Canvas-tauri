@@ -77,7 +77,7 @@ Google 3.1 Flash 的 512／21:9 官方正文给出 792×168，与比例不一致
 7. 在 ToAPIs／LibAPI／Amam／Sora2U／GRSAI 分别核对已绑定型号：渠道原默认值、候选顺序及素材限制不变；未声明的首尾帧、音轨、质量或批量不增加。GRSAI GPT 的 1K／16:9 基础版为 1672×941，Flare 的 2K／4:3 为 2304×1728，能力查询与原请求一致。
 8. RunningHub 核对普通生图及 Seedance／H3 参数表，确认渠道额外档位、自动时长、令牌时长和大小写仍可选；相似名称但未审计的专有端点不受影响。改动某个测试连接后，其他同型号连接及已保存用户声明保持独立。
 
-在仓库根目录复跑本轮 32 个测试文件：
+在仓库根目录可复跑仍保留的 31 个测试文件。旧 Seedance 能力适配器的专用测试已随函数退役。
 
 ```powershell
 $files = @(
@@ -94,7 +94,7 @@ $files = @(
   'tests/services/libapiModelManifest.test.ts', 'tests/services/toapisModelManifest.test.ts',
   'tests/services/sora2uModelManifest.test.ts', 'tests/services/sora2uVideoRuntime.test.ts',
   'tests/services/grsaiMedia.test.ts', 'tests/services/imageRequestContracts.test.ts',
-  'tests/services/toSeedanceCapabilityView.test.ts', 'tests/services/mediaParameterMappings.test.ts',
+  'tests/services/mediaParameterMappings.test.ts',
   'tests/services/chat/providerConfigDraftService.test.ts', 'tests/services/runninghubModelManifest.test.ts',
   'tests/services/runninghubMediaRouting.test.ts', 'tests/services/imageSingleRequestBatch.test.ts'
 )

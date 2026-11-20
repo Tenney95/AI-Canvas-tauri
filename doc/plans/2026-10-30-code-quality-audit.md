@@ -934,3 +934,9 @@ cargo test --lib blender_runtime::result::tests
 - RunningHub Qwen Image 3.0 普通版与 Pro 的四个端点在模块初始化时分别复用文生图和编辑参数构造。完整目录静态展开后与原源码逐字节一致，各端点仍独立创建参数及嵌套对象。Tauri 桌面端在已配置的 RunningHub 连接选择四个端点，核对字段顺序、参考图槽和种子设置，普通编辑仍默认 `0`，其余三项仍无默认值。目录哈希、对象隔离和请求构造的回归入口见 [runninghubModelManifest.test.ts](../../tests/services/runninghubModelManifest.test.ts#L14) 和 [runninghubMedia.test.ts](../../tests/services/runninghubMedia.test.ts#L173)。
 
 在仓库根目录可运行 `npm test -- tests/services/imageOutpaintService.test.ts tests/services/apimartGen.test.ts tests/components/nodeCriticalInteractions.test.tsx tests/components/modelSelectorWorkflows.test.tsx tests/services/runninghubModelManifest.test.ts tests/services/runninghubMedia.test.ts`。
+
+## 2026-11-20 Seedance 适配、节点预览样式与 Wan 2.7 参数精简
+
+本次未运行测试，待用户验收。
+
+- 移除已无业务调用的旧 Seedance 能力适配函数及其专用测试。现行通用能力解析和 APIMart 请求构造保持原样。Tauri 桌面端重开一个含已保存通用视频模型的项目，核对显式声明的时长、画幅、分辨率和音频开关。分别选择未声明能力的通用模型和已配置的 APIMart Seedance，核对原有参数、参考素材限制和请求预览。现行回归入口见 [videoModelCapabilityResolver.test.ts](../../tests/services/videoModelCapabilityResolver.test.ts)、[videoParamSelectorProtocol.test.ts](../../tests/components/videoParamSelectorProtocol.test.ts) 和 [apimartGen.test.ts](../../tests/services/apimartGen.test.ts)。
