@@ -930,3 +930,4 @@ cargo test --lib blender_runtime::result::tests
 本次未运行测试，待用户验收。
 
 - 移除已被统一生成流程替代的 APIMart 专用扩图模块及其专用测试引用。保留图像节点的扩图入口和 APIMart 厂商适配器。Tauri 桌面端从已加载图片的图像节点进入扩图，选定画幅和已配置的 APIMart 模型后生成。核对只创建一个生成节点、原图不变、失败后重试继续使用原垫图。创建、项目切换和未知提交的回归入口见 [imageOutpaintService.test.ts](../../tests/services/imageOutpaintService.test.ts)，APIMart 请求与轮询行为见 [apimartGen.test.ts](../../tests/services/apimartGen.test.ts)。
+- 删除模型菜单旧厂商徽标、工作流空态和定位修饰样式。现用小徽标、工作流圆点、基础菜单定位和主题规则保持原样。Tauri 桌面端在深浅主题下打开节点模型菜单，缩窄窗口并靠近画布边缘重开，核对菜单仍可见、可选厂商模型和工作流。切换到无可用工作流的连接，核对原有过滤及当前选择。相关回归入口见 [modelSelectorWorkflows.test.tsx](../../tests/components/modelSelectorWorkflows.test.tsx)。

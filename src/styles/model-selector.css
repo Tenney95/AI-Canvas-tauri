@@ -151,10 +151,6 @@
   font-weight: 700;
   flex-shrink: 0;
 }
-.text-model-icon-badge {
-  background: var(--theme-border);
-  color: var(--theme-text-secondary);
-}
 .text-model-icon-mini {
   width: 24px;
   height: 24px;
@@ -171,19 +167,14 @@
 /* Vendor badges carry their own brand hue; tint and glyph are both derived from
    --badge-hue so the light theme can darken the glyph without losing the identity.
    厂商徽标各带品牌色，底色与字形都由 --badge-hue 推导，浅色主题下可只压暗字形而保留辨识度。 */
-.text-model-icon-badge[data-badge],
 .text-model-icon-mini[data-badge] {
   background: color-mix(in srgb, var(--badge-hue) 18%, transparent);
   color: var(--badge-hue);
 }
-[data-theme='light'] .text-model-icon-badge[data-badge],
 [data-theme='light'] .text-model-icon-mini[data-badge] {
   background: color-mix(in srgb, var(--badge-hue) 22%, transparent);
   color: color-mix(in srgb, var(--badge-hue) 62%, var(--theme-text));
 }
-.text-model-icon-badge[data-badge="OA"] { --badge-hue: #818cf8; }
-.text-model-icon-badge[data-badge="M"]  { --badge-hue: #a855f7; }
-.text-model-icon-badge[data-badge="AM"] { --badge-hue: #4ade80; }
 .text-model-icon-mini[data-badge="OA"]  { --badge-hue: #818cf8; }
 .text-model-icon-mini[data-badge="M"]   { --badge-hue: #a855f7; }
 .text-model-icon-mini[data-badge="AM"]  { --badge-hue: #4ade80; }
@@ -211,42 +202,12 @@
   display: block;
 }
 
-/* Workflow icon badge */
-.text-model-icon-wf {
-  width: 20px;
-  height: 20px;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  background: var(--brand-alpha-15);
-  color: var(--brand-pale);
-}
-
-/* Workflow section empty state */
-.model-wf-empty {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 10px 8px;
-  color: var(--theme-text-muted);
-  font-size: 12px;
-}
-
 /* Workflow item dots */
 .wf-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: var(--brand-light);
-  margin: 5px;
-}
-.wf-none-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--theme-text-muted);
   margin: 5px;
 }
 
@@ -257,24 +218,6 @@
   left: 0;
   margin-bottom: 4px;
   transform-origin: bottom left;
-}
-/* 向上空间不足时 → 向下弹出 */
-.model-dropdown.drop-down {
-  bottom: auto;
-  top: 100%;
-  margin-bottom: 0;
-  margin-top: 4px;
-  transform-origin: top left;
-}
-
-/* 右边界溢出时 → 右对齐 */
-.model-dropdown.drop-align-right {
-  left: auto;
-  right: 0;
-  transform-origin: bottom right;
-}
-.model-dropdown.drop-down.drop-align-right {
-  transform-origin: top right;
 }
 
 /* ============================================
