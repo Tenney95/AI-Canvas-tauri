@@ -47,6 +47,10 @@ function status() {
     previewTarget: layer ? Number(layer.dataset.previewTargetCount ?? 0)
       : root?.querySelectorAll('[data-canvas-node-lod="preview"]').length ?? 0,
     bitmapRasters: Number(layer?.dataset.bitmapRasterCount ?? 0),
+    bitmapPartialRasters: Number(layer?.dataset.bitmapPartialRasterCount ?? 0),
+    edgeRasters: Array.from(root?.querySelectorAll<HTMLCanvasElement>('[data-canvas-edge-stroke-layer]') ?? [],
+      (canvas) => Number(canvas.dataset.edgeRasterCount ?? 0)),
+    mountedShotlistEditors: root?.querySelectorAll('.shotlist-table .shot-content-editor [contenteditable="true"]').length ?? 0,
     zoom: viewport?.zoom ?? null,
     width: root?.clientWidth ?? window.innerWidth,
     height: root?.clientHeight ?? window.innerHeight,

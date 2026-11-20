@@ -1304,6 +1304,22 @@ describe('critical canvas node interactions', () => {
     }]);
   });
 
+  it('keeps all long-table row targets and mounts the heavy editors only for the initial window', async () => {
+    const rows = Array.from({ length: 49 }, (_, i) => ({
+      id: `row-${i}`, shotNo: String(i + 1), content: `镜头 ${i + 1}`, dialogue: `台词 ${i + 1}`,
+    }));
+    const { tree, store } = await setupShotlistWidths(undefined, rows);
+    const row = (id: string) => findElement(tree, (element) => element.props['data-shot-row-id'] === id);
+    const near = row('row-0');
+    expect(findElement(near, (element) => element.props.ariaLabel === '内容').props.value).toBe('镜头 1');
+    const far = row('row-48');
+    expect(findElement(far, (element) => element.props['data-shot-frame-row'] === 'row-48')).toBeTruthy();
+    expect(findElement(far, (element) => element.props['aria-label'] === '台词').props)
+      .toMatchObject({ children: '台词 49', tabIndex: 0, role: 'textbox', 'data-shot-editor-placeholder': '' });
+    expect(() => findElement(far, (element) => element.props.ariaLabel === '内容')).toThrow('Element not found');
+    expect(store.commitToHistory).not.toHaveBeenCalled();
+  });
+
   it('opens table defaults and stable-row photography from the shared table, without writing on open', async () => {
     const { tree, store, setters } = await setupShotlistWidths(undefined, [{ id: 'row-1', shotNo: '1', content: '原内容' }]);
     const defaults = findElement(tree, (element) => element.type === 'button' && Array.isArray(element.props.children)

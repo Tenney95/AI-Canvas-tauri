@@ -9,7 +9,8 @@ import { acquireCachedCanvasImagePreview, acquireCanvasImagePreview } from '../n
 import { canvasImageTier } from '../nodes/shared/image/canvasImageDisplay';
 import NodeLabel from '../nodes/shared/NodeLabel';
 import { acquireCanvasVideoPoster } from '../nodes/shared/video/canvasVideoPreviewCache';
-import { CANVAS_MEDIA_TITLE_HEIGHT, drawCanvasNearMedia, readCanvasNearMediaStyle, type CanvasMediaDetails } from './canvasNearMediaStyle';
+import { CANVAS_MEDIA_TITLE_HEIGHT, drawCanvasNearMedia, drawCanvasNearMediaTitle, readCanvasNearMediaStyle, type CanvasMediaDetails } from './canvasNearMediaStyle';
+import { collectMediaDamage, intersectsMediaDamage, mediaBodyPixels, paintMediaDamage, type BitmapRect } from './canvasMediaRasterDamage';
 import type { FarNodeGpuCard, FarNodeWebGpu } from './canvasFarNodeWebGpu';
 
 export interface CanvasFarNodeCard {
@@ -44,6 +45,13 @@ interface Preview {
 }
 
 interface CardStyle { background: string; stroke: string; radius: number }
+
+interface RasterCard {
+  card: CanvasFarNodeCard;
+  key: string;
+  image?: HTMLImageElement;
+  pixels?: BitmapRect;
+}
 
 interface BitmapWindow {
   left: number;
@@ -138,10 +146,13 @@ export default memo(function CanvasFarNodeBitmap({
     let bitmap: BitmapWindow | undefined;
     const settledRedrawKey = {};
     let settledRedraw: { bitmap: BitmapWindow; transform: string; cancel: () => void } | undefined;
-    let dirty = true;
+    let needsFullDraw = true;
+    let previewChanged = false;
     let rasterCount = 0;
+    let partialRasterCount = 0;
     let projectedCards: typeof cards | undefined;
-    let keyedCards: Array<{ card: CanvasFarNodeCard; key: string }> = [];
+    let keyedCards: RasterCard[] = [];
+    const visible: RasterCard[] = [];
     const gpuAbort = new AbortController();
     let gpu: FarNodeWebGpu | undefined;
     let gpuTimeout: number | undefined;
@@ -180,7 +191,7 @@ export default memo(function CanvasFarNodeBitmap({
       gpuStatus = 'failed';
       gpuReason = reason;
       reportGpuStatus();
-      dirty = true;
+      needsFullDraw = true;
       schedule();
     };
 
@@ -256,7 +267,7 @@ export default memo(function CanvasFarNodeBitmap({
           if (stopped || signal.aborted) return;
           if (!image.naturalWidth || !image.naturalHeight) throw new Error('Preview has no image content');
           entry.ready = true;
-          dirty = true;
+          previewChanged = true;
           schedule();
         } catch {
           if (stopped || signal.aborted) return;
@@ -322,7 +333,8 @@ export default memo(function CanvasFarNodeBitmap({
         } else {
           cancelSettledRedraw();
         }
-        if (covered && !dirty && projectedCards === cardsRef.current) return;
+        const sameCards = projectedCards === cardsRef.current;
+        if (covered && !needsFullDraw && !previewChanged && sameCards) return;
 
         if (!bitmap || !covered) {
           const gutter = BITMAP_GUTTER / zoom;
@@ -355,16 +367,11 @@ export default memo(function CanvasFarNodeBitmap({
         const scaleX = raster.zoom * pixelWidth / raster.cssWidth;
         const scaleY = raster.zoom * pixelHeight / raster.cssHeight;
         const gpuCards: FarNodeGpuCard[] | null = gpu && gpuCanvas ? [] : null;
-        if (!gpuCards) {
-          if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
-          if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
-          ctx.setTransform(1, 0, 0, 1, 0, 0);
-          ctx.clearRect(0, 0, pixelWidth, pixelHeight);
-          ctx.setTransform(scaleX, 0, 0, scaleY, -raster.left * scaleX, -raster.top * scaleY);
-          setCardStyle(ctx, cardStyle);
-        }
+        const reusePixels = covered && !needsFullDraw && sameCards && !gpuCards
+          && canvas.width === pixelWidth && canvas.height === pixelHeight;
+        let damage: BitmapRect[] | null = reusePixels ? [] : null;
 
-        if (projectedCards !== cardsRef.current) {
+        if (!sameCards) {
           projectedCards = cardsRef.current;
           keyedCards = projectedCards.map((card) => ({ card, key: `${card.image ? 'image' : 'video'}:${card.source}` }));
         }
@@ -372,11 +379,17 @@ export default memo(function CanvasFarNodeBitmap({
         let rendered = 0, ready = 0, detailTarget = 0, detailReady = 0;
         const cap = near ? getPerformanceModeBudget().imagePreviewMaxEdge || 1024 : DEFAULT_PREVIEW_EDGE;
         wanted.clear();
-        for (const { card, key } of keyedCards) {
+        visible.length = 0;
+        for (const item of keyedCards) {
+          const { card, key } = item;
           const cardRight = card.x + card.width, cardBottom = card.y + card.height;
           const cardTop = card.detail?.title ? card.y - CANVAS_MEDIA_TITLE_HEIGHT : card.y;
           if (cardRight <= raster.left || card.x >= raster.right
-            || cardBottom <= raster.top || cardTop >= raster.bottom) continue;
+            || cardBottom <= raster.top || cardTop >= raster.bottom) {
+            item.image = undefined;
+            item.pixels = undefined;
+            continue;
+          }
           const edge = card.detail && card.image
             ? Math.min(cap, canvasImageTier(Math.max(card.width, card.height) * raster.zoom * renderRatio) || cap)
             : DEFAULT_PREVIEW_EDGE;
@@ -394,10 +407,18 @@ export default memo(function CanvasFarNodeBitmap({
           }
           const image = entry.ready ? entry.image : undefined;
           if (gpuCards) gpuCards.push({ ...card, textureKey: key, image });
-          else if (card.detail && nearProbeRef.current) {
-            nearStyle ??= readCanvasNearMediaStyle(view, nearProbeRef.current);
-            drawCanvasNearMedia(ctx, { ...card, detail: card.detail }, nearStyle, image);
-          } else drawCard(ctx, card, cardStyle, image);
+          else {
+            if (!reusePixels || !item.pixels) {
+              item.pixels = mediaBodyPixels(card, raster, scaleX, scaleY, pixelWidth, pixelHeight);
+            }
+            // Compare the selected tier, not the decoded resource: one source can serve multiple
+            // cards and a late low-resolution response may already be superseded by a sharp one.
+            if (damage && item.image !== image) {
+              damage = collectMediaDamage(damage, item.pixels, pixelWidth * pixelHeight);
+            }
+            visible.push(item);
+          }
+          item.image = image;
           rendered++;
           if (entry.ready) ready++;
         }
@@ -421,6 +442,22 @@ export default memo(function CanvasFarNodeBitmap({
           present(gpuCanvas);
           if (canvas.width || canvas.height) canvas.width = canvas.height = 0;
         } else {
+          if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
+          if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
+          paintMediaDamage(ctx, pixelWidth, pixelHeight, damage, () => {
+            ctx.setTransform(scaleX, 0, 0, scaleY, -raster.left * scaleX, -raster.top * scaleY);
+            setCardStyle(ctx, cardStyle);
+            for (const { card, image, pixels } of visible) {
+              const repaintBody = damage === null || (pixels && intersectsMediaDamage(pixels, damage));
+              if (card.detail && nearProbeRef.current) {
+                nearStyle ??= readCanvasNearMediaStyle(view, nearProbeRef.current);
+                const nearCard = { ...card, detail: card.detail };
+                if (repaintBody) drawCanvasNearMedia(ctx, nearCard, nearStyle, image);
+                // A neighbouring title can overlap the cleared body, particularly with custom fonts.
+                else if (card.detail.title) drawCanvasNearMediaTitle(ctx, nearCard, nearStyle);
+              } else if (repaintBody) drawCard(ctx, card, cardStyle, image);
+            }
+          });
           present(canvas);
         }
         const renderedCount = String(rendered);
@@ -434,8 +471,13 @@ export default memo(function CanvasFarNodeBitmap({
           presentedCanvas.dataset.detailTargetCount = String(detailTarget);
           presentedCanvas.dataset.detailReadyCount = String(detailReady);
         }
-        presentedCanvas.dataset.bitmapRasterCount = String(++rasterCount);
-        dirty = false;
+        if (damage === null || damage.length > 0) {
+          presentedCanvas.dataset.bitmapRasterCount = String(++rasterCount);
+          if (damage) partialRasterCount++;
+          presentedCanvas.dataset.bitmapPartialRasterCount = String(partialRasterCount);
+        }
+        needsFullDraw = false;
+        previewChanged = false;
       } catch { fail(); }
     };
     const frame = createFrameCoalescer(draw);
@@ -455,11 +497,11 @@ export default memo(function CanvasFarNodeBitmap({
     });
     const viewportObserver = new MutationObserver(schedule);
     viewportObserver.observe(viewport, { attributes: true, attributeFilter: ['style'] });
-    const appearanceObserver = new MutationObserver(() => { style = nearStyle = null; dirty = true; schedule(); });
+    const appearanceObserver = new MutationObserver(() => { style = nearStyle = null; needsFullDraw = true; schedule(); });
     appearanceObserver.observe(canvas.ownerDocument.documentElement, {
       attributes: true, attributeFilter: ['style', 'data-theme', 'data-appearance-id'],
     });
-    const unsubscribeMode = subscribePerformanceMode(() => { pruneIdle(Date.now()); schedule(); });
+    const unsubscribeMode = subscribePerformanceMode(() => { needsFullDraw = true; pruneIdle(Date.now()); schedule(); });
     const watchResolution = () => {
       resolution?.removeEventListener('change', watchResolution);
       resolution = view.matchMedia(`(resolution: ${view.devicePixelRatio || 1}dppx)`);
@@ -486,7 +528,7 @@ export default memo(function CanvasFarNodeBitmap({
             view.clearTimeout(gpuTimeout);
             if (stopped || gpuAbort.signal.aborted) { backend.destroy(); return; }
             gpu = backend;
-            dirty = true;
+            needsFullDraw = true;
             schedule();
           }, () => fallbackToCanvas2d('gpu-init'));
       }

@@ -201,23 +201,24 @@ describe('minimap Canvas bitmap', () => {
 });
 
 describe('viewport Canvas edge strokes', () => {
-  it('allocates only the viewport backing store and cancels its parent transform', () => {
+  it('anchors the padded backing to the same world coordinates as the hit paths', () => {
     const f = fixture([edge('ab', 'M0 1000 C100 1000 100 1080 200 1080')]);
     f.viewport.style.transform = 'matrix(0.25,0,0,0.25,100,-200)';
     f.render();
     flushFrames();
-    expect([f.canvas.width, f.canvas.height]).toEqual([800, 600]);
-    expect(f.canvas.style).toMatchObject({ width: '400px', height: '300px', transform: 'matrix(4,0,0,4,-400,800)' });
-    expect(f.ctx.setTransform).toHaveBeenLastCalledWith(0.5, 0, 0, 0.5, 200, -400);
+    expect([f.canvas.width, f.canvas.height]).toEqual([1248, 1048]);
+    expect(f.canvas.style).toMatchObject({ width: '624px', height: '524px', transform: 'matrix(4,0,0,4,-848,352)' });
+    expect(f.ctx.setTransform).toHaveBeenLastCalledWith(0.5, 0, 0, 0.5, 424, -176);
     expect(f.ctx.stroke).toHaveBeenCalled();
     expect(f.onUnavailable).not.toHaveBeenCalled();
   });
 
-  it('coalesces Store and committed DOM transform changes and reuses Path2D on small pans', () => {
+  it('reuses the actual bitmap for a covered pan and recenters against the committed transform', () => {
     const f = fixture();
     f.render(); flushFrames();
-    f.ctx.stroke.mockClear(); f.view.requestAnimationFrame.mockClear();
-    f.state.transform = [50, -30, 1];
+    f.ctx.stroke.mockClear(); f.ctx.clearRect.mockClear(); f.view.requestAnimationFrame.mockClear();
+    const anchor = f.canvas.style.transform;
+    f.state.transform = [-140, -10, 1];
     f.notify(); f.notify();
     driver.observers[0].callback(); driver.observers[0].callback();
     expect(driver.frames.size).toBe(1);
@@ -225,9 +226,17 @@ describe('viewport Canvas edge strokes', () => {
     // The committed DOM transform intentionally lags the Store publication.
     f.viewport.style.transform = 'matrix(1,0,0,1,30,-20)';
     flushFrames();
-    expect(f.ctx.setTransform).toHaveBeenLastCalledWith(2, 0, 0, 2, 60, -40);
+    expect(f.canvas.style.transform).toBe(anchor);
+    expect(f.ctx.clearRect).not.toHaveBeenCalled();
+    expect(f.ctx.stroke).not.toHaveBeenCalled();
     expect(driver.paths).toHaveLength(1);
+    expect(f.canvas.dataset.edgeRasterCount).toBe('1');
+    f.viewport.style.transform = 'matrix(1,0,0,1,-140,-10)';
+    driver.observers[0].callback();
+    expect(f.ctx.setTransform).toHaveBeenLastCalledWith(2, 0, 0, 2, -56, 204);
     expect(f.ctx.stroke).toHaveBeenCalledOnce();
+    flushFrames();
+    expect(f.canvas.dataset.edgeRasterCount).toBe('2');
   });
 
   it.each([0.1, 0.45, 0.85, 1.2, 5])('sends only nearby cubic geometry to Path2D at zoom %s', (zoom) => {
@@ -289,6 +298,17 @@ describe('viewport Canvas edge strokes', () => {
     expect(f.onUnavailable).not.toHaveBeenCalled();
   });
 
+  it('draws a previously offscreen edge before painting a viewport jump', () => {
+    const f = fixture([edge('incoming', 'M720 40 L800 60')]);
+    f.render(); flushFrames();
+    expect(f.canvas.dataset.edgeDrawn).toBe('0');
+    f.viewport.style.transform = 'matrix(1,0,0,1,-600,0)';
+    driver.observers[0].callback();
+    expect(f.canvas.dataset.edgeDrawn).toBe('1');
+    expect(f.ctx.stroke).toHaveBeenCalledOnce();
+    expect(f.canvas.dataset.edgeRasterCount).toBe('2');
+  });
+
   it('strokes a translucent edge only once even when clipping yields multiple visible subpaths', () => {
     const f = fixture([edge('overlap', 'M-100000,0 C300000,0 -300000,0 100000,0')]);
     f.viewport.style.transform = 'matrix(1,0,0,1,200,150)';
@@ -298,7 +318,7 @@ describe('viewport Canvas edge strokes', () => {
     expect(driver.paths[0].match(/M/g)).toHaveLength(3);
     expect(driver.paths[0].match(/C/g)).toHaveLength(3);
     f.ctx.stroke.mockClear();
-    driver.observers[0].callback(); flushFrames();
+    driver.observers[1].callback(); flushFrames();
     expect(f.ctx.stroke).toHaveBeenCalledOnce();
     expect(f.ctx.globalAlpha).toBe(0.4);
     expect(f.ctx.strokeStyle).toBe('rgba(60, 70, 80, 0.5)');
@@ -321,7 +341,7 @@ describe('viewport Canvas edge strokes', () => {
       expect(Math.max(...xs) - Math.min(...xs)).toBeLessThanOrEqual((f.state.width + 256) * 1.5 + 1);
       expect(f.canvas.dataset).toMatchObject({ edgeDrawn: '1', edgeClipFallbacks: '0' });
     }
-    expect([f.canvas.width, f.canvas.height]).toEqual([Math.ceil(400 * ratio), Math.ceil(300 * ratio)]);
+    expect([f.canvas.width, f.canvas.height]).toEqual([Math.ceil(624 * ratio), Math.ceil(524 * ratio)]);
     expect(f.onUnavailable).not.toHaveBeenCalled();
   });
 
@@ -343,6 +363,61 @@ describe('viewport Canvas edge strokes', () => {
     f.render([edge('cd', 'M10 20 L30 40')]);
     flushFrames();
     expect(driver.paths).toHaveLength(4);
+  });
+
+  it('keeps an equivalent model group cached and repaints when its order changes', () => {
+    const first = edge();
+    const second = edge('cd', 'M1 1 L40 10');
+    const f = fixture([first, second]);
+    f.render(); flushFrames();
+    f.render([first, second]); flushFrames();
+    f.render([{ ...first, interactive: !first.interactive }, second]); flushFrames();
+    expect(f.canvas.dataset.edgeRasterCount).toBe('1');
+    f.render([second, first]); flushFrames();
+    expect(f.canvas.dataset.edgeRasterCount).toBe('2');
+    expect(f.ctx.stroke.mock.calls.at(-2)?.[0]).toBe(f.ctx.stroke.mock.calls[1][0]);
+  });
+
+  it('redraws on resize, zoom or DPR change even for an unchanged model group', () => {
+    const f = fixture();
+    f.render(); flushFrames();
+    f.state.width = 401;
+    f.notify(); flushFrames();
+    expect(f.canvas.dataset.edgeRasterCount).toBe('2');
+    f.move(0, 0, 1.5);
+    expect(f.canvas.dataset.edgeRasterCount).toBe('3');
+    f.view.devicePixelRatio = 1.25;
+    const ratioChanged = f.media.addEventListener.mock.calls[0][1];
+    ratioChanged(); flushFrames();
+    expect(f.canvas.dataset.edgeRasterCount).toBe('4');
+    // Fractional DPR requires independent horizontal/vertical scales after integer allocation.
+    expect(f.canvas.width).toBe(782);
+    const sx = 782 / 625;
+    expect(f.ctx.setTransform).toHaveBeenLastCalledWith(1.5 * sx, 0, 0, 1.5 * 1.25, 112 * sx, 112 * 1.25);
+    expect(f.onUnavailable).not.toHaveBeenCalled();
+  });
+
+  it('uses a sharp viewport-only bitmap when overscan would exceed the memory cap', () => {
+    const f = fixture();
+    f.state.width = 1920; f.state.height = 1080;
+    f.render(); flushFrames();
+    expect([f.canvas.width, f.canvas.height]).toEqual([3840, 2160]);
+    f.move(1, 0, 1);
+    expect(f.canvas.dataset.edgeRasterCount).toBe('2');
+    expect(f.onUnavailable).not.toHaveBeenCalled();
+  });
+
+  it('preserves viewport resolution above the overscan cap and resumes reuse after resizing', () => {
+    const f = fixture();
+    f.state.width = 1920; f.state.height = 1080; f.view.devicePixelRatio = 3;
+    f.render(); flushFrames();
+    expect([f.canvas.width, f.canvas.height]).toEqual([5760, 3240]);
+    f.state.width = 400; f.state.height = 300;
+    f.notify(); flushFrames();
+    expect([f.canvas.width, f.canvas.height]).toEqual([1872, 1572]);
+    f.move(20, 0, 1);
+    expect(f.canvas.dataset.edgeRasterCount).toBe('2');
+    expect(f.onUnavailable).not.toHaveBeenCalled();
   });
 
   it('ignores drag class changes and refreshes appearance styles while preserving the path cache', () => {

@@ -94,6 +94,14 @@ export function drawCanvasNearMedia(
     ctx.stroke();
   }
   ctx.restore();
+  drawCanvasNearMediaTitle(ctx, { x, y, width, detail }, style);
+}
+
+export function drawCanvasNearMediaTitle(
+  ctx: CanvasRenderingContext2D,
+  { x, y, width, detail }: { x: number; y: number; width: number; detail: CanvasMediaDetails },
+  style: ReturnType<typeof readCanvasNearMediaStyle>,
+) {
   if (!detail.title) return;
 
   const label = style.title;

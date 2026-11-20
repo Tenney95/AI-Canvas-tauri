@@ -33,6 +33,7 @@ import {
   resolveShotlistColumns,
 } from '../../types';
 import MentionEditor from './shared/MentionEditor';
+import { useShotlistEditorWindow } from './useShotlistEditorWindow';
 import { createCanvasNodeDataSelector } from '../../utils/canvasNodeDataSelector';
 import { getCanvasNodeById } from '../../utils/canvasRenderProjection';
 import { isInsideMentionPortal } from './shared/mentionPortals';
@@ -730,6 +731,8 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
     return () => document.removeEventListener('pointerdown', onPointerDown);
   }, [picker]);
 
+  const editorWindow = useShotlistEditorWindow(tableRef, rows.length, nodeHeight, isFullscreen, tableColumns);
+  const activeRowIndex = editorWindow.activeRow ? rows.findIndex((row) => row.id === editorWindow.activeRow) : -1;
   const renderCell = (row: ShotRow, column: ShotlistColumnKey, rowIndex: number) => {
     if (column === 'cinematography') {
       const settings = resolveCinematography(data.shotlistCinematography, row.cinematography);
@@ -896,6 +899,8 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
     }
 
     if (column === 'content' || column === 'dialogue') {
+      const showEditor = editorWindow.all || (rowIndex >= editorWindow.range.first && rowIndex < editorWindow.range.end)
+        || (activeRowIndex >= 0 && Math.abs(rowIndex - activeRowIndex) <= 1);
       const openFieldEditor = () => {
         if ((useAppStore.getState().currentProjectId ?? undefined) !== currentProjectId) return;
         commitToHistory();
@@ -913,7 +918,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
               event.preventDefault(); event.stopPropagation(); openFieldEditor();
             }
           }}>
-          <MentionEditor
+          {showEditor ? <MentionEditor
             nodeId={id}
             value={row[column] ?? ''}
             onChange={(value) => patchRow(row.id, { [column]: value })}
@@ -924,7 +929,14 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
             canSubmit={false}
             submitShortcut="ctrl-enter"
             className="shot-content-editor w-full"
-          />
+          /> : (
+            <div className="shot-content-editor w-full">
+              <div className="ui-ai-input__editor prompt-editor" role="textbox" aria-multiline="true" tabIndex={0}
+                data-shot-editor-placeholder="" aria-label={t(SHOTLIST_COLUMN_LABELS[column])}>
+                {row[column]}
+              </div>
+            </div>
+          )}
         </div>
       );
     }
