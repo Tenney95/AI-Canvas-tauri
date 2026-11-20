@@ -273,6 +273,18 @@ export default function App() {
     void initFromDb().then(() => setProjectBootReady(true));
   }, [initFromDb]);
   useEffect(() => {
+    if (!isTauri || !projectBootReady) return;
+    let disposed = false;
+    let unobserve: (() => void) | undefined;
+    void import('./services/wsagentPluginInstallService').then(({ observeWsagentPluginInstall }) => {
+      if (!disposed) unobserve = observeWsagentPluginInstall();
+    }).catch(() => undefined);
+    return () => {
+      disposed = true;
+      unobserve?.();
+    };
+  }, [projectBootReady]);
+  useEffect(() => {
     if (projectBootReady && splashDone && projectLoadStatus === 'ready') {
       void restoreAfterWebviewTermination();
     }

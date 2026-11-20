@@ -2366,6 +2366,8 @@ pub fn run() {
             wsagent_shared::scripts::wsagent_shared_scripts_list,
             wsagent_shared::scripts::wsagent_shared_scripts_read,
             wsagent_shared::scripts::wsagent_shared_scripts_apply,
+            wsagent_shared::plugin_install::wsagent_plugin_install_take,
+            wsagent_shared::plugin_install::wsagent_plugin_install_finish,
             wsagent_shared::wsagent_shared_revoke,
             wsagent_shared::wsagent_shared_list,
             wsagent_shared::wsagent_shared_read,
@@ -2476,6 +2478,10 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             path_policy::authorize_native_drop(app_handle, &event);
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = &event {
+                wsagent_shared::plugin_install::on_opened(app_handle, urls);
+            }
             if matches!(event, tauri::RunEvent::Exit) {
                 codex_runtime::shutdown(app_handle);
                 comfyui::progress::shutdown_progress(app_handle);
