@@ -225,6 +225,7 @@ export default function GlobalCreativeAssetsPanel({ kind, compact }: { kind: Dra
     return [...characters, ...scenes, ...props].filter((asset) => keys.has(dramaAssetIdentityKey(asset)));
   }, [source, onlyImported, lastImported, characters, scenes, props]);
   const list = useDramaAssetList(sourceItems, search, `global:${kind}:${onlyImported}`);
+  const selecting = !compact && list.selecting;
   const { items } = list;
   const usageTarget = useMemo(() => usage ? { kind: 'creative' as const, scope: 'global' as const,
     assetKind: usage.asset.kind, assetId: usage.asset.id, name: usage.asset.name } : null, [usage]);
@@ -313,7 +314,7 @@ export default function GlobalCreativeAssetsPanel({ kind, compact }: { kind: Dra
     <div className="flex min-w-0 flex-wrap items-center gap-2 p-3">
       <h3 className="shrink-0 text-sm font-medium text-canvas-text">{onlyImported ? t('本次导入') : t('全局{kind}', { kind: t(DRAMA_ASSET_CATEGORY_LABEL[kind]) })} <span className="text-canvas-text-muted">{sourceItems.length}</span></h3>
       <DramaAssetListControls inline sortBy={list.sortBy} sortOrder={list.sortOrder} onSort={list.changeSort}
-        selecting={list.selecting} onSelecting={list.toggleSelecting} selectedCount={list.selected.length} visibleCount={items.length}
+        selecting={selecting} onSelecting={compact ? undefined : list.toggleSelecting} selectedCount={list.selected.length} visibleCount={items.length}
         onSelectAll={list.selectAll} onExport={() => void transfer('export', undefined, list.selected)}
         onCopy={currentProjectId && currentProjectId !== 'default' ? () => void handleCopyToProject(list.selected) : undefined}
         copyLabel={t('复制到本项目')} busy={busy || loading || Boolean(loadError)} canExport={isTauriEnv()} />
@@ -323,20 +324,24 @@ export default function GlobalCreativeAssetsPanel({ kind, compact }: { kind: Dra
           <input className="ui-input ui-input--sm select-text" aria-label={t('搜索全局创作资产')} placeholder={t('搜索名称、简介、别名…')}
             value={search} onChange={(event) => setSearch(event.target.value)} />
         </label>
-        <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" disabled={busy || loading || Boolean(loadError)} onClick={() => void upload()}>
-          <Upload size={14} aria-hidden="true" />{t('上传图片')}
-        </button>
-        <button type="button" className="ui-btn ui-btn--primary ui-btn--sm" disabled={busy || loading || Boolean(loadError)} onClick={() => setEditing({ asset: newAsset(kind, ''), creating: true })}>
-          <Plus size={14} aria-hidden="true" />{t('新增{kind}', { kind: t(DRAMA_ASSET_CATEGORY_LABEL[kind]) })}
-        </button>
-        <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" disabled={busy || loading || Boolean(loadError) || !isTauriEnv()}
-          aria-label={t('导入全局创作资产')} title={t('追加导入全局创作资产，按人物、场景、道具、武器分类保存')} onClick={() => void transfer('import')}>
-          <Upload size={14} aria-hidden="true" />{t('导入')}
-        </button>
-        <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" disabled={busy || loading || Boolean(loadError) || !source.length || !isTauriEnv()}
-          aria-label={t('导出全部全局{kind}', { kind: t(DRAMA_ASSET_CATEGORY_LABEL[kind]) })} title={t('导出当前分类的全部全局资产及媒体，不受搜索影响')} onClick={() => void transfer('export')}>
-          <Download size={14} aria-hidden="true" />{t('导出')}
-        </button>
+        {!compact && (
+          <>
+            <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" disabled={busy || loading || Boolean(loadError)} onClick={() => void upload()}>
+              <Upload size={14} aria-hidden="true" />{t('上传图片')}
+            </button>
+            <button type="button" className="ui-btn ui-btn--primary ui-btn--sm" disabled={busy || loading || Boolean(loadError)} onClick={() => setEditing({ asset: newAsset(kind, ''), creating: true })}>
+              <Plus size={14} aria-hidden="true" />{t('新增{kind}', { kind: t(DRAMA_ASSET_CATEGORY_LABEL[kind]) })}
+            </button>
+            <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" disabled={busy || loading || Boolean(loadError) || !isTauriEnv()}
+              aria-label={t('导入全局创作资产')} title={t('追加导入全局创作资产，按人物、场景、道具、武器分类保存')} onClick={() => void transfer('import')}>
+              <Upload size={14} aria-hidden="true" />{t('导入')}
+            </button>
+            <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" disabled={busy || loading || Boolean(loadError) || !source.length || !isTauriEnv()}
+              aria-label={t('导出全部全局{kind}', { kind: t(DRAMA_ASSET_CATEGORY_LABEL[kind]) })} title={t('导出当前分类的全部全局资产及媒体，不受搜索影响')} onClick={() => void transfer('export')}>
+              <Download size={14} aria-hidden="true" />{t('导出')}
+            </button>
+          </>
+        )}
       </div>
     </div>
     {lastImported.length > 0 && <div className="flex flex-wrap items-center gap-2 px-3 pb-2 text-xs text-canvas-text-secondary">
@@ -361,11 +366,11 @@ export default function GlobalCreativeAssetsPanel({ kind, compact }: { kind: Dra
           inert={operationKind === 'import' || undefined} aria-busy={operationKind === 'import' || undefined}>
           {items.length === 0 ? <div role="status" className="flex flex-col items-center gap-2 p-3 text-xs text-canvas-text-muted">
             <p>{search ? t('没有匹配的资产') : t('暂无全局{kind}', { kind: t(DRAMA_ASSET_CATEGORY_LABEL[kind]) })}</p>
-            <p>{t('可新建资产、上传图片、导入资产包，或从文件右键菜单添加；保存后可跨项目使用。')}</p>
+            {!compact && <p>{t('可新建资产、上传图片、导入资产包，或从文件右键菜单添加；保存后可跨项目使用。')}</p>}
           </div> : items.map((asset) => <DramaAssetCard key={asset.id} asset={asset} thumb={asset.imageUrl}
-            imageNodes={imageNodes} editing={false} uploading={busy} manageUploadedImage
-            selecting={list.selecting} selected={list.selectedKeys.has(dramaAssetIdentityKey(asset))} onToggleSelect={() => list.toggle(asset)}
-            onOpen={list.selecting ? () => list.toggle(asset) : asset.kind === 'character' ? () => openCharacters(true, { scope: 'global', characterId: asset.id, origin: 'assets' }) : undefined}
+            imageNodes={imageNodes} editing={false} uploading={busy} manageUploadedImage browseOnly={compact}
+            selecting={selecting} selected={selecting && list.selectedKeys.has(dramaAssetIdentityKey(asset))} onToggleSelect={() => list.toggle(asset)}
+            onOpen={selecting ? () => list.toggle(asset) : asset.kind === 'character' ? () => openCharacters(true, { scope: 'global', characterId: asset.id, origin: 'assets' }) : undefined}
             onViewUsage={() => setUsage({ asset, deleting: false })}
             onManageImages={asset.kind !== 'character' ? () => setGalleryAsset(asset) : undefined}
             onToggleEdit={() => setEditing({ asset, creating: false })}

@@ -10,7 +10,7 @@ export default function DramaAssetListControls({ sortBy, sortOrder, onSort, sele
   selectedCount, visibleCount, onSelectAll, onExport, onCopy, copyLabel, busy, canExport, inline = false,
 }: {
   sortBy: DramaAssetSortBy; sortOrder: 'asc' | 'desc'; onSort: (by: DramaAssetSortBy, order: 'asc' | 'desc') => void;
-  selecting: boolean; onSelecting: () => void; selectedCount: number; visibleCount: number;
+  selecting: boolean; onSelecting?: () => void; selectedCount: number; visibleCount: number;
   onSelectAll: () => void; onExport: () => void; onCopy?: () => void; copyLabel: string; busy: boolean; canExport: boolean;
   inline?: boolean;
 }) {
@@ -26,11 +26,11 @@ export default function DramaAssetListControls({ sortBy, sortOrder, onSort, sele
       onClick={() => onSort(sortBy, sortOrder === 'asc' ? 'desc' : 'asc')}>
       <OrderIcon size={14} aria-hidden="true" />{t(sortOrder === 'asc' ? '升序' : '降序')}
     </button>
-    <button type="button" className={`ui-btn ui-btn--ghost ui-btn--sm${selecting ? ' is-active' : ''}`}
+    {onSelecting && <button type="button" className={`ui-btn ui-btn--ghost ui-btn--sm${selecting ? ' is-active' : ''}`}
       aria-pressed={selecting} disabled={busy} onClick={onSelecting}>
       <CheckSquare size={14} aria-hidden="true" />{t(selecting ? '退出多选' : '多选')}
-    </button>
-    {selecting && <>
+    </button>}
+    {onSelecting && selecting && <>
       <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" disabled={busy || !visibleCount} onClick={onSelectAll}>
         {t(selectedCount === visibleCount && visibleCount > 0 ? '取消全选' : '全选')}
       </button>

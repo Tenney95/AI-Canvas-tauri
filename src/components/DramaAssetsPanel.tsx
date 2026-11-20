@@ -8,17 +8,17 @@ import { Icon } from '@iconify/react';
 import { Download } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { t as translate, useT } from '../i18n';
-import { useAppStore } from '../store/useAppStore';
+import { useAppStore, type AppState } from '../store/useAppStore';
 import type { DramaAsset, DramaAssetCategory, DramaAssetKind, DramaAssetWriteOptions } from '../types/dramaAssets';
 import { DRAMA_ASSET_CATEGORY_LABEL, MAX_DRAMA_REFERENCE_IMAGES, normalizeDramaVisualAsset } from '../types/dramaAssets';
-import { findDramaAssetByKind, formatDramaAssetTextBrief } from '../services/dramaAssetPrompt';
+import { findDramaAssetByKind, formatDramaAssetTextBrief, resolveDramaAssetImageRef } from '../services/dramaAssetPrompt';
 import { confirmAction } from '../services/confirmDialog';
 import ViewportImage from './shared/ViewportImage';
 import Select from './shared/Select';
 import { uploadSourceFileToProject, isTauriEnv } from '../services/fileService';
 import { generateId, seriesOwnerId } from '../store/store.utils';
 import { normalizeAssetKey } from '../services/dramaAssetExtract';
-import { cropImageStyle } from './character/characterReferencePresentation';
+import { CHARACTER_REFERENCE_KIND_LABELS, cropImageStyle } from './character/characterReferencePresentation';
 import { exportProjectDramaAssets, importProjectDramaAssets } from '../services/dramaAssetTransferService';
 import type { DramaAssetIdentity } from '../services/dramaAssetTransferFormat';
 import { dramaAssetIdentityKey, getDramaAssetCategory, matchesDramaAssetCategory } from '../services/dramaAssetSearch';
@@ -107,6 +107,8 @@ export function DramaAssetCard({
   onManageImages,
   manageUploadedImage = false,
   creating = false,
+  browseOnly = false,
+  referenceNodes = [],
 }: {
   asset: DramaAsset;
   thumb?: string;
@@ -133,6 +135,8 @@ export function DramaAssetCard({
   onManageImages?: () => void;
   manageUploadedImage?: boolean;
   creating?: boolean;
+  browseOnly?: boolean;
+  referenceNodes?: AppState['nodes'];
 }) {
   const t = useT();
   const selectionId = useId();
@@ -154,6 +158,14 @@ export function DramaAssetCard({
     && avatarReference.id === asset.avatarReferenceImageId
     ? asset.avatarCrop
     : undefined;
+  const referencePreviews = browseOnly && asset.kind === 'character' && asset.referenceImages?.length
+    ? asset.referenceImages.map((reference) => ({
+        id: reference.id,
+        label: t('{kind}参考图', { kind: t(CHARACTER_REFERENCE_KIND_LABELS[reference.kind]) }),
+        src: reference.imageUrl?.trim() || resolveDramaAssetImageRef(asset, referenceNodes, reference.id)?.imageUrl,
+      }))
+    : null;
+  const hasImage = referencePreviews ? referencePreviews.some((reference) => Boolean(reference.src)) : Boolean(displayThumb);
 
   const handleToggleEdit = useCallback(() => {
     if (!editing) {
@@ -186,9 +198,8 @@ export function DramaAssetCard({
           disabled={uploading} onChange={onToggleSelect} />
         <label htmlFor={selectionId}>{t('选择资产「{name}」', { name: asset.name })}</label>
       </div>}
-      <div className="drama-asset-card-layout">
-        {/* Thumb */}
-        <div className={`drama-asset-thumbnail w-20 rounded-lg overflow-hidden shrink-0 bg-canvas-hover border border-canvas-border flex items-center justify-center${asset.kind === 'character' ? ' character-avatar drama-asset-thumbnail--character' : ' h-20'}`}>
+      <div className={referencePreviews ? 'flex min-w-0 flex-col gap-2' : 'drama-asset-card-layout'}>
+        {!referencePreviews && <div className={`drama-asset-thumbnail w-20 rounded-lg overflow-hidden shrink-0 bg-canvas-hover border border-canvas-border flex items-center justify-center${asset.kind === 'character' ? ' character-avatar drama-asset-thumbnail--character' : ' h-20'}`}>
           {displayThumb ? (
             <ViewportImage
               src={displayThumb}
@@ -204,7 +215,7 @@ export function DramaAssetCard({
               {t(DRAMA_ASSET_CATEGORY_LABEL[getDramaAssetCategory(asset)])[0]}
             </span>
           )}
-        </div>
+        </div>}
 
         <div className="drama-asset-card-body flex-1 min-w-0">
           <div className="drama-asset-meta flex items-center gap-1.5 flex-wrap">
@@ -215,7 +226,7 @@ export function DramaAssetCard({
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-canvas-hover text-canvas-text-muted shrink-0">
               {IMPORTANCE_LABEL[asset.importance] ? t(IMPORTANCE_LABEL[asset.importance]) : asset.importance}
             </span>
-            {displayThumb ? (
+            {hasImage ? (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-400 shrink-0">
                 {t('已绑图')}
               </span>
@@ -310,7 +321,7 @@ export function DramaAssetCard({
           )}
 
           {/* Bind image picker */}
-          {bindOpen && (
+          {!browseOnly && bindOpen && (
             <div className={`drama-asset-bind-picker mt-2 p-2 rounded-lg border border-canvas-border bg-canvas-surface/80 max-h-32 overflow-y-auto space-y-1${onOpen && !editing ? ' relative z-20' : ''}`}>
               {imageNodes.length === 0 ? (
                 <p className="text-[11px] text-canvas-text-muted px-1">{t('画布上暂无图像节点')}</p>
@@ -340,8 +351,23 @@ export function DramaAssetCard({
           )}
         </div>
 
-        {/* Actions — 仅管理，生图请在画布图像节点 @ + slash */}
-        {!creating && <div className={`drama-asset-actions flex flex-wrap items-center gap-1${onOpen && !editing ? ' relative z-20' : ''}`}>
+        {referencePreviews && (
+          <ul aria-label={t('角色参考图')} className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,72px),1fr))] gap-2">
+            {referencePreviews.map(({ id, label, src }) => (
+              <li key={id} className="flex aspect-square min-w-0 items-center justify-center overflow-hidden rounded-lg border border-canvas-border bg-canvas-hover">
+                {src ? (
+                  <ViewportImage src={src} alt={label} className="h-full w-full object-contain" draggable={false} />
+                ) : (
+                  <span role="img" aria-label={t('参考图不可用')} className="text-canvas-text-muted">
+                    <Icon icon="lucide:image-off" width={18} aria-hidden="true" />
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {!creating && !browseOnly && <div className={`drama-asset-actions flex flex-wrap items-center gap-1${onOpen && !editing ? ' relative z-20' : ''}`}>
           <button
             type="button"
             className="drama-asset-action-copy ui-btn ui-btn--ghost ui-btn--sm"
@@ -716,6 +742,8 @@ export default function DramaAssetsPanel({ compact = false }: { compact?: boolea
     return list;
   }, [dramaAssets, tab, onlyImported, lastImported]);
   const list = useDramaAssetList(sourceItems, search, `${projectId}:${tab}:${onlyImported}`);
+  const selecting = !compact && list.selecting;
+  const draftAsset = compact ? null : creatingAsset;
   const { items } = list;
 
   const lastExtractLabel = useMemo(() => {
@@ -784,7 +812,7 @@ export default function DramaAssetsPanel({ compact = false }: { compact?: boolea
                     type="button"
                     className={`ui-btn ui-btn--ghost ui-btn--sm shrink-0${tab === key ? ' is-active' : ''}`}
                     aria-pressed={tab === key}
-                    disabled={busy || creatingAsset !== null}
+                    disabled={busy || draftAsset !== null}
                     onClick={() => setTab(key)}
                   >
                     {t(label)}
@@ -797,7 +825,7 @@ export default function DramaAssetsPanel({ compact = false }: { compact?: boolea
                   {lastExtractLabel}
                 </span>
               ) : null}
-              {(tab === 'all' || tab === 'character') ? (
+              {!compact && (tab === 'all' || tab === 'character') ? (
                 <button
                   type="button"
                   className="ui-btn ui-btn--ghost ui-btn--sm ml-auto shrink-0"
@@ -807,41 +835,44 @@ export default function DramaAssetsPanel({ compact = false }: { compact?: boolea
                   {t('打开角色库')}
                 </button>
               ) : null}
-      <div className={`flex items-center gap-2 shrink-0 ${tab === 'all' || tab === 'character' ? '' : 'ml-auto'}`}>
-        {tab === 'all' && (
-          <Select aria-label={t('上传资产类型')} className="w-auto" size="sm" value={uploadKind} disabled={busy || creatingAsset !== null} fixedMenu
-            onChange={(selectedOptionValue) => setUploadKind(selectedOptionValue as DramaAssetCategory)}>
-            {KIND_TABS.filter((item) => item.key !== 'all').map((item) => (
-              <option key={item.key} value={item.key}>{t(item.label)}</option>
-            ))}
-          </Select>
+        {!compact && (
+          <>
+            <div className={`flex items-center gap-2 shrink-0 ${tab === 'all' || tab === 'character' ? '' : 'ml-auto'}`}>
+              {tab === 'all' && (
+                <Select aria-label={t('上传资产类型')} className="w-auto" size="sm" value={uploadKind} disabled={busy || creatingAsset !== null} fixedMenu
+                  onChange={(selectedOptionValue) => setUploadKind(selectedOptionValue as DramaAssetCategory)}>
+                  {KIND_TABS.filter((item) => item.key !== 'all').map((item) => (
+                    <option key={item.key} value={item.key}>{t(item.label)}</option>
+                  ))}
+                </Select>
+              )}
+              <button type="button" className="ui-btn ui-btn--primary ui-btn--sm" disabled={busy || creatingAsset !== null}
+                onClick={() => void handleUpload(tab === 'all' ? uploadKind : tab)}>
+                <Icon icon="lucide:upload" width={14} aria-hidden="true" />
+                {uploading ? t('上传中…') : t('上传{kind}图片', { kind: t(DRAMA_ASSET_CATEGORY_LABEL[tab === 'all' ? uploadKind : tab]) })}
+              </button>
+              <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={busy || creatingAsset !== null} onClick={beginCreate}>
+                <Icon icon="lucide:plus" width={14} aria-hidden="true" />{t('新增{kind}', { kind: t(DRAMA_ASSET_CATEGORY_LABEL[tab === 'all' ? uploadKind : tab]) })}
+              </button>
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" disabled={busy || !isTauriEnv()}
+                aria-label={t('导入创作资产')} title={t('导入 .aicassets 创作资产包，追加到当前项目')}
+                onClick={() => void handleTransfer('import')}>
+                <Icon icon="lucide:import" width={14} aria-hidden="true" />{t('导入')}
+              </button>
+              <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" disabled={busy || !totals.all || !isTauriEnv()}
+                aria-label={t('导出创作资产')} title={t('导出当前项目的全部创作资产及媒体，不受分类或搜索影响')}
+                onClick={() => void handleTransfer('export')}>
+                <Download size={14} aria-hidden="true" />{t('导出')}
+              </button>
+            </div>
+          </>
         )}
-        <button type="button" className="ui-btn ui-btn--primary ui-btn--sm" disabled={busy || creatingAsset !== null}
-          onClick={() => void handleUpload(tab === 'all' ? uploadKind : tab)}>
-          <Icon icon="lucide:upload" width={14} aria-hidden="true" />
-          {uploading ? t('上传中…') : t('上传{kind}图片', { kind: t(DRAMA_ASSET_CATEGORY_LABEL[tab === 'all' ? uploadKind : tab]) })}
-        </button>
-        <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={busy || creatingAsset !== null} onClick={beginCreate}>
-          <Icon icon="lucide:plus" width={14} aria-hidden="true" />{t('新增{kind}', { kind: t(DRAMA_ASSET_CATEGORY_LABEL[tab === 'all' ? uploadKind : tab]) })}
-        </button>
-      </div>
-
-              <div className="flex shrink-0 items-center gap-1">
-                <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" disabled={busy || !isTauriEnv()}
-                  aria-label={t('导入创作资产')} title={t('导入 .aicassets 创作资产包，追加到当前项目')}
-                  onClick={() => void handleTransfer('import')}>
-                  <Icon icon="lucide:import" width={14} aria-hidden="true" />{t('导入')}
-                </button>
-                <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" disabled={busy || !totals.all || !isTauriEnv()}
-                  aria-label={t('导出创作资产')} title={t('导出当前项目的全部创作资产及媒体，不受分类或搜索影响')}
-                  onClick={() => void handleTransfer('export')}>
-                  <Download size={14} aria-hidden="true" />{t('导出')}
-                </button>
-              </div>
       </div>
 
       <DramaAssetListControls sortBy={list.sortBy} sortOrder={list.sortOrder} onSort={list.changeSort}
-        selecting={list.selecting} onSelecting={list.toggleSelecting} selectedCount={list.selected.length} visibleCount={items.length}
+        selecting={selecting} onSelecting={compact ? undefined : list.toggleSelecting} selectedCount={list.selected.length} visibleCount={items.length}
         onSelectAll={list.selectAll} onExport={() => void handleTransfer('export', undefined, list.selected)}
         onCopy={() => void copyToGlobal(list.selected)} copyLabel={t('复制到全局')} busy={busy} canExport={isTauriEnv()} />
       {lastImported.length > 0 && <div className="flex flex-wrap items-center gap-2 px-3 pb-2 text-xs text-canvas-text-secondary">
@@ -866,7 +897,7 @@ export default function DramaAssetsPanel({ compact = false }: { compact?: boolea
           }}>{t(cancelRequested ? '取消中…' : '取消')}</button>
       </div>}
 
-      {tab !== 'all' && totals[tab] > 0 ? (
+      {!compact && tab !== 'all' && totals[tab] > 0 ? (
         <div className="flex justify-end px-3 pb-1 shrink-0">
                 <button
                   type="button"
@@ -879,22 +910,22 @@ export default function DramaAssetsPanel({ compact = false }: { compact?: boolea
         </div>
       ) : null}
 
-      <div className={`flex-1 overflow-y-auto px-3 pb-4${items.length > 0 || creatingAsset ? ' drama-assets-grid' : ''}`}
+      <div className={`flex-1 overflow-y-auto px-3 pb-4${items.length > 0 || draftAsset ? ' drama-assets-grid' : ''}`}
         inert={operationKind === 'import' || undefined} aria-busy={operationKind === 'import' || undefined}>
-              {creatingAsset && <DramaAssetCard key={creatingAsset.id} asset={creatingAsset} creating editing imageNodes={[]}
+              {draftAsset && <DramaAssetCard key={draftAsset.id} asset={draftAsset} creating editing imageNodes={[]}
                 uploading={busy} onToggleEdit={() => { if (!busy) setCreatingAsset(null); }} onDelete={() => setCreatingAsset(null)}
                 onBindImage={() => {}} onCopyBrief={() => {}} onUploadImage={() => {}}
                 onSaveFields={(patch) => { void runOperation('save', async (_projectId, _ownerId, options) => {
-                  if (creatingAsset.kind === 'character') return;
+                  if (draftAsset.kind === 'character') return;
                   options.onProgress(t('正在保存资产'));
                   const saved = await useAppStore.getState().saveDramaVisualAsset('project', {
-                    ...creatingAsset, ...patch, storyRole: patch.storyRole || undefined, key: normalizeAssetKey(patch.name), updatedAt: Date.now(),
+                    ...draftAsset, ...patch, storyRole: patch.storyRole || undefined, key: normalizeAssetKey(patch.name), updatedAt: Date.now(),
                   }, options);
                   options.assertCurrent?.();
                   if (!saved) throw new Error(t('保存失败，修改仍保留，请重试'));
                   setCreatingAsset(null); showToast(t('已保存'));
                 }); }} />}
-              {items.length === 0 && !creatingAsset ? (
+              {items.length === 0 && !draftAsset ? (
                 <div className="flex flex-col items-center justify-center py-10 text-canvas-text-muted">
                   <svg
                     width="40"
@@ -911,13 +942,13 @@ export default function DramaAssetsPanel({ compact = false }: { compact?: boolea
                   <p className="text-[13px] mb-1">
                     {t(search ? '无匹配资产' : '暂无短剧资产')}
                   </p>
-                  <div className="text-[11px] text-center max-w-[340px] leading-relaxed opacity-90 space-y-1.5">
+                  {!compact && <div className="text-[11px] text-center max-w-[340px] leading-relaxed opacity-90 space-y-1.5">
                     <p className="font-medium text-canvas-text-secondary">{t('可本地上传图片，也可管理简介与绑图')}</p>
                     <p>{t('1. 文本节点')} <code className="px-1 rounded bg-canvas-hover">/</code> {t('→ 提取人物/场景/道具')}</p>
                     <p>{t('2. 图像节点提示词中')} <code className="px-1 rounded bg-canvas-hover">@</code> {t('选资产（无图=简介）')}</p>
                     <p>{t('3. 再')} <code className="px-1 rounded bg-canvas-hover">/</code> {t('使用人设参考等生成资产图')}</p>
                     <p>{t('4. 生成后可在此「绑图」，之后 @ 即为参考图')}</p>
-                  </div>
+                  </div>}
                 </div>
               ) : (
                 items.map((asset) => (
@@ -926,10 +957,12 @@ export default function DramaAssetsPanel({ compact = false }: { compact?: boolea
                     asset={asset}
                     thumb={resolveThumb(asset, nodes as Array<{ id: string; data: Record<string, unknown> }>)}
                     imageNodes={imageNodes}
-                    editing={editingId === dramaAssetIdentityKey(asset)}
-                    selecting={list.selecting} selected={list.selectedKeys.has(dramaAssetIdentityKey(asset))}
+                    browseOnly={compact}
+                    referenceNodes={compact ? nodes : undefined}
+                    editing={!compact && editingId === dramaAssetIdentityKey(asset)}
+                    selecting={selecting} selected={selecting && list.selectedKeys.has(dramaAssetIdentityKey(asset))}
                     onToggleSelect={() => list.toggle(asset)}
-                    onOpen={list.selecting ? () => list.toggle(asset) : asset.kind === 'character' ? () => setCharacterLibraryOpen(true, { scope: 'project', characterId: asset.id, origin: 'assets' }) : undefined}
+                    onOpen={selecting ? () => list.toggle(asset) : asset.kind === 'character' ? () => setCharacterLibraryOpen(true, { scope: 'project', characterId: asset.id, origin: 'assets' }) : undefined}
                     onViewUsage={() => setUsage({ asset, deleting: false })}
                     onManageImages={asset.kind !== 'character' ? () => setGalleryAsset(asset) : undefined}
                     onToggleEdit={() =>

@@ -189,6 +189,7 @@ vi.mock('../../src/components/assets/AssetImagePreview', () => ({ default: 'asse
 import AssetsPanel from '../../src/components/AssetsPanel';
 import CharacterLibraryPanel from '../../src/components/CharacterLibraryPanel';
 import DramaAssetsPanel, { DramaAssetCard } from '../../src/components/DramaAssetsPanel';
+import DramaAssetListControls from '../../src/components/assets/DramaAssetListControls';
 import GlobalCreativeAssetsPanel from '../../src/components/assets/GlobalCreativeAssetsPanel';
 import { setLocale } from '../../src/i18n';
 import Tabs, { type TabsProps } from '../../src/components/shared/Tabs';
@@ -234,6 +235,7 @@ function renderDramaCards(root: unknown): unknown {
   if (!root || typeof root !== 'object' || !('props' in root)) return root;
   const element = root as Element;
   if (element.type === DramaAssetCard) return renderDramaCards(DramaAssetCard(element.props as unknown as Parameters<typeof DramaAssetCard>[0]));
+  if (element.type === DramaAssetListControls) return DramaAssetListControls(element.props as unknown as Parameters<typeof DramaAssetListControls>[0]);
   return { ...element, props: { ...element.props, children: renderDramaCards(element.props.children) } };
 }
 // 展开真实 Tabs 子组件，沿用同一套 hook 驱动，保留业务级交互回归。
@@ -359,16 +361,17 @@ afterEach(() => {
 
 describe('项目创作资产工具条', () => {
   function renderDrama() {
+    const compact = driver.store!.getState().assetsPanelMode === 'drawer';
     for (let pass = 0; pass < 5; pass++) {
       driver.stateIndex = 0; driver.refIndex = 0; driver.effectIndex = 1; driver.memoIndex = 0; driver.dirty = false;
-      tree = renderDramaCards(DramaAssetsPanel({ compact: true }));
+      tree = renderDramaCards(DramaAssetsPanel({ compact }));
       if (!driver.dirty) break;
     }
     const pending = driver.pending; driver.pending = [];
     pending.forEach((effect) => effect());
   }
   async function settleDrama() { await new Promise<void>((resolve) => setImmediate(resolve)); renderDrama(); }
-  function open() {
+  function open(mode: 'page' | 'drawer' = 'page') {
     const base = { key: 'asset', summary: '', visualNotes: '', importance: 'main', confirmed: true,
       createdAt: 1, updatedAt: 1, source: 'manual' } as const;
     driver.store!.setState({
@@ -376,10 +379,45 @@ describe('项目创作资产工具条', () => {
         scenes: [{ ...base, id: 'room', name: '场景甲', kind: 'scene' }], props: [{ ...base, id: 'key', name: '道具甲', kind: 'prop' }] },
       showToast: vi.fn(), importDramaAssets: vi.fn().mockResolvedValue(1), saveCurrentProjectSilent: vi.fn().mockResolvedValue('project-1'),
     });
-    driver.store!.getState().setAssetsPanelOpen(true, 'page');
+    driver.store!.getState().setAssetsPanelOpen(true, mode);
     driver.store!.getState().setDramaAssetsPanelOpen(true);
     renderDrama();
   }
+
+  it('Tab 抽屉只显示浏览控件，并按角色库顺序展示图片、旧记录和缺失状态', () => {
+    open('drawer');
+    const { dramaAssets } = driver.store!.getState();
+    const [character] = dramaAssets.characters;
+    const node = canvasNode('source', 'source-image');
+    const imageUrl = 'https://example.test/source.png';
+    driver.store!.setState({
+      nodes: [{ ...node, data: { ...node.data, imageUrl } }],
+      dramaAssets: { ...dramaAssets, characters: [
+        { ...character, referenceImages: [
+          { id: 'avatar', kind: 'avatar', imageUrl: 'https://example.test/avatar.png', prompt: '', createdAt: 1, updatedAt: 1 },
+          { id: 'body', kind: 'full_body', sourceNodeId: node.id, prompt: '', createdAt: 1, updatedAt: 1 },
+          { id: 'expression', kind: 'expression', imageUrl: 'https://example.test/expression.png', prompt: '', createdAt: 1, updatedAt: 1 },
+          { id: 'missing', kind: 'outfit', prompt: '', createdAt: 1, updatedAt: 1 },
+        ] },
+        { ...character, id: 'legacy', name: '旧人物', imageUrl: 'https://example.test/legacy.png' },
+      ] },
+    });
+    renderDrama();
+    const gallery = button('角色参考图');
+    expect(all(gallery, (element) => typeof element.props.src === 'string').map((element) => element.props.src)).toEqual([
+      'https://example.test/avatar.png', imageUrl, 'https://example.test/expression.png',
+    ]);
+    expect(all(gallery, (element) => element.props['aria-label'] === '参考图不可用')).toHaveLength(1);
+    expect(all(tree, (element) => element.props.src === 'https://example.test/legacy.png')).toHaveLength(1);
+    expect(button('创作资产排序方式')).toBeDefined();
+    click(find((element) => element.type === 'button' && visibleText(element.props.children) === '人物 2'));
+    renderDrama();
+    expect(all(tree, (element) => String(element.props.className).includes('drama-asset-actions'))).toHaveLength(0);
+    expect(all(tree, (element) => ['上传资产类型', '导入创作资产', '导出创作资产'].includes(String(element.props['aria-label'])))).toHaveLength(0);
+    expect(visibleText(tree)).not.toMatch(/打开角色库|新增人物|多选|清空本类/);
+    click(button('打开人物：人物甲'));
+    expect(driver.store!.getState().characterLibraryRequest).toMatchObject({ scope: 'project', characterId: 'hero' });
+  });
 
   it('使用小尺寸控件，先保存新项目，导出完整创作资产而不受分类和搜索影响', async () => {
     open();
@@ -546,16 +584,17 @@ describe('项目创作资产工具条', () => {
 
 describe('全局创作资产工具条', () => {
   function renderGlobal(kind: DramaAsset['kind'] = 'character') {
+    const compact = driver.store!.getState().assetsPanelMode === 'drawer';
     for (let pass = 0; pass < 5; pass++) {
       driver.stateIndex = 0; driver.refIndex = 0; driver.effectIndex = 1; driver.memoIndex = 0; driver.dirty = false;
-      tree = renderDramaCards(GlobalCreativeAssetsPanel({ kind, compact: true }));
+      tree = renderDramaCards(GlobalCreativeAssetsPanel({ kind, compact }));
       if (!driver.dirty) break;
     }
     const pending = driver.pending; driver.pending = [];
     pending.forEach((effect) => effect());
   }
   async function settleGlobal(kind: DramaAsset['kind'] = 'character') { await new Promise<void>((resolve) => setImmediate(resolve)); renderGlobal(kind); }
-  function open(kind: DramaAsset['kind'] = 'character') {
+  function open(kind: DramaAsset['kind'] = 'character', mode: 'page' | 'drawer' = 'page') {
     const base = { key: 'global', summary: '', visualNotes: '', importance: 'main', confirmed: true,
       createdAt: 1, updatedAt: 1, source: 'manual' } as const;
     driver.store!.setState({ currentProjectId: null,
@@ -568,13 +607,28 @@ describe('全局创作资产工具条', () => {
       saveGlobalDramaAsset: vi.fn().mockResolvedValue(true), deleteGlobalDramaAsset: vi.fn().mockResolvedValue(true),
       bindGlobalDramaAssetImage: vi.fn().mockResolvedValue(true),
     });
-    driver.store!.getState().setAssetsPanelOpen(true, 'page', { tab: 'permanent' });
+    driver.store!.getState().setAssetsPanelOpen(true, mode, { tab: 'permanent' });
     renderGlobal(kind);
   }
   function mixedAssets(): DramaAsset[] {
     const state = driver.store!.getState();
     return [state.globalCharacters[0], state.globalScenes[0], state.globalProps[0]].map((asset) => ({ ...asset, id: `imported-${asset.kind}` }));
   }
+
+  it('Tab 抽屉中的全局角色卡展示参考图，隐藏卡片与批量管理入口', () => {
+    open('character', 'drawer');
+    const [character] = driver.store!.getState().globalCharacters;
+    driver.store!.setState({ globalCharacters: [{ ...character, referenceImages: [
+      { id: 'front', kind: 'primary', imageUrl: 'https://example.test/front.png', prompt: '', createdAt: 1, updatedAt: 1 },
+      { id: 'side', kind: 'turnaround', imageUrl: 'https://example.test/side.png', prompt: '', createdAt: 1, updatedAt: 1 },
+    ] }] });
+    renderGlobal();
+    expect(all(button('角色参考图'), (element) => typeof element.props.src === 'string').map((element) => element.props.src)).toEqual([
+      'https://example.test/front.png', 'https://example.test/side.png',
+    ]);
+    expect(visibleText(tree)).not.toMatch(/上传图片|新增人物|导入|导出|多选|复制简介/);
+    expect(button('搜索全局创作资产')).toBeDefined();
+  });
 
   it.each([
     ['character', '人物'], ['scene', '场景'], ['prop', '道具'],
