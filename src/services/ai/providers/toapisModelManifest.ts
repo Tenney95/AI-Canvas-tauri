@@ -68,6 +68,12 @@ const K_RESOLUTIONS = { resolutions: ['1K', '2K', '4K'], defaultResolution: '1K'
 const METADATA_RESOLUTION: Body = { metadata: { resolution: '{{imageSize}}' } };
 const GPT_QUALITIES = ['low', 'medium', 'high'];
 const GPT_25_QUALITIES = ['auto', 'low', 'medium', 'high', 'xhigh', 'max'];
+const GPT_IMAGE_2_OVERRIDES: ImageModelCapability = {
+  resolutions: ['1k', '2k', '4k'], defaultResolution: '1k', ratios: GPT_RATIOS,
+  maxImageReferences: 14, supportsBatch: true, maxBatchCount: 8,
+};
+const GPT_IMAGE_2_REFERENCE_FIELDS: ModelProtocolVariables = { reference_images: '{{imageUrls}}', image_urls: undefined };
+const SEEDREAM_BATCH_OVERRIDES: ImageModelCapability = { maxImageReferences: 10, supportsBatch: true, maxBatchCount: 8 };
 
 /** 渠道未公布的像素、质量、背景和引用上限不能从同型号基础能力补齐。 */
 function channelImageCapability(
@@ -83,16 +89,13 @@ function channelImageCapability(
 }
 
 const IMAGE_MODELS: ProviderModelSelection[] = [
-  ...images(['gpt-image-2'], channelImageCapability('gpt-image-2', {
-    resolutions: ['1k', '2k', '4k'], defaultResolution: '1k', ratios: GPT_RATIOS,
-    maxImageReferences: 14, supportsBatch: true, maxBatchCount: 8,
-  }), { resolution: '{{imageSize}}', reference_images: '{{imageUrls}}', image_urls: undefined }),
+  ...images(['gpt-image-2'], channelImageCapability('gpt-image-2', GPT_IMAGE_2_OVERRIDES),
+    { resolution: '{{imageSize}}', ...GPT_IMAGE_2_REFERENCE_FIELDS }),
   // https://docs.toapis.com/docs/cn/api-reference/images/gpt-image-2-vip/generation
   ...images(['gpt-image-2-vip'], channelImageCapability('gpt-image-2', {
-    resolutions: ['1k', '2k', '4k'], defaultResolution: '1k', ratios: GPT_RATIOS,
-    maxImageReferences: 14, supportsBatch: true, maxBatchCount: 8,
+    ...GPT_IMAGE_2_OVERRIDES,
     qualities: GPT_QUALITIES, defaultQuality: 'medium',
-  }), { resolution: '{{imageSize}}', quality: '{{imageQuality}}', reference_images: '{{imageUrls}}', image_urls: undefined }),
+  }), { resolution: '{{imageSize}}', quality: '{{imageQuality}}', ...GPT_IMAGE_2_REFERENCE_FIELDS }),
   // https://docs.toapis.com/docs/cn/api-reference/images/gpt-image-2/official
   ...images(['gpt-image-2-official'], channelImageCapability('gpt-image-2', { ratios: GPT_RATIOS,
     maxImageReferences: 16, supportsBatch: true, maxBatchCount: 4,
@@ -140,19 +143,15 @@ const IMAGE_MODELS: ProviderModelSelection[] = [
   ...images(['qwen-image-3.0', 'qwen-image-3.0-pro'], {
     resolutions: ['1K', '2K'], defaultResolution: '1K', ratios: RATIOS, maxImageReferences: 3,
   }, { resolution: '{{imageSize}}' }),
-  ...images(['doubao-seedream-4-0'], channelImageCapability('seedream-4', {
-    maxImageReferences: 10, supportsBatch: true, maxBatchCount: 8,
-  }), METADATA_RESOLUTION),
-  ...images(['doubao-seedream-4-5'], channelImageCapability('seedream-4.5', {
-    maxImageReferences: 10, supportsBatch: true, maxBatchCount: 8,
-  }), METADATA_RESOLUTION),
+  ...images(['doubao-seedream-4-0'], channelImageCapability('seedream-4', SEEDREAM_BATCH_OVERRIDES), METADATA_RESOLUTION),
+  ...images(['doubao-seedream-4-5'], channelImageCapability('seedream-4.5', SEEDREAM_BATCH_OVERRIDES), METADATA_RESOLUTION),
   ...images(['doubao-seedream-5-0'], channelImageCapability('seedream-5-lite', {
     resolutions: ['2K', '3K'], ratios: WIDE_RATIOS,
-    maxImageReferences: 10, supportsBatch: true, maxBatchCount: 8,
+    ...SEEDREAM_BATCH_OVERRIDES,
   }), METADATA_RESOLUTION),
   ...images(['doubao-seedream-5-0-pro'], channelImageCapability('seedream-5-pro', {
     resolutions: ['1K', '2K'], defaultResolution: '1K', ratios: WIDE_RATIOS,
-    maxImageReferences: 10, supportsBatch: true, maxBatchCount: 8,
+    ...SEEDREAM_BATCH_OVERRIDES,
   }), METADATA_RESOLUTION),
   ...images(['flux-kontext-pro', 'flux-kontext-max'], {
     ratios: WIDE_RATIOS, maxImageReferences: 1, hasResolutionField: false,

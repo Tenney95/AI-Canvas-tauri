@@ -974,3 +974,11 @@ cargo test --lib blender_runtime::result::tests
 - xAI Grok Imagine 两套视频协议在模块初始化时共用构造，各自创建请求和响应对象，并沿用同一个轮询对象。静态展开与原声明一致，包括单图生视频的 `image.url` 原位置及任务摘要输入。在接入受控视频接口的 Tauri 桌面项目选择文生视频和单图生视频，核对仅后者发送首图，时长、画幅、分辨率及字段顺序一致。使用固定 `request_id` 验证轮询沿用原任务，重开已有待续任务或让其失败，核对继续查询原 ID 及原错误处理。请求和轮询用例见 [xaiModelManifest.test.ts](../../tests/services/xaiModelManifest.test.ts#L72)。
 
 在仓库根目录可运行 `npm test -- tests/components/characterActionMedia.test.ts tests/services/assetSearchService.test.ts tests/components/animationNodePreview.test.tsx tests/components/slashCommandFolders.test.tsx tests/services/xaiModelManifest.test.ts`。
+
+## 2026-11-20 RunningHub 与中转渠道的公共模型参数
+
+按图像、视频、音频分别归并。本次未运行测试，待用户验收。
+
+检查了 RunningHub 本地标准目录的 347 个端点（图像 97、视频 214、音频 36），以及 APIMart、CCC、ToAPIs、LibAPI、万象、Amam、GRSAI、Sora2U 的内置定义和现有共享模板。Lec 按快速适配合同检查，Muse 保留网页生成边界。文本执行已有公共协议，渠道精确型号、目录白名单、输入模态和上下文限制分别声明。自定义连接和用户工作流仍按各自配置解析。
+
+- 图像组复用 RunningHub 同族端点的相同字段、LibAPI 的同序图片模式、ToAPIs GPT Image 2 与 Seedream 的渠道共用项，以及 APIMart 相关生图能力的同族公共定义。保留每个入口的枚举次序、默认值、字段缺省和独立对象。Tauri 桌面端在已配置的连接中分别选择普通／VIP／官方 GPT、Seedream、Wan 2.7 普通／Pro 和有编辑模式差异的 LibAPI 模型，核对尺寸、质量、参考图及批量上限，再预览文生、编辑和多参考请求。模式例外和渠道字段用 [libapiModelManifest.test.ts](../../tests/services/libapiModelManifest.test.ts)、[toapisModelManifest.test.ts](../../tests/services/toapisModelManifest.test.ts) 及 [mediaModelCapabilities.test.ts](../../tests/services/mediaModelCapabilities.test.ts) 回归。

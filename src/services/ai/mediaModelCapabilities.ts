@@ -131,26 +131,51 @@ function createGrokImagineBaseCapability(modelId: string): ImageCapability {
   };
 }
 
+function createGeminiPreviewCapability(modelId: string, template: 'nano-banana-2' | 'nano-banana-pro'): ImageCapability {
+  return {
+    modelId,
+    resolutionStyle: 'K',
+    ...getImageCapabilityTemplate(template, {
+      resolutions: ['1K'], ratios: [...COMMON_RATIOS, '4:5', '5:4', '21:9'], maxBatchCount: undefined,
+    }),
+  };
+}
+
+function createGptImage1Capability(modelId: 'gpt-image-1' | 'gpt-image-1.5'): ImageCapability {
+  return {
+    modelId,
+    resolutionStyle: 'K',
+    ...getImageCapabilityTemplate(modelId, {
+      resolutions: ['1k', '2k', '4k'], defaultResolution: '1k', maxBatchCount: 4,
+      supportsDataUrlReference: false, qualities: undefined, defaultQuality: undefined,
+    }),
+  };
+}
+
+function createWan27ImageCapability(modelId: string, resolutions: string[]): ImageCapability {
+  return {
+    modelId,
+    resolutions,
+    defaultResolution: '2K',
+    ratios: [...COMMON_RATIOS],
+    defaultRatio: '1:1',
+    resolutionStyle: 'K',
+    supportsBatch: true,
+    maxBatchCount: 4,
+    supportsImageReference: true,
+    maxImageReferences: 9,
+    supportsDataUrlReference: true,
+  };
+}
+
 /**
  * 生图能力表。modelId 以各 Provider 文档为准；getImageCapability 用归一化 key 匹配，
  * 兼容 defaultModels 里旧的历史 ID（如 seedream-4.0 → doubao-seedream-4.0）。
  */
 const IMAGE_CAPABILITIES: Record<string, ImageCapability> = {
   // ── Nano Banana / Gemini 系列 ──
-  'gemini-3.1-flash-image-preview': {
-    modelId: 'gemini-3.1-flash-image-preview',
-    resolutionStyle: 'K',
-    ...getImageCapabilityTemplate('nano-banana-2', {
-      resolutions: ['1K'], ratios: [...COMMON_RATIOS, '4:5', '5:4', '21:9'], maxBatchCount: undefined,
-    }),
-  },
-  'gemini-3-pro-image-preview': {
-    modelId: 'gemini-3-pro-image-preview',
-    resolutionStyle: 'K',
-    ...getImageCapabilityTemplate('nano-banana-pro', {
-      resolutions: ['1K'], ratios: [...COMMON_RATIOS, '4:5', '5:4', '21:9'], maxBatchCount: undefined,
-    }),
-  },
+  'gemini-3.1-flash-image-preview': createGeminiPreviewCapability('gemini-3.1-flash-image-preview', 'nano-banana-2'),
+  'gemini-3-pro-image-preview': createGeminiPreviewCapability('gemini-3-pro-image-preview', 'nano-banana-pro'),
   'gemini-2.5-flash-image-preview': {
     modelId: 'gemini-2.5-flash-image-preview',
     resolutionStyle: 'K',
@@ -166,22 +191,8 @@ const IMAGE_CAPABILITIES: Record<string, ImageCapability> = {
     ...GPT_IMAGE_25_CAPABILITY,
     modelId: 'gpt-image-2.5-sunburst',
   },
-  'gpt-image-1': {
-    modelId: 'gpt-image-1',
-    resolutionStyle: 'K',
-    ...getImageCapabilityTemplate('gpt-image-1', {
-      resolutions: ['1k', '2k', '4k'], defaultResolution: '1k', maxBatchCount: 4,
-      supportsDataUrlReference: false, qualities: undefined, defaultQuality: undefined,
-    }),
-  },
-  'gpt-image-1.5': {
-    modelId: 'gpt-image-1.5',
-    resolutionStyle: 'K',
-    ...getImageCapabilityTemplate('gpt-image-1.5', {
-      resolutions: ['1k', '2k', '4k'], defaultResolution: '1k', maxBatchCount: 4,
-      supportsDataUrlReference: false, qualities: undefined, defaultQuality: undefined,
-    }),
-  },
+  'gpt-image-1': createGptImage1Capability('gpt-image-1'),
+  'gpt-image-1.5': createGptImage1Capability('gpt-image-1.5'),
   'gpt-image-2': {
     modelId: 'gpt-image-2',
     resolutionStyle: 'K',
@@ -233,32 +244,8 @@ const IMAGE_CAPABILITIES: Record<string, ImageCapability> = {
   'grok-imagine-2.0-ext': createGrokImagineBaseCapability('grok-imagine-2.0-ext'),
 
   // ── wan2.7 image（size 支持分辨率关键词，n 1-4）──
-  'wan2.7-image': {
-    modelId: 'wan2.7-image',
-    resolutions: ['1K', '2K'],
-    defaultResolution: '2K',
-    ratios: [...COMMON_RATIOS],
-    defaultRatio: '1:1',
-    resolutionStyle: 'K',
-    supportsBatch: true,
-    maxBatchCount: 4,
-    supportsImageReference: true,
-    maxImageReferences: 9,
-    supportsDataUrlReference: true,
-  },
-  'wan2.7-image-pro': {
-    modelId: 'wan2.7-image-pro',
-    resolutions: ['1K', '2K', '4K'],
-    defaultResolution: '2K',
-    ratios: [...COMMON_RATIOS],
-    defaultRatio: '1:1',
-    resolutionStyle: 'K',
-    supportsBatch: true,
-    maxBatchCount: 4,
-    supportsImageReference: true,
-    maxImageReferences: 9,
-    supportsDataUrlReference: true,
-  },
+  'wan2.7-image': createWan27ImageCapability('wan2.7-image', ['1K', '2K']),
+  'wan2.7-image-pro': createWan27ImageCapability('wan2.7-image-pro', ['1K', '2K', '4K']),
 
   // ── Seedream 系列（doubao-seedream-*）──
   'doubao-seedream-4.0': {
