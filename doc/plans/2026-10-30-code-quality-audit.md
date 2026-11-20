@@ -871,3 +871,4 @@ cargo test --lib blender_runtime::result::tests
 已实现，按范围分别提交。本次未运行测试，待用户验收。
 
 - 外观主题的导入校验、迁移和导出共用同一组有序图片槽位，导入和导出复用图片引用替换。原始主题仍先校验再规范化，缺图、损坏及摘要不符均在写入前拒绝。Tauri 桌面端从外观设置导出带共享及独立面板背景的主题，再导入并应用，核对图片和设置。异常与旧版主题的既有覆盖见 [appearanceThemeService.test.ts](../../tests/services/appearanceThemeService.test.ts)。
+- APIMart 的三项 MiniMax-H3 能力记录和两项 Seedance 1.0 Pro 能力记录分别在模块初始化时共用本组构造。静态展开后与原能力表一致，包括型号 ID、能力字段顺序、首尾帧和素材限制。Tauri 桌面端在已配置 APIMart 的项目打开视频参数，核对 H3 与 Seedance 1.0 Fast／Quality 的选项和默认值。在旧项目打开过往 H3 特殊型号节点，确认原型号仍可解析。请求体与目录回归入口见 [apimartGen.test.ts](../../tests/services/apimartGen.test.ts) 和 [providerCatalogService.test.ts](../../tests/services/providerCatalogService.test.ts)。
