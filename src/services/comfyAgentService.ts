@@ -13,6 +13,7 @@ import type {
 } from '../types/media';
 import { isTauriEnv, persistMediaUrlToProjectData } from './fileService';
 import { comfyFetch, pollComfyHistory } from './comfyPolling';
+import { classifyHttpResponseFailure } from './ai/httpUtils';
 import { maybeAutoReleaseComfyMemory } from './comfyMemory';
 import { COMFY_AUDIO_OUTPUT_KINDS, resolveComfyOutputUrl, type ComfyOutputKind } from './comfyOutputs';
 import { cancelComfyPrompt, formatComfyPromptError } from './comfyWorkflowService';
@@ -545,24 +546,29 @@ export async function executeValidatedComfyUIWorkflow(args: {
   assertServerSelectionCurrent(entry);
   if (args.signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
 
+  const requestBody = JSON.stringify({ prompt: entry.workflow });
+  // 在首次异步等待前领取凭证，响应丢失或并发调用均不能再次提交。
+  validatedWorkflows.delete(args.validationId);
+  let rejected = false;
   let promptId = '';
   try {
     const response = await comfyFetch(`${entry.baseUrl}/prompt`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: entry.workflow }),
+      body: requestBody,
       signal: args.signal,
     });
     if (!response.ok) {
+      rejected = classifyHttpResponseFailure(response.status, undefined);
       const body = await response.text().catch(() => '');
       throw new Error(formatComfyPromptError(response.status, body));
     }
     const submitted = await response.json() as { prompt_id?: unknown; error?: unknown };
-    if (typeof submitted.prompt_id !== 'string' || !submitted.prompt_id) {
+    if (typeof submitted.prompt_id !== 'string' || !submitted.prompt_id.trim()) {
+      rejected = classifyHttpResponseFailure(response.status, submitted);
       throw new Error(typeof submitted.error === 'string' ? submitted.error : 'ComfyUI 未返回 prompt_id');
     }
     promptId = submitted.prompt_id;
-    validatedWorkflows.delete(args.validationId);
     const output = await pollComfyHistory(
       entry.baseUrl,
       promptId,
@@ -616,7 +622,12 @@ export async function executeValidatedComfyUIWorkflow(args: {
     };
     return { artifact, saveOffer: createSaveOffer(entry, args.conversationId) };
   } catch (error) {
-    if (promptId && (args.signal?.aborted || (error instanceof DOMException && error.name === 'AbortError'))) {
+    const aborted = args.signal?.aborted || (error instanceof DOMException && error.name === 'AbortError');
+    if (rejected) {
+      if (entry.expiresAt > Date.now()) validatedWorkflows.set(args.validationId, entry);
+    } else if (!promptId && !aborted) {
+      throw new Error('ComfyUI 提交结果未知，请先核对原服务器的队列和历史，再决定是否生成。', { cause: error });
+    } else if (promptId && aborted) {
       await cancelComfyPrompt(entry.baseUrl, promptId).catch(() => false);
     } else if (promptId) {
       await maybeAutoReleaseComfyMemory(

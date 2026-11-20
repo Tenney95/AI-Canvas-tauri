@@ -202,6 +202,39 @@ describe('ComfyUI assistant server selection', () => {
     expect(comfyBaseUrlFor(saved.id)).toBe(remoteUrl);
   });
 
+  it.each(['断线', '网关超时', '回执缺少任务 ID'])('提交后%s，原校验凭证不能再次入队', async (failure) => {
+    const { validationId } = await validateComfyUIWorkflow({ ...validationArgs, workflow: workflow() });
+    if (failure === '断线') comfyFetchMock.mockRejectedValueOnce(new TypeError('connection closed'));
+    else comfyFetchMock.mockResolvedValueOnce(failure === '网关超时' ? jsonResponse({}, 504) : jsonResponse({}));
+    await expect(executeValidatedComfyUIWorkflow({ ...executionArgs, validationId })).rejects.toThrow('提交结果未知');
+    expect(getValidatedComfyWorkflowSummary(validationId, 'task-1', 'project-1')).toBeNull();
+    await expect(executeValidatedComfyUIWorkflow({ ...executionArgs, validationId })).rejects.toThrow('校验已失效');
+    expect(comfyFetchMock.mock.calls.filter(([url]) => url.endsWith('/prompt'))).toHaveLength(1);
+  });
+
+  it('等待提交响应期间同一凭证只能发出一次请求，原调用仍按自己的任务 ID 取件', async () => {
+    const { validationId } = await validateComfyUIWorkflow({ ...validationArgs, workflow: workflow() });
+    let finish!: (response: Response) => void;
+    comfyFetchMock.mockImplementationOnce(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    const first = executeValidatedComfyUIWorkflow({ ...executionArgs, validationId });
+    try {
+      await expect(executeValidatedComfyUIWorkflow({ ...executionArgs, validationId })).rejects.toThrow('校验已失效');
+    } finally { finish(jsonResponse({ prompt_id: 'mine' })); }
+    await expect(first).resolves.toHaveProperty('artifact.url');
+    expect(comfyFetchMock.mock.calls.filter(([url]) => url.endsWith('/prompt'))).toHaveLength(1);
+    expect(pollComfyHistoryMock).toHaveBeenCalledWith(remoteUrl, 'mine', expect.any(String), expect.any(Function), undefined);
+  });
+
+  it('提交前取消和服务端明确拒绝时仍可使用原凭证', async () => {
+    const { validationId } = await validateComfyUIWorkflow({ ...validationArgs, workflow: workflow() });
+    await expect(executeValidatedComfyUIWorkflow({ ...executionArgs, validationId, signal: AbortSignal.abort() }))
+      .rejects.toMatchObject({ name: 'AbortError' });
+    comfyFetchMock.mockResolvedValueOnce(jsonResponse({ error: { message: 'invalid prompt' } }, 400));
+    await expect(executeValidatedComfyUIWorkflow({ ...executionArgs, validationId })).rejects.toThrow('400');
+    await expect(executeValidatedComfyUIWorkflow({ ...executionArgs, validationId })).resolves.toHaveProperty('artifact.url');
+    expect(comfyFetchMock.mock.calls.filter(([url]) => url.endsWith('/prompt'))).toHaveLength(2);
+  });
+
   it.each(['delete', 'replace', 'default'])('invalidates validation after %s without sending a prompt', async (change) => {
     const validated = await validateComfyUIWorkflow({ ...validationArgs, serverId: change === 'default' ? undefined : validationArgs.serverId, workflow: workflow() });
     useAppStore.setState((state) => ({ config: {
