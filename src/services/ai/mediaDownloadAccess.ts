@@ -81,8 +81,8 @@ export async function resolveMediaDownloadRequest(url: string, access?: MediaDow
 }
 
 /** 同步结果只保留可重取的 HTTP(S) 引用，内联二进制不写入任务存储。 */
-export function sanitizeMediaResultUrls(value: unknown, excludedSecret?: string): string[] | undefined {
-  if (!Array.isArray(value) || value.length === 0 || value.length > 32) return;
+export function sanitizeMediaResultUrls(value: unknown, excludedSecret?: string, maxCount = 32): string[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > maxCount) return;
   try {
     return value.map((item) => {
       if (typeof item !== 'string' || item.length > 16384) throw new Error();

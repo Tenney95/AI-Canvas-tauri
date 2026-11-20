@@ -47,8 +47,8 @@ import { nativeProtocolTaskDigest, nativeProtocolQueryDigest, nativeProtocolQuer
 import { retainNativeMediaOutputs } from '../indexedDb/nativeMediaCollectionRepository';
 import { projectModelSourceToken } from '../projectModelComparisonMaterial';
 import { sha256BytesHex } from '../mediaDataUrl';
-import { persistMediaUrlToProjectData } from '../fileService';
-import { captureNativeMediaLocalResult } from '../nativeMediaLocalResult';
+import { persistNativeMediaResult } from '../nativeMediaResultPersistence';
+import { prepareNativeSyncDownload, saveNativeSyncDownload } from '../nativeSyncMediaDownload';
 import { continueNativeMediaTask, createNativeMediaPendingError } from '../nativeMediaTaskContinuation';
 import { redactVolcengineError, redactVolcengineErrorText } from './providers/volcengineError';
 
@@ -531,14 +531,19 @@ export async function runConfiguredModelProtocol(
         if (!submitted.urls?.length || submitted.urls.length > 128) throw new Error('同步协议产物集合为空或超过安全上限，原操作保留供核对');
         // 已付费返回的产物先保存到原持久根；当前窗口切集或取消不能把它丢弃。
         await assertNativeMediaResultRetention(nativeTask);
-        const localResults = [];
-        for (const url of submitted.urls) {
-          const saved = await persistMediaUrlToProjectData(url, nativeContext!.canvasId, `ai-${options.category}`, '原同步媒体', { mediaDownloadAccess });
-          if (!saved.filePath) throw new Error('同步媒体尚未保存到原项目目录');
-          localResults.push({ ...await captureNativeMediaLocalResult(nativeContext!.canvasId, saved.filePath), category: options.category });
+        nativeTask = await prepareNativeSyncDownload(nativeTask, submitted.urls, mediaDownloadAccess, provider.apiKey);
+        if (nativeTask.syncDownload) {
+          try { nativeTask = await saveNativeSyncDownload(nativeTask); }
+          catch { throw createNativeMediaPendingError(nativeTask); }
+        } else {
+          const localResults = [];
+          for (const url of submitted.urls) {
+            localResults.push(await persistNativeMediaResult(url, nativeContext!.canvasId, { category: options.category,
+              mediaDownloadAccess, label: '原同步媒体', missingFileMessage: '同步媒体尚未保存到原项目目录' }));
+          }
+          await assertNativeMediaResultRetention(nativeTask);
+          nativeTask = await retainNativeMediaOutputs(nativeTask, localResults);
         }
-        await assertNativeMediaResultRetention(nativeTask);
-        nativeTask = await retainNativeMediaOutputs(nativeTask, localResults);
         if (signal?.aborted || !isProjectExpectedContextCurrent(nativeContext!, useAppStore.getState(), { checkCanvasRevision: false })) {
           throw createNativeMediaPendingError(nativeTask);
         }

@@ -55,8 +55,12 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
     const { resumeNativeApimartImageBatch } = await import('./nativeApimartImageRecovery');
     return resumeNativeApimartImageBatch(operationId, externalSignal);
   }
-  if (found.localResults?.length || found.submissionKind === 'sync' && found.localResult) {
-    const record = await claimNativeMediaRecovery(operationId, context, { signal: externalSignal });
+  if (found.localResults?.length || found.syncDownload || found.submissionKind === 'sync' && found.localResult) {
+    let record = await claimNativeMediaRecovery(operationId, context, { signal: externalSignal });
+    if (record.syncDownload) {
+      const { saveNativeSyncDownload } = await import('./nativeSyncMediaDownload');
+      record = await saveNativeSyncDownload(record, { signal: externalSignal });
+    }
     const files = nativeMediaLocalOutputs(record);
     for (const file of files) await readNativeMediaLocalResult(record.canvasId, file);
     externalSignal?.throwIfAborted();

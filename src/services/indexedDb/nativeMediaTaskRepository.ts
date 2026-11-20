@@ -58,6 +58,8 @@ export interface NativeMediaTaskRecord {
   fingerprintScheme?: 'video-input-v1' | 'media-input-v2' | 'media-input-v3';
   requestFingerprint?: string;
   submissionKind?: 'async' | 'sync';
+  /** 已返回的 HTTP 结果仅存本机密文，有序前缀在完整交付前不投影到节点。 */
+  syncDownload?: { sealed: string; count: number; saved: NativeMediaLocalOutput[] };
   localResult?: NativeMediaLocalResult;
   localResults?: NativeMediaLocalOutput[];
   completion?: NativeMediaCompletion;
@@ -84,6 +86,17 @@ export interface NativeMediaTaskRecord {
 }
 
 export function validateNativeMediaTaskRecord(value: NativeMediaTaskRecord): NativeMediaTaskRecord {
+  if (value?.syncDownload !== undefined) {
+    const pending = value.syncDownload;
+    if (!pending || value.submissionKind !== 'sync' || value.recovery?.kind !== 'general-protocol'
+      || !['submitted', 'reviewed'].includes(value.status) || value.localResult || value.localResults || value.resultRelativePath
+      || Object.keys(pending).some((field) => !['sealed', 'count', 'saved'].includes(field))
+      || typeof pending.sealed !== 'string' || pending.sealed.length > 12_000_000 || !/^[A-Za-z0-9+/]{16}\.[A-Za-z0-9+/]+={0,2}$/.test(pending.sealed)
+      || !Number.isSafeInteger(pending.count) || pending.count < 1 || pending.count > 128
+      || !Array.isArray(pending.saved) || pending.saved.length > pending.count) return fail('同步媒体下载回执损坏');
+    if (pending.saved.length) validateNativeMediaLocalOutputs(pending.saved);
+    if (pending.saved.some((item) => item.category !== value.category)) return fail('同步媒体结果类型不一致');
+  }
   if (value?.completion !== undefined) {
     const summary = value.completion;
     if (!value.localResults || !summary || Object.keys(summary).some((field) => !['taskCount', 'failedTasks', 'failedSubmissions', 'unknownSubmissions', 'notStartedSubmissions'].includes(field))
@@ -148,7 +161,7 @@ export function validateNativeMediaTaskRecord(value: NativeMediaTaskRecord): Nat
     || !['prepared', 'submitted', 'outcome-unknown', 'delivered', 'failed', 'reviewed'].includes(value.status)
     || !UUID.test(value.lease) || !validEpoch(value.revision) || !validEpoch(value.createdAt) || !validEpoch(value.updatedAt)
     || value.remoteTaskId !== undefined && !id(value.remoteTaskId)
-    || value.status === 'submitted' && !(value.localResults?.length || (value.submissionKind === 'sync' ? value.localResult : value.remoteTaskId))
+    || value.status === 'submitted' && !(value.syncDownload || value.localResults?.length || (value.submissionKind === 'sync' ? value.localResult : value.remoteTaskId))
     || value.deliveryDigest !== undefined && !/^[a-f0-9]{64}$/.test(value.deliveryDigest)
     || value.committedCanvasRevision !== undefined && !validEpoch(value.committedCanvasRevision)
     || value.resultRelativePath !== undefined && safeExchangePath(value.resultRelativePath) !== value.resultRelativePath
@@ -167,7 +180,7 @@ export function validateNativeMediaTaskRecord(value: NativeMediaTaskRecord): Nat
     || !['chat', 'canvas', 'both'].includes(value.origin.deliveryMode)
     || Object.keys(value.origin).some((key) => !['conversationId', 'messageId', 'agentTaskId', 'modelId', 'deliveryMode'].includes(key)))) return fail('媒体原对话身份损坏');
   const fields = ['projectId', 'kind', 'operationId', 'ownerProjectId', 'canvasId', 'episodeId', 'projectEpoch', 'canvasEpoch',
-    'sourceCanvasRevision', 'nodeId', 'targetNodeType', 'resultRootRef', 'inputFingerprint', 'fingerprintScheme', 'requestFingerprint', 'submissionKind', 'localResult', 'localResults', 'completion', 'recovery', 'pollContext', 'apimartImageBatch', 'lateImageTaskIds', 'imageReference', 'providerConfigId', 'providerBase', 'protocolDigest', 'modelRef', 'origin', 'category', 'status', 'remoteTaskId', 'deliveryDigest', 'committedCanvasRevision', 'resultRelativePath',
+    'sourceCanvasRevision', 'nodeId', 'targetNodeType', 'resultRootRef', 'inputFingerprint', 'fingerprintScheme', 'requestFingerprint', 'submissionKind', 'syncDownload', 'localResult', 'localResults', 'completion', 'recovery', 'pollContext', 'apimartImageBatch', 'lateImageTaskIds', 'imageReference', 'providerConfigId', 'providerBase', 'protocolDigest', 'modelRef', 'origin', 'category', 'status', 'remoteTaskId', 'deliveryDigest', 'committedCanvasRevision', 'resultRelativePath',
     'lease', 'revision', 'createdAt', 'updatedAt'];
   if (Object.keys(value).some((key) => !fields.includes(key))) return fail('媒体任务账本包含未知字段，不能自动恢复');
   return value;
@@ -308,6 +321,31 @@ export async function assertNativeMediaResultRetention(record: NativeMediaTaskRe
   }, [ROOTS, CANVASES, EXCHANGE]); } finally { db.close(); }
 }
 
+/** 保存原下载描述或完成一个候选。原租约和版本共同防止旧下载覆盖新进度。 */
+export async function recordNativeSyncDownload(record: NativeMediaTaskRecord,
+  update: { sealed: string; count: number } | NativeMediaLocalOutput, options: NativeProjectOptions = {}): Promise<NativeMediaTaskRecord> {
+  const db = await openNativeProjectDatabase(false, options); if (!db) return fail();
+  try { return await transact(db, 'readwrite', options, async (tx) => {
+    if (tx.durability !== 'strict') return fail();
+    const store = tx.objectStore(EXCHANGE), row = await req(store.get(record.projectId));
+    if (!row) return fail();
+    const current = validateNativeMediaTaskRecord(row);
+    if (current.lease !== record.lease || current.revision !== record.revision || current.revision >= Number.MAX_SAFE_INTEGER
+      || !await matchingCanvas(tx, current)) return fail('原同步任务的租约或目的地已变化');
+    let pending = current.syncDownload;
+    if ('sealed' in update) {
+      if (pending || !['prepared', 'outcome-unknown'].includes(current.status)) return fail();
+      pending = { sealed: update.sealed, count: update.count, saved: [] };
+    } else {
+      if (!pending || current.status !== 'submitted') return fail();
+      pending = { ...pending, saved: [...pending.saved, update] };
+    }
+    const next = validateNativeMediaTaskRecord({ ...current, syncDownload: pending, status: 'submitted', revision: current.revision + 1, updatedAt: Date.now() });
+    await req(store.put(next));
+    return next;
+  }, [ROOTS, CANVASES, EXCHANGE], true); } finally { db.close(); }
+}
+
 /** 收到远端 ID 即耐久保存；即使原画布此时已删除，也保留原回执供只读核对。 */
 export async function recordNativeMediaSubmission(operationId: string, lease: string,
   outcome: { taskId: string; pollContext?: Record<string, unknown> } | { unknown: true } | { notStarted: true }, options: NativeProjectOptions = {}): Promise<NativeMediaTaskRecord> {
@@ -419,7 +457,7 @@ export async function claimNativeMediaRecovery(operationId: string, context: Can
       if (options.expectedSubmission && (current.status !== 'submitted' || current.lease !== options.expectedSubmission.lease
         || current.revision !== options.expectedSubmission.revision)) return fail('原任务刚被更新或结束，自动交付未重新取得执行权');
       await assertNoPendingNativeSharedSync(tx, current.ownerProjectId);
-      if (!['submitted', 'reviewed'].includes(current.status) || !(current.localResults?.length || (current.submissionKind === 'sync' ? current.localResult : current.remoteTaskId)) || current.revision >= Number.MAX_SAFE_INTEGER
+      if (!['submitted', 'reviewed'].includes(current.status) || !(current.syncDownload || current.localResults?.length || (current.submissionKind === 'sync' ? current.localResult : current.remoteTaskId)) || current.revision >= Number.MAX_SAFE_INTEGER
         || current.category !== 'video' && !['media-input-v2', 'media-input-v3'].includes(current.fingerprintScheme ?? '')
         || current.ownerProjectId !== context.projectId || current.canvasId !== context.canvasId
         || current.episodeId !== context.episodeId || current.projectEpoch !== context.projectEpoch

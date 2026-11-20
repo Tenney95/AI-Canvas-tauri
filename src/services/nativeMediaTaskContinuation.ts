@@ -6,10 +6,10 @@ export function createNativeMediaPendingError(record: NativeMediaTaskRecord, cau
   const localResultAvailable = !!(record.localResults?.length || record.localResult);
   const error = new Error(localResultAvailable
     ? record.origin?.deliveryMode === 'chat' ? '媒体已保存，返回原对话后会自动继续显示。' : '媒体已保存，返回原画布后会自动继续显示。'
-    : '媒体任务已保留，暂未取得可安全显示的结果。', cause === undefined ? undefined : { cause });
+    : record.syncDownload ? '原媒体已生成，下载尚未完成。可继续保存原结果。' : '媒体任务已保留，暂未取得可安全显示的结果。', cause === undefined ? undefined : { cause });
   error.name = 'NativeMediaTaskPending';
   Object.assign(error, { nativeOperationId: record.operationId, localResultAvailable,
-    remoteTaskKnown: record.status === 'submitted' && !!record.remoteTaskId });
+    remoteTaskKnown: record.status === 'submitted' && !!(record.remoteTaskId || record.syncDownload) });
   return error;
 }
 

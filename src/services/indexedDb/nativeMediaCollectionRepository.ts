@@ -34,9 +34,11 @@ export async function retainNativeMediaOutputs(record: NativeMediaTaskRecord, ou
     }
     const inline = options.inlineSubmission === true && current.submissionKind === 'async';
     if (current.revision !== original.revision || !configValuesEqual(current.recovery, original.recovery)
-      || (current.submissionKind === 'sync' || inline ? !['prepared', 'outcome-unknown'].includes(current.status)
-        : current.status !== 'submitted' || !current.remoteTaskId)
       || inline && (current.remoteTaskId !== undefined || !current.recovery)) return fail();
+    if (current.syncDownload) {
+      if (current.status !== 'submitted' || files.length !== current.syncDownload.count || !configValuesEqual(current.syncDownload.saved, files)) return fail();
+    } else if (current.submissionKind === 'sync' || inline ? !['prepared', 'outcome-unknown'].includes(current.status)
+      : current.status !== 'submitted' || !current.remoteTaskId) return fail();
     const [project, canvas, revision] = await Promise.all([
       req(tx.objectStore(ROOTS).get(current.ownerProjectId)) as Promise<ProjectRecord | undefined>,
       req(tx.objectStore(CANVASES).get(current.canvasId)) as Promise<CanvasDocument | undefined>,
@@ -46,7 +48,9 @@ export async function retainNativeMediaOutputs(record: NativeMediaTaskRecord, ou
       || canvas.projectId !== current.ownerProjectId || canvas.episodeId !== current.episodeId || !revision
       || revision.projectId !== current.ownerProjectId || !Number.isSafeInteger(revision.changeRevision) || revision.changeRevision < 0) return fail();
     // 只单调保留回执；真正投递另核验共享写锁、原输入和画布 CAS。
-    const next = validateNativeMediaTaskRecord({ ...current, ...(inline ? { submissionKind: 'sync' as const } : {}), localResults: files,
+    const completed = { ...current };
+    delete completed.syncDownload;
+    const next = validateNativeMediaTaskRecord({ ...completed, ...(inline ? { submissionKind: 'sync' as const } : {}), localResults: files,
       ...(options.completion ? { completion: structuredClone(options.completion) } : {}), resultRelativePath: files[0].relativePath,
       status: 'submitted', revision: increment(current.revision), updatedAt: Date.now() });
     await Promise.all([req(store.put(next)), req(tx.objectStore(REVISIONS).put({ ...revision, changeRevision: increment(revision.changeRevision) }))]);

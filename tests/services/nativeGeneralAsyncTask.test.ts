@@ -11,7 +11,12 @@ import { runConfiguredModelProtocol } from '../../src/services/ai/modelProtocolR
 import { MINIMAX_BASE_URL, resolveMinimaxExecutionProfile } from '../../src/services/ai/providers/minimaxModelManifest';
 
 const driver = vi.hoisted(() => ({ context: undefined as CanvasContext | undefined, state: {} as Record<string, unknown>, revision: 0,
-  fetch: vi.fn(), save: vi.fn(), capture: vi.fn(), deliver: vi.fn() }));
+  secrets: new Map<string, string>(), fetch: vi.fn(), save: vi.fn(), capture: vi.fn(), deliver: vi.fn() }));
+vi.mock('../../src/services/providerSecretService', async (original) => ({
+  ...await original<typeof import('../../src/services/providerSecretService')>(),
+  readAppSecret: async (key: string) => driver.secrets.get(key) ?? null,
+  writeAppSecret: async (key: string, value: string) => { driver.secrets.set(key, value); return true; },
+}));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => driver.state, subscribe: () => () => {} } }));
 vi.mock('../../src/services/projectExecutionContext', async (original) => ({
   ...await original<typeof import('../../src/services/projectExecutionContext')>(), captureLegacyCanvasContext: () => driver.context,
@@ -30,7 +35,7 @@ import { executeNativeGeneralAsyncTask, resumeNativeGeneralAsyncTask, nativeGene
 
 beforeEach(() => {
   vi.stubGlobal('indexedDB', new IDBFactory()); vi.stubGlobal('IDBKeyRange', IDBKeyRange); vi.stubGlobal('crypto', webcrypto);
-  driver.fetch.mockReset(); driver.deliver.mockReset().mockResolvedValue(undefined);
+  driver.secrets.clear(); driver.fetch.mockReset(); driver.deliver.mockReset().mockResolvedValue(undefined);
   driver.save.mockReset().mockImplementation(async (url: string, _canvasId: string, nodeType: string) => ({
     filePath: `/isolated/${createHash('sha256').update(url).digest('hex')}.${nodeType === 'ai-video' ? 'mp4' : 'wav'}`, assetUrl: 'asset://synthetic',
   }));
@@ -203,4 +208,42 @@ it('提交结果未知时保留原操作，续接不会重新POST', async () => 
   await expect(executeNativeGeneralAsyncTask(input)).rejects.toMatchObject({ name: 'NativeMediaTaskPending' });
   const [record] = await listNativeMediaTasks(context.projectId); expect(record.status).toBe('outcome-unknown');
   await expect(resumeNativeGeneralAsyncTask(record.operationId)).rejects.toThrow('未知'); expect(driver.fetch).toHaveBeenCalledOnce();
+});
+
+it('声明式同步中转下载中断后重开原画布仅续存剩余签名链接，账本不暴露链接或 Key', async () => {
+  const { context, input } = await fixture();
+  const model: GeneralModelConfig = { id: 'model', modelId: 'sync-audio', name: '同步音频', category: 'audio', providerConfigId: 'custom',
+    executionProfile: { preset: 'custom', protocol: { version: 2, mode: 'sync',
+      submit: { method: 'POST', path: '/generate' }, response: { type: 'json', result: { urlPath: 'data.*.url' } } } } };
+  const urls = ['https://cdn.example/a.wav?signature=first-private', 'https://cdn.example/b.wav?signature=second-private'];
+  driver.fetch.mockResolvedValueOnce(Response.json({ data: urls.map((url) => ({ url })) }));
+  const save = driver.save.getMockImplementation()!;
+  driver.save.mockImplementationOnce(save).mockRejectedValueOnce(new Error('下载中断'));
+  await expect(runConfiguredModelProtocol({ model, category: 'audio', nodeId: input.nodeId, beforeSubmit: input.beforeSubmit, variables: {} }))
+    .rejects.toMatchObject({ name: 'NativeMediaTaskPending', remoteTaskKnown: true, localResultAvailable: false });
+  const [partial] = await listNativeMediaTasks(context.projectId);
+  expect(partial).toMatchObject({ status: 'submitted', syncDownload: { count: 2, saved: [{ category: 'audio' }] } });
+  expect(partial.remoteTaskId).toBeUndefined(); expect(partial.localResults).toBeUndefined();
+  for (const secret of ['cdn.example', 'first-private', 'second-private', 'synthetic-key']) expect(JSON.stringify(partial)).not.toContain(secret);
+  const { saveNativeSyncDownload, prepareNativeSyncDownload } = await import('../../src/services/nativeSyncMediaDownload');
+  await expect(saveNativeSyncDownload({ ...partial, operationId: crypto.randomUUID() })).rejects.toThrow();
+  const access = { providerConfigId: 'custom', origin: 'https://general.example' };
+  await expect(prepareNativeSyncDownload(partial, ['https://general.example/result?key=synthetic-key'], access, input.apiKey)).resolves.toBe(partial);
+  expect(driver.save).toHaveBeenCalledTimes(2);
+  const { describeNativeMediaRecovery } = await import('../../src/services/nativeMediaRecoverySummary');
+  expect(describeNativeMediaRecovery(partial)).toMatchObject({ canResume: true, resultCount: 1, expectedCount: 2, cachedOnly: false });
+  driver.context = { ...context, runtimeEpoch: 'restart' };
+  driver.state.messages = [];
+  const project = vi.fn();
+  driver.state.commitNativeMediaResult = project;
+  const { resumeNativeVolcengineTask } = await vi.importActual<typeof import('../../src/services/nativeVolcengineRecovery')>('../../src/services/nativeVolcengineRecovery');
+  driver.save.mockRejectedValueOnce(new Error('签名链接暂不可用'));
+  await expect(resumeNativeVolcengineTask(partial.operationId)).rejects.toThrow();
+  expect(project).not.toHaveBeenCalled();
+  await resumeNativeVolcengineTask(partial.operationId);
+  const [complete] = await listNativeMediaTasks(context.projectId);
+  expect(complete.syncDownload).toBeUndefined(); expect(complete.localResults).toHaveLength(2);
+  expect(project).toHaveBeenCalledOnce();
+  expect(driver.save.mock.calls.map(([url]) => url)).toEqual([urls[0], urls[1], urls[1], urls[1]]);
+  expect(driver.fetch.mock.calls.map(([, init]) => init.method)).toEqual(['POST']);
 });

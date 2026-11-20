@@ -52,6 +52,10 @@ export function describeNativeMediaRecovery(record: NativeMediaTaskRecord, detai
     reviewable: ['prepared', 'submitted', 'outcome-unknown'].includes(record.status), cachedOnly: localCount > 0,
     recoveryAction: 'manual_review_only', maySubmitUnstartedStage: false,
   };
+  if (record.syncDownload) {
+    summary.resultCount = record.syncDownload.saved.length;
+    summary.expectedCount = record.syncDownload.count;
+  }
   const counters: RecoveryCounts | undefined = batch ? { ...batch, resultCount: batch.candidateCount, expectedCount: batch.requestedCount } : details.workflow ?? details.image;
   if (counters) {
     summary.resultCount = localCount || count(counters.resultCount ?? counters.candidateCount);
@@ -65,7 +69,7 @@ export function describeNativeMediaRecovery(record: NativeMediaTaskRecord, detai
   }
   const supported = !!record.recovery || !!record.modelRef || ['volcengine', 'apimart', 'grsai', 'comfyui'].includes(record.providerConfigId);
   const versioned = record.category === 'video' || ['media-input-v2', 'media-input-v3'].includes(record.fingerprintScheme ?? '');
-  const existing = ['submitted', 'reviewed'].includes(record.status) && !!record.remoteTaskId;
+  const existing = ['submitted', 'reviewed'].includes(record.status) && !!(record.remoteTaskId || record.syncDownload);
   summary.canResume = supported && versioned && (record.status === 'delivered' ? !!record.origin
     : record.status !== 'failed' && (summary.cachedOnly || existing
       || record.status === 'prepared' && !!record.remoteTaskId && (!!record.apimartImageBatch || record.recovery?.kind === 'workflow') && !summary.unknownSubmissions));
