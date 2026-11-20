@@ -313,29 +313,6 @@
   border-color: var(--brand-alpha-25);
 }
 
-.animation-frames-select {
-  height: 27px;
-  padding: 0 20px 0 7px;
-  border: 1px solid var(--theme-border);
-  border-radius: 6px;
-  outline: none;
-  background: var(--theme-surface);
-  color: var(--theme-text);
-  font-size: 10px;
-  cursor: var(--cursor-pointer, pointer);
-  flex-shrink: 0;
-  font-family: inherit;
-  appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M1 1l3 3 3-3' stroke='%238888a0' stroke-width='1.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 6px center;
-}
-
-.animation-frames-select:hover,
-.animation-frames-select:focus-visible {
-  border-color: var(--brand-alpha-25);
-}
-
 .animation-param-actions {
   display: inline-flex;
   align-items: center;

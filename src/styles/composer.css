@@ -659,18 +659,6 @@
   }
 }
 
-.composer-select {
-  flex: 1;
-  min-width: 0;
-  padding: 4px 6px;
-  background: var(--theme-surface, rgba(0, 0, 0, 0.25));
-  border: 1px solid var(--theme-border);
-  border-radius: 6px;
-  color: var(--theme-text);
-  font-size: 12px;
-  cursor: var(--cursor-pointer, pointer);
-}
-
 /* 数值输入网格（X/Y/宽/高/旋转…） */
 .composer-num-grid {
   display: grid;

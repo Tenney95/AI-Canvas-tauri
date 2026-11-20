@@ -950,3 +950,4 @@ cargo test --lib blender_runtime::result::tests
 本次未运行测试，待用户验收。
 
 - 移除无生产调用的旧单层目录枚举和两个无用导入。原专用测试的磁盘删除断言移到现用扫描的三种来源用例，保留对过滤、计数和流式结果的覆盖。Tauri 桌面端在测试项目及可丢弃目录中核对项目、全局和外部素材列表。普通素材、普通 `.pending` 文件和点文件继续列出，新旧原生暂存件在列表隐藏、磁盘文件保留。现有扫描回归见 [assetFolderNavigation.test.ts](../../tests/services/assetFolderNavigation.test.ts#L107) 和 [projectThumbnailExclusion.test.ts](../../tests/services/projectThumbnailExclusion.test.ts)。
+- 删除动画生成帧数、高级预设步骤类型及合成面板混合模式和字体的旧原生下拉样式。Tauri 桌面端在有动画节点、预设与图片素材的测试项目中依次打开这四类控件，分别用鼠标和键盘切换选项，核对定位、焦点和选值。切换深浅主题并缩窄窗口，核对预设网格对齐及菜单可见。相关键盘和弹层边界用例见 [selectPortalBoundary.test.ts](../../tests/components/selectPortalBoundary.test.ts)。

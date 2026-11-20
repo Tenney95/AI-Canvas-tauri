@@ -777,10 +777,6 @@
   font-weight: 600;
 }
 
-.preset-advanced-step-type {
-  min-width: 0;
-}
-
 .preset-advanced-variable-bar {
   display: flex;
   align-items: center;
@@ -1158,10 +1154,6 @@
 
   .preset-advanced-step-header {
     grid-template-columns: 28px 22px minmax(0, 1fr) auto;
-  }
-
-  .preset-advanced-step-type {
-    grid-column: 3 / -1;
   }
 
   .preset-advanced-step-settings {
