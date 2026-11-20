@@ -894,3 +894,9 @@ cargo test --lib blender_runtime::result::tests
 - 桌面跨库复制的预检、暂存、提交和清理收敛到一处。两个方向继续各自提供源库、目标库和保存回调。静态展开与原流程一致，包括提交前按原规则回收、开始提交后保留媒体与索引。Tauri 桌面端使用带参考图、声音和关联武器的资产分别复制到项目和全局库，核对新身份、归属、依赖和独立编辑。回归暂存中取消、切换项目和保存回调失败，预期沿用对应的清理或保留规则。现有 [dramaAssetTransferService.test.ts](../../tests/services/dramaAssetTransferService.test.ts#L319) 直接覆盖全局到项目，项目到全局仍需直接验收。
 
 在仓库根目录可运行 `npm test -- tests/store/clipboard.test.ts tests/services/dramaAssetTransferService.test.ts tests/services/episodeAssetService.test.ts`。
+
+## 2026-11-20 生图能力、分镜提示词与参考时长精简
+
+已实现，按范围分别提交。本次未运行测试，待用户验收。
+
+- FLUX.2、Qwen 和 Grok 的十项基础生图能力在模块初始化时按系列复用构造，保留分辨率、参考图张数、Data URL 支持和旧别名。APIMart 专属覆盖及请求构造沿用原路径。Tauri 桌面端在已配置渠道的图像节点选择这些型号，核对分辨率、批量张数和参考图上限，重点验收 Qwen 2.0／3.0 的不同限制及 Grok 渠道覆盖。已有请求回归见 [mediaModelCapabilities.test.ts](../../tests/services/mediaModelCapabilities.test.ts) 和 [apimartGen.test.ts](../../tests/services/apimartGen.test.ts)。

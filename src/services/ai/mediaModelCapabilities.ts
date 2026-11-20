@@ -82,6 +82,55 @@ const GPT_IMAGE_25_CAPABILITY: Omit<ImageCapability, 'modelId'> = {
   }),
 };
 
+function createFlux2ImageCapability(modelId: string): ImageCapability {
+  return {
+    modelId,
+    resolutions: ['1MP', '2MP', '3MP', '4MP'],
+    defaultResolution: '2MP',
+    ratios: [...COMMON_RATIOS, '21:9', '9:21'],
+    defaultRatio: '1:1',
+    resolutionStyle: 'MP',
+    supportsBatch: false,
+    supportsImageReference: true,
+    maxImageReferences: 8,
+    supportsDataUrlReference: true,
+  };
+}
+
+function createQwenImageCapability(
+  modelId: string,
+  { maxImageReferences, supportsDataUrlReference }: { maxImageReferences: number; supportsDataUrlReference: boolean },
+): ImageCapability {
+  return {
+    modelId,
+    resolutions: ['1K', '2K'],
+    defaultResolution: '1K',
+    ratios: [...COMMON_RATIOS],
+    defaultRatio: '1:1',
+    resolutionStyle: 'K',
+    supportsBatch: true,
+    maxBatchCount: 6,
+    supportsImageReference: true,
+    maxImageReferences,
+    supportsDataUrlReference,
+  };
+}
+
+function createGrokImagineBaseCapability(modelId: string): ImageCapability {
+  return {
+    modelId,
+    resolutions: [],
+    ratios: ['1:1', '16:9', '9:16', '3:2', '2:3'],
+    defaultRatio: '1:1',
+    resolutionStyle: 'none',
+    supportsBatch: true,
+    maxBatchCount: 10,
+    supportsImageReference: true,
+    maxImageReferences: 1,
+    supportsDataUrlReference: true,
+  };
+}
+
 /**
  * 生图能力表。modelId 以各 Provider 文档为准；getImageCapability 用归一化 key 匹配，
  * 兼容 defaultModels 里旧的历史 ID（如 seedream-4.0 → doubao-seedream-4.0）。
@@ -156,96 +205,15 @@ const IMAGE_CAPABILITIES: Record<string, ImageCapability> = {
   },
 
   // ── FLUX.2 系列（分辨率用 MP，n 固定 1）──
-  'flux-2-pro': {
-    modelId: 'flux-2-pro',
-    resolutions: ['1MP', '2MP', '3MP', '4MP'],
-    defaultResolution: '2MP',
-    ratios: [...COMMON_RATIOS, '21:9', '9:21'],
-    defaultRatio: '1:1',
-    resolutionStyle: 'MP',
-    supportsBatch: false,
-    supportsImageReference: true,
-    maxImageReferences: 8,
-    supportsDataUrlReference: true,
-  },
-  'flux-2-flex': {
-    modelId: 'flux-2-flex',
-    resolutions: ['1MP', '2MP', '3MP', '4MP'],
-    defaultResolution: '2MP',
-    ratios: [...COMMON_RATIOS, '21:9', '9:21'],
-    defaultRatio: '1:1',
-    resolutionStyle: 'MP',
-    supportsBatch: false,
-    supportsImageReference: true,
-    maxImageReferences: 8,
-    supportsDataUrlReference: true,
-  },
-  'flux-2-max': {
-    modelId: 'flux-2-max',
-    resolutions: ['1MP', '2MP', '3MP', '4MP'],
-    defaultResolution: '2MP',
-    ratios: [...COMMON_RATIOS, '21:9', '9:21'],
-    defaultRatio: '1:1',
-    resolutionStyle: 'MP',
-    supportsBatch: false,
-    supportsImageReference: true,
-    maxImageReferences: 8,
-    supportsDataUrlReference: true,
-  },
+  'flux-2-pro': createFlux2ImageCapability('flux-2-pro'),
+  'flux-2-flex': createFlux2ImageCapability('flux-2-flex'),
+  'flux-2-max': createFlux2ImageCapability('flux-2-max'),
 
   // ── Qwen Image 系列 ──
-  'qwen-image-2.0': {
-    modelId: 'qwen-image-2.0',
-    resolutions: ['1K', '2K'],
-    defaultResolution: '1K',
-    ratios: [...COMMON_RATIOS],
-    defaultRatio: '1:1',
-    resolutionStyle: 'K',
-    supportsBatch: true,
-    maxBatchCount: 6,
-    supportsImageReference: true,
-    maxImageReferences: 9,
-    supportsDataUrlReference: false,
-  },
-  'qwen-image-2.0-pro': {
-    modelId: 'qwen-image-2.0-pro',
-    resolutions: ['1K', '2K'],
-    defaultResolution: '1K',
-    ratios: [...COMMON_RATIOS],
-    defaultRatio: '1:1',
-    resolutionStyle: 'K',
-    supportsBatch: true,
-    maxBatchCount: 6,
-    supportsImageReference: true,
-    maxImageReferences: 9,
-    supportsDataUrlReference: false,
-  },
-  'qwen-image-3.0': {
-    modelId: 'qwen-image-3.0',
-    resolutions: ['1K', '2K'],
-    defaultResolution: '1K',
-    ratios: [...COMMON_RATIOS],
-    defaultRatio: '1:1',
-    resolutionStyle: 'K',
-    supportsBatch: true,
-    maxBatchCount: 6,
-    supportsImageReference: true,
-    maxImageReferences: 3,
-    supportsDataUrlReference: true,
-  },
-  'qwen-image-3.0-pro': {
-    modelId: 'qwen-image-3.0-pro',
-    resolutions: ['1K', '2K'],
-    defaultResolution: '1K',
-    ratios: [...COMMON_RATIOS],
-    defaultRatio: '1:1',
-    resolutionStyle: 'K',
-    supportsBatch: true,
-    maxBatchCount: 6,
-    supportsImageReference: true,
-    maxImageReferences: 3,
-    supportsDataUrlReference: true,
-  },
+  'qwen-image-2.0': createQwenImageCapability('qwen-image-2.0', { maxImageReferences: 9, supportsDataUrlReference: false }),
+  'qwen-image-2.0-pro': createQwenImageCapability('qwen-image-2.0-pro', { maxImageReferences: 9, supportsDataUrlReference: false }),
+  'qwen-image-3.0': createQwenImageCapability('qwen-image-3.0', { maxImageReferences: 3, supportsDataUrlReference: true }),
+  'qwen-image-3.0-pro': createQwenImageCapability('qwen-image-3.0-pro', { maxImageReferences: 3, supportsDataUrlReference: true }),
 
   // ── Z-Image-Turbo（仅文生图，无 n）──
   'z-image-turbo': {
@@ -260,42 +228,9 @@ const IMAGE_CAPABILITIES: Record<string, ImageCapability> = {
   },
 
   // ── Grok Imagine 系列（无 resolution 字段）──
-  'grok-imagine-1.0-apimart': {
-    modelId: 'grok-imagine-1.0-apimart',
-    resolutions: [],
-    ratios: ['1:1', '16:9', '9:16', '3:2', '2:3'],
-    defaultRatio: '1:1',
-    resolutionStyle: 'none',
-    supportsBatch: true,
-    maxBatchCount: 10,
-    supportsImageReference: true,
-    maxImageReferences: 1,
-    supportsDataUrlReference: true,
-  },
-  'grok-imagine-1.5-apimart': {
-    modelId: 'grok-imagine-1.5-apimart',
-    resolutions: [],
-    ratios: ['1:1', '16:9', '9:16', '3:2', '2:3'],
-    defaultRatio: '1:1',
-    resolutionStyle: 'none',
-    supportsBatch: true,
-    maxBatchCount: 10,
-    supportsImageReference: true,
-    maxImageReferences: 1,
-    supportsDataUrlReference: true,
-  },
-  'grok-imagine-2.0-ext': {
-    modelId: 'grok-imagine-2.0-ext',
-    resolutions: [],
-    ratios: ['1:1', '16:9', '9:16', '3:2', '2:3'],
-    defaultRatio: '1:1',
-    resolutionStyle: 'none',
-    supportsBatch: true,
-    maxBatchCount: 10,
-    supportsImageReference: true,
-    maxImageReferences: 1,
-    supportsDataUrlReference: true,
-  },
+  'grok-imagine-1.0-apimart': createGrokImagineBaseCapability('grok-imagine-1.0-apimart'),
+  'grok-imagine-1.5-apimart': createGrokImagineBaseCapability('grok-imagine-1.5-apimart'),
+  'grok-imagine-2.0-ext': createGrokImagineBaseCapability('grok-imagine-2.0-ext'),
 
   // ── wan2.7 image（size 支持分辨率关键词，n 1-4）──
   'wan2.7-image': {
