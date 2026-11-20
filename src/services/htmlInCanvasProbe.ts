@@ -38,7 +38,7 @@ async function readHtmlInCanvasPixel(): Promise<HtmlInCanvasProbeResult> {
   let device: GPUDevice | undefined;
   let texture: GPUTexture | undefined;
   let readback: GPUBuffer | undefined;
-  let context: GPUCanvasContext | null = null;
+  const drawing: { context?: GPUCanvasContext } = {};
   let timer: number | undefined;
   let stage = 'adapter';
 
@@ -83,8 +83,9 @@ async function readHtmlInCanvasPixel(): Promise<HtmlInCanvasProbeResult> {
       backgroundColor: 'rgb(255 0 0)',
     });
     canvas.append(stamp);
-    context = canvas.getContext('webgpu');
+    const context = canvas.getContext('webgpu');
     if (!context) return { status: 'unsupported', reason: 'webgpu-context-unavailable' };
+    drawing.context = context;
 
     stage = 'paint';
     context.configure({ device, format: gpu.getPreferredCanvasFormat(), alphaMode: 'premultiplied' });
@@ -145,7 +146,7 @@ async function readHtmlInCanvasPixel(): Promise<HtmlInCanvasProbeResult> {
     window.clearTimeout(timer);
     controller.abort();
     canvas.remove();
-    context?.unconfigure();
+    drawing.context?.unconfigure();
     readback?.destroy();
     texture?.destroy();
     device?.destroy();

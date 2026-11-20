@@ -88,7 +88,21 @@ vi.mock('react', async () => {
   useLayoutEffect: effect,
   };
 });
-vi.mock('zustand/react/shallow', () => ({ useShallow: <T,>(selector: T) => selector }));
+vi.mock('zustand/react/shallow', async () => {
+  const { shallow } = await import('zustand/vanilla/shallow');
+  return {
+    useShallow: <T,>(selector: (state: AppState) => T) => {
+      const index = driver.refIndex++;
+      return (state: AppState) => {
+        const next = selector(state);
+        const previous = driver.refs[index];
+        if (previous && shallow(previous.current, next)) return previous.current as T;
+        driver.refs[index] = { current: next };
+        return next;
+      };
+    },
+  };
+});
 vi.mock('react-dom', () => ({ createPortal: driver.portal }));
 vi.mock('../../src/store/useAppStore', () => ({
   useAppStore: Object.assign((selector: (state: AppState) => unknown) => selector(driver.store!.getState()), {

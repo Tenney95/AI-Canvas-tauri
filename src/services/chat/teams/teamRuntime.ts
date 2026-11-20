@@ -14,7 +14,7 @@ import { sanitizeDomainText } from '../subAgentMaterials';
 import { hashTeamText, readTeamArtifactText, saveTeamArtifact } from './teamArtifactService';
 import { executeTeamModel, fingerprintTeamModel, TeamModelReturnedError, type TeamModelResult } from './teamModelExecutor';
 import {
-  getTeamReadersForTemplate, getTeamReaderStageId, normalizeTeamProfile,
+  createDefaultTeamProfile, getTeamReadersForTemplate, getTeamReaderStageId, normalizeTeamProfile,
   TEAM_READER_SCOPE_LABELS, TEAM_READER_TYPE_LABELS, TEAM_ROLE_LABELS, TEAM_ROLES, TEAM_TEMPLATES, validateTeamReaders,
 } from './teamProfileService';
 import {
@@ -96,7 +96,7 @@ export async function captureTeamModelFingerprints(
   const definitions = frozenStages ?? graphAndReaderDefinitions(graphForProfile(profile, templateId), profile, templateId);
   const members = definitions.filter((stage) => stage.roleId !== 'reader');
   const required = new Set(members.map((stage) => stage.roleId));
-  const result = Object.fromEntries(TEAM_ROLES.map((role) => [role, ''])) as ModelFingerprintSnapshot;
+  const result: ModelFingerprintSnapshot = createDefaultTeamProfile().roles;
   const [readerFingerprints] = await Promise.all([
     Promise.all(definitions.filter((stage) => stage.roleId === 'reader').map(async (stage) => {
       const target = getStageTarget(profile, stage);

@@ -43,7 +43,7 @@ it('allows Space on the WSAGENT button and keeps the image prompt shortcut', () 
     id: 'image', type: 'ai-image', position: { x: 0, y: 0 },
     data: { label: '图像', type: 'ai-image' },
   };
-  useAppStore.setState({ nodes: [interop, image], currentProjectId: 'project-interop' });
+  useAppStore.setState({ nodes: [interop, image], currentProjectId: 'project-interop', projectLoadStatus: 'ready' });
   const document = Object.assign(new EventTarget(), { querySelector: vi.fn(() => null) });
   vi.stubGlobal('document', document);
   useKeyboardShortcuts();
