@@ -151,6 +151,7 @@ const videoSubmissionOwners = new Map<string, symbol>();
 
 interface SequentialImageBatch {
   projectId: string | null;
+  expectedRevision: number;
   nodeIds: string[];
   remainingNodeIds: Set<string>;
   controller: AbortController;
@@ -236,9 +237,10 @@ async function runSequentialImageBatch(
     const outputsPerJob = resolveImageOutputsPerJob(data.model ?? '', data.provider ?? '', state.config);
     const nodeIds = prepareImageBatchNodes({ nodeId, count, projectId, commitHistory: options?.history !== 'transient',
       ...(outputsPerJob > 1 ? { slotStride: outputsPerJob } : {}) }).nodeIds;
-    owner = { projectId, nodeIds, remainingNodeIds: new Set(nodeIds), controller: new AbortController() };
+    owner = { projectId, nodeIds, remainingNodeIds: new Set(nodeIds), controller: new AbortController(),
+      expectedRevision: useAppStore.getState().getCurrentRevision() };
     const activeOwner = owner;
-    const baselineRevision = useAppStore.getState().getCurrentRevision();
+    const nativeContext = state.projectExecutionContext?.modelGeneration === 1 ? state.projectExecutionContext : undefined;
     const inputSignatures = new Map(useAppStore.getState().nodes.filter((node) => nodeIds.includes(node.id))
       .map((node) => [node.id, imageBatchInputSignature(node.data)]));
     for (const targetId of nodeIds) imageBatchOwners.set(targetId, activeOwner);
@@ -252,7 +254,8 @@ async function runSequentialImageBatch(
         const current = useAppStore.getState();
         const source = current.nodes.find((node) => node.id === nodeId);
         const target = current.nodes.find((node) => node.id === targetId);
-        if (signal.aborted || current.currentProjectId !== projectId || current.getCurrentRevision() !== baselineRevision
+        if (signal.aborted || current.currentProjectId !== projectId || current.getCurrentRevision() !== activeOwner.expectedRevision
+          || nativeContext && !isProjectExpectedContextCurrent(nativeContext, current, { checkCanvasRevision: false })
           || !source || !target || imageBatchInputSignature(source.data) !== inputSignatures.get(nodeId)
           || imageBatchInputSignature(target.data) !== inputSignatures.get(targetId)) throw new Error('任务已取消');
       } };
@@ -919,11 +922,22 @@ export async function executeGeneration(
     if (cancellation?.signal.aborted) return { success: false, message: '任务已取消' };
     if (err instanceof Error && err.name === 'NativeMediaTaskDelivered') {
       mediaDelivered = true;
+      const batch = lease && imageBatchLeases.get(lease);
+      const operationId = 'nativeOperationId' in err && typeof err.nativeOperationId === 'string' ? err.nativeOperationId : undefined;
+      if (batch?.currentNodeId === nodeId && nativeMediaGuard && operationId) {
+        const state = useAppStore.getState();
+        const target = state.nodes.find((node) => node.id === nodeId)?.data;
+        // 只承认本张回执投影引起的一次修订；期间的编辑仍会阻止下一张提交。
+        if (ownsGeneration(state) && state.getCurrentRevision() === batch.expectedRevision + 1
+          && target?.status === 'success' && target.artifactId === nativeMediaOutputArtifactId(operationId, 0)) {
+          batch.expectedRevision += 1;
+        }
+      }
       if (postProcess === 'character-8-direction-grid' && nodeType === 'ai-image' && executionContext?.kind === 'canvas') {
         const ownsDeliveredImage = (state: AppState) => ownsGeneration(state)
           && isProjectExpectedContextCurrent(executionContext, state, { checkCanvasRevision: false });
-        if ('nativeOperationId' in err && typeof err.nativeOperationId === 'string' && err.nativeOperationId) {
-          await addCharacterDirectionGrid(nodeId, { nativeOperationId: err.nativeOperationId }, ownsDeliveredImage, notify);
+        if (operationId) {
+          await addCharacterDirectionGrid(nodeId, { nativeOperationId: operationId }, ownsDeliveredImage, notify);
         } else if (ownsDeliveredImage(useAppStore.getState())) {
           notify(t('原图已生成，8 向宫格处理失败'), 'error');
         }

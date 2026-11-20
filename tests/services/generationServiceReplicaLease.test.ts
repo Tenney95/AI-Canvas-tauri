@@ -59,7 +59,7 @@ vi.mock('../../src/services/pollManager', () => ({
   registerMediaNodeOperation: mocks.registerOperation,
   isNativeMediaNodeBusy: () => false,
   trackNativeMediaNodeRun: vi.fn((_canvasId: string, _nodeId: string, _controller?: AbortController) => () => {}),
-  refreshNativeMediaNodeRecovery: vi.fn(),
+  refreshNativeMediaNodeRecovery: vi.fn().mockResolvedValue(undefined),
   registerNodePolling: vi.fn((nodeId: string, parentSignal?: AbortSignal) => {
     mocks.polling.get(nodeId)?.controller.abort();
     const controller = new AbortController();
@@ -541,6 +541,36 @@ describe('节点视频生成的宿主任务租约', () => {
     }));
     expect(mocks.image).not.toHaveBeenCalled();
     expect(mocks.persist).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { scenario: '仅本张交付', completes: true },
+    { scenario: '额外的画布编辑', completes: false },
+    { scenario: '其他任务的产物', completes: false },
+    { scenario: '已重新打开画布', completes: false },
+  ])('新项目串行生图在$scenario 后核对下一张提交资格', async ({ scenario, completes }) => {
+    const context: CanvasContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'runtime',
+      projectId: 'p', projectEpoch: 1, canvasId: 'p', episodeId: null, canvasEpoch: 1, canvasRevision: 0 };
+    mocks.store.projectExecutionContext = context;
+    const input: BaseNodeData = { type: 'ai-image', label: '连续图片', prompt: '山谷', provider: 'general', model: 'general/image', batchCount: 2 };
+    mocks.store.nodes = [{ id: 'video', data: input }];
+    mocks.prepareBatch.mockImplementationOnce(() => {
+      mocks.store.nodes.push({ id: 'copy', data: { ...input, batchCount: 1, status: 'loading' } });
+      return { nodeIds: ['video', 'copy'] };
+    });
+    mocks.imageBatch.mockImplementation(async ({ nodeId }: { nodeId: string }) => {
+      const operationId = `op-${nodeId}`;
+      const revision = mocks.store.getCurrentRevision() + (scenario === '额外的画布编辑' ? 2 : 1);
+      mocks.store.getCurrentRevision.mockReturnValue(revision);
+      mocks.store.projectExecutionContext = { ...context, canvasRevision: revision,
+        runtimeEpoch: scenario === '已重新打开画布' ? 'reopened' : context.runtimeEpoch };
+      mocks.store.nodes = mocks.store.nodes.map((node) => node.id !== nodeId ? node : {
+        ...node, data: { ...node.data, status: 'success', artifactId: `native-media-${scenario === '其他任务的产物' ? 'other' : operationId}` },
+      });
+      throw Object.assign(new Error('已交付'), { name: 'NativeMediaTaskDelivered', nativeOperationId: operationId });
+    });
+    expect((await run()).success).toBe(completes);
+    expect(mocks.imageBatch.mock.calls.map(([options]) => options.nodeId)).toEqual(completes ? ['video', 'copy'] : ['video']);
   });
 
   it('submits K fixed-output jobs sequentially and creates 4K output slots without changing the parent revision', async () => {
