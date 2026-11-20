@@ -1,6 +1,7 @@
 /** 原作业的全部结果按稳定序号发布；其他节点、连线和分组不得被媒体回执覆盖。 */
 import type { Node } from '@xyflow/react';
 import type { BaseNodeData } from '../types';
+import type { NativeMusicTrackMetadata } from '../types/media';
 import type { CanvasDocument } from '../types/project';
 import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
 import { nativeMediaLocalOutputs } from './nativeMediaCollection';
@@ -15,7 +16,7 @@ export const nativeMediaOutputNodeId = (record: Pick<NativeMediaTaskRecord, 'ope
   `${record.apimartImageBatch ? 'native-image' : 'native-output'}-${record.operationId}-${ordinal}`;
 
 export function buildNativeMediaCollectionCanvas(canvas: CanvasDocument, record: NativeMediaTaskRecord,
-  resultRootRef = record.resultRootRef ?? canvas.storageRootRef): Body {
+  resultRootRef = record.resultRootRef ?? canvas.storageRootRef, tracks?: (NativeMusicTrackMetadata | undefined)[]): Body {
   const results = nativeMediaLocalOutputs(record);
   if (!results.length || results[0].category !== record.category) throw new Error('原媒体完整产物集合缺少主结果');
   if (record.resultRootRef && record.resultRootRef !== resultRootRef) throw new Error('原媒体产物主根已变化');
@@ -30,6 +31,7 @@ export function buildNativeMediaCollectionCanvas(canvas: CanvasDocument, record:
   const height = typeof sourceData.nodeHeight === 'number' && sourceData.nodeHeight > 0 ? sourceData.nodeHeight : 280;
   const firstDisplayId = getNextDisplayId(canvas.nodes as Node<BaseNodeData>[]);
   const output = results.map((file, ordinal) => {
+    if (file.musicTrackFile && !tracks?.[ordinal]) throw new Error('原音乐音轨资料尚未读取');
     const id = ordinal === 0 ? source.id : nativeMediaOutputNodeId(record, ordinal);
     if (ordinal && ids.has(id)) throw new Error('原媒体候选身份被占用，未覆盖已有节点');
     const sameCategory = file.category === record.category;
@@ -44,6 +46,7 @@ export function buildNativeMediaCollectionCanvas(canvas: CanvasDocument, record:
       artifactId: nativeMediaOutputArtifactId(record.operationId, ordinal), batchGroupId: `${record.apimartImageBatch ? 'native-image' : 'native-media'}-batch-${record.operationId}`,
       ...(ordinal ? { batchCount: 1, displayId: firstDisplayId + ordinal - 1, label: `${sourceData.label || (file.category === 'image' ? '图片' : '媒体')} ${ordinal + 1}`,
         ...(sameCategory ? {} : { role: 'source' }) } : {}),
+      ...(file.musicTrackFile ? tracks?.[ordinal] : {}),
       ...(type === 'ai-animation' ? animationResultPatch(sourceData as unknown as BaseNodeData) : {}),
       status: 'success', error: undefined, mediaTaskState: undefined, mediaTaskStage: undefined, videoTaskState: undefined };
     for (const key of ['filePath', 'assetId', 'mattingMask', 'annotation', 'annotationLayer', 'imageWidth', 'imageHeight']) delete data[key];
@@ -53,6 +56,7 @@ export function buildNativeMediaCollectionCanvas(canvas: CanvasDocument, record:
   });
   return { nodes: [...canvas.nodes.map((node) => (node as { id?: unknown })?.id === source.id ? output[0] : node), ...output.slice(1)], edges: canvas.edges, groups: canvas.groups };
 }
-export function assertNativeMediaCollectionCanvas(before: CanvasDocument, after: Body, record: NativeMediaTaskRecord, resultRootRef = record.resultRootRef ?? before.storageRootRef): void {
-  if (!configValuesEqual(buildNativeMediaCollectionCanvas(before, record, resultRootRef), after)) throw new Error('媒体投递必须包括完整集合且只能修改原节点与本批候选');
+export function assertNativeMediaCollectionCanvas(before: CanvasDocument, after: Body, record: NativeMediaTaskRecord,
+  resultRootRef = record.resultRootRef ?? before.storageRootRef, tracks?: (NativeMusicTrackMetadata | undefined)[]): void {
+  if (!configValuesEqual(buildNativeMediaCollectionCanvas(before, record, resultRootRef, tracks), after)) throw new Error('媒体投递必须包括完整集合且只能修改原节点与本批候选');
 }

@@ -12,6 +12,7 @@ import { nativeImageBatchResults, nativeImageBatchSettled } from './nativeImageB
 import { assertNativeImageBatchCanvas } from './nativeImageBatchCanvas';
 import { assertNativeMediaCollectionCanvas } from './nativeMediaCollectionCanvas';
 import { writeNativeOutputHistory } from './nativeOutputHistory';
+import { readMusicTrackMetadata } from './nativeAudioContent';
 
 const req = <T>(request: IDBRequest<T>) => new Promise<T>((resolve, reject) => {
   request.onsuccess = () => resolve(request.result);
@@ -127,6 +128,7 @@ export async function commitNativeMediaDelivery(input: { record: NativeMediaTask
     for (const file of nativeImageBatchResults(original)) await readNativeMediaLocalResult(original.canvasId, file);
   }
   const deliveryDigest = await sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(fixed.document)));
+  const tracks = await readMusicTrackMetadata(original.ownerProjectId, original.localResults);
   const db = await openNativeProjectDatabase(false, options); if (!db) return fail();
   try {
     return await transact(db, 'readwrite', options, async (tx) => {
@@ -159,7 +161,7 @@ export async function commitNativeMediaDelivery(input: { record: NativeMediaTask
         || canvas.episodeId !== current.episodeId || canvas.revision !== fixed.expectedCanvasRevision) return fail();
       if (current.resultRootRef && current.resultRootRef !== project.storageRootRef) return fail('原媒体主根已变化');
       if (current.apimartImageBatch) assertNativeImageBatchCanvas(canvas, fixed.document, current, project.storageRootRef);
-      else if (current.localResults) assertNativeMediaCollectionCanvas(canvas, fixed.document, current, project.storageRootRef);
+      else if (current.localResults) assertNativeMediaCollectionCanvas(canvas, fixed.document, current, project.storageRootRef, tracks);
       else assertOnlyTargetNodeChanged(canvas, fixed.document, current.nodeId);
       const target = fixed.document.nodes.find((node) => node && typeof node === 'object' && (node as { id?: unknown }).id === current.nodeId) as { data?: Record<string, unknown> } | undefined;
       const resultRelativePath = target?.data?.relativePath;

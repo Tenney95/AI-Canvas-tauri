@@ -1,11 +1,14 @@
 /** APIMart 音乐阶段只保存原任务身份和内容文件证据；提示词／歌词正文不进入账本。 */
 import type { NativeMediaTaskRecord } from './nativeMediaTaskRepository';
 import { validateNativeMediaTaskRecord } from './nativeMediaTaskRepository';
+import type { NativeAudioContentFile } from '../../types/media';
+import { validateNativeAudioContentFile } from '../nativeAudioContent';
 import { configValuesEqual } from '../configPatch';
 import { CANVASES, EPISODES, EXCHANGE, REVISIONS, ROOTS, TRANSFER, assertNoPendingNativeSharedSync, increment,
   openNativeProjectDatabase, readCanvasTarget, transact, type NativeProjectOptions } from './nativeProjectRepository';
 
-export interface NativeAudioContentFile { relativePath: string; bytes: number; sha256: string; mimeType: 'application/json' }
+export type { NativeAudioContentFile } from '../../types/media';
+export { validateNativeAudioContentFile };
 type StageName = 'lyrics' | 'music';
 export interface NativeMusicStage {
   submissionId: string; state: 'prepared' | 'not-started' | 'unknown' | 'submitted' | 'completed' | 'failed' | 'not-needed';
@@ -22,11 +25,6 @@ const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{1
 const stores = [ROOTS, EPISODES, CANVASES, EXCHANGE, TRANSFER, REVISIONS] as const;
 const request = <T>(value: IDBRequest<T>) => new Promise<T>((resolve, reject) => { value.onsuccess = () => resolve(value.result); value.onerror = () => reject(value.error); });
 const fail = (): never => { throw new Error('原音乐阶段或提交身份已变化，回执保留，不会重新提交'); };
-export function validateNativeAudioContentFile(file: NativeAudioContentFile): void {
-  if (!file || Object.keys(file).some((key) => !['relativePath', 'bytes', 'sha256', 'mimeType'].includes(key))
-    || file.mimeType !== 'application/json' || !Number.isSafeInteger(file.bytes) || file.bytes <= 0 || file.bytes > 256 * 1024
-    || !/^[a-f0-9]{64}$/.test(file.sha256) || file.relativePath !== `media/${file.sha256}.json`) return fail();
-}
 function validate(value: NativeApimartMusicState): NativeApimartMusicState {
   if (!value || value.kind !== 'native-apimart-music-v1' || !UUID.test(value.operationId) || !UUID.test(value.submissionLease)
     || value.projectId !== `${PREFIX}${value.operationId}` || !/^p2-[a-f0-9-]{36}$/.test(value.ownerProjectId)

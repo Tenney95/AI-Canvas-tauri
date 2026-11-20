@@ -26,10 +26,11 @@ import { retainNativeMediaOutputs } from '../../src/services/indexedDb/nativeMed
 import { restoreProjectRecord, serializeProjectRecord } from '../../src/services/storageService';
 import { trackCanvasMediaImport } from '../../src/services/canvasDerivationGuard';
 
-const nativeDisplayIo = vi.hoisted(() => ({ inspect: vi.fn(), assetUrl: vi.fn(), normalizeMedia: vi.fn() }));
+const nativeDisplayIo = vi.hoisted(() => ({ inspect: vi.fn(), assetUrl: vi.fn(), normalizeMedia: vi.fn(), readContent: vi.fn() }));
 vi.mock('@tauri-apps/api/core', async (original) => ({ ...await original<typeof import('@tauri-apps/api/core')>(),
   invoke: async (command: string, input: unknown) => {
     if (command === 'inspect_project_archive_assets') return nativeDisplayIo.inspect(input);
+    if (command === 'read_native_project_media') return nativeDisplayIo.readContent(input);
     throw new Error(`unexpected native fixture command: ${command}`);
   } }));
 vi.mock('../../src/services/fs/core', async (original) => ({ ...await original<typeof import('../../src/services/fs/core')>(),
@@ -183,12 +184,13 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
       loadAgentTasksForProject: vi.fn(async () => {}), loadProjectMemoriesForProject: vi.fn(async () => {}),
     } as unknown as AppState));
   }
-  async function fixture(sourceType: 'ai-video' | 'ai-image' | 'ai-animation' | 'ai-panorama' | 'ai-audio' = 'ai-video') {
+  async function fixture(sourceType: 'ai-video' | 'ai-image' | 'ai-animation' | 'ai-panorama' | 'ai-audio' = 'ai-video', music = false) {
     const initial = await createNativeProject({ projectId, name: '隔离剧集', kind: 'series' });
     const first = await createNativeEpisode({ projectId, expectedProjectEpoch: initial.project.epoch, episodeId: episodeA, canvasId: canvasA, name: '第一集' });
     const aggregate = await createNativeEpisode({ projectId, expectedProjectEpoch: first.project.epoch, episodeId: episodeB, canvasId: canvasB, name: '第二集' });
     await saveNativeCanvas({ projectId, expectedProjectEpoch: aggregate.project.epoch, canvasId: canvasA, episodeId: episodeA,
-      expectedCanvasEpoch: 1, expectedCanvasRevision: 0, document: { nodes: [{ ...sourceNode(), type: sourceType, data: { ...sourceNode().data, type: sourceType } }], edges: [], groups: [] } });
+      expectedCanvasEpoch: 1, expectedCanvasRevision: 0, document: { nodes: [{ ...sourceNode(), type: sourceType, data: { ...sourceNode().data, type: sourceType,
+        ...(music ? { provider: 'apimart', model: 'apimart/flowmusic', musicTitle: '上一首', musicLyrics: '旧歌词', musicClipId: 'old-clip' } : {}) } }], edges: [], groups: [] } });
     const store = fixtureStore(aggregate);
     expect(await store.getState().switchProject(canvasA)).toBe(canvasA);
     const context = store.getState().projectExecutionContext;
@@ -199,9 +201,11 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     const fingerprint = await sha256BytesHex(new TextEncoder().encode(sourceType === 'ai-video'
       ? videoInputFingerprintMaterial(store.getState().nodes[0], store.getState()) : nativeMediaInputMaterial(store.getState().nodes[0], store.getState(), 'media-input-v3')));
     const category = sourceType === 'ai-audio' ? 'audio' : sourceType === 'ai-video' ? 'video' : 'image';
-    const prepared = await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: 'video-node', providerConfigId: 'volcengine',
+    const prepared = await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: 'video-node', providerConfigId: music ? 'apimart' : 'volcengine',
       providerBase: 'https://provider.example/api/v3', category, sourceCanvasRevision: document.revision, inputFingerprint: fingerprint,
-      ...(sourceType !== 'ai-video' ? { fingerprintScheme: 'media-input-v3', modelRef: 'volcengine/fixture', protocolDigest: 'b'.repeat(64), requestFingerprint: 'c'.repeat(64) } : {}) });
+      ...(sourceType !== 'ai-video' ? { fingerprintScheme: 'media-input-v3', modelRef: music ? 'apimart/flowmusic' : 'volcengine/fixture',
+        protocolDigest: 'b'.repeat(64), requestFingerprint: 'c'.repeat(64) } : {}),
+      ...(music ? { submissionKind: 'async', recovery: { kind: 'builtin-audio', modelId: 'flowmusic', digest: 'b'.repeat(64) } } as const : {}) });
     const receipt = await recordNativeMediaSubmission(prepared.operationId, prepared.lease, { taskId: 'original-paid-task' });
     const originalHistory = { nodes: [], edges: [], groups: [] };
     const agent = { id: 'agent-active', projectId: canvasA, status: 'running' } as AppState['agentTasks'][number];
@@ -614,6 +618,32 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     const selection = await readNativeProjectSelection(projectId, canvasA);
     expect(selection?.canvas?.nodes).toMatchObject([{ id: receipt.nodeId, data: { relativePath: file.relativePath } },
       { id: oldVideo.id, data: { relativePath: mediaPath, videoUrl: mediaPath } }]);
+  });
+
+  it('APIMart 缓存交付按音轨读取原资料，校验失败保留回执，重试后节点及落盘内容一致', async () => {
+    const { store, context, receipt } = await fixture('ai-audio', true);
+    const tracks = [
+      { musicTitle: '', musicLyrics: '', musicClipId: '' },
+      { musicTitle: '第二首', musicLyrics: '第二首的歌词', musicClipId: 'clip-2' },
+    ];
+    const content = new Map<string, Uint8Array>();
+    const files = await Promise.all(tracks.map(async (track, ordinal) => {
+      const data = new TextEncoder().encode(JSON.stringify(track));
+      const hash = await sha256BytesHex(data);
+      const musicTrackFile = { relativePath: `media/${hash}.json`, bytes: data.length, sha256: hash, mimeType: 'application/json' as const };
+      content.set(musicTrackFile.relativePath, data);
+      const sha256 = (ordinal ? 'b' : 'a').repeat(64);
+      return { category: 'audio' as const, relativePath: `media/${sha256}.wav`, sha256, bytes: 10, musicTrackFile };
+    }));
+    const retained = await retainNativeMediaOutputs(receipt, files);
+    nativeDisplayIo.readContent.mockResolvedValueOnce([0]);
+    await expect(store.getState().commitNativeMediaResult(retained, files[0].relativePath, context)).rejects.toThrow('内容文件已变化');
+    expect((await listNativeMediaTasks(projectId))[0].status).toBe('submitted');
+    nativeDisplayIo.readContent.mockImplementation(({ reference }) => content.get(reference.relativePath));
+    await store.getState().commitNativeMediaResult(retained, files[0].relativePath, context);
+    const expected = tracks.map((track, index) => ({ data: { ...track, relativePath: files[index].relativePath } }));
+    expect(store.getState().nodes).toMatchObject(expected);
+    expect((await readNativeProjectSelection(projectId, canvasA))?.canvas?.nodes).toMatchObject(expected);
   });
 
   it.each(['sha', 'url'] as const)('本机候选%s证据失败时不把空白展示提交为delivered', async (failure) => {

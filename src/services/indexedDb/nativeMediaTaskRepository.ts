@@ -95,7 +95,7 @@ export function validateNativeMediaTaskRecord(value: NativeMediaTaskRecord): Nat
       || !Number.isSafeInteger(pending.count) || pending.count < 1 || pending.count > 128
       || !Array.isArray(pending.saved) || pending.saved.length > pending.count) return fail('同步媒体下载回执损坏');
     if (pending.saved.length) validateNativeMediaLocalOutputs(pending.saved);
-    if (pending.saved.some((item) => item.category !== value.category)) return fail('同步媒体结果类型不一致');
+    if (pending.saved.some((item) => item.category !== value.category || item.musicTrackFile)) return fail('同步媒体结果类型不一致');
   }
   if (value?.completion !== undefined) {
     const summary = value.completion;
@@ -106,6 +106,8 @@ export function validateNativeMediaTaskRecord(value: NativeMediaTaskRecord): Nat
   }
   if (value?.localResults !== undefined) {
     validateNativeMediaLocalOutputs(value.localResults);
+    if (value.localResults.some((file) => file.musicTrackFile)
+      && (value.category !== 'audio' || value.providerConfigId !== 'apimart' || value.recovery?.kind !== 'builtin-audio' || value.submissionKind !== 'async')) return fail();
     if (value.localResult || value.apimartImageBatch || value.localResults[0].category !== value.category
       || value.resultRelativePath !== value.localResults[0].relativePath) return fail('原媒体完整产物集合与主结果不一致');
   }

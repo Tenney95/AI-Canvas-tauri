@@ -4,7 +4,7 @@ import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { CanvasContext } from '../../src/types/project';
 import { createNativeProject, readNativeProjectCapture, saveNativeCanvas } from '../../src/services/indexedDb/nativeProjectRepository';
-import { listNativeMediaTasks } from '../../src/services/indexedDb/nativeMediaTaskRepository';
+import { listNativeMediaTasks, type NativeMediaTaskRecord } from '../../src/services/indexedDb/nativeMediaTaskRepository';
 import { bindNativeMediaOrigin } from '../../src/services/nativeMediaOrigin';
 import { nativeMediaInputMaterial } from '../../src/services/nativeMediaInput';
 import type { AppState } from '../../src/store/useAppStore';
@@ -13,7 +13,7 @@ import { readNativeApimartMusicState } from '../../src/services/indexedDb/native
 const driver = vi.hoisted(() => ({ context: undefined as CanvasContext | undefined, canvasRevision: 0,
   state: {} as Record<string, unknown>, switchAfterSpeech: false, speech: vi.fn(), deliver: vi.fn(), invoke: vi.fn(),
   inputFingerprint: '', lyricsSubmit: vi.fn(), musicSubmit: vi.fn(), fetchTask: vi.fn(), originPersist: vi.fn(), musicPosts: 0,
-  contents: new Map<string, number[]>() }));
+  saveTrack: vi.fn(), contents: new Map<string, number[]>() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: driver.invoke }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => driver.state, subscribe: () => () => {} } }));
 vi.mock('../../src/services/projectExecutionContext', async (original) => ({
@@ -26,6 +26,7 @@ vi.mock('../../src/services/nativeVideoSubmission', () => ({ isNativeVideoSubmis
   assertNativeVideoSubmissionInput: async () => {},
 }));
 vi.mock('../../src/services/nativeMediaLocalResult', () => ({ readNativeMediaLocalResult: async () => {}, captureNativeMediaLocalResult: vi.fn() }));
+vi.mock('../../src/services/nativeMediaResultPersistence', () => ({ persistNativeMediaResult: driver.saveTrack }));
 vi.mock('../../src/services/nativeVolcengineRecovery', () => ({ resumeNativeVolcengineTask: driver.deliver }));
 vi.mock('../../src/services/nativeMediaOriginPersistence', () => ({ persistNativeMediaOrigin: driver.originPersist }));
 vi.mock('../../src/services/ai/httpTransport', async (original) => ({
@@ -34,7 +35,7 @@ vi.mock('../../src/services/ai/httpTransport', async (original) => ({
 }));
 vi.mock('../../src/services/ai/apimartAudio', async (original) => ({
   ...await original<typeof import('../../src/services/ai/apimartAudio')>(), generateApimartSpeech: driver.speech,
-  submitFlowMusicLyrics: driver.lyricsSubmit, submitFlowMusicGeneration: driver.musicSubmit,
+  submitFlowMusicLyrics: driver.lyricsSubmit, submitFlowMusicGeneration: driver.musicSubmit, submitSunoGeneration: driver.musicSubmit,
 }));
 
 import { generateNativeBuiltinAudio, resumeNativeBuiltinAudioTask } from '../../src/services/nativeBuiltinAudioRecovery';
@@ -44,7 +45,7 @@ beforeEach(() => {
   driver.context = undefined; driver.contents.clear(); driver.switchAfterSpeech = false;
   driver.inputFingerprint = 'a'.repeat(64); driver.musicPosts = 0; driver.lyricsSubmit.mockReset(); driver.musicSubmit.mockReset(); driver.fetchTask.mockReset();
   driver.originPersist.mockReset().mockResolvedValue(undefined);
-  driver.deliver.mockReset().mockResolvedValue(undefined); driver.speech.mockReset(); driver.invoke.mockReset();
+  driver.deliver.mockReset().mockResolvedValue(undefined); driver.speech.mockReset(); driver.invoke.mockReset(); driver.saveTrack.mockReset();
   driver.invoke.mockImplementation(async (command: string, input: { projectId: string; mimeType?: string; data?: number[]; reference?: { relativePath: string } }) => {
     if (command === 'write_native_project_media') {
       const data = input.data!, sha256 = createHash('sha256').update(new Uint8Array(data)).digest('hex');
@@ -66,11 +67,11 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-async function fixture() {
+async function fixture(model = 'gpt-4o-mini-tts') {
   const created = await createNativeProject({ name: '隔离TTS' });
   const canvas = await saveNativeCanvas({ projectId: created.project.id, canvasId: created.canvas!.id, episodeId: null,
     expectedProjectEpoch: created.project.epoch, expectedCanvasEpoch: created.canvas!.epoch, expectedCanvasRevision: 0,
-    document: { nodes: [{ id: 'audio', type: 'ai-audio', position: { x: 0, y: 0 }, data: { type: 'ai-audio', model: 'gpt-4o-mini-tts', provider: 'apimart', prompt: '合成朗读' } }], edges: [], groups: [] } });
+    document: { nodes: [{ id: 'audio', type: 'ai-audio', position: { x: 0, y: 0 }, data: { type: 'ai-audio', model, provider: 'apimart', prompt: '合成朗读' } }], edges: [], groups: [] } });
   const context: CanvasContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, projectId: created.project.id,
     projectEpoch: created.project.epoch, canvasId: canvas.id, canvasEpoch: canvas.epoch, canvasRevision: canvas.revision,
     episodeId: null, runtimeEpoch: 'original-view' };
@@ -94,7 +95,7 @@ async function fixture() {
       return { context: expected, canvasRevision: saved.revision, assertCurrent, release: () => { released = true; } };
     },
     saveCurrentProjectSilent: async () => canvas.id };
-  return { context, input: { params: { model: 'gpt-4o-mini-tts', provider: 'apimart', nodeId: 'audio', prompt: '合成朗读', audioFormat: 'wav' as const },
+  return { context, input: { params: { model, provider: 'apimart', nodeId: 'audio', prompt: '合成朗读', audioFormat: 'wav' as const },
     prompt: '合成朗读', apiKey: 'synthetic-key', baseUrl: 'https://apimart.example/v1', beforeSubmit: async () => {} } };
 }
 it('返回音频时窗口已切换仍保存原根及SHA，只有当前视图投递暂停', async () => {
@@ -122,6 +123,55 @@ it('正常TTS先建立本机回执再自动交付原操作', async () => {
   const [record] = await listNativeMediaTasks(context.projectId);
   expect(record.localResults?.[0].category).toBe('audio');
   expect(driver.deliver).toHaveBeenCalledWith(record.operationId, undefined); expect(driver.speech).toHaveBeenCalledOnce();
+});
+
+it.each(['flowmusic', 'suno'])('%s 两条音乐候选在交付中断后仅用各自的本机音轨和资料续存', async (model) => {
+  const { context, input } = await fixture(model);
+  const params = model === 'suno' ? { ...input.params, autoGenerateLyrics: true, musicTitle: '上一首标题', musicLyrics: '上一首歌词' } : input.params;
+  const first = { musicTitle: '北风里的灯', musicLyrics: '灯火一点，归人一程', musicClipId: 'original-clip-one' };
+  const urls = ['https://media.example/one.wav', 'https://media.example/two.wav'];
+  driver.musicSubmit.mockImplementation(async (_key, _base, _body, _signal, guard: () => Promise<void>) => {
+    await guard(); return 'original-music-task';
+  });
+  driver.fetchTask.mockResolvedValue({ status: 'completed', result: { music: [
+    { audio_url: urls[0], title: first.musicTitle, lyrics: first.musicLyrics, clip_id: first.musicClipId },
+    { audio_url: urls[1] },
+  ] } });
+  driver.saveTrack.mockImplementation(async (url: string) => {
+    const bytes = new TextEncoder().encode(url);
+    const sha256 = createHash('sha256').update(bytes).digest('hex'), relativePath = `media/${sha256}.wav`;
+    driver.contents.set(`${context.projectId}/${relativePath}`, [...bytes]);
+    return { relativePath, sha256, bytes: bytes.length, category: 'audio' };
+  });
+  driver.deliver.mockRejectedValueOnce(new Error('画布交付中断'));
+  await expect(generateNativeBuiltinAudio({ ...input, params })).rejects.toMatchObject({ name: 'NativeMediaTaskPending' });
+  const [saved] = await listNativeMediaTasks(context.projectId);
+  expect(saved.localResults).toHaveLength(2);
+  for (const text of Object.values(first)) expect(JSON.stringify(saved)).not.toContain(text);
+
+  driver.context = { ...context, runtimeEpoch: 'after-restart' };
+  driver.state.projectExecutionContext = driver.context;
+  driver.state.config = { providers: {} }; driver.state.messages = [];
+  const project = vi.fn<(record: NativeMediaTaskRecord) => Promise<void>>().mockResolvedValue(undefined);
+  driver.state.commitNativeMediaResult = project;
+  const { resumeNativeVolcengineTask } = await vi.importActual<typeof import('../../src/services/nativeVolcengineRecovery')>('../../src/services/nativeVolcengineRecovery');
+  driver.deliver.mockImplementation(resumeNativeVolcengineTask);
+  await resumeNativeBuiltinAudioTask(saved.operationId);
+  expect(project).toHaveBeenCalledOnce();
+  const outputs = project.mock.calls[0][0].localResults!;
+  expect(outputs).toEqual(saved.localResults);
+  expect(outputs.map((file) => file.sha256)).toEqual(urls.map((url) => createHash('sha256').update(url).digest('hex')));
+  const metadata = outputs.map((file) => {
+    const ref = file.musicTrackFile!;
+    expect(ref).toMatchObject({ mimeType: 'application/json', relativePath: expect.stringMatching(/^media\/[a-f0-9]{64}\.json$/) });
+    const bytes = new Uint8Array(driver.contents.get(`${context.projectId}/${ref.relativePath}`)!);
+    expect(ref.sha256).toBe(createHash('sha256').update(bytes).digest('hex')); expect(ref.bytes).toBe(bytes.length);
+    return JSON.parse(new TextDecoder().decode(bytes));
+  });
+  expect(metadata).toMatchObject([first, { musicTitle: '', musicLyrics: '', musicClipId: '' }]);
+  expect(driver.lyricsSubmit).not.toHaveBeenCalled(); expect(driver.musicSubmit).toHaveBeenCalledOnce();
+  expect(driver.fetchTask).toHaveBeenCalledOnce();
+  expect(driver.saveTrack.mock.calls.map(([url]) => url)).toEqual(urls);
 });
 
 it('纯对话歌词已完成后重启，项目输入变化不能仅凭消息归属首发音乐阶段', async () => {

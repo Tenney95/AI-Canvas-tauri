@@ -4,18 +4,23 @@ import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepositor
 import { nativeImageBatchResults } from './nativeImageBatch';
 import { safeExchangePath } from './projectExchangeDomain';
 import { isNativeMediaContentPath } from './nativeMediaContentPath';
+import { validateNativeAudioContentFile } from './nativeAudioContent';
 
 export const MAX_NATIVE_MEDIA_OUTPUTS = 128;
 export function validateNativeMediaLocalOutputs(value: readonly NativeMediaLocalOutput[]): void {
   if (!Array.isArray(value) || !value.length || value.length > MAX_NATIVE_MEDIA_OUTPUTS) throw new Error('原媒体产物集合不完整或超过上限');
   for (const file of value) {
     if (!file || ![Object.prototype, null].includes(Object.getPrototypeOf(file))
-      || Reflect.ownKeys(file).some((key) => typeof key !== 'string' || !['category', 'relativePath', 'bytes', 'sha256'].includes(key)
+      || Reflect.ownKeys(file).some((key) => typeof key !== 'string' || !['category', 'relativePath', 'bytes', 'sha256', 'musicTrackFile'].includes(key)
         || !('value' in Object.getOwnPropertyDescriptor(file, key)!))
       || !['image', 'video', 'audio'].includes(file.category) || !Number.isSafeInteger(file.bytes) || file.bytes <= 0
       || typeof file.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(file.sha256)
       || typeof file.relativePath !== 'string' || safeExchangePath(file.relativePath) !== file.relativePath
       || !isNativeMediaContentPath(file.relativePath, file.sha256)) throw new Error('原媒体产物缺少受控文件身份');
+    if (file.musicTrackFile !== undefined) {
+      if (file.category !== 'audio') throw new Error('音轨资料只能绑定音频产物');
+      validateNativeAudioContentFile(file.musicTrackFile);
+    }
   }
 }
 export function nativeMediaLocalOutputs(record: Pick<NativeMediaTaskRecord, 'localResults' | 'localResult' | 'apimartImageBatch' | 'category'>): NativeMediaLocalOutput[] {

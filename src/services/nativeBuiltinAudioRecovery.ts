@@ -14,8 +14,8 @@ import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from './p
 import { persistNativeMediaOrigin } from './nativeMediaOriginPersistence';
 import { assertNativeMediaPrepared, assertNativeMediaResultRetention, claimNativeMediaRecovery, failNativeMediaTask,
   listNativeMediaTasks, normalizeNativeMediaProviderBase, prepareNativeMediaTask, recordNativeMediaSubmission, type NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
-import { beginNativeApimartMusicStage, prepareNativeApimartMusicState, readNativeApimartMusicState, recordNativeApimartMusicStage,
-  validateNativeAudioContentFile, type NativeAudioContentFile } from './indexedDb/nativeApimartMusicRepository';
+import { beginNativeApimartMusicStage, prepareNativeApimartMusicState, readNativeApimartMusicState, recordNativeApimartMusicStage } from './indexedDb/nativeApimartMusicRepository';
+import { readNativeAudioContent, writeNativeAudioContent, musicTrackMetadata } from './nativeAudioContent';
 import { retainNativeMediaOutputs } from './indexedDb/nativeMediaCollectionRepository';
 import { nativeMediaLocalOutputs } from './nativeMediaCollection';
 import { assertNativeVideoSubmissionInput, captureNativeVideoSubmissionBaseline, isNativeVideoSubmissionGuard } from './nativeVideoSubmission';
@@ -58,20 +58,6 @@ function validateInput(value: FrozenAudioInput): FrozenAudioInput {
     || getApimartAudioCapability(value.modelId) === 'speech' && value.prompt.length > 4096
     || settings.autoGenerateLyrics && value.modelId === 'flowmusic' && value.prompt.length > 3000) throw new Error('原音频参数无效，未提交生成');
   return value;
-}
-async function writeContent(projectId: string, value: unknown): Promise<NativeAudioContentFile> {
-  const bytes = new TextEncoder().encode(JSON.stringify(value));
-  if (!bytes.length || bytes.length > 256 * 1024) throw new Error('原音频输入超过内容文件上限');
-  const reference = await invoke<NativeAudioContentFile>('write_native_project_media', { projectId, mimeType: 'application/json', data: Array.from(bytes) });
-  validateNativeAudioContentFile(reference);
-  if (reference.bytes !== bytes.length || reference.sha256 !== await sha256BytesHex(bytes)) throw new Error('原音频输入未完整保存');
-  await readContent(projectId, reference); return reference;
-}
-async function readContent(projectId: string, reference: NativeAudioContentFile): Promise<unknown> {
-  validateNativeAudioContentFile(reference);
-  const bytes = new Uint8Array(await invoke<number[]>('read_native_project_media', { projectId, reference }));
-  if (bytes.length !== reference.bytes || await sha256BytesHex(bytes) !== reference.sha256) throw new Error('原音频内容文件已变化');
-  return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
 }
 function currentContext(): CanvasContext {
   const context = captureLegacyCanvasContext(useAppStore.getState());
@@ -136,7 +122,7 @@ export async function generateNativeBuiltinAudio(input: { params: AIAudioGenPara
       || await sha256BytesHex(new TextEncoder().encode(messageInput.material)) !== baseline.inputFingerprint) throw new Error('原对话音频输入不能完整冻结，未提交生成');
     frozen.chatSource = { inputSha256: baseline.inputFingerprint, stateSha256: await chatStateDigest(material.slice(2)), prompt: intent.prompt, modelRef: origin.modelId };
   }
-  const inputFile = await writeContent(context.projectId, frozen), protocolDigest = await contractDigest(modelId);
+  const inputFile = await writeNativeAudioContent(context.projectId, frozen), protocolDigest = await contractDigest(modelId);
   const speech = getApimartAudioCapability(modelId) === 'speech';
   let record = await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: input.params.nodeId,
     providerConfigId: 'apimart', providerBase: input.baseUrl, modelRef: `apimart/${modelId}`, protocolDigest,
@@ -197,8 +183,11 @@ export async function resumeNativeBuiltinAudioTask(operationId: string, external
   if (record.status === 'failed') throw new Error('原音频任务已确认失败，回执保留');
   if (await contractDigest(record.recovery.modelId!) !== record.protocolDigest || record.recovery.digest !== record.protocolDigest) throw new Error('原音频合同已变化，未查询或重新提交');
   let state = await readNativeApimartMusicState(record);
-  const frozen = validateInput(await readContent(record.ownerProjectId, state.inputFile) as FrozenAudioInput);
+  const frozen = validateInput(await readNativeAudioContent(record.ownerProjectId, state.inputFile) as FrozenAudioInput);
   if (frozen.modelId !== record.recovery.modelId) throw new Error('原音频内容文件的模型不一致');
+  const suno = /^suno(?:-v6(?:-wild|-mini)?)?$/.test(frozen.modelId);
+  const lyrics = frozen.settings.autoGenerateLyrics ? undefined : frozen.settings.musicLyrics?.trim();
+  const title = suno && !lyrics ? undefined : frozen.settings.musicTitle?.trim();
   const selected = connection(record), controller = new AbortController(), abort = () => controller.abort();
   externalSignal?.addEventListener('abort', abort, { once: true }); if (externalSignal?.aborted) controller.abort();
   const unsubscribe = useAppStore.subscribe(() => { if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) controller.abort(); });
@@ -232,12 +221,12 @@ export async function resumeNativeBuiltinAudioTask(operationId: string, external
       const settings = frozen.settings;
       const taskId = name === 'lyrics'
         ? await submitFlowMusicLyrics(selected.apiKey, selected.baseUrl, frozen.prompt, controller.signal, guard)
-        : /^suno(?:-v6(?:-wild|-mini)?)?$/.test(frozen.modelId)
+        : suno
           ? await submitSunoGeneration(selected.apiKey, selected.baseUrl, { version: frozen.modelId === 'suno' ? 'v6' : frozen.modelId.slice('suno-'.length) as 'v6' | 'v6-wild' | 'v6-mini',
-            prompt: frozen.prompt, lyrics: settings.autoGenerateLyrics ? undefined : settings.musicLyrics, title: settings.musicTitle, duration: settings.musicDuration }, controller.signal, guard)
+            prompt: frozen.prompt, lyrics, title, duration: settings.musicDuration }, controller.signal, guard)
           : await submitFlowMusicGeneration(selected.apiKey, selected.baseUrl, { version: frozen.modelId === 'flowmusic-lyria-3.5' ? 'lyria-3.5' : undefined,
-            soundPrompt: frozen.prompt, lyrics: generated?.lyrics || (settings.autoGenerateLyrics ? undefined : settings.musicLyrics),
-            title: generated?.title || settings.musicTitle, bpm: settings.musicBpm, length: settings.musicDuration ?? 60 }, controller.signal, guard);
+            soundPrompt: frozen.prompt, lyrics: generated?.lyrics || lyrics,
+            title: generated?.title || title, bpm: settings.musicBpm, length: settings.musicDuration ?? 60 }, controller.signal, guard);
       if (selected.apiKey && taskId.includes(selected.apiKey)) throw new Error('音频响应中的任务身份包含凭据，不能保存或重投');
       state = await recordNativeApimartMusicStage(state, name, { taskId });
     } catch (error) {
@@ -257,7 +246,7 @@ export async function resumeNativeBuiltinAudioTask(operationId: string, external
     if (state.lyrics.state === 'submitted') {
       try {
         generated = extractFlowMusicLyrics(await wait(state.lyrics.taskId!));
-        const resultFile = await writeContent(record.ownerProjectId, { version: 1, ...generated });
+        const resultFile = await writeNativeAudioContent(record.ownerProjectId, { version: 1, ...generated });
         state = await recordNativeApimartMusicStage(state, 'lyrics', { resultFile });
       } catch (error) {
         if (error instanceof PollTaskFailedError) { state = await recordNativeApimartMusicStage(state, 'lyrics', { failed: true });
@@ -266,7 +255,7 @@ export async function resumeNativeBuiltinAudioTask(operationId: string, external
       }
     }
     if (state.lyrics.state === 'completed') {
-      const saved = await readContent(record.ownerProjectId, state.lyrics.resultFile!) as { version?: unknown; title?: unknown; lyrics?: unknown };
+      const saved = await readNativeAudioContent(record.ownerProjectId, state.lyrics.resultFile!) as { version?: unknown; title?: unknown; lyrics?: unknown };
       if (saved.version !== 1 || typeof saved.title !== 'string' || saved.title.length > 512 || typeof saved.lyrics !== 'string'
         || !saved.lyrics.trim() || saved.lyrics.length > 30_000 || Object.keys(saved).some((key) => !['version', 'title', 'lyrics'].includes(key))) throw new Error('原歌词文件不完整');
       generated = { title: saved.title, lyrics: saved.lyrics };
@@ -280,9 +269,14 @@ export async function resumeNativeBuiltinAudioTask(operationId: string, external
     const access = createMediaDownloadAccess('apimart', selected.baseUrl, { type: 'bearer' });
     for (const [ordinal, track] of tracks.entries()) {
       current();
-      outputs.push(await persistNativeMediaResult(track.url, record.canvasId, { category: 'audio',
+      const output = await persistNativeMediaResult(track.url, record.canvasId, { category: 'audio',
         label: `原音乐音轨 ${ordinal + 1}`, missingFileMessage: '原音乐音轨尚未保存',
-        signal: controller.signal, assertCurrent: current, mediaDownloadAccess: access }));
+        signal: controller.signal, assertCurrent: current, mediaDownloadAccess: access });
+      if (record.origin?.deliveryMode !== 'chat') {
+        const metadata = musicTrackMetadata(track, { title: generated?.title || title, lyrics: generated?.lyrics || lyrics });
+        output.musicTrackFile = await writeNativeAudioContent(record.ownerProjectId, metadata);
+      }
+      outputs.push(output);
     }
     record = await retainNativeMediaOutputs(record, outputs);
     state = await recordNativeApimartMusicStage(state, 'music', { completed: true });

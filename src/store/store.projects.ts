@@ -1665,7 +1665,9 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         nodes = buildNativeImageBatchCanvas(canvas, record, resultRootRef).nodes;
       } else if (record.localResults) {
         const { buildNativeMediaCollectionCanvas } = await import('../services/nativeMediaCollectionCanvas');
-        nodes = buildNativeMediaCollectionCanvas(canvas, record, resultRootRef).nodes;
+        const { readMusicTrackMetadata } = await import('../services/nativeAudioContent');
+        const tracks = await readMusicTrackMetadata(record.ownerProjectId, record.localResults);
+        nodes = buildNativeMediaCollectionCanvas(canvas, record, resultRootRef, tracks).nodes;
       }
       const selected = before.projects.find((item) => item.id === record.canvasId);
       if (!selected) throw new Error('原画布目录不可用，产物已保留');
