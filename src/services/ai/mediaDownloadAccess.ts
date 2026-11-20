@@ -1,12 +1,13 @@
 /**
  * mediaDownloadAccess — 规范化媒体下载凭据与请求并清理结果 URL。
  */
-import { APIMART_BASE_URL, GRSAI_BASE_URL } from '../../constants/api';
+import { APIMART_BASE_URL, GRSAI_BASE_URL, RUNNINGHUB_MODEL_BASE_URL } from '../../constants/api';
 import type { MediaDownloadAccess, ModelProtocolAuthConfig } from '../../types/aiTypes';
 import { applyQueryAuthentication, renderRequestHeaders } from './modelProtocolRequest';
 import { validateAuthentication } from './modelProtocolValidation';
 import { resolveProviderCatalogId } from './providerPolicies';
 import { isRelayonOfficialBaseUrl } from './relayonProviderGroups';
+import { resolveRunningHubCredential, runningHubSiteId } from '../runninghubSiteCredentials';
 
 function httpUrl(value: string): URL {
   const url = new URL(value);
@@ -65,17 +66,23 @@ export async function resolveMediaDownloadRequest(url: string, access?: MediaDow
   const target = httpUrl(url);
   if (target.origin !== safe.origin || safe.auth?.type === 'none') return { url };
   const { useAppStore } = await import('../../store/useAppStore');
-  const provider = useAppStore.getState().config.providers[safe.providerConfigId];
-  const currentBaseUrl = provider?.baseUrl || (safe.providerConfigId === 'apimart' ? APIMART_BASE_URL : safe.providerConfigId === 'grsai' ? GRSAI_BASE_URL : '');
-  const relayonOfficialOrigin = resolveProviderCatalogId(safe.providerConfigId, provider) === 'relayonapi'
+  const providers = useAppStore.getState().config.providers;
+  const id = safe.providerConfigId;
+  const provider = providers[id];
+  const runningHub = id === 'runninghub' || id === 'runninghub-model';
+  const connection = provider && runningHub ? resolveRunningHubCredential(providers, id, runningHubSiteId(safe.origin)) : provider;
+  const defaultBaseUrl = runningHub ? RUNNINGHUB_MODEL_BASE_URL
+    : id === 'apimart' ? APIMART_BASE_URL : id === 'grsai' ? GRSAI_BASE_URL : '';
+  const currentBaseUrl = connection?.baseUrl || defaultBaseUrl;
+  const relayonOfficialOrigin = resolveProviderCatalogId(id, provider) === 'relayonapi'
     && isRelayonOfficialBaseUrl(currentBaseUrl) && isRelayonOfficialBaseUrl(`${safe.origin}/v1`);
-  if (!provider || !currentBaseUrl || httpUrl(currentBaseUrl).origin !== safe.origin && !relayonOfficialOrigin) {
+  if (!connection || !currentBaseUrl || httpUrl(currentBaseUrl).origin !== safe.origin && !relayonOfficialOrigin) {
     throw new Error('原媒体连接或接口地址已变化，请检查原连接配置');
   }
-  if (!provider.apiKey) throw new Error('原媒体连接尚未填写 API Key，请补填后继续保存');
-  return { url: applyQueryAuthentication(url, safe.auth, provider.apiKey), downloadAccess: {
+  if (!connection.apiKey) throw new Error('原媒体连接尚未填写 API Key，请补填后继续保存');
+  return { url: applyQueryAuthentication(url, safe.auth, connection.apiKey), downloadAccess: {
     origin: safe.origin,
-    headers: renderRequestHeaders({ method: 'GET', path: '/' }, safe.auth, provider.apiKey, {}),
+    headers: renderRequestHeaders({ method: 'GET', path: '/' }, safe.auth, connection.apiKey, {}),
     ...(safe.auth?.type === 'query' ? { queryAuthName: safe.auth.name } : {}),
   } };
 }

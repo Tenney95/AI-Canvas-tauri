@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { APIMART_BASE_URL, GRSAI_BASE_URL } from '../../src/constants/api';
 import { useAppStore } from '../../src/store/useAppStore';
 import { createMediaDownloadAccess, resolveMediaDownloadRequest, sanitizeMediaDownloadAccess, sanitizeMediaResultUrls } from '../../src/services/ai/mediaDownloadAccess';
+import { buildRunningHubSiteProviders, runningHubCredentialId } from '../../src/services/runninghubSiteCredentials';
 
 beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState(), true);
@@ -26,6 +27,39 @@ describe('media download authorization', () => {
   it('leaves signed external CDN URLs intact without credentials', async () => {
     const url = 'https://cdn.example/video.mp4?signature=a%2fb%2Bc';
     expect(await resolveMediaDownloadRequest(url, createMediaDownloadAccess('original', 'https://gateway.example/v1'))).toEqual({ url });
+  });
+
+  it.each([
+    { connection: 'runninghub', site: 'cn', active: 'ai', key: 'workflow-cn' },
+    { connection: 'runninghub-model', site: 'ai', active: 'cn', key: 'model-ai' },
+  ] as const)('RunningHub $connection 切站后只为原站结果使用原站凭据', async ({ connection, site, active, key }) => {
+    const origin = `https://www.runninghub.${site}`, activeOrigin = `https://www.runninghub.${active}`;
+    const access = createMediaDownloadAccess(connection, origin, { type: 'bearer' });
+    const providers = buildRunningHubSiteProviders({}, { name: 'RunningHub', baseUrl: activeOrigin, apiKey: '' }, {
+      cn: { workflowKey: 'workflow-cn', modelKey: 'model-cn' },
+      ai: { workflowKey: 'workflow-ai', modelKey: 'model-ai' },
+    });
+    useAppStore.setState((state) => ({ config: { ...state.config, providers } }));
+    const url = `${origin}/file`;
+    expect(await resolveMediaDownloadRequest(url, access)).toEqual({ url, downloadAccess: { origin, headers: { Authorization: `Bearer ${key}` } } });
+    for (const external of [`${activeOrigin}/file`, 'https://cdn.example/file?signature=original']) {
+      expect(await resolveMediaDownloadRequest(external, access)).toEqual({ url: external });
+    }
+    const alteredOrigin = origin.replace('https:', 'http:');
+    await expect(resolveMediaDownloadRequest(`${alteredOrigin}/file`, createMediaDownloadAccess(connection, alteredOrigin))).rejects.toThrow('原媒体连接');
+    const remaining = { ...providers };
+    delete remaining[runningHubCredentialId(site, connection)];
+    useAppStore.setState((state) => ({ config: { ...state.config, providers: remaining } }));
+    await expect(resolveMediaDownloadRequest(url, access)).rejects.toThrow();
+  });
+
+  it('旧 RunningHub 单站连接沿用国内站默认地址', async () => {
+    useAppStore.setState((state) => ({ config: { ...state.config, providers: {
+      runninghub: { name: '旧工作流', apiKey: 'legacy-fixture' },
+    } } }));
+    const origin = 'https://www.runninghub.cn';
+    const result = await resolveMediaDownloadRequest(`${origin}/file`, createMediaDownloadAccess('runninghub', origin));
+    expect(result.downloadAccess?.headers).toEqual({ Authorization: 'Bearer legacy-fixture' });
   });
 
   it.each(['https://gateway.example@evil.example/video', 'https://user:pass@gateway.example/video'])(
