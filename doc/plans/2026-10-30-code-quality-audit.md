@@ -927,7 +927,10 @@ cargo test --lib blender_runtime::result::tests
 
 ## 2026-11-20 扩图、模型菜单与 Qwen 参数精简
 
-本次未运行测试，待用户验收。
+已实现，按范围分别提交。本次未运行测试，待用户验收。
 
 - 移除已被统一生成流程替代的 APIMart 专用扩图模块及其专用测试引用。保留图像节点的扩图入口和 APIMart 厂商适配器。Tauri 桌面端从已加载图片的图像节点进入扩图，选定画幅和已配置的 APIMart 模型后生成。核对只创建一个生成节点、原图不变、失败后重试继续使用原垫图。创建、项目切换和未知提交的回归入口见 [imageOutpaintService.test.ts](../../tests/services/imageOutpaintService.test.ts)，APIMart 请求与轮询行为见 [apimartGen.test.ts](../../tests/services/apimartGen.test.ts)。
 - 删除模型菜单旧厂商徽标、工作流空态和定位修饰样式。现用小徽标、工作流圆点、基础菜单定位和主题规则保持原样。Tauri 桌面端在深浅主题下打开节点模型菜单，缩窄窗口并靠近画布边缘重开，核对菜单仍可见、可选厂商模型和工作流。切换到无可用工作流的连接，核对原有过滤及当前选择。相关回归入口见 [modelSelectorWorkflows.test.tsx](../../tests/components/modelSelectorWorkflows.test.tsx)。
+- RunningHub Qwen Image 3.0 普通版与 Pro 的四个端点在模块初始化时分别复用文生图和编辑参数构造。完整目录静态展开后与原源码逐字节一致，各端点仍独立创建参数及嵌套对象。Tauri 桌面端在已配置的 RunningHub 连接选择四个端点，核对字段顺序、参考图槽和种子设置，普通编辑仍默认 `0`，其余三项仍无默认值。目录哈希、对象隔离和请求构造的回归入口见 [runninghubModelManifest.test.ts](../../tests/services/runninghubModelManifest.test.ts#L14) 和 [runninghubMedia.test.ts](../../tests/services/runninghubMedia.test.ts#L173)。
+
+在仓库根目录可运行 `npm test -- tests/services/imageOutpaintService.test.ts tests/services/apimartGen.test.ts tests/components/nodeCriticalInteractions.test.tsx tests/components/modelSelectorWorkflows.test.tsx tests/services/runninghubModelManifest.test.ts tests/services/runninghubMedia.test.ts`。
