@@ -1,12 +1,15 @@
 //! 项目内可重建的缩略图缓存；原图读取授权与派生文件写入始终在原生侧复核。
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
+use image::codecs::{jpeg::JpegDecoder, png::PngDecoder, webp::WebPDecoder};
+use image::{DynamicImage, ImageDecoder, ImageFormat, Limits};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Runtime, Webview};
 use tauri::ipc::{InvokeBody, Request};
@@ -20,10 +23,17 @@ const CACHE_DIRECTORY: &str = ".thumbnail";
 const CACHE_MAGIC: &[u8; 8] = b"ACTHMB01";
 const CACHE_HEADER_BYTES: usize = 8 + 32 + 4 + 4 + 32;
 const MAX_PREVIEW_BYTES: usize = 4 * 1024 * 1024;
-const MAX_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_NATIVE_SOURCE_EDGE: u32 = 16_384;
+const MAX_NATIVE_SOURCE_PIXELS: u64 = 160_000_000;
+const NATIVE_PREVIEW_WORKING_BYTES: u64 = 512 * 1024 * 1024;
+const PNG_DECODER_WORKING_BYTES: u64 = 16 * 1024 * 1024;
+// JPEG 的渐进系数和 WebP 的解码临时表面可能随原图像素数增长。
+const JPEG_WEBP_SCRATCH_BYTES_PER_PIXEL: u64 = 8;
 const WRITE_METADATA_HEADER: &str = "x-aic-thumbnail-meta";
 const MAX_WRITE_METADATA_BYTES: usize = 1024 * 1024;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static NATIVE_PREVIEW_SLOT: Mutex<()> = Mutex::new(());
 #[cfg(windows)]
 const HIDE_CACHE_ERROR: &str = "无法隐藏缩略图缓存目录";
 #[cfg(windows)]
@@ -240,6 +250,128 @@ fn read_cache(
         return None;
     }
     Some((bytes, width, height))
+}
+
+fn decode_native_preview(
+    mut decoder: impl ImageDecoder,
+    mut limits: Limits,
+    max_edge: u32,
+    scratch_bytes_per_pixel: u64,
+) -> Option<(Vec<u8>, u32, u32)> {
+    let (width, height) = decoder.dimensions();
+    let pixels = u64::from(width) * u64::from(height);
+    if pixels == 0 || pixels > MAX_NATIVE_SOURCE_PIXELS {
+        return None;
+    }
+    limits.check_dimensions(width, height).ok()?;
+    let padded_pixels = u64::from(width.next_multiple_of(32)) * u64::from(height.next_multiple_of(32));
+    limits.reserve(decoder.total_bytes() + padded_pixels * scratch_bytes_per_pixel).ok()?;
+    decoder.set_limits(limits).ok()?;
+    let orientation = decoder.orientation().ok();
+    let mut preview = {
+        let original = DynamicImage::from_decoder(decoder).ok()?;
+        original.thumbnail(max_edge, max_edge)
+    };
+    // 旋转小图，避免为原图再分配一份解码缓冲。
+    if let Some(orientation) = orientation {
+        preview.apply_orientation(orientation);
+    }
+    let mut preview = DynamicImage::ImageRgba8(preview.into_rgba8());
+    let mut encoded = Cursor::new(Vec::new());
+    preview.write_to(&mut encoded, ImageFormat::Png).ok()?;
+    if encoded.get_ref().len() > MAX_PREVIEW_BYTES {
+        preview = preview.thumbnail(max_edge / 2, max_edge / 2);
+        encoded = Cursor::new(Vec::new());
+        preview.write_to(&mut encoded, ImageFormat::Png).ok()?;
+    }
+    (encoded.get_ref().len() <= MAX_PREVIEW_BYTES)
+        .then(|| (encoded.into_inner(), preview.width(), preview.height()))
+}
+
+fn read_native_preview_input(root: &Path, source: &Path) -> Option<Vec<u8>> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    let _parent_leases = {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ};
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0).share_mode(FILE_SHARE_READ.0);
+        windows_files::pin_directory_chain(source.parent()?, "无法安全读取缩略图原图").ok()?
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // O_NOFOLLOW | O_NONBLOCK：拒绝跟随末级链接或阻塞在被替换的管道上。
+        #[cfg(target_os = "macos")]
+        options.custom_flags(0x100 | 0x4);
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        options.custom_flags(0x20000 | 0x800);
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        options.custom_flags(0x8000 | 0x800);
+    }
+    validate_descendant(root, source, false).ok()?;
+    let file = options.open(source).ok()?;
+    let metadata = file.metadata().ok()?;
+    let size = metadata.len();
+    if !metadata.is_file() || is_link(&metadata) || size == 0 || size > MAX_SOURCE_BYTES {
+        return None;
+    }
+    let current = || {
+        validate_descendant(root, source, false).ok()?;
+        if crate::path_policy::canonicalize_simplified(source).ok()? != source {
+            return None;
+        }
+        let latest = fs::symlink_metadata(source).ok()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.dev() != latest.dev() || metadata.ino() != latest.ino() {
+                return None;
+            }
+        }
+        (size == latest.len() && metadata.modified().ok()? == latest.modified().ok()?).then_some(())
+    };
+    current()?;
+    let mut bytes = Vec::with_capacity(size as usize);
+    (&file).take(size + 1).read_to_end(&mut bytes).ok()?;
+    current()?;
+    (bytes.len() as u64 == size).then_some(bytes)
+}
+
+fn native_preview(root: &Path, source: &Path, max_edge: u32) -> Option<(Vec<u8>, u32, u32)> {
+    // WebView 已判定原图超限；原生侧同一时刻最多派生一张，且只返回小图。
+    let _permit = NATIVE_PREVIEW_SLOT.try_lock().ok()?;
+    let bytes = read_native_preview_input(root, source)?;
+    let size = bytes.len() as u64;
+    let format = image::guess_format(&bytes).ok()?;
+    let input = Cursor::new(bytes);
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_NATIVE_SOURCE_EDGE);
+    limits.max_image_height = Some(MAX_NATIVE_SOURCE_EDGE);
+    limits.max_alloc = Some(NATIVE_PREVIEW_WORKING_BYTES - size);
+    match format {
+        ImageFormat::Png => {
+            let mut png_limits = limits.clone();
+            png_limits.max_alloc = Some(PNG_DECODER_WORKING_BYTES);
+            let decoder = PngDecoder::with_limits(input, png_limits).ok()?;
+            if decoder.is_apng().ok()? {
+                return None;
+            }
+            limits.reserve(PNG_DECODER_WORKING_BYTES).ok()?;
+            decode_native_preview(decoder, limits, max_edge, 0)
+        }
+        ImageFormat::Jpeg => decode_native_preview(
+            JpegDecoder::new(input).ok()?, limits, max_edge, JPEG_WEBP_SCRATCH_BYTES_PER_PIXEL,
+        ),
+        ImageFormat::WebP => {
+            let decoder = WebPDecoder::new(input).ok()?;
+            if decoder.has_animation() {
+                return None;
+            }
+            decode_native_preview(decoder, limits, max_edge, JPEG_WEBP_SCRATCH_BYTES_PER_PIXEL)
+        }
+        _ => None,
+    }
 }
 
 #[cfg(windows)]
@@ -578,6 +710,32 @@ pub fn prepare_project_agent_workspace<R: Runtime>(
     }
 }
 
+fn prepare_thumbnail(
+    root: &Path,
+    source: &Path,
+    max_edge: u32,
+    generate_on_miss: bool,
+) -> Result<PreparedThumbnail, String> {
+    let identity = source_identity(root, source, max_edge)?;
+    let cached = read_cache(root, &identity, max_edge).or_else(|| {
+        if !generate_on_miss {
+            return None;
+        }
+        let preview = native_preview(root, source, max_edge)?;
+        // 缓存写入失败时仍可返回小图，最终返回前统一复核原图版本。
+        let _ = write_cache(root, source, max_edge, &hex(&identity.version), &preview.0);
+        Some(preview)
+    });
+    let current = source_identity(root, source, max_edge)?;
+    let cached = cached.filter(|_| identity.version == current.version);
+    Ok(PreparedThumbnail {
+        source_version: hex(&current.version),
+        width: cached.as_ref().map(|(_, width, _)| *width),
+        height: cached.as_ref().map(|(_, _, height)| *height),
+        cached_bytes: cached.map(|(bytes, _, _)| bytes),
+    })
+}
+
 #[tauri::command]
 pub async fn prepare_project_thumbnail<R: Runtime>(
     webview: Webview<R>,
@@ -585,21 +743,12 @@ pub async fn prepare_project_thumbnail<R: Runtime>(
     project_dir: String,
     source_path: String,
     max_edge: u32,
+    generate_on_miss: Option<bool>,
 ) -> Result<PreparedThumbnail, String> {
     ensure_main(&webview)?;
     tauri::async_runtime::spawn_blocking(move || {
         let (root, source) = authorized_source(&app, &project_dir, &source_path)?;
-        let identity = source_identity(&root, &source, max_edge)?;
-        let cached = read_cache(&root, &identity, max_edge);
-        // 读取缓存时原图同样可能改变；此时返回新版本的 miss，前端重新派生。
-        let current = source_identity(&root, &source, max_edge)?;
-        let cached = cached.filter(|_| identity.version == current.version);
-        Ok(PreparedThumbnail {
-            source_version: hex(&current.version),
-            width: cached.as_ref().map(|(_, width, _)| *width),
-            height: cached.as_ref().map(|(_, _, height)| *height),
-            cached_bytes: cached.map(|(bytes, _, _)| bytes),
-        })
+        prepare_thumbnail(&root, &source, max_edge, generate_on_miss.unwrap_or(false))
     })
     .await
     .map_err(|_| "缩略图缓存读取任务失败")?
@@ -788,6 +937,23 @@ mod tests {
         let path = project.0.join(CACHE_DIRECTORY).join(&identity.cache_name);
         assert_eq!(fs::read(path).unwrap(), legacy_cache(&identity, 32, 32, &bytes));
         assert_eq!(read_cache(&project.0, &identity, 256).unwrap(), (bytes, 32, 32));
+    }
+
+    #[test]
+    fn generates_and_reuses_a_preview_for_an_existing_large_png() {
+        let project = Fixture::new();
+        let root = crate::path_policy::canonicalize_simplified(&project.0).unwrap();
+        let source = root.join("source.png");
+        // 原图超出 WebView 的单边限制，但夹具像素数和内存开销很小。
+        let original = png(8193, 128);
+        fs::write(&source, &original).unwrap();
+        assert!(prepare_thumbnail(&root, &source, 512, false).unwrap().cached_bytes.is_none());
+        let generated = prepare_thumbnail(&root, &source, 512, true).unwrap();
+        assert_eq!((generated.width, generated.height), (Some(512), Some(8)));
+        let cached = prepare_thumbnail(&root, &source, 512, false).unwrap();
+        assert!(generated.cached_bytes.is_some());
+        assert_eq!(cached.cached_bytes, generated.cached_bytes);
+        assert_eq!(fs::read(&source).unwrap(), original);
     }
 
     #[test]

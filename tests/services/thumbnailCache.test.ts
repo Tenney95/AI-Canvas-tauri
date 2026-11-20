@@ -86,6 +86,14 @@ describe('prepareProjectThumbnail platform and project routing', () => {
     });
   });
 
+  it('passes the opt-in native generation flag for a project image', async () => {
+    await prepareProjectThumbnail('episode-id', SOURCE, 512, new AbortController().signal, true);
+
+    expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith('prepare_project_thumbnail', {
+      projectDir: PROJECT_DIR, sourcePath: 'G:\\media\\source.png', maxEdge: 512, generateOnMiss: true,
+    });
+  });
+
   it('captures the resolved project directory and source version for a later write', async () => {
     const session = await prepareProjectThumbnail('episode-id', SOURCE, 512, new AbortController().signal);
     expect(session).not.toBeNull();

@@ -232,6 +232,31 @@ describe('canvas image preview cache', () => {
     preview.release();
   });
 
+  it.each(['encoded size', 'pixel count'])('uses a native thumbnail when the local original exceeds the %s budget', async (kind) => {
+    const source = 'asset://localhost/upscaled.png';
+    if (kind === 'encoded size') {
+      headMock.mockResolvedValue(new Response(null, { headers: { 'content-length': String(33 * 1024 * 1024) } }));
+    } else {
+      dimensions.width = 8192;
+      dimensions.height = 4608;
+      fetchMock.mockImplementation(streamedPreviewSource);
+    }
+    const cached = { blob: png(), width: 512, height: 288 };
+    disk.prepare.mockResolvedValueOnce(null).mockResolvedValueOnce({ cached, persist: vi.fn() });
+    const pending = acquire(source, 512, new AbortController().signal, 'project-upscale');
+    await flush();
+    const preview = await pending;
+
+    expect(preview?.src).toMatch(/^blob:/);
+    expect(disk.prepare).toHaveBeenNthCalledWith(1, 'project-upscale', source, 512, expect.any(AbortSignal));
+    expect(disk.prepare).toHaveBeenNthCalledWith(2, 'project-upscale', source, 512, expect.any(AbortSignal), true);
+    expect(createUrl).toHaveBeenCalledExactlyOnceWith(cached.blob);
+    expect(bitmapMock).not.toHaveBeenCalled();
+    expect(warnMock).not.toHaveBeenCalled();
+    if (kind === 'encoded size') expect(fetchMock).not.toHaveBeenCalled();
+    preview?.release();
+  });
+
   it('acquires only ready project and source-matching previews during interaction without starting work', async () => {
     const abort = new AbortController();
     const ready = acquire('asset://localhost/image.png?_refresh=1', 256, abort.signal, 'project-a');

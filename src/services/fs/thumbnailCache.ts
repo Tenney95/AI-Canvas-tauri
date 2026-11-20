@@ -75,6 +75,7 @@ export async function prepareProjectThumbnail(
   source: string,
   maxEdge: number,
   signal: AbortSignal,
+  generateOnMiss = false,
 ): Promise<ProjectThumbnailSession | null> {
   if (!projectId || !isTauriEnv() || signal.aborted || ![256, 512, 1024].includes(maxEdge)) return null;
   const sourcePath = localMediaUrlToPath(source);
@@ -82,7 +83,9 @@ export async function prepareProjectThumbnail(
   try {
     const projectDir = await getProjectDataDir(projectId);
     if (!projectDir || signal.aborted) return null;
-    const result = await invoke<NativeThumbnail>('prepare_project_thumbnail', { projectDir, sourcePath, maxEdge });
+    const result = await invoke<NativeThumbnail>('prepare_project_thumbnail', {
+      projectDir, sourcePath, maxEdge, ...(generateOnMiss ? { generateOnMiss } : {}),
+    });
     if (signal.aborted) return null;
     let cached: ProjectThumbnailSession['cached'] = null;
     if (result.cachedBytes && result.cachedBytes.length > 0 && result.cachedBytes.length <= MAX_THUMBNAIL_BYTES

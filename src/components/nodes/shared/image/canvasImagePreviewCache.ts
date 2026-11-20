@@ -34,6 +34,10 @@ interface Preview {
   rgbaBytes: number;
 }
 
+function previewFromBlob(blob: Blob, width: number, height: number): Preview {
+  return { src: URL.createObjectURL(blob), rgbaBytes: width * height * 4 };
+}
+
 interface Entry {
   key: string;
   source: string;
@@ -210,7 +214,7 @@ async function derive(entry: Entry): Promise<Preview | null> {
     signal.throwIfAborted();
     if (disk?.cached) {
       const { blob, width, height } = disk.cached;
-      return { src: URL.createObjectURL(blob), rgbaBytes: width * height * 4 };
+      return previewFromBlob(blob, width, height);
     }
     stage = 'read-source';
     const nativeComfyImage = shouldLoadNativeComfyImage(entry.source);
@@ -250,8 +254,16 @@ async function derive(entry: Entry): Promise<Preview | null> {
     if (!previewBlob) throw new Error('Preview encoding failed');
     // 先展示内存预览，写盘由文件服务的有界串行队列处理。
     void disk?.persist(previewBlob);
-    return { src: URL.createObjectURL(previewBlob), rgbaBytes: width * height * 4 };
+    return previewFromBlob(previewBlob, width, height);
   } catch (error) {
+    if (!signal.aborted && entry.projectId && isTauriAssetUrl(entry.source) && error instanceof RangeError
+      && (stage === 'read-source' || stage === 'dimensions')) {
+      const native = await prepareProjectThumbnail(entry.projectId, entry.source, entry.maxEdge, signal, true).catch(() => null);
+      if (!signal.aborted && native?.cached) {
+        const { blob, width, height } = native.cached;
+        return previewFromBlob(blob, width, height);
+      }
+    }
     if (!signal.aborted) {
       // 只记录固定阶段和错误分类，避免异常属性带出图片地址或本地路径。
       warn(error instanceof TypeError ? 'TypeError'
