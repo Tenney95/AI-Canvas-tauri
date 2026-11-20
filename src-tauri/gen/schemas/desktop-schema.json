@@ -2283,6 +2283,12 @@
           "markdownDescription": "Allows the main window to upload authorized reference media to fixed Beijing TOS endpoints."
         },
         {
+          "description": "Allows the main window to manage WSAGENT pairing and shared projects, and consume a validated WSAGENT plugin installation request.",
+          "type": "string",
+          "const": "allow-wsagent-shared",
+          "markdownDescription": "Allows the main window to manage WSAGENT pairing and shared projects, and consume a validated WSAGENT plugin installation request."
+        },
+        {
           "description": "Denies the fixed Codex runtime commands.",
           "type": "string",
           "const": "deny-external-agent-commands",
