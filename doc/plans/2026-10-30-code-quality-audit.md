@@ -882,3 +882,6 @@ cargo test --lib blender_runtime::result::tests
 
 - 工作流、预设和 Skill 管理弹窗共用遮罩与面板动效常量，保留各自的挂载方式、交互和原动画配置。Tauri 桌面端依次打开三个入口，核对打开和关闭、遮罩点击以及各自的操作入口。切换性能模式和系统减少动态效果后再重试，确认关闭时序、可点击区域和焦点行为。工作流交互的已有用例见 [workflowEditorInteraction.test.tsx](../../tests/components/workflowEditorInteraction.test.tsx)，动画本身需实机验收。
 - 厂商配置预览的参考视频宽度及参考音视频单件、总时长共用同一个数值区间构造。工具注册时仍分别创建五个对象，静态展开与原声明逐字一致。Tauri 桌面端可通过对话助手预览视频模型配置，核对合法宽度和时长仍可出草稿、未知字段仍被拒绝。助手和 MCP 的参数结构与校验入口见 [providerConfigTools.test.ts](../../tests/services/chat/providerConfigTools.test.ts#L545)。
+- Seedance 2.0 标准版、Fast 和 Mini 在模块初始化时共用一份基础能力定义，静态展开与原声明逐字一致。Tauri 桌面端使用已配置的 Seedance 2.0 模型分别打开三档参数面板，核对标准版可选 480p、720p、1080p 和 4k，Fast 和 Mini 仍为 480p、720p。另核对原连接的渠道覆盖与 2.5 自动时长。分辨率、渠道和克隆隔离的覆盖入口见 [seedanceModelCapabilities.test.ts](../../tests/services/seedanceModelCapabilities.test.ts)。
+
+在仓库根目录可运行 `npm test -- tests/components/workflowEditorInteraction.test.tsx tests/services/chat/providerConfigTools.test.ts tests/services/seedanceModelCapabilities.test.ts`。

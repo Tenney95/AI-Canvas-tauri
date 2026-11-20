@@ -41,49 +41,27 @@ const FIXED_RATIOS = ['21:9', ...SEEDANCE_COMMON_RATIOS];
 const ALL_RATIOS = [...FIXED_RATIOS, 'adaptive'];
 const SD20_OPERATIONS = ['text-to-video', 'image-to-video', 'video-to-video'] as const;
 
+function createSeedance20Capability(resolutions: string[]): VideoModelCapability {
+  return {
+    operations: [...SD20_OPERATIONS],
+    resolutions,
+    defaultResolution: '720p',
+    ratios: ALL_RATIOS,
+    defaultRatio: '16:9',
+    minDuration: 4,
+    maxDuration: 15,
+    defaultDuration: 5,
+    supportsAudio: true,
+    maxImageReferences: 9,
+    maxVideoReferences: 3,
+    maxAudioReferences: 3,
+  };
+}
+
 const OFFICIAL_CAPABILITIES: Record<SeedanceModelVariant, VideoModelCapability> = {
-  '2.0-standard': {
-    operations: [...SD20_OPERATIONS],
-    resolutions: ['480p', '720p', '1080p', '4k'],
-    defaultResolution: '720p',
-    ratios: ALL_RATIOS,
-    defaultRatio: '16:9',
-    minDuration: 4,
-    maxDuration: 15,
-    defaultDuration: 5,
-    supportsAudio: true,
-    maxImageReferences: 9,
-    maxVideoReferences: 3,
-    maxAudioReferences: 3,
-  },
-  '2.0-fast': {
-    operations: [...SD20_OPERATIONS],
-    resolutions: ['480p', '720p'],
-    defaultResolution: '720p',
-    ratios: ALL_RATIOS,
-    defaultRatio: '16:9',
-    minDuration: 4,
-    maxDuration: 15,
-    defaultDuration: 5,
-    supportsAudio: true,
-    maxImageReferences: 9,
-    maxVideoReferences: 3,
-    maxAudioReferences: 3,
-  },
-  '2.0-mini': {
-    operations: [...SD20_OPERATIONS],
-    resolutions: ['480p', '720p'],
-    defaultResolution: '720p',
-    ratios: ALL_RATIOS,
-    defaultRatio: '16:9',
-    minDuration: 4,
-    maxDuration: 15,
-    defaultDuration: 5,
-    supportsAudio: true,
-    maxImageReferences: 9,
-    maxVideoReferences: 3,
-    maxAudioReferences: 3,
-  },
+  '2.0-standard': createSeedance20Capability(['480p', '720p', '1080p', '4k']),
+  '2.0-fast': createSeedance20Capability(['480p', '720p']),
+  '2.0-mini': createSeedance20Capability(['480p', '720p']),
   '2.5': {
     operations: [...SD20_OPERATIONS],
     resolutions: ['480p', '720p', '1080p'],
