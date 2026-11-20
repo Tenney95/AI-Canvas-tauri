@@ -88,14 +88,6 @@
   image-rendering: auto;
 }
 
-.animation-sheet {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  user-select: none;
-}
-
 .animation-cell { position: relative; overflow: hidden; min-width: 0; }
 .animation-curated-sheet { display: grid; width: 100%; height: 100%; align-content: center; overflow: auto; }
 .animation-editor {

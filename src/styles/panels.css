@@ -2118,15 +2118,6 @@ button.wf-ionode-badge.is-default {
   overflow-x: hidden;
   padding: 10px 2px 10px 10px;
 }
-/* 多列瀑布流：高度自适应（不限高/不溢出），内容向下增长由外层滚动 */
-.asset-search-masonry {
-  columns: 3;
-  column-gap: 12px;
-}
-.asset-search-masonry .assets-waterfall-card {
-  break-inside: avoid;
-  margin-bottom: 12px;
-}
 .asset-search-scroll .assets-load-sentinel {
   padding-top: 8px;
   text-align: center;

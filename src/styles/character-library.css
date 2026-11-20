@@ -681,24 +681,6 @@
   border-right: 1px solid var(--border-subtle);
 }
 
-.character-capture-image {
-  display: grid;
-  width: 100%;
-  aspect-ratio: 4 / 3;
-  overflow: hidden;
-  place-items: center;
-  color: var(--theme-text-muted);
-  background: color-mix(in srgb, var(--theme-bg) 72%, var(--theme-card));
-  border: 1px solid var(--theme-border);
-  border-radius: 7px;
-}
-
-.character-capture-image img {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-}
-
 .character-capture-preview > div:last-child {
   display: flex;
   min-width: 0;
@@ -1402,11 +1384,6 @@
   .character-capture-preview {
     border-right: 0;
     border-bottom: 1px solid var(--border-subtle);
-  }
-
-  .character-capture-image {
-    max-width: 360px;
-    margin: 0 auto;
   }
 }
 

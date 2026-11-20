@@ -964,3 +964,9 @@ cargo test --lib blender_runtime::result::tests
 - 厂商配置预览工具在注册时共用输入模式和生成操作的能力覆盖 Schema 构造。静态展开确认两组键的顺序、约束和嵌套对象隔离保持原样。Tauri 桌面端通过对话助手预览自定义视频模型，用合法的 `keyframe` 和 `video-to-video` 覆盖核对画幅、默认画幅、是否必选画幅及仅自动时长的声明。再传入未知操作键或空画幅数组，预期仍在草稿生成前拒绝。已连接 MCP 的客户端可核对同一工具的声明顺序。现有接受和拒绝用例见 [providerConfigTools.test.ts](../../tests/services/chat/providerConfigTools.test.ts#L545)。
 
 在仓库根目录可运行 `npm test -- tests/hooks/useCanvasViewportPreferences.test.ts tests/hooks/useCanvasLongPressRadialMenuPointer.test.ts tests/store/groupFolders.test.ts tests/services/chat/providerConfigTools.test.ts`。
+
+## 2026-11-20 旧预览样式、文本分镜与 xAI 视频协议精简
+
+本次未运行测试，待用户验收。
+
+- 清理角色捕获旧图片区、独立资源搜索旧瀑布流和动画节点旧整图的专属样式。Tauri 桌面端在有图片和动画的测试项目中，依次打开角色捕获、独立资源搜索和动画节点。切换深浅主题并缩窄窗口，核对图片完整显示、搜索三列滚动追加、动画网格与逐帧播放。现有数据和播放回归见 [characterActionMedia.test.ts](../../tests/components/characterActionMedia.test.ts)、[assetSearchService.test.ts](../../tests/services/assetSearchService.test.ts) 和 [animationNodePreview.test.tsx](../../tests/components/animationNodePreview.test.tsx)。
