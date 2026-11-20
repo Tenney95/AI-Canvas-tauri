@@ -598,6 +598,24 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     expect((await listNativeMediaTasks(projectId))[0]).toMatchObject({ status: 'delivered', localResults: files });
   });
 
+  it('回写新图片只恢复本轮节点，跳过同画布已有的视频', async () => {
+    const { store, context, receipt } = await fixture('ai-image');
+    const oldVideo = { ...sourceNode(), id: 'old-video', data: { ...sourceNode().data, status: 'success' as const,
+      artifactId: `native-media-${crypto.randomUUID()}`, relativePath: mediaPath, videoUrl: mediaUrl } };
+    store.setState(({ nodes }) => ({ nodes: [...nodes, oldVideo] }));
+    const sha256 = 'b'.repeat(64);
+    const file = { category: 'image' as const, relativePath: `media/${sha256}.png`, sha256, bytes: 10 };
+    const retained = await retainNativeMediaOutputs(receipt, [file]);
+    vi.mocked(restoreProjectRecord).mockClear();
+    await store.getState().commitNativeMediaResult(retained, file.relativePath, context);
+    expect(vi.mocked(restoreProjectRecord).mock.calls.map(([record]) => (record.nodes as Node[]).map((node) => node.id)))
+      .toEqual([[receipt.nodeId]]);
+    expect(store.getState().nodes.find((node) => node.id === oldVideo.id)).toBe(oldVideo);
+    const selection = await readNativeProjectSelection(projectId, canvasA);
+    expect(selection?.canvas?.nodes).toMatchObject([{ id: receipt.nodeId, data: { relativePath: file.relativePath } },
+      { id: oldVideo.id, data: { relativePath: mediaPath, videoUrl: mediaPath } }]);
+  });
+
   it.each(['sha', 'url'] as const)('本机候选%s证据失败时不把空白展示提交为delivered', async (failure) => {
     const { store, receipt, context } = await fixture('ai-image');
     const file = { category: 'image' as const, relativePath: `media/${'d'.repeat(64)}.png`, sha256: 'd'.repeat(64), bytes: 10 };

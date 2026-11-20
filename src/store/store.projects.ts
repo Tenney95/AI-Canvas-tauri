@@ -1669,9 +1669,6 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       }
       const selected = before.projects.find((item) => item.id === record.canvasId);
       if (!selected) throw new Error('原画布目录不可用，产物已保留');
-      const restored = await restoreProjectRecord({ ...selected, nodes, edges: canvas.edges, groups: canvas.groups,
-        dramaAssets: runtime.loaded.content.dramaAssets });
-      assertCurrent();
       const { createNativeMediaDisplayResolver, nativeMediaContentDigest } = await import('../services/nativeMediaDisplay');
       const { nativeMediaLocalOutputs } = await import('../services/nativeMediaCollection');
       const { nativeMediaOutputNodeId } = await import('../services/nativeMediaCollectionCanvas');
@@ -1679,6 +1676,12 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       // 老异步回执没有集合字段时也只接受明确摘要路径，不按普通文件名猜配已付费结果。
       const digest = nativeMediaContentDigest(relativePath);
       const displayFiles = files.length ? files : digest ? [{ relativePath, sha256: digest, category: record.category }] : [];
+      const deliveryIds = new Set([record.nodeId, ...files.slice(1).map((_, index) => nativeMediaOutputNodeId(record, index + 1))]);
+      // 事务仍校验完整画布。展示只恢复本轮目标与候选，避免重新读取其他节点的媒体文件。
+      const restored = await restoreProjectRecord({ ...selected,
+        nodes: (nodes as Node<BaseNodeData>[]).filter((node) => deliveryIds.has(node.id)), edges: [], groups: [],
+        dramaAssets: runtime.loaded.content.dramaAssets });
+      assertCurrent();
       const displays = createNativeMediaDisplayResolver(selection.project);
       const displayPatches = new Map<string, Record<string, unknown>>();
       for (const [ordinal, file] of displayFiles.entries()) {
