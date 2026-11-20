@@ -937,7 +937,10 @@ cargo test --lib blender_runtime::result::tests
 
 ## 2026-11-20 Seedance 适配、节点预览样式与 Wan 2.7 参数精简
 
-本次未运行测试，待用户验收。
+已实现，按范围分别提交。本次未运行测试，待用户验收。
 
 - 移除已无业务调用的旧 Seedance 能力适配函数及其专用测试。现行通用能力解析和 APIMart 请求构造保持原样。Tauri 桌面端重开一个含已保存通用视频模型的项目，核对显式声明的时长、画幅、分辨率和音频开关。分别选择未声明能力的通用模型和已配置的 APIMart Seedance，核对原有参数、参考素材限制和请求预览。现行回归入口见 [videoModelCapabilityResolver.test.ts](../../tests/services/videoModelCapabilityResolver.test.ts)、[videoParamSelectorProtocol.test.ts](../../tests/components/videoParamSelectorProtocol.test.ts) 和 [apimartGen.test.ts](../../tests/services/apimartGen.test.ts)。
 - 删除无组件消费者的旧全屏关闭、Markdown 预览与工具栏、视频播放器样式。保留当前视频封面、节点圆角和全屏文本框、标题区及绝对关闭按钮。Tauri 桌面端在深浅主题下打开 Markdown 和纯文本全屏，核对编辑、预览和关闭。用含本地视频的节点核对紧凑预览、播放中拖动节点及全屏关闭后回到画布。现有交互入口见 [fullscreenOverlay.test.tsx](../../tests/components/fullscreenOverlay.test.tsx)、[markdownEditor.test.tsx](../../tests/components/markdownEditor.test.tsx) 和 [videoNodePreviewLifecycle.test.tsx](../../tests/components/videoNodePreviewLifecycle.test.tsx)。
+- RunningHub Wan 2.7 和 Spicy 六个端点只在目录初始化时复用 `promptExtend`、`seed` 的构造，仍各自创建字段与嵌套 schema。目录静态展开后与原源码逐字节一致。Tauri 桌面端在已配置的 RunningHub 连接中切换这六个端点，核对两字段仍位于列表末尾，提示词扩展默认开启，种子无默认值，`0` 与 `2147483647` 可用且越界值被拒绝。各端点独有的时长、画幅和参考素材限制照原定义显示。目录摘要、对象隔离和请求构造回归见 [runninghubModelManifest.test.ts](../../tests/services/runninghubModelManifest.test.ts#L14) 和 [runninghubMedia.test.ts](../../tests/services/runninghubMedia.test.ts#L173)。
+
+在仓库根目录可运行 `npm test -- tests/services/videoModelCapabilityResolver.test.ts tests/components/videoParamSelectorProtocol.test.ts tests/services/apimartGen.test.ts tests/components/fullscreenOverlay.test.tsx tests/components/markdownEditor.test.tsx tests/components/videoNodePreviewLifecycle.test.tsx tests/services/runninghubModelManifest.test.ts tests/services/runninghubMedia.test.ts`。
