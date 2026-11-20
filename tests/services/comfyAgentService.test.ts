@@ -16,9 +16,6 @@ vi.mock('../../src/services/fileService', () => ({
   persistMediaUrlToProjectData: vi.fn(),
   saveWorkflow: vi.fn(),
 }));
-vi.mock('../../src/services/comfyWorkflowService', () => ({
-  formatComfyPromptError: (status: number) => `ComfyUI 拒绝了工作流 (${status})`,
-}));
 
 import { useAppStore } from '../../src/store/useAppStore';
 import {
@@ -235,7 +232,33 @@ describe('ComfyUI assistant server selection', () => {
       throw new DOMException('aborted', 'AbortError');
     });
     await expect(executeValidatedComfyUIWorkflow({ ...executionArgs, validationId: validated.validationId, signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
-    expect(comfyFetchMock).toHaveBeenCalledWith(`${remoteUrl}/api/jobs/remote-task/cancel`, { method: 'POST' });
+    expect(comfyFetchMock).toHaveBeenCalledWith(`${remoteUrl}/api/jobs/remote-task/cancel`, expect.objectContaining({ method: 'POST' }));
+  });
+
+  it.each(['pending', 'running'] as const)('旧服务取消助手的 %s 任务时只操作该任务', async (state) => {
+    const validated = await validateComfyUIWorkflow({ ...validationArgs, workflow: workflow() });
+    const controller = new AbortController();
+    pollComfyHistoryMock.mockImplementation(async () => {
+      controller.abort();
+      throw new DOMException('aborted', 'AbortError');
+    });
+    let pending = state === 'pending' ? [[1, 'mine']] : [];
+    const running = [[2, state === 'pending' ? 'someone-else' : 'mine']];
+    comfyFetchMock.mockImplementation(async (url: string, init: RequestInit = {}) => {
+      if (url === `${remoteUrl}/prompt`) return jsonResponse({ prompt_id: 'mine' });
+      if (url === `${remoteUrl}/api/jobs/mine/cancel`) return jsonResponse({}, 404);
+      if (url === `${remoteUrl}/queue` && init.method === 'POST') {
+        pending = [];
+        return jsonResponse({});
+      }
+      if (url === `${remoteUrl}/queue`) return jsonResponse({ queue_pending: pending, queue_running: running });
+      throw new Error(`unexpected ${url}`);
+    });
+    await expect(executeValidatedComfyUIWorkflow({ ...executionArgs, validationId: validated.validationId, signal: controller.signal }))
+      .rejects.toMatchObject({ name: 'AbortError' });
+    const deletes = comfyFetchMock.mock.calls.filter(([url, init]) => url === `${remoteUrl}/queue` && init?.method === 'POST');
+    expect(deletes.map(([, init]) => JSON.parse(init.body))).toEqual(state === 'pending' ? [{ delete: ['mine'] }] : []);
+    expect(comfyFetchMock.mock.calls.some(([url]) => url === `${remoteUrl}/interrupt`)).toBe(false);
   });
 });
 
@@ -383,7 +406,7 @@ describe('ComfyUI assistant workflow validation and execution', () => {
     })).rejects.toMatchObject({ name: 'AbortError' });
     expect(comfyFetchMock).toHaveBeenCalledWith(
       'http://127.0.0.1:8188/api/jobs/prompt-1/cancel',
-      { method: 'POST' },
+      expect.objectContaining({ method: 'POST' }),
     );
   });
 

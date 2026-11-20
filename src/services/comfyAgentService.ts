@@ -15,7 +15,7 @@ import { isTauriEnv, persistMediaUrlToProjectData } from './fileService';
 import { comfyFetch, pollComfyHistory } from './comfyPolling';
 import { maybeAutoReleaseComfyMemory } from './comfyMemory';
 import { COMFY_AUDIO_OUTPUT_KINDS, resolveComfyOutputUrl, type ComfyOutputKind } from './comfyOutputs';
-import { formatComfyPromptError } from './comfyWorkflowService';
+import { cancelComfyPrompt, formatComfyPromptError } from './comfyWorkflowService';
 import { extractComfyUIIONodes, sanitizeWorkflowFileName } from './comfyUIWindowService';
 import { assertComfyResponse } from './comfyQuery';
 import { listConfiguredComfyServers, resolveComfyServerSelection, type ComfyServerSelection } from './comfyServers';
@@ -428,25 +428,6 @@ export function getValidatedComfyWorkflowSummary(
   return { validationId, kind, serverId, serverName, nodeCount, outputNodeCount, nodeClasses, customNodeClasses, modelNames, expiresAt };
 }
 
-async function cancelPrompt(baseUrl: string, promptId: string): Promise<void> {
-  try {
-    const direct = await comfyFetch(`${baseUrl}/api/jobs/${encodeURIComponent(promptId)}/cancel`, { method: 'POST' });
-    if (direct.status !== 404) return;
-    await comfyFetch(`${baseUrl}/queue`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ delete: [promptId] }),
-    });
-    await comfyFetch(`${baseUrl}/interrupt`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt_id: promptId }),
-    });
-  } catch {
-    // 本地中止必须立即生效；远端兼容性取消是尽力而为。
-  }
-}
-
 function outputKinds(kind: MediaKind): ComfyOutputKind[] {
   if (kind === 'video') return ['video'];
   if (kind === 'audio') return [...COMFY_AUDIO_OUTPUT_KINDS, 'image'];
@@ -636,7 +617,7 @@ export async function executeValidatedComfyUIWorkflow(args: {
     return { artifact, saveOffer: createSaveOffer(entry, args.conversationId) };
   } catch (error) {
     if (promptId && (args.signal?.aborted || (error instanceof DOMException && error.name === 'AbortError'))) {
-      await cancelPrompt(entry.baseUrl, promptId);
+      await cancelComfyPrompt(entry.baseUrl, promptId).catch(() => false);
     } else if (promptId) {
       await maybeAutoReleaseComfyMemory(
         entry.baseUrl,

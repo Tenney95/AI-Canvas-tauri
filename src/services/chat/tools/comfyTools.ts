@@ -267,7 +267,7 @@ export function registerComfyAgentTools(): Array<() => void> {
         } catch (error) {
           const stopped = context.signal.aborted || (error instanceof DOMException && error.name === 'AbortError');
           const message = stopped
-            ? '已终止 ComfyUI 动态工作流，并已请求取消远端任务'
+            ? '已停止等待 ComfyUI 动态工作流，可在原服务器的队列和历史中核对任务状态'
             : error instanceof Error ? error.message : 'ComfyUI 动态工作流执行失败';
           const currentStore = useAppStore.getState();
           if (lifecycle) failMediaPlaceholderLifecycle(lifecycle, message);
