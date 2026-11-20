@@ -17,6 +17,7 @@ import { springSmooth, fadeFast } from '../../../utils/motion';
 import { calcAnchoredPosition, calcFixedPosition } from '../../../utils/popupPosition';
 import { resolveMentionPreview } from './connectedNodesPreviewInteractions';
 import { readMentionPreviewSource, resolveDramaMentionPreview, type MentionChipPreview, type MentionPreviewSource } from './mentionEditorPreview';
+import { mentionHoverSuppressed, subscribeMentionHoverGestures } from './mentionHoverGestures';
 import { AnimatePresence, motion } from 'framer-motion';
 import PopupCloseButton from '../../shared/PopupCloseButton';
 import MentionPicker, { type MentionPickerChip, type MentionPickerItem } from '../../shared/MentionPicker';
@@ -97,6 +98,16 @@ const selectReferenceNodes = createCanvasNodeDataSelector([
   'directorCaptureUrls', 'storyboardCols', 'storyboardRows', 'storyboardOverrides', 'shotlistRows',
 ]);
 let referenceNodeConsumers = 0;
+const INITIAL_MENTION_POSITION = { left: 12, top: 0 };
+let highlightedMention: { owner: object; id: string } | undefined;
+
+function releaseMentionHighlight(owner: object) {
+  if (highlightedMention?.owner !== owner) return;
+  const { id } = highlightedMention;
+  highlightedMention = undefined;
+  const state = useAppStore.getState();
+  if (state.hoveredMentionNodeId === id) state.setHoveredMentionNodeId(null);
+}
 interface RefmodEditSession {
   asset: ComfyRefmodAsset;
   thumbnailUrl?: string;
@@ -303,7 +314,8 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const globalAssetsRequestedRef = useRef(false);
   const mentionEditorWrapRef = useRef<HTMLDivElement>(null);
   const mentionDropdownRef = useRef<HTMLDivElement>(null);
-  const [mentionDropdownPosition, setMentionDropdownPosition] = useState({ left: 12, top: 0 });
+  const [mentionDropdownPosition, setMentionDropdownPosition] = useState(INITIAL_MENTION_POSITION);
+  const mentionDropdownWasOpen = useRef(false);
   const mentionDropdownHeightRef = useRef<number | null>(null);
   const [mentionDropdownResizing, setMentionDropdownResizing] = useState(false);
   const editorRef = useRef<HTMLDivElement>(null);
@@ -393,8 +405,9 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     cancelChipDragRef.current = null;
     if (chipHoverTimer.current !== null) clearTimeout(chipHoverTimer.current);
     chipHoverTimer.current = null;
-    if (lastHoverKeyRef.current) useAppStore.getState().setHoveredMentionNodeId(null);
+    releaseMentionHighlight(lastHoverKeyRef);
     lastHoverKeyRef.current = null;
+    chipPresenceActive.current = false;
     editorRef.current?.blur();
     refmodSessionRef.current = undefined;
     savedMentionRangeRef.current = null;
@@ -1618,24 +1631,28 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   // ── 芯片 hover：读取对应内容的小卡片，保留原有引用高亮联动 ──
   const lastHoverKeyRef = useRef<string | null>(null);
   const chipHoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const chipHoverSuppressedRef = useRef(false);
-  const [chipHoverSuppressed, setChipHoverSuppressed] = useState(false);
+  const chipPresenceActive = useRef(false);
+  const [chipPresenceKey, setChipPresenceKey] = useState(0);
+  // 浮动面板会复用同一个编辑器。切换归属时释放旧卡片及其完整节点订阅。
+  if (chipTip && (disabled || chipTip.ownerNodeId !== nodeId || chipTip.ownerProjectId !== currentProjectId)) {
+    setChipTip(null);
+  }
   if (disabled) {
     if (showMention) setShowMention(false);
     if (showAssetPicker) setShowAssetPicker(false);
     if (refmodSession) setRefmodSession(undefined);
-    if (chipTip) setChipTip(null);
     if (chipMenu) setChipMenu(null);
   }
   const handleEditorMouseLeave = useCallback(() => {
+    if (!lastHoverKeyRef.current) return;
     if (chipHoverTimer.current !== null) clearTimeout(chipHoverTimer.current);
     chipHoverTimer.current = null;
     lastHoverKeyRef.current = null;
-    useAppStore.getState().setHoveredMentionNodeId(null);
-    setChipTip(null);
+    releaseMentionHighlight(lastHoverKeyRef);
+    if (chipPresenceActive.current) setChipTip(null);
   }, []);
   const handleEditorMouseOver = useCallback((e: React.MouseEvent) => {
-    if (chipMenu || showMention || e.buttons !== 0 || chipHoverSuppressedRef.current || editorRef.current?.classList.contains('is-chip-dragging')) {
+    if (chipMenu || showMention || e.buttons !== 0 || mentionHoverSuppressed(window) || editorRef.current?.classList.contains('is-chip-dragging')) {
       handleEditorMouseLeave();
       return;
     }
@@ -1645,11 +1662,15 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     if (key === lastHoverKeyRef.current) return; // 同一芯片，跳过避免抖动
     handleEditorMouseLeave();
     lastHoverKeyRef.current = key;
-    if (source?.kind === 'node') useAppStore.getState().setHoveredMentionNodeId(parseShotlistRowMentionId(source.id)?.nodeId || source.id);
+    if (source?.kind === 'node') {
+      const id = parseShotlistRowMentionId(source.id)?.nodeId || source.id;
+      highlightedMention = { owner: lastHoverKeyRef, id };
+      useAppStore.getState().setHoveredMentionNodeId(id);
+    }
     if (el && source && key) {
       chipHoverTimer.current = setTimeout(() => {
         chipHoverTimer.current = null;
-        const stillHovered = () => !chipHoverSuppressedRef.current
+        const stillHovered = () => !mentionHoverSuppressed(window)
           && !editorRef.current?.classList.contains('is-chip-dragging')
           && lastHoverKeyRef.current === key && el.isConnected && editorRef.current?.contains(el)
           && useAppStore.getState().currentProjectId === currentProjectId;
@@ -1663,6 +1684,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
           : calcAnchoredPosition(rect, width, height, 8, 12);
         const tip = { source, key, x: position.left, y: position.top, width,
           ownerNodeId: nodeId, ownerProjectId: currentProjectId };
+        chipPresenceActive.current = true;
         setChipTip(tip);
         if (source.kind === 'asset' && ['image', 'video'].includes(getFileCategory(source.label))) {
           // Resolve only the hovered file; do not scan asset folders or retain stale results.
@@ -1802,67 +1824,29 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   }, [chipTip, currentProjectId, dramaAssets, globalAssets, nodeId, nodeMetaMap, previewNodes, t]);
   const chipSpriteSource = useComfyImageSource(chipPreview?.sprite ? chipPreview.thumbnailUrl : undefined);
   useEffect(() => {
-    // 捕获画布、文字选择和胶囊拖动；原生拖放开始后可能立即收到 pointercancel。
-    let nativeDragging = false;
-    const updateSuppressed = (pressed: boolean) => {
-      const suppressed = pressed || nativeDragging;
-      chipHoverSuppressedRef.current = suppressed;
-      setChipHoverSuppressed(suppressed);
-      if (suppressed) handleEditorMouseLeave();
-    };
-    const pointerDown = (event: PointerEvent) => {
-      const previous = lastChipClickRef.current;
-      if (previous && (!(event.target instanceof Node) || !previous.chip.contains(event.target))) lastChipClickRef.current = null;
-      updateSuppressed(true);
-    };
-    const pointerUp = (event: PointerEvent) => updateSuppressed(event.buttons !== 0);
-    const pointerMove = (event: PointerEvent) => {
-      // 在窗口外松开后重新进入，也能恢复普通悬浮。
-      if (event.buttons === 0 && !nativeDragging && chipHoverSuppressedRef.current) updateSuppressed(false);
-    };
-    const pointerCancel = () => { lastChipClickRef.current = null; updateSuppressed(false); };
-    const dragStart = () => {
-      nativeDragging = true;
-      updateSuppressed(true);
-    };
-    const reset = () => {
-      nativeDragging = false;
-      lastChipClickRef.current = null;
-      updateSuppressed(false);
-      handleEditorMouseLeave();
-    };
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
+    const owner = lastHoverKeyRef;
+    const unsubscribe = subscribeMentionHoverGestures(window, (event) => {
+      if (!owner.current && !chipPresenceActive.current && !lastChipClickRef.current) return;
+      if (event.type === 'pointerdown') {
+        const previous = lastChipClickRef.current;
+        if (previous && (!(event.target instanceof Node) || !previous.chip.contains(event.target))) lastChipClickRef.current = null;
+      } else if (['pointercancel', 'drop', 'dragend', 'blur', 'keydown'].includes(event.type)) {
         lastChipClickRef.current = null;
-        if (lastHoverKeyRef.current) handleEditorMouseLeave();
       }
-    };
-    window.addEventListener('pointerdown', pointerDown, true);
-    window.addEventListener('pointerup', pointerUp, true);
-    window.addEventListener('pointermove', pointerMove, true);
-    window.addEventListener('pointercancel', pointerCancel, true);
-    window.addEventListener('dragstart', dragStart, true);
-    window.addEventListener('dragend', reset, true);
-    window.addEventListener('drop', reset, true);
-    window.addEventListener('blur', reset);
-    window.addEventListener('resize', handleEditorMouseLeave);
-    window.addEventListener('scroll', handleEditorMouseLeave, true);
-    window.addEventListener('keydown', escape);
+      if (event.type === 'pointercancel' && !mentionHoverSuppressed(window)) return;
+      handleEditorMouseLeave();
+      // 按下同时卸载正在退场的预览。普通移出仍交给 AnimatePresence 淡出。
+      if (chipPresenceActive.current && (event.type === 'pointerdown' || event.type === 'dragstart')) {
+        chipPresenceActive.current = false;
+        setChipPresenceKey((key) => key + 1);
+      }
+    });
     return () => {
+      unsubscribe();
       if (chipHoverTimer.current !== null) clearTimeout(chipHoverTimer.current);
-      lastHoverKeyRef.current = null;
-      useAppStore.getState().setHoveredMentionNodeId(null);
-      window.removeEventListener('pointerdown', pointerDown, true);
-      window.removeEventListener('pointerup', pointerUp, true);
-      window.removeEventListener('pointermove', pointerMove, true);
-      window.removeEventListener('pointercancel', pointerCancel, true);
-      window.removeEventListener('dragstart', dragStart, true);
-      window.removeEventListener('dragend', reset, true);
-      window.removeEventListener('drop', reset, true);
-      window.removeEventListener('blur', reset);
-      window.removeEventListener('resize', handleEditorMouseLeave);
-      window.removeEventListener('scroll', handleEditorMouseLeave, true);
-      window.removeEventListener('keydown', escape);
+      chipHoverTimer.current = null;
+      owner.current = null;
+      releaseMentionHighlight(owner);
     };
   }, [currentProjectId, nodeId, handleEditorMouseLeave]);
 
@@ -2196,12 +2180,14 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
 
   useLayoutEffect(() => {
     if (!showMention) {
+      if (!mentionDropdownWasOpen.current) return;
+      mentionDropdownWasOpen.current = false;
       mentionDropdownHeightRef.current = null;
       setMentionDropdownResizing(false);
-      setMentionDropdownPosition({ left: 12, top: 0 });
+      setMentionDropdownPosition(INITIAL_MENTION_POSITION);
       return undefined;
     }
-
+    mentionDropdownWasOpen.current = true;
     const dropdown = mentionDropdownRef.current;
     const resizeObserver = typeof ResizeObserver === 'undefined'
       ? null
@@ -2305,7 +2291,9 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       {/* 保留 chip-name-tip 的 Portal 标记，宿主点外关闭逻辑继续识别。 */}
       {createPortal(
         // 按下时直接卸载详情卡片，避免拖动期间仍残留退出动画。
-        disabled || chipHoverSuppressed ? null : <AnimatePresence>
+        disabled ? null : <AnimatePresence key={chipPresenceKey} onExitComplete={() => {
+          if (!lastHoverKeyRef.current) chipPresenceActive.current = false;
+        }}>
           {chipTip && chipPreview && (
             <motion.div
               key={chipTip.key}

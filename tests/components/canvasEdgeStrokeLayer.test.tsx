@@ -20,7 +20,10 @@ const driver = vi.hoisted(() => ({
   nextFrame: 0,
   paths: [] as string[],
   observers: [] as Array<{ callback: () => void; observe: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }>,
+  useStoreApi: vi.fn(),
 }));
+
+vi.mock('@xyflow/react', () => ({ useStoreApi: driver.useStoreApi }));
 
 vi.mock('react', async () => ({
   ...await vi.importActual<typeof import('react')>('react'),
@@ -43,6 +46,7 @@ vi.mock('react', async () => ({
 }));
 
 import CanvasEdgeStrokeLayer from '../../src/components/canvas/CanvasEdgeStrokeLayer';
+import CanvasMiniMapNodeLayer from '../../src/components/canvas/CanvasMiniMapNodeLayer';
 
 interface ElementTree {
   type: unknown;
@@ -160,6 +164,40 @@ beforeEach(() => {
 afterEach(() => {
   driver.effects.forEach(({ cleanup }) => cleanup?.());
   vi.unstubAllGlobals();
+});
+
+describe('minimap Canvas bitmap', () => {
+  it('skips the node scan on drag class changes and redraws on a theme change', () => {
+    const f = fixture();
+    const readNodes = vi.fn(() => []);
+    const state = { get nodes() { return readNodes(); } };
+    driver.useStoreApi.mockReturnValue({ getState: () => state, subscribe: () => () => {} });
+    vi.stubGlobal('requestAnimationFrame', f.view.requestAnimationFrame);
+    vi.stubGlobal('cancelAnimationFrame', f.view.cancelAnimationFrame);
+    const tree = CanvasMiniMapNodeLayer({
+      width: 180, height: 120,
+      geometry: { getViewportRevision: () => state, getNodeDimensions: vi.fn(), nodeHasDimensions: vi.fn() },
+    });
+    elements(tree, 'canvas')[0].props.ref!.current = {
+      ...f.canvas, getContext: () => ({ roundRect: vi.fn() }),
+    };
+    elements(tree, 'rect')[0].props.ref!.current = {};
+    elements(tree, 'foreignObject')[0].props.ref!.current = {};
+    driver.pending.splice(0).forEach((effect) => effect());
+    expect(readNodes).toHaveBeenCalledOnce();
+
+    const appearance = driver.observers[0];
+    const [target, options] = appearance.observe.mock.calls[0];
+    expect(target).toBe(f.canvas.ownerDocument.documentElement);
+    const publish = (name: string) => {
+      if (options.attributeFilter.includes(name)) appearance.callback();
+      flushFrames();
+    };
+    publish('class');
+    expect(readNodes).toHaveBeenCalledOnce();
+    publish('data-theme');
+    expect(readNodes).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('viewport Canvas edge strokes', () => {
@@ -307,13 +345,19 @@ describe('viewport Canvas edge strokes', () => {
     expect(driver.paths).toHaveLength(4);
   });
 
-  it('refreshes appearance styles while preserving path cache', () => {
+  it('ignores drag class changes and refreshes appearance styles while preserving the path cache', () => {
     const f = fixture();
     f.render(); flushFrames();
     f.view.getComputedStyle.mockClear();
-    driver.observers[1].callback(); driver.observers[1].callback();
+    const appearance = driver.observers[1];
+    expect(appearance.observe).toHaveBeenCalledWith(f.canvas.ownerDocument.documentElement, {
+      attributes: true, attributeFilter: ['style', 'data-theme', 'data-appearance-id'],
+    });
+    f.view.getComputedStyle.mockReturnValue({ stroke: 'rgb(20, 30, 40)', strokeWidth: '3', opacity: '1' });
+    appearance.callback(); appearance.callback();
     flushFrames();
     expect(f.view.getComputedStyle).toHaveBeenCalledTimes(2);
+    expect(f.strokes.at(-1)).toMatchObject({ color: 'rgb(20, 30, 40)', width: 3 });
     expect(driver.paths).toHaveLength(1);
   });
 

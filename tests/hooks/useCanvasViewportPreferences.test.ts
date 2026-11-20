@@ -8,6 +8,7 @@ const driver = vi.hoisted(() => ({
   state: {
     currentProjectId: 'episode-1', configHydrated: true,
     config: {} as Pick<AppConfig, 'canvasViewportMode' | 'canvasViewportZoom' | 'canvasViewportMinZoom' | 'canvasViewportMaxZoom'>,
+    configSaveStatus: 'idle', configDirty: false, configEditBaseline: {} as Record<string, unknown>,
     updateConfig: vi.fn(), saveConfig: vi.fn(),
   },
   viewport: { x: 0, y: 0, zoom: 1 },
@@ -87,6 +88,9 @@ beforeEach(() => {
   driver.viewport = { x: 0, y: 0, zoom: 1 };
   driver.state.currentProjectId = 'episode-1';
   driver.state.config = { canvasViewportMode: 'manual', canvasViewportZoom: 1.5 };
+  driver.state.configSaveStatus = 'idle';
+  driver.state.configDirty = false;
+  driver.state.configEditBaseline = { ...driver.state.config };
   driver.state.updateConfig.mockReset().mockImplementation((patch) => {
     driver.state.config = { ...driver.state.config, ...patch };
   });
@@ -142,5 +146,80 @@ describe('opening a project at its last viewport', () => {
     view.autoFit();
     expect(driver.flow.fitView).toHaveBeenCalledTimes(2);
     expect(driver.state.updateConfig).toHaveBeenCalledWith(expect.objectContaining({ canvasViewportMode: 'auto' }));
+  });
+
+  it('remembers repeated manual pans without saving global preferences, including at a restored project zoom', () => {
+    const view = renderProbe();
+    view.markViewportReady();
+    for (const zoom of [1.5, 0.55, 0.55]) {
+      driver.viewport = { x: 0, y: 0, zoom };
+      view.beginUserMove();
+      driver.viewport.x += 240;
+      view.recordViewport(driver.viewport, { width: 1200, height: 800 });
+      view.endUserMove();
+      view.rememberViewport();
+      expect(readCanvasViewport('episode-1')).toMatchObject({ x: 240, zoom });
+    }
+    expect(driver.state.updateConfig).not.toHaveBeenCalled();
+    expect(driver.state.saveConfig).not.toHaveBeenCalled();
+  });
+
+  it('takes over auto fit on the first drag and saves the final manual zoom once', () => {
+    driver.state.config.canvasViewportMode = 'auto';
+    const view = renderProbe();
+    view.beginUserMove();
+    expect(driver.state.config).toMatchObject({ canvasViewportMode: 'manual', canvasViewportZoom: 1 });
+    expect(driver.state.saveConfig).not.toHaveBeenCalled();
+    view.beginUserMove();
+    view.endUserMove();
+    view.endUserMove();
+    expect(driver.state.updateConfig).toHaveBeenCalledOnce();
+    expect(driver.state.saveConfig).toHaveBeenCalledOnce();
+
+    view.beginUserMove();
+    driver.viewport.zoom = 0.65;
+    view.endUserMove();
+    expect(driver.state.config.canvasViewportZoom).toBe(0.65);
+    expect(driver.state.saveConfig).toHaveBeenCalledTimes(2);
+    view.beginUserMove();
+    view.endUserMove();
+    expect(driver.state.saveConfig).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a failed zoom preference on the next pan without resaving unrelated dirty settings', async () => {
+    const view = renderProbe();
+    driver.state.saveConfig.mockImplementationOnce(async () => {
+      driver.state.configDirty = true;
+      driver.state.configSaveStatus = 'error';
+      throw new Error('save failed');
+    });
+    view.beginUserMove();
+    driver.viewport.zoom = 0.8;
+    view.endUserMove();
+    await Promise.resolve();
+    view.beginUserMove();
+    view.endUserMove();
+    expect(driver.state.updateConfig).toHaveBeenCalledOnce();
+    expect(driver.state.saveConfig).toHaveBeenCalledTimes(2);
+    driver.state.configEditBaseline = { ...driver.state.config };
+    view.beginUserMove();
+    view.endUserMove();
+    expect(driver.state.saveConfig).toHaveBeenCalledTimes(2);
+  });
+
+  it('honors locking during a gesture and reapplies an explicit zoom preset', () => {
+    const view = renderProbe();
+    view.beginUserMove();
+    driver.state.config.canvasViewportMode = 'locked';
+    driver.viewport.zoom = 1.25;
+    view.endUserMove();
+    view.beginUserMove();
+    view.endUserMove();
+    expect(driver.state.updateConfig).not.toHaveBeenCalled();
+    expect(driver.state.saveConfig).not.toHaveBeenCalled();
+    driver.state.config.canvasViewportMode = 'manual';
+    view.setZoom(1.5);
+    expect(driver.flow.zoomTo).toHaveBeenCalledWith(1.5);
+    expect(driver.state.saveConfig).toHaveBeenCalledOnce();
   });
 });

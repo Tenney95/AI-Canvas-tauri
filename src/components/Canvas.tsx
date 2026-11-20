@@ -33,6 +33,7 @@ import CanvasNoteNode from './noteNodes/CanvasNoteNode';
 import PluginNode from './nodes/PluginNode';
 import AiAppNode from './nodes/AiAppNode';
 import NodeRenderBoundary from './nodes/shared/NodeRenderBoundary';
+import { CanvasHandleFilter } from './nodes/shared/GooeyBtn';
 import CanvasNodeLodBoundary from './nodes/shared/CanvasNodeLodBoundary';
 import { CanvasNodeLodContext } from '../hooks/useCanvasNodeLod';
 import { createCanvasNodeLodRuntime } from '../services/canvasNodeLodRuntime';
@@ -668,6 +669,28 @@ function CanvasInner({ onReady }: CanvasProps) {
     refreshLocalZoomTargets();
   }, [refreshLocalZoomTargets]);
 
+  const startObservingZoomTargets = useCallback(() => {
+    const canvasRoot = canvasRootRef.current;
+    if (!canvasRoot || zoomTargetsObserverRef.current) return;
+    const observer = new MutationObserver((records) => {
+      if (records.some((record) => {
+        if (record.type === 'attributes') {
+          return record.target instanceof Element && record.target.matches('.react-flow__node, .node, .node-toolbar-shell');
+        }
+        // 图片加载、文本/图标更新不影响可见工具栏目标；只处理相关结构的新增与移除。
+        const affectsTargets = (node: Node) => node instanceof Element
+          && (node.matches(ZOOM_TARGET_STRUCTURE) || node.querySelector(ZOOM_TARGET_STRUCTURE) !== null);
+        return Array.from(record.addedNodes).some(affectsTargets) || Array.from(record.removedNodes).some(affectsTargets);
+      })) {
+        refreshLocalZoomTargets();
+      }
+    });
+    zoomTargetsObserverRef.current = observer;
+    observer.observe(canvasRoot, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+    canvasRoot.addEventListener('pointerover', handleZoomTargetPointer, { passive: true });
+    canvasRoot.addEventListener('pointerout', handleZoomTargetPointer, { passive: true });
+  }, [handleZoomTargetPointer, refreshLocalZoomTargets]);
+
   const stopObservingZoomTargets = useCallback(() => {
     if (zoomTargetsRefreshFrameRef.current) cancelAnimationFrame(zoomTargetsRefreshFrameRef.current);
     zoomTargetsRefreshFrameRef.current = 0;
@@ -688,34 +711,12 @@ function CanvasInner({ onReady }: CanvasProps) {
     const interacting = activeInteractionsRef.current.size > 0;
     if (wasInteracting === interacting) return;
     nodeLodRuntime.interaction(interacting);
-    if (interacting) {
-      const canvasRoot = canvasRootRef.current;
-      if (canvasRoot) {
-        // 只在交互期间监听挂载/选中与 hover；不读取布局，也不监听自身的 style 写入。
-        const observer = new MutationObserver((records) => {
-          if (records.some((record) => {
-            if (record.type === 'attributes') {
-              return record.target instanceof Element && record.target.matches('.react-flow__node, .node, .node-toolbar-shell');
-            }
-            // 图片加载、文本/图标更新不影响可见工具栏目标；只处理相关结构的新增与移除。
-            const affectsTargets = (node: Node) => node instanceof Element
-              && (node.matches(ZOOM_TARGET_STRUCTURE) || node.querySelector(ZOOM_TARGET_STRUCTURE) !== null);
-            return Array.from(record.addedNodes).some(affectsTargets) || Array.from(record.removedNodes).some(affectsTargets);
-          })) {
-            refreshLocalZoomTargets();
-          }
-        });
-        zoomTargetsObserverRef.current = observer;
-        observer.observe(canvasRoot, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
-        canvasRoot.addEventListener('pointerover', handleZoomTargetPointer, { passive: true });
-        canvasRoot.addEventListener('pointerout', handleZoomTargetPointer, { passive: true });
-      }
-    } else {
+    if (!interacting) {
       stopObservingZoomTargets();
       updateNodeZoomCompensation(reactFlowInstance.getViewport().zoom);
     }
     document.documentElement.classList.toggle(CANVAS_INTERACTING_CLASS, interacting);
-  }, [handleZoomTargetPointer, nodeLodRuntime, reactFlowInstance, refreshLocalZoomTargets, stopObservingZoomTargets, updateNodeZoomCompensation]);
+  }, [nodeLodRuntime, reactFlowInstance, stopObservingZoomTargets, updateNodeZoomCompensation]);
 
   const beginCanvasInteraction = useCallback((kind: CanvasInteractionKind) => {
     const pendingFrame = interactionReleaseFramesRef.current[kind];
@@ -797,6 +798,10 @@ function CanvasInner({ onReady }: CanvasProps) {
     }
     recordViewport(viewport, { width, height });
     nodeLodRuntime.viewport(viewport.zoom, (width / 2 - viewport.x) / viewport.zoom, (height / 2 - viewport.y) / viewport.zoom);
+    // 平移中新节点会挂载，只有倍率发生变化时才需要跟踪工具栏和端口的局部缩放补偿。
+    if (activeInteractionsRef.current.size > 0 && viewport.zoom !== latestCanvasZoomRef.current) {
+      startObservingZoomTargets();
+    }
     updateNodeZoomCompensation(viewport.zoom);
     const activePan = activeCanvasPanRef.current;
     if (!activePan) return;
@@ -804,7 +809,7 @@ function CanvasInner({ onReady }: CanvasProps) {
       deltaX: viewport.x - activePan.startX,
       deltaY: viewport.y - activePan.startY,
     });
-  }, [flowStore, nodeLodRuntime, reactFlowInstance, recordViewport, updateNodeZoomCompensation]);
+  }, [flowStore, nodeLodRuntime, reactFlowInstance, recordViewport, startObservingZoomTargets, updateNodeZoomCompensation]);
 
   const handleWheelZoomStart = useCallback(() => {
     beginUserMove();
@@ -1920,7 +1925,9 @@ function CanvasInner({ onReady }: CanvasProps) {
 export default function Canvas({ onReady }: CanvasProps) {
   return (
     <ReactFlowProvider>
-      <CanvasInner onReady={onReady} />
+      <CanvasHandleFilter>
+        <CanvasInner onReady={onReady} />
+      </CanvasHandleFilter>
     </ReactFlowProvider>
   );
 }

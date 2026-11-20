@@ -29,7 +29,10 @@ const GEOMETRY_NAME = '__aiCanvasEdgeGeometry';
 const LAYER_NAME = '__aiCanvasEdgeRenderLayer';
 const VIEWPORT_REVISIONS_NAME = '__aiCanvasEdgeViewportRevisions';
 const VIEWPORT_REVISION_NAME = '__aiCanvasEdgeViewportRevision';
+const VIEWPORT_STATE_NAME = '__aiCanvasWithViewportRevision';
 const VIEWPORT_SET_NAME = '__aiCanvasSetViewport';
+const PANE_DRAGGING_ENTRY = 'onDraggingChange: (paneDragging) => store.setState((prevState) => prevState.paneDragging === paneDragging ? prevState : { paneDragging }),';
+const PANE_DRAGGING_REPLACEMENT = `onDraggingChange: (paneDragging) => store.setState((state) => state.paneDragging === paneDragging ? state : ${VIEWPORT_STATE_NAME}(state, { paneDragging }), true),`;
 const VIEWPORT_SETTERS = [
   ['store.setState({ transform });', `${VIEWPORT_SET_NAME}(store, transform);`],
   ['store.setState({ transform: [viewport.x, viewport.y, viewport.zoom] });', `${VIEWPORT_SET_NAME}(store, [viewport.x, viewport.y, viewport.zoom]);`],
@@ -55,12 +58,13 @@ const VIEWPORT_ENTRIES = [
 ] as const;
 const GEOMETRY_DECLARATION = `const ${VIEWPORT_REVISIONS_NAME} = new WeakMap();
 const ${VIEWPORT_REVISION_NAME} = (state) => ${VIEWPORT_REVISIONS_NAME}.get(state) ?? state;
+function ${VIEWPORT_STATE_NAME}(state, patch) {
+    const next = { ...state, ...patch };
+    ${VIEWPORT_REVISIONS_NAME}.set(next, ${VIEWPORT_REVISION_NAME}(state));
+    return next;
+}
 function ${VIEWPORT_SET_NAME}(store, transform) {
-    store.setState((state) => {
-        const next = { ...state, transform };
-        ${VIEWPORT_REVISIONS_NAME}.set(next, ${VIEWPORT_REVISION_NAME}(state));
-        return next;
-    }, true);
+    store.setState((state) => ${VIEWPORT_STATE_NAME}(state, { transform }), true);
 }
 const ${GEOMETRY_NAME} = Object.freeze({ getEdgePosition, getElevatedEdgeZIndex, getMarkerId, getViewportRevision: ${VIEWPORT_REVISION_NAME} });`;
 
@@ -101,7 +105,7 @@ export function transformCanvasEdgeLayer(
     uniqueIndex(source, '"data-canvas-edge-renderer":', '连线渲染诊断属性');
     return null;
   }
-  if ([GEOMETRY_NAME, LAYER_NAME, VIEWPORT_REVISIONS_NAME, VIEWPORT_REVISION_NAME, VIEWPORT_SET_NAME]
+  if ([GEOMETRY_NAME, LAYER_NAME, VIEWPORT_REVISIONS_NAME, VIEWPORT_REVISION_NAME, VIEWPORT_STATE_NAME, VIEWPORT_SET_NAME]
     .some((name) => source.includes(name))) {
     throw adapterError('适配器局部名称已被占用');
   }
@@ -113,12 +117,12 @@ export function transformCanvasEdgeLayer(
     throw adapterError('原生几何函数导入结构已变化');
   }
 
-  // These two audited calls publish transform alone, after user callbacks have
-  // finished. All other RF publications get a fresh identity, including set({})
-  // after in-place measurements / handle updates. Record before synchronous
-  // subscribers run, and replace with the complete state to retain its identity.
+  // Only the audited transform setters and the isolated paneDragging toggle
+  // preserve geometry. An ordinary RF publication (including set({}) after
+  // in-place measurements) still starts a new revision.
   for (const original of VIEWPORT_ENTRIES) uniqueIndex(source, original, '纯视口发布入口');
   for (const [original] of VIEWPORT_SETTERS) uniqueIndex(source, original, '纯视口发布调用');
+  uniqueIndex(source, PANE_DRAGGING_ENTRY, '平移状态发布入口');
 
   const start = uniqueIndex(source, FUNCTION_SIGNATURE, 'EdgeRenderer 签名');
   const end = uniqueIndex(source, FUNCTION_END, 'EdgeRenderer 结束位置');
@@ -150,6 +154,7 @@ ${body.slice(0, returnStart)}    const renderEdge = ${renderEdge};
   // refer to generated code until a directly declared mapping utility is adopted.
   let code = source.slice(0, start) + adaptedBody + source.slice(end);
   for (const [original, replacement] of VIEWPORT_SETTERS) code = code.replace(original, replacement);
+  code = code.replace(PANE_DRAGGING_ENTRY, PANE_DRAGGING_REPLACEMENT);
   return { code, map: null };
 }
 

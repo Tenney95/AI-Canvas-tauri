@@ -32,7 +32,8 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
   const [isUploading, setIsUploading] = useState(false);
 
   // ── Fullscreen ──
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  // 首次打开时才挂载全屏编辑器，之后保留关闭动画与焦点恢复。
+  const [isFullscreen, setIsFullscreen] = useState<boolean | null>(null);
   const fullscreenTextareaRef = useRef<HTMLTextAreaElement>(null);
   const fullscreenEditActiveRef = useRef(false);
 
@@ -333,10 +334,10 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
     </div>
 
     {/* Fullscreen overlay */}
-      <FullscreenOverlay
+      {isFullscreen !== null && <FullscreenOverlay
         isOpen={isFullscreen}
-      onClose={handleCloseFullscreen}
-      title={(data.label as string) || t('文本内容')}
+        onClose={handleCloseFullscreen}
+        title={(data.label as string) || t('文本内容')}
       >
       <textarea
         ref={fullscreenTextareaRef}
@@ -346,7 +347,7 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
         onBlur={finishFullscreenEdit}
         spellCheck={false}
       />
-      </FullscreenOverlay>
+      </FullscreenOverlay>}
     </>
   );
 }
