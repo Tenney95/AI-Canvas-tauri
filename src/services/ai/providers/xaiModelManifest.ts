@@ -52,7 +52,7 @@ const XAI_VIDEO_POLL = {
   },
 };
 
-const XAI_TEXT_TO_VIDEO_PROTOCOL: NormalizedModelExecutionProtocol = {
+const createXaiVideoProtocol = (includeReferenceImage: boolean): NormalizedModelExecutionProtocol => ({
   version: 2,
   mode: 'async',
   auth: { type: 'bearer' },
@@ -63,6 +63,7 @@ const XAI_TEXT_TO_VIDEO_PROTOCOL: NormalizedModelExecutionProtocol = {
     body: {
       model: '{{model}}',
       prompt: '{{prompt}}',
+      ...(includeReferenceImage ? { image: { url: '{{firstImage}}' } } : {}),
       duration: '{{duration}}',
       aspect_ratio: '{{aspectRatio}}',
       resolution: '{{seedanceResolution}}',
@@ -70,28 +71,10 @@ const XAI_TEXT_TO_VIDEO_PROTOCOL: NormalizedModelExecutionProtocol = {
   },
   response: { type: 'json', taskIdPath: 'request_id', errorPath: 'error.message' },
   poll: XAI_VIDEO_POLL,
-};
+});
 
-const XAI_IMAGE_TO_VIDEO_PROTOCOL: NormalizedModelExecutionProtocol = {
-  version: 2,
-  mode: 'async',
-  auth: { type: 'bearer' },
-  submit: {
-    method: 'POST',
-    path: '/videos/generations',
-    bodyEncoding: 'json',
-    body: {
-      model: '{{model}}',
-      prompt: '{{prompt}}',
-      image: { url: '{{firstImage}}' },
-      duration: '{{duration}}',
-      aspect_ratio: '{{aspectRatio}}',
-      resolution: '{{seedanceResolution}}',
-    },
-  },
-  response: { type: 'json', taskIdPath: 'request_id', errorPath: 'error.message' },
-  poll: XAI_VIDEO_POLL,
-};
+const XAI_TEXT_TO_VIDEO_PROTOCOL = createXaiVideoProtocol(false);
+const XAI_IMAGE_TO_VIDEO_PROTOCOL = createXaiVideoProtocol(true);
 
 export const XAI_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
   {

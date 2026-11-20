@@ -967,7 +967,10 @@ cargo test --lib blender_runtime::result::tests
 
 ## 2026-11-20 旧预览样式、文本分镜与 xAI 视频协议精简
 
-本次未运行测试，待用户验收。
+已实现，按范围分别提交。本次未运行测试，待用户验收。
 
 - 清理角色捕获旧图片区、独立资源搜索旧瀑布流和动画节点旧整图的专属样式。Tauri 桌面端在有图片和动画的测试项目中，依次打开角色捕获、独立资源搜索和动画节点。切换深浅主题并缩窄窗口，核对图片完整显示、搜索三列滚动追加、动画网格与逐帧播放。现有数据和播放回归见 [characterActionMedia.test.ts](../../tests/components/characterActionMedia.test.ts)、[assetSearchService.test.ts](../../tests/services/assetSearchService.test.ts) 和 [animationNodePreview.test.tsx](../../tests/components/animationNodePreview.test.tsx)。
 - 两份文本分镜模板在模块初始化时共用正文构造。静态展开结果与原标准版、秒级版逐字节一致，包含各自的空行、措辞和输入占位符。Tauri 桌面端在接入受控文本模型的测试节点中输入短正文，分别从快捷指令与已配置的预设工具栏触发两个模板。核对入口顺序、实际请求正文只替换一次、两版原有空行与措辞及直接执行行为。现有 [slashCommandFolders.test.tsx](../../tests/components/slashCommandFolders.test.tsx) 覆盖菜单交互，两版全文由静态对照核实。
+- xAI Grok Imagine 两套视频协议在模块初始化时共用构造，各自创建请求和响应对象，并沿用同一个轮询对象。静态展开与原声明一致，包括单图生视频的 `image.url` 原位置及任务摘要输入。在接入受控视频接口的 Tauri 桌面项目选择文生视频和单图生视频，核对仅后者发送首图，时长、画幅、分辨率及字段顺序一致。使用固定 `request_id` 验证轮询沿用原任务，重开已有待续任务或让其失败，核对继续查询原 ID 及原错误处理。请求和轮询用例见 [xaiModelManifest.test.ts](../../tests/services/xaiModelManifest.test.ts#L72)。
+
+在仓库根目录可运行 `npm test -- tests/components/characterActionMedia.test.ts tests/services/assetSearchService.test.ts tests/components/animationNodePreview.test.tsx tests/components/slashCommandFolders.test.tsx tests/services/xaiModelManifest.test.ts`。
