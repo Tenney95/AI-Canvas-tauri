@@ -911,3 +911,6 @@ cargo test --lib blender_runtime::result::tests
 
 - RunningHub 的 Seedance 2.5 与 Seedream 5.0 Pro 八个端点共用四组参数构造。逐处展开后与原目录源码一致，每个端点仍单独创建参数及嵌套对象。Tauri 桌面端可在已配置的 RunningHub 连接选择对应端点，核对字段顺序、默认值、枚举和参考素材槽。目录哈希与对象隔离的已有用例见 [runninghubModelManifest.test.ts](../../tests/services/runninghubModelManifest.test.ts#L14)。
 - 外观预设节点预览共用图片、视频的缩略图容器和图片、视频、文本的提示词行。Tauri 桌面端在空画布及含图片、视频、文本节点的项目打开外观设置，分别核对深浅主题、缩略图、播放标记、比例和提示词。使用失效缩略图检查原隐藏行为，并切换预览节点类型复核新图片可显示。现有用例见 [appearanceSettings.test.tsx](../../tests/components/appearanceSettings.test.tsx#L56)。
+- 提示词编辑器和只读预览共用节点样式、工作流样式及工作流图标三张表。两侧保留各自的默认样式、解析、编号和交互。Tauri 桌面端在节点提示词中放入文本及图片引用和工作流输入，打开对应只读预览，核对类型样式、图标、编号和点击行为。再用缺失引用和未闭合的工作流值复核各自原回退。现有用例见 [promptChipViewer.test.tsx](../../tests/components/promptChipViewer.test.tsx) 和 [mentionEditorImageIndices.test.ts](../../tests/components/mentionEditorImageIndices.test.ts)。
+
+在仓库根目录可运行 `npm test -- tests/services/runninghubModelManifest.test.ts tests/components/appearanceSettings.test.tsx tests/components/promptChipViewer.test.tsx tests/components/mentionEditorImageIndices.test.ts tests/components/richTextChipSafety.test.ts`。

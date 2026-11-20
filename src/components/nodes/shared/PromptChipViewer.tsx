@@ -14,33 +14,12 @@ import type {
 import { getFileCategory } from '../../../services/fileService';
 import { parseDramaMentionId } from '../../../types/dramaAssets';
 import { findDramaAsset, resolveDramaActionMediaRef, resolveDramaAssetImageRef } from '../../../services/dramaAssetPrompt';
-import { bestNodeThumb, getNodeChipIconPath, getNodeMetaMap, numberMediaReferenceLabels } from './mentionEditorDom';
+import {
+  bestNodeThumb, getNodeChipIconPath, getNodeMetaMap, numberMediaReferenceLabels,
+  NODE_CHIP_STYLE, WORKFLOW_CHIP_STYLE, WORKFLOW_CHIP_ICON,
+} from './mentionEditorDom';
 import { parseShotlistRowMentionId } from '../../../types/shotlist';
 import { parseComfyRefmodMentions } from '../../../utils/comfyRefmodMention';
-
-const CHIP_STYLE: Record<string, string> = {
-  'ai-text': 'chip-text',
-  'ai-image': 'chip-image',
-  'ai-video': 'chip-video',
-  'ai-audio': 'chip-audio',
-  'ai-markdown': 'chip-markdown',
-  'ai-storyboard': 'chip-image',
-  'ai-shotlist': 'chip-text',
-};
-
-const WF_IO_STYLE: Record<string, string> = {
-  prompt: 'chip-workflow-prompt',
-  image: 'chip-workflow-image',
-  video: 'chip-workflow-video',
-  audio: 'chip-workflow-audio',
-};
-
-const WF_IO_ICON: Record<string, string> = {
-  prompt: 'T',
-  image: 'I',
-  video: 'V',
-  audio: 'A',
-};
 
 export interface PromptChipRenderOptions {
   nodes?: Array<{ id: string; data?: Record<string, unknown> }>;
@@ -242,7 +221,7 @@ export function renderPromptWithChips(
       elements.push(
         <span
           key={`node-${match.index}`}
-          className={`prompt-chip prompt-chip-node ${CHIP_STYLE[nodeType] || 'chip-image'} cursor-pointer`}
+          className={`prompt-chip prompt-chip-node ${NODE_CHIP_STYLE[nodeType] || 'chip-image'} cursor-pointer`}
           data-ref-id={nodeId}
           data-ref-label={label}
           title={title}
@@ -268,10 +247,10 @@ export function renderPromptWithChips(
       const ioType = match[8] || 'prompt';
       const input = readWorkflowValue(prompt, regex.lastIndex);
       elements.push(
-        <span key={`wf-${match.index}`} className={`prompt-chip prompt-chip-wf ${WF_IO_STYLE[ioType] || WF_IO_STYLE.prompt}`} data-wf-id={ioId}
+        <span key={`wf-${match.index}`} className={`prompt-chip prompt-chip-wf ${WORKFLOW_CHIP_STYLE[ioType] || WORKFLOW_CHIP_STYLE.prompt}`} data-wf-id={ioId}
           data-wf-title={ioTitle} data-wf-preview-value={input.value} role="button" tabIndex={0}>
           <span className="prompt-chip-wf-prefix">
-            <span className="prompt-chip-icon">{WF_IO_ICON[ioType] || '?'}</span>
+            <span className="prompt-chip-icon">{WORKFLOW_CHIP_ICON[ioType] || '?'}</span>
             <span className="prompt-chip-wf-id">#{ioId}</span>
             <span className="prompt-chip-wf-colon">:</span>
           </span>

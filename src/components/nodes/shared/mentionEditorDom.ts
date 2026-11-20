@@ -21,7 +21,7 @@ import { resolveVideoThumbnailPoster } from '../../shared/videoThumbnailSource';
 
 const IS_TAURI = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 export const ZWSP = '\u200B';
-const CHIP_STYLE: Record<string, string> = {
+export const NODE_CHIP_STYLE: Readonly<Record<string, string>> = {
   'ai-text': 'chip-text',
   'ai-image': 'chip-image',
   'ai-video': 'chip-video',
@@ -42,13 +42,13 @@ export function getNodeChipIconPath(nodeType: string): string | undefined {
   return NODE_CHIP_ICON_PATHS[type];
 }
 
-const WF_IO_STYLE: Record<string, string> = {
+export const WORKFLOW_CHIP_STYLE: Readonly<Record<string, string>> = {
   prompt: 'chip-workflow-prompt',
   image: 'chip-workflow-image',
   video: 'chip-workflow-video',
   audio: 'chip-workflow-audio',
 };
-const WF_IO_ICON: Record<string, string> = {
+export const WORKFLOW_CHIP_ICON: Readonly<Record<string, string>> = {
   prompt: 'T',
   image: 'I',
   video: 'V',
@@ -298,7 +298,7 @@ export function serializeDOM(root: HTMLElement): string {
 function nodeChipPresentation(meta: NodeMeta | undefined): Pick<ReferenceChipOptions, 'kind' | 'iconPath' | 'thumbnailUrl'> {
   const nodeType = (meta?.type || 'ai-text').replace(/^source-/, 'ai-');
   return {
-    kind: (CHIP_STYLE[nodeType] || CHIP_STYLE['ai-text']).replace('chip-', '') as ReferenceChipOptions['kind'],
+    kind: (NODE_CHIP_STYLE[nodeType] || NODE_CHIP_STYLE['ai-text']).replace('chip-', '') as ReferenceChipOptions['kind'],
     iconPath: getNodeChipIconPath(nodeType),
     thumbnailUrl: ['ai-image', 'ai-video', 'ai-storyboard'].includes(nodeType) ? meta?.thumbnailUrl : undefined,
   };
@@ -614,7 +614,7 @@ export function buildWorkflowChipEl(
   ioNodeType: WorkflowIONodeType,
 ): HTMLSpanElement {
   const span = document.createElement('span');
-  span.className = `prompt-chip prompt-chip-wf ${WF_IO_STYLE[ioNodeType] || WF_IO_STYLE.prompt}`;
+  span.className = `prompt-chip prompt-chip-wf ${WORKFLOW_CHIP_STYLE[ioNodeType] || WORKFLOW_CHIP_STYLE.prompt}`;
   span.contentEditable = 'false';
   span.setAttribute('data-wf-id', ioNodeId);
   span.tabIndex = 0;
@@ -625,7 +625,7 @@ export function buildWorkflowChipEl(
   prefix.className = 'prompt-chip-wf-prefix';
   prefix.contentEditable = 'false';
   prefix.appendChild(buildWorkflowChipIconEl());
-  prefix.appendChild(buildChipTextEl('prompt-chip-icon', WF_IO_ICON[ioNodeType] || '?'));
+  prefix.appendChild(buildChipTextEl('prompt-chip-icon', WORKFLOW_CHIP_ICON[ioNodeType] || '?'));
   prefix.appendChild(buildChipTextEl('prompt-chip-wf-id', `#${ioNodeId}`));
   prefix.appendChild(buildChipTextEl('prompt-chip-wf-colon', ':'));
   span.appendChild(prefix);
