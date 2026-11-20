@@ -129,6 +129,45 @@ it('完整解析多个原ID与每项多个URL，不能悄悄省略无效候选',
   expect(nativeGeneralTaskUrls({ data: [{ url: ['https://cdn.example/a.png', 'https://cdn.example/b.png'] }, { b64_json: 'AQID' }] }, 'images')).toHaveLength(3);
   expect(() => nativeGeneralTaskUrls({ audios: [{ url: 'https://cdn.example/a.wav' }, {}] }, 'audios')).toThrow('候选');
 });
+
+it.each(['none', 'bearer'] as const)('声明式异步模型按原 %s 鉴权首次查询，重开续取只使用原任务', async (auth) => {
+  const { context, input } = await fixture();
+  const model: GeneralModelConfig = { id: 'model', modelId: 'remote-audio', name: '自建音频', category: 'audio', providerConfigId: 'custom',
+    executionProfile: { preset: 'custom', protocol: { version: 2, mode: 'async', ...(auth === 'none' ? { auth: { type: 'none' } } : {}),
+      submit: { method: 'POST', path: '/generate' }, response: { type: 'json', taskIdPath: 'id' },
+      poll: { method: 'GET', path: '/tasks/{{submit.id}}', retry: { maxRetries: 0 },
+        response: { statusPath: 'status', successValues: ['completed'], failureValues: ['failed'], result: { urlPath: 'url' } } } } } };
+  const provider = { baseUrl: input.baseUrl, apiKey: auth === 'none' ? '' : input.apiKey };
+  driver.state.config = { providers: { custom: provider }, generalModels: [model] };
+  const { resumeNativeVolcengineTask } = await vi.importActual<typeof import('../../src/services/nativeVolcengineRecovery')>('../../src/services/nativeVolcengineRecovery');
+  driver.deliver.mockImplementationOnce(resumeNativeVolcengineTask);
+  driver.fetch.mockResolvedValueOnce(Response.json({ id: 'original' }))
+    .mockResolvedValueOnce(new Response('', { status: 504 }))
+    .mockResolvedValueOnce(Response.json({ status: 'completed', url: `${input.baseUrl}/audio.wav` }));
+  await expect(runConfiguredModelProtocol({ model, category: 'audio', nodeId: input.nodeId, beforeSubmit: input.beforeSubmit, variables: {} }))
+    .rejects.toMatchObject({ name: 'NativeMediaTaskPending', remoteTaskKnown: true });
+  const [receipt] = await listNativeMediaTasks(context.projectId);
+  expect(receipt).toMatchObject({ status: 'submitted', remoteTaskId: 'original' });
+  expect(driver.fetch).toHaveBeenCalledTimes(2);
+
+  driver.context = { ...context, runtimeEpoch: 'after-restart' };
+  driver.state.commitNativeMediaResult = vi.fn();
+  if (auth === 'bearer') {
+    provider.apiKey = '';
+    await expect(resumeNativeVolcengineTask(receipt.operationId)).rejects.toThrow('API Key');
+    expect(driver.fetch).toHaveBeenCalledTimes(2);
+    provider.apiKey = 'updated-key';
+  }
+  await resumeNativeVolcengineTask(receipt.operationId);
+  const query = `${input.baseUrl}/tasks/original`, originalHeader = auth === 'none' ? null : `Bearer ${input.apiKey}`;
+  expect(driver.fetch.mock.calls.map(([url, init]) => [url, init.method, new Headers(init.headers).get('Authorization')])).toEqual([
+    [`${input.baseUrl}/generate`, 'POST', originalHeader], [query, 'GET', originalHeader], [query, 'GET', auth === 'none' ? null : 'Bearer updated-key'],
+  ]);
+  expect(driver.save).toHaveBeenCalledExactlyOnceWith(`${input.baseUrl}/audio.wav`, context.canvasId, 'ai-audio', expect.any(String),
+    expect.objectContaining({ mediaDownloadAccess: expect.objectContaining({ auth: { type: auth } }) }));
+  expect(driver.state.commitNativeMediaResult).toHaveBeenCalledOnce();
+});
+
 it('正常提交在POST前已有未知意图，所有原task和候选保存后自动投递', async () => {
   const { context, input } = await fixture();
   driver.fetch.mockImplementation(async (url: string, init?: RequestInit) => {

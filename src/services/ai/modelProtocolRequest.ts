@@ -55,7 +55,7 @@ export function buildSameOriginUrl(
  * 否则请求会不带 Authorization 头照常发出去，用户看到的是上游一句 401 Invalid token，
  * 完全看不出是本地没填密钥——Agent 建的连接默认就是空密钥，很容易踩到。
  */
-function assertModelProtocolApiKey(
+export function assertModelProtocolApiKey(
   auth: ModelProtocolAuthConfig | undefined,
   apiKey: string,
 ): void {

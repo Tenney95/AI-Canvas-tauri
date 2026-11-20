@@ -8,6 +8,7 @@ import { APIMART_BASE_URL, GRSAI_BASE_URL, VOLCENGINE_BASE_URL } from '../consta
 import { PollTaskFailedError } from './pollTask';
 import { GRSAI_H3_PROTOCOL } from './ai/grsaiModels';
 import { resolvePoll, pollResolvedModelProtocol } from './ai/modelProtocolPoll';
+import { assertModelProtocolApiKey } from './ai/modelProtocolRequest';
 import { sha256BytesHex } from './mediaDataUrl';
 import { projectModelSourceToken } from './projectModelComparisonMaterial';
 import { queryApimartVideoResult } from './ai/apimartVideoResult';
@@ -105,7 +106,7 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
   };
   assertCurrent();
   const provider = useAppStore.getState().config.providers[record.providerConfigId];
-  if (!provider?.apiKey) throw new Error('缺少原视频连接的 API Key，原任务已保留');
+  if (!provider) throw new Error('原媒体连接不存在，请恢复原连接后续查');
   const generalExpected = record.recovery?.kind === 'general-protocol' || record.modelRef?.startsWith('general/') === true;
   const general = generalExpected ? resolveNativeProtocolConnection(record) : undefined;
   const generalProtocol = general && await resolveNativeRecoveryProtocol({
@@ -115,6 +116,8 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
     ...(record.recovery?.kind === 'general-protocol' ? { queryDigest: record.recovery.digest } : {}),
   });
   if (generalExpected && (!general || !generalProtocol || general.providerConfigId !== record.providerConfigId || general.model.category !== record.category)) throw new Error('原模型或查询协议已变化，请恢复原配置后续查');
+  const apiKey = provider.apiKey || '';
+  assertModelProtocolApiKey(generalProtocol?.auth, apiKey);
   const isVolcengine = !generalExpected && record.providerConfigId === 'volcengine';
   const isGrsai = !generalExpected && record.providerConfigId === 'grsai';
   if (record.recovery?.kind === 'builtin-video' && (await nativeBuiltinVideoProtocolDigest(record.providerConfigId) !== record.protocolDigest
@@ -140,20 +143,20 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
       const poll = { ...resolvePoll(baseUrl, generalProtocol.poll!, generalProtocol.auth, resolveNativeProtocolContext(generalProtocol, taskId, record.pollContext)),
         ...(catalogId === 'relayonapi' && record.category === 'video' && usesRelayonModelProtocol(general!.model.modelId, general!.model.executionProfile)
           ? { resultUrlFallbackPaths: [...new Set(RELAYON_VIDEO_RESULT_URL_PATHS)] } : {}) };
-      const result = await pollResolvedModelProtocol(poll, provider.apiKey!, controller.signal, baseUrl,
+      const result = await pollResolvedModelProtocol(poll, apiKey, controller.signal, baseUrl,
         catalogId === 'minimax' && usesMinimaxModelProtocol(general!.model.modelId, general!.model.executionProfile) ? assertMinimaxQueryResponse : undefined,
         getProviderPolicy(catalogId).upload === 'volcengine-tos');
       assertModelProtocolResult(record.category, result);
       if (!result.urls?.length || result.urls.length > 128) throw new Error('原媒体产物集合为空或超过安全上限，原任务保留');
       return { urls: result.urls };
     })() : isVolcengine
-      ? await pollVolcengineVideoTask({ apiKey: provider.apiKey, baseUrl, taskId, signal: controller.signal,
+      ? await pollVolcengineVideoTask({ apiKey, baseUrl, taskId, signal: controller.signal,
         maxDuration: VIDEO_POLL_MAX_DURATION_MS, onFailed: (status) => { remoteFailed = status; } })
       : isGrsai ? await (async () => {
         if (!/^[A-Za-z0-9_-]{1,160}$/.test(taskId)) throw new Error('原任务 ID 不能安全用于查询，请到原平台核对');
         const poll = resolvePoll(baseUrl, GRSAI_H3_PROTOCOL.poll!, GRSAI_H3_PROTOCOL.auth, { submit: { id: taskId } });
         try {
-          const result = await pollResolvedModelProtocol(poll, provider.apiKey!, controller.signal, baseUrl);
+          const result = await pollResolvedModelProtocol(poll, apiKey, controller.signal, baseUrl);
           if (!result.urls?.length || result.urls.length > 128) throw new Error('原视频任务产物集合为空或超过安全上限');
           return { urls: result.urls };
         } catch (error) {
@@ -161,7 +164,7 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
           throw error;
         }
       })() : {
-        urls: await queryApimartVideoResult(provider.apiKey!, baseUrl, taskId, {
+        urls: await queryApimartVideoResult(apiKey, baseUrl, taskId, {
           onFailed: (status) => { remoteFailed = status; },
           failureMessage: () => '原视频任务已确认失败或取消',
           missingResult: '原视频任务产物集合为空或超过安全上限',
@@ -172,7 +175,7 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
     const savedIds = !generalExpected && record.pollContext?.taskIds;
     const taskIds = Array.isArray(savedIds) ? savedIds : [record.remoteTaskId!];
     if (!taskIds.length || taskIds.length > 128 || taskIds[0] !== record.remoteTaskId
-      || taskIds.some((id) => !isSafeNativeProtocolTaskId(id, [provider.apiKey!]))) throw new Error('原任务集合无效，未发起查询');
+      || taskIds.some((id) => !isSafeNativeProtocolTaskId(id, [apiKey]))) throw new Error('原任务集合无效，未发起查询');
     const results: Awaited<ReturnType<typeof query>>[] = [];
     let failedTasks = 0;
     for (const taskId of taskIds as string[]) {
