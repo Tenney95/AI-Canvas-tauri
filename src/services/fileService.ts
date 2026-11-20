@@ -15,6 +15,7 @@ import type { MediaDownloadRequest } from './ai/mediaDownloadAccess';
 import { downloadGithubBytes, githubMirrorUrl } from './githubDownloadService';
 import { identifyAsset, getRelativeAssetPath } from './fs/assetIndex';
 import { readAssetTextFile } from './fs/assetTextFiles';
+import { canReuseProjectFile, type ProjectFileStaging } from './fs/projectFileStaging';
 import { walkDirectoryFiles, type AssetScanOptions } from './fs/assetLibrary';
 import { isNativeProjectMediaContentPath } from './nativeMediaContentPath';
 import { completeMediaRelocation, mediaFileAllocationKey, persistMediaRelocation, retiredMediaPaths, type MediaRelocation } from './indexedDb/mediaRelocations';
@@ -58,6 +59,8 @@ export interface NodeOutputDownloadProgress {
 }
 
 export interface FileTransferOptions {
+  /** 批量导入的独占新文件在画布提交后交付，复用已有文件时不登记。 */
+  staging?: ProjectFileStaging;
   /** 调用方的运行时/持久代际复核，不序列化；可在系统对话框后撤销原写入。 */
   assertCurrent?: () => void | Promise<void>;
   /** 仅本次生成交付使用；原任务恢复时从当前连接重建鉴权，不保存 Key。 */
@@ -453,9 +456,12 @@ export interface AssetFileCopyResult {
 }
 
 /** 验证内容后落盘，同名自动加序号；原文件始终保留。 */
-export async function copyAssetFileToFolder(sourcePath: string, destinationDirectory: string, options?: FileTransferOptions): Promise<AssetFileCopyResult> {
+export async function copyAssetFileToFolder(sourcePath: string, destinationDirectory: string, options?: FileTransferOptions,
+  movePlan?: { kind: 'plan'; reservedNames: string[] } | { kind: 'publish'; copy: AssetFileCopyResult; resume: boolean }): Promise<AssetFileCopyResult> {
   if (!isTauriEnv()) throw new Error('文件拖放仅支持桌面应用');
-  return runNativeFileTransfer<AssetFileCopyResult>('copy_asset_file_to_folder', { sourcePath, destinationDirectory }, options);
+  // 旧运行时只接受目录字符串，必须在写盘前拒绝它无法识别的移动计划。
+  const destination = movePlan ? { directory: destinationDirectory, plan: movePlan } : destinationDirectory;
+  return runNativeFileTransfer<AssetFileCopyResult>('copy_asset_file_to_folder', { sourcePath, destinationDirectory: destination }, options);
 }
 
 /** 资产包暂存使用已有原生下载边界；调用方只提供本轮专属目录中的目标文件。 */
@@ -731,6 +737,7 @@ async function saveProjectBytes(
   deduplicateByContent = false,
   signal?: AbortSignal,
   assertCurrent?: () => void | Promise<void>,
+  staging?: ProjectFileStaging,
 ): Promise<string> {
   const save = async () => {
     throwIfMediaReadAborted(signal);
@@ -759,7 +766,7 @@ async function saveProjectBytes(
         if (entryStem !== base && !/^[1-9]\d*$/.test(sequence)
           && entryStem !== `${base}-${digest.slice(0, 20)}`) continue;
         const path = joinPath(dataDir, entry.name);
-        if (retired.has(mediaFileAllocationKey(path))) continue;
+        if (retired.has(mediaFileAllocationKey(path)) || !canReuseProjectFile(path, staging)) continue;
         let matches: boolean;
         try {
           const info = await lstat(path);
@@ -775,7 +782,8 @@ async function saveProjectBytes(
         if (matches) {
           const latestRetired = await retiredMediaPaths();
           throwIfMediaReadAborted(signal);
-          if (!latestRetired.has(mediaFileAllocationKey(path))) { await assertCurrent?.(); return path; }
+          await assertCurrent?.();
+          if (!latestRetired.has(mediaFileAllocationKey(path)) && canReuseProjectFile(path, staging)) return path;
         }
       }
     }
@@ -783,7 +791,21 @@ async function saveProjectBytes(
     const destPath = await resolveUniqueDestPath(dataDir, fileName, true);
     throwIfMediaReadAborted(signal);
     await assertCurrent?.();
-    await writeFile(destPath, bytes, { createNew: true });
+    if (staging) {
+      await staging.write(destPath, async (markCreated) => {
+        const file = await fsOpen(destPath, { write: true, createNew: true });
+        markCreated();
+        try {
+          for (let offset = 0; offset < bytes.byteLength;) {
+            await assertCurrent?.();
+            const chunk = bytes.subarray(offset, offset + 1024 * 1024);
+            const written = await file.write(chunk);
+            if (written <= 0 || written > chunk.length) throw new Error('写入素材失败');
+            offset += written;
+          }
+        } finally { await file.close(); }
+      });
+    } else await writeFile(destPath, bytes, { createNew: true });
     await assertCurrent?.();
     notifyProjectDiskChanged();
     return destPath;
@@ -820,6 +842,7 @@ export async function copyFileToProjectData(
     const reuse = !!relative && relative.split('/').every((part) => !!part && !part.startsWith('.'));
     if (reuse) {
       throwIfMediaReadAborted(options?.signal);
+      if (!canReuseProjectFile(sourcePath, options?.staging)) throw new Error('素材正在导入，请稍后重试');
       if ((await retiredMediaPaths()).has(mediaFileAllocationKey(sourcePath))) {
         throw new Error('素材路径已迁移，请刷新后重试');
       }
@@ -830,7 +853,14 @@ export async function copyFileToProjectData(
       destPath = stripVerbatimPrefix(existing.path);
     } else {
       destPath = await resolveUniqueDestPath(dataDir, fileName, true);
-      await runNativeFileTransfer('copy_file_streamed', { sourcePath, destinationPath: destPath }, options);
+      const staging = options?.staging;
+      const writeNew = () => runNativeFileTransfer('copy_file_streamed', { sourcePath, destinationPath: destPath },
+        staging ? { ...options, assertCurrent: undefined } : options);
+      if (staging) {
+        await options.assertCurrent?.();
+        await staging.write(destPath, writeNew);
+        await options.assertCurrent?.();
+      } else await writeNew();
       notifyProjectDiskChanged();
     }
   } catch (err) {
@@ -859,7 +889,7 @@ export async function saveDataUrlToProjectData(
   dataUrl: string,
   projectId: string,
   fileName: string,
-  options: Pick<FileTransferOptions, 'deduplicateByContent' | 'throwOnError' | 'assertCurrent'> = {},
+  options: Pick<FileTransferOptions, 'deduplicateByContent' | 'throwOnError' | 'assertCurrent' | 'staging'> = {},
 ): Promise<{ filePath: string; assetUrl: string } | null> {
   if (!isTauriEnv()) return null;
   await options.assertCurrent?.();
@@ -877,7 +907,7 @@ export async function saveDataUrlToProjectData(
       label: fileName,
     });
 
-    const destPath = await saveProjectBytes(dataDir, fileName, bytes, options.deduplicateByContent, undefined, options.assertCurrent);
+    const destPath = await saveProjectBytes(dataDir, fileName, bytes, options.deduplicateByContent, undefined, options.assertCurrent, options.staging);
 
     const convertFileSrc = await getConvertFileSrc();
     const assetUrl = convertFileSrc ? convertFileSrc(destPath) : '';
@@ -982,7 +1012,7 @@ function extractFileNameFromUrl(url: string, fallbackPrefix: string): string {
 /** MIME → 扩展名（带点），用于无法从 URL 推断扩展名时兜底 */
 const MIME_TO_EXT: Record<string, string> = {
   'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif',
-  'image/svg+xml': '.svg',
+  'image/svg+xml': '.svg', 'image/avif': '.avif', 'image/bmp': '.bmp', 'image/tiff': '.tiff',
   'video/mp4': '.mp4', 'video/webm': '.webm', 'video/quicktime': '.mov',
   'audio/mpeg': '.mp3', 'audio/mp3': '.mp3',
   'audio/wav': '.wav', 'audio/x-wav': '.wav', 'audio/wave': '.wav',
@@ -1673,6 +1703,7 @@ export async function uploadSourceFile(accept?: string): Promise<UploadResult | 
  */
 export function extractFilesFromNodeData(
   nodeData: Record<string, unknown>,
+  owner?: { projectId: string; nodeId: string },
 ): AssetFileEntry | null {
   const fileName = (nodeData.fileName as string) || '';
   const imgUrl = nodeData.imageUrl as string | undefined;
@@ -1690,7 +1721,8 @@ export function extractFilesFromNodeData(
   }
   if (!name && assetUrl) {
     if (assetUrl.startsWith('data:')) {
-      name = '';
+      const mime = /^data:([^;,]+)[;,]/i.exec(assetUrl.slice(0, 128))?.[1].toLowerCase();
+      name = `file${mime ? MIME_TO_EXT[mime] ?? '' : ''}`;
     } else {
       try {
         const u = new URL(assetUrl);
@@ -1705,8 +1737,10 @@ export function extractFilesFromNodeData(
 
   const category = getFileCategory(name);
 
-  // Use filePath as identifier if available, otherwise derive from name + node id
-  const entryPath = fp || `node://${name}`;
+  // 内嵌素材可能同名，归属节点在文件落盘前提供稳定身份。
+  const entryPath = fp || (owner?.nodeId
+    ? `node://${encodeURIComponent(owner.projectId)}/${encodeURIComponent(owner.nodeId)}`
+    : `node://${name}`);
 
   return {
     assetId: nodeData.assetId as string | undefined,

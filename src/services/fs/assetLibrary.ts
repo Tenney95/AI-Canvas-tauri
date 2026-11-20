@@ -20,7 +20,7 @@ import {
 import { moveToTrash } from './trash';
 import { getRelativeAssetPath, identifyAsset, identifyAssetBatch } from './assetIndex';
 import { getAllAssetIndexes, getAssetIndexByPath, loadProjectAssetPathLookup, putAssetIndex, putAssetIndexes, type AssetIndexRecord } from '../indexedDbService';
-import { mediaFileAllocationKey, retiredMediaPaths } from '../indexedDb/mediaRelocations';
+import { mediaFileAllocationKey, pendingAssetMoveTargets, retiredMediaPaths } from '../indexedDb/mediaRelocations';
 import { decodeDataUrlBytesAsync } from '../mediaDataUrl';
 import { isProjectAgentInternalFile, isProjectAgentWorkspaceDirectory } from '../../utils/agentProjectWorkspace';
 import { isNativeMediaPendingFile } from '../../utils/nativeMediaPendingFile';
@@ -250,7 +250,7 @@ export async function scanDirectoryFiles(
       continue;
     }
     // 不跟随符号链接扩大外部目录授权或形成遍历环。
-    const fileEntries: typeof entries = [];
+    let fileEntries: typeof entries = [];
     for (const entry of entries) {
       if (!entry.isFile || entry.isSymlink || isNativeMediaPendingFile(entry.name) || isNativeProjectBindingFile(entry.name)) continue;
       if (projectScan && isProjectAgentInternalFile(folder.relativePath ? `${folder.relativePath}/${entry.name}` : entry.name)) continue;
@@ -273,6 +273,13 @@ export async function scanDirectoryFiles(
         }
       }
       fileEntries.push(entry);
+    }
+    if (!projectScan && fileEntries.length) {
+      // 移动先登记目标再发布文件；在 readDir 后读计划，覆盖扫描期间刚发布的副本。
+      const pending = await pendingAssetMoveTargets();
+      throwIfScanAborted(opts.signal);
+      if (pending.size) fileEntries = fileEntries.filter((entry) =>
+        !pending.has(mediaFileAllocationKey(getFilePath(dir, entry.name))));
     }
     const subDirs = entries.filter((e) => e.isDirectory && !e.isSymlink
       && !opts.excludedDirectories?.includes(e.name)
@@ -560,7 +567,7 @@ export async function saveToPermanent(filePath: string): Promise<string | null> 
 
 /**
  * 将 asset entry 保存到永久目录 — 支持磁盘文件和 data URL 两种来源
- * virtual:// 路径会从 entry.assetUrl（data URL）解码写入
+ * 节点和资产库的虚拟条目从 entry.assetUrl（data URL）解码写入。
  */
 export async function saveAssetToPermanent(
   entry: AssetFileEntry,
@@ -568,16 +575,17 @@ export async function saveAssetToPermanent(
   if (!isTauriEnv()) return null;
 
   // 虚拟路径：从 data URL 解码写入
-  if (entry.path.startsWith('virtual://')) {
+  if (entry.path.startsWith('virtual://') || entry.path.startsWith('node://')) {
     if (!entry.assetUrl || !entry.assetUrl.startsWith('data:')) return null;
     const destDir = await ensureGlobalFilesDir();
     if (!destDir) return null;
 
     try {
-      const destPath = await resolveUniqueDestPath(destDir, entry.name);
-
+      const name = entry.name.split(/[\\/]/).pop();
+      if (!name || name === '.' || name === '..') return null;
       const bytes = await decodeDataUrlBytesAsync(entry.assetUrl);
-      await writeFile(destPath, bytes);
+      const destPath = await resolveUniqueDestPath(destDir, name);
+      await writeFile(destPath, bytes, { createNew: true });
       return destPath;
     } catch (err) {
       console.error('Failed to save virtual asset to permanent:', entry.name, err);

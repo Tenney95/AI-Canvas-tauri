@@ -6,11 +6,11 @@ import { t } from '../i18n';
 import type { Node } from '@xyflow/react';
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
-import type { BaseNodeData, NodeGroup } from '../types';
+import type { BaseNodeData, NodeGroup, ShotFrameBinding } from '../types';
 import { generateId, computeImageNodeDimensions, blobToDataUrl } from './store.utils';
 import { textNodeHeight } from '../utils/num';
 import * as fileService from '../services/fileService';
-import { copyNodeMedia, needsNodeMediaCopy, discardCopiedNodeMedia } from '../services/nodeMediaCopy';
+import { copyNodeMedia, needsNodeMediaCopy, discardCopiedNodeMedia, snapshotShotlistBinding } from '../services/nodeMediaCopy';
 import { registerCanvasImport, isCanvasDerivationFresh, completeCanvasDerivation, canvasMediaImportsPaused,
   trackCanvasMediaImport } from '../services/canvasDerivationGuard';
 import { AI_APP_COPY_MESSAGE, isAiAppNode } from '../services/aiApps/aiAppCreation';
@@ -121,6 +121,17 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
     const copiedNodes = nodes
       .filter((n) => idsToCopy.has(n.id))
       .map((n) => ({ ...n, data: { ...n.data } }));
+    if (copiedNodes.some((node) => node.data.shotlistRows?.length)) {
+      const byId = new Map(nodes.map((node) => [node.id, node.data]));
+      const snapshot = <K extends ShotFrameBinding['kind']>(binding: ShotFrameBinding & { kind: K }) => {
+        const source = byId.get(binding.nodeId);
+        return source ? snapshotShotlistBinding(binding, source) : binding;
+      };
+      for (const { data } of copiedNodes) {
+        if (data.shotlistRows) data.shotlistRows = data.shotlistRows.map((row) => ({ ...row,
+          frame: row.frame && snapshot(row.frame), video: row.video && snapshot(row.video) }));
+      }
+    }
     const copiedGroups = groups.filter((g) => idsToCopy.has(g.id)).map((g) => ({ ...g }));
     set({
       clipboard: { nodes: copiedNodes, groups: copiedGroups, projectId: get().currentProjectId },
@@ -135,21 +146,33 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
       get().showToast(AI_APP_COPY_MESSAGE, 'error');
       return;
     }
+    const idMap = new Map(clipboard.nodes.map((node) => [node.id, `node-${generateId()}`]));
+    const crossProject = clipboard.projectId !== get().currentProjectId;
     let copiedNodes = clipboard.nodes;
-    if (copiedNodes.some((node) => needsNodeMediaCopy(node.data))) {
+    if (copiedNodes.some((node) => needsNodeMediaCopy(node.data, crossProject))) {
       const guard = registerCanvasImport(get());
       if (!guard) { get().showToast('请先创建项目再复制媒体', 'error'); return; }
       get().showToast('正在复制素材…');
       const staged: { data: BaseNodeData; source: BaseNodeData }[] = [];
       let ready = false;
       try {
-        copiedNodes = [];
-        for (const node of clipboard.nodes) {
-          const data = needsNodeMediaCopy(node.data) ? await copyNodeMedia(node.data, guard.projectId) : node.data;
+        const copiedSources = new Map<string, BaseNodeData>();
+        const bindingIds = new Map(idMap);
+        const shotlist = crossProject ? { copiedSources, targetId: (id: string) => {
+          if (!bindingIds.has(id)) bindingIds.set(id, `node-${generateId()}`);
+          return bindingIds.get(id)!;
+        } } : undefined;
+        // 一同粘贴的媒体节点先分配目标文件，分镜快照与该新来源指向同一份素材。
+        const order = crossProject && clipboard.nodes.some((node) => node.data.shotlistRows?.length)
+          ? [...clipboard.nodes].sort((a, b) => Number(!!a.data.shotlistRows?.length) - Number(!!b.data.shotlistRows?.length))
+          : clipboard.nodes;
+        for (const node of order) {
+          const data = needsNodeMediaCopy(node.data, crossProject) ? await copyNodeMedia(node.data, guard.projectId, shotlist) : node.data;
           if (data !== node.data) staged.push({ data, source: node.data });
           if (!isCanvasDerivationFresh(guard, get())) { get().showToast('画布已变化，请重新粘贴'); return; }
-          copiedNodes.push({ ...node, data });
+          copiedSources.set(node.id, data);
         }
+        copiedNodes = clipboard.nodes.map((node) => ({ ...node, data: copiedSources.get(node.id)! }));
         ready = true;
       } catch {
         if (get().currentProjectId === guard.projectId) get().showToast('素材复制失败，请重新粘贴', 'error');
@@ -162,13 +185,6 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
     get().commitToHistory();
 
     const offset = { x: 30, y: 30 };
-    const idMap = new Map<string, string>();
-
-    // Build IDs for ALL copied nodes first
-    clipboard.nodes.forEach((node) => {
-      const newId = `node-${generateId()}`;
-      idMap.set(node.id, newId);
-    });
 
     // Prepare new nodes with remapped parentId and group ID
     const newNodes: Node<BaseNodeData>[] = copiedNodes.map((node, idx) => {
@@ -190,6 +206,12 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
       // Remap data.groupId for group nodes
       if (newNode.data?.groupId && idMap.has(newNode.data.groupId as string)) {
         newNode.data = { ...newNode.data, groupId: idMap.get(newNode.data.groupId as string) };
+      }
+      const production = newNode.data.shotlistProductionSource;
+      if (crossProject && production) {
+        const sheetId = idMap.get(production.nodeId);
+        if (sheetId) newNode.data.shotlistProductionSource = { ...production, nodeId: sheetId };
+        else delete newNode.data.shotlistProductionSource;
       }
       return newNode;
     });

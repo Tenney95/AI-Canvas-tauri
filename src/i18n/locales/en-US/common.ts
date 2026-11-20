@@ -388,6 +388,8 @@ const common = {
   "已创建「{name}」（{count} 个节点）": "Created “{name}” ({count} nodes)",
   "已解散分组「{name}」": "Ungrouped “{name}”",
   "已创建「{name}」": "Created “{name}”",
+  "无法撤销，请移走项目中占用原位置的「{name}」后重试": "Cannot undo. Move “{name}” out of the original location in the project, then try again.",
+  "无法还原「{name}」，请检查项目目录后重试撤销": "Could not restore “{name}”. Check the project folder and try undoing again.",
   "已撤销，但 {count} 个媒体文件未能还原": "Undone, but {count} media files could not be restored",
   "已更新插件「{name}」": "Updated plugin “{name}”",
   "已安装插件「{name}」": "Installed plugin “{name}”",

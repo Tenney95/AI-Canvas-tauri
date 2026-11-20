@@ -48,6 +48,7 @@ import { collectCanvasDescendantIds } from '../utils/canvasHierarchy';
 import { normalizeShotlistPromptReferences, resolveSingleShotlistRowReference } from '../services/shotlistPromptService';
 import { pickWorkflowSizeInputs, readNodeModelPreference, saveWorkflowModelPreference } from '../services/modelPreferenceService';
 import { isProjectExpectedContextCurrent } from '../services/projectExecutionContext';
+import { parseChatImageReferences } from '../utils/chatImageReference';
 
 /** 只投影本次真实传入的媒体参数，保留 false、接口默认背景与自动时长。 */
 function mediaParametersToNodeData(kind: MediaKind, parameters?: MediaGenerationParameters): Partial<BaseNodeData> {
@@ -626,18 +627,28 @@ export function collectKeepPaths(
 
 /** 文件暂存晚于画布事件；回收前复核原项目、删除对象和新出现的共享引用。 */
 export function createNodeFileDeletionContext(
-  get: () => Pick<AppState, 'currentProjectId' | 'nodes' | 'messages'>,
+  get: () => Pick<AppState, 'currentProjectId' | 'nodes' | 'messages' | 'chatImageDrafts'>,
   nodes: Node<BaseNodeData>[], idsToDelete: ReadonlySet<string>, projectId: string | null,
   isCurrent?: () => boolean,
 ): fileService.NodeFileDeletionContext {
   const deleted = new Map(nodes.filter((node) => idsToDelete.has(node.id)).map((node) => [node.id, node.data]));
   return {
     deletedNodeIds: [...idsToDelete],
-    getLiveKeepPaths: () => {
+    getLiveKeepPaths: (chatImagePath) => {
       const latest = get();
       if (isCurrent?.() === false || latest.currentProjectId !== projectId
         || latest.nodes.some((node) => deleted.has(node.id) && deleted.get(node.id) !== node.data)) return null;
-      return collectKeepPaths(latest.nodes, idsToDelete, latest.messages);
+      const paths = collectKeepPaths(latest.nodes, idsToDelete, latest.messages);
+      if (chatImagePath) {
+        for (const { content } of latest.messages) {
+          if (!content?.includes('@image{')) continue;
+          for (const { fileName } of parseChatImageReferences(content)) paths.add(chatImagePath(fileName));
+        }
+        for (const images of Object.values(latest.chatImageDrafts)) {
+          for (const { fileName } of images) paths.add(chatImagePath(fileName));
+        }
+      }
+      return paths;
     },
   };
 }

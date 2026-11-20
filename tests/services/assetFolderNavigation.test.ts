@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   exists: vi.fn(), mkdir: vi.fn(),
   open: vi.fn(), readFile: vi.fn(), writeFile: vi.fn(), uniquePath: vi.fn(),
   copyStream: vi.fn(),
+  pendingTargets: vi.fn<() => Promise<ReadonlySet<string>>>(),
 }));
 vi.mock('@tauri-apps/plugin-fs', () => ({
   readDir: mocks.readDir, stat: mocks.stat, remove: mocks.remove, exists: mocks.exists,
@@ -41,6 +42,7 @@ vi.mock('../../src/services/fs/trash', () => ({ moveToTrash: vi.fn() }));
 vi.mock('../../src/services/indexedDb/mediaRelocations', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/services/indexedDb/mediaRelocations')>(),
   retiredMediaPaths: async () => new Set<string>(),
+  pendingAssetMoveTargets: mocks.pendingTargets,
 }));
 
 import { listExternalFolderContents, listExternalFolderFiles, selectAssetFolderFiles, listGlobalFolderContents, createAssetSubfolder, resolveAssetFolderDirectory, addAssetFilesToGlobal, saveToPermanent, saveAssetToPermanent, walkDirectoryFiles } from '../../src/services/fs/assetLibrary';
@@ -65,6 +67,8 @@ beforeEach(() => {
   mocks.copyStream.mockReset().mockImplementation(async (_source: string, destination: string) => ({ path: destination, totalBytes: 3 }));
   mocks.uniquePath.mockReset().mockImplementation(async (directory: string, name: string) => `${directory}/${name}`);
   mocks.directories.clear();
+  mocks.pendingTargets.mockReset().mockResolvedValue(new Set());
+  mocks.stat.mockClear();
   mocks.readDir.mockImplementation(async (path: string) => {
     const entries = mocks.directories.get(path);
     if (!entries) throw new Error('Unavailable directory');
@@ -78,6 +82,24 @@ beforeEach(() => {
 });
 
 describe('global asset folder browsing', () => {
+  it.each(['global', 'folder'] as const)('读取目录期间出现的移动副本不分配身份或发布卡片（%s）', async (source) => {
+    const root = source === 'global' ? '/global/file' : '/library';
+    const target = `${root}/moving.png`, shown = `${root}/other.png`;
+    directory(root, ['moving.png', 'other.png']);
+    mocks.readDir.mockImplementationOnce(async (path: string) => {
+      mocks.pendingTargets.mockResolvedValue(new Set([target]));
+      return mocks.directories.get(path);
+    });
+    const streamed: AssetFileEntry[] = [];
+    const options = { onFiles: (files: AssetFileEntry[]) => { streamed.push(...files); } };
+    const result = source === 'global' ? await listGlobalFolderContents(options) : await listExternalFolderContents([root], options);
+    expect(result.files.map((file) => file.path)).toEqual([shown]);
+    expect(streamed.map((file) => file.path)).toEqual([shown]);
+    expect(result.folders[0].fileCount).toBe(1);
+    expect(mocks.stat).not.toHaveBeenCalledWith(target);
+    mocks.pendingTargets.mockResolvedValue(new Set());
+    expect((await walkDirectoryFiles(root, { source })).map((file) => file.path)).toEqual([target, shown]);
+  });
   it('注册项目上级或子目录时跳过整个项目子树，其他外部素材正常展示', async () => {
     directory('/global', ['hero.png', '作品/']);
     directory('/global/作品', [NATIVE_PROJECT_BINDING_FILE, '专用图.png', '分组/']);
@@ -196,13 +218,25 @@ describe('global asset folder browsing', () => {
     expect(mocks.writeFile).not.toHaveBeenCalled();
   });
 
-  it('decodes a virtual asset across multiple base64 chunks without changing its bytes', async () => {
+  it.each(['virtual://image', 'node://project/node'])('decodes %s across multiple base64 chunks without changing its bytes', async (path) => {
     const assetUrl = `data:image/png;base64,${'AAAA'.repeat(100_000)}`;
-    await expect(saveAssetToPermanent({ path: 'virtual://image', name: '角色.png', assetUrl } as AssetFileEntry))
+    await expect(saveAssetToPermanent({ path, name: '角色.png', assetUrl } as AssetFileEntry))
       .resolves.toBe('/global/file/角色.png');
-    expect(mocks.writeFile).toHaveBeenCalledExactlyOnceWith('/global/file/角色.png', new Uint8Array(300_000));
+    expect(mocks.writeFile).toHaveBeenCalledExactlyOnceWith('/global/file/角色.png', new Uint8Array(300_000), { createNew: true });
     expect(mocks.copyStream).not.toHaveBeenCalled();
     expect(mocks.readFile).not.toHaveBeenCalled();
+  });
+
+  it('keeps same-name embedded images distinct by project and node until they have a disk path', async () => {
+    const { extractFilesFromNodeData } = await vi.importActual<typeof import('../../src/services/fileService')>('../../src/services/fileService');
+    const image = { fileName: '角色.png', imageUrl: 'data:image/png;base64,AQID' };
+    const owner = { projectId: 'project-a', nodeId: 'image-a' };
+    const first = extractFilesFromNodeData(image, owner);
+    const second = extractFilesFromNodeData(image, { ...owner, nodeId: 'image-b' });
+    const otherProject = extractFilesFromNodeData(image, { ...owner, projectId: 'project-b' });
+    expect(new Set([first?.path, second?.path, otherProject?.path]).size).toBe(3);
+    expect(extractFilesFromNodeData({ imageUrl: image.imageUrl }, owner)?.name).toBe('file.png');
+    expect(extractFilesFromNodeData({ ...image, filePath: '/project/角色.png' }, owner)?.path).toBe('/project/角色.png');
   });
 
   it('does not fall back to the import root for removed or invalid target folders', async () => {

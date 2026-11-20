@@ -11,9 +11,11 @@ import { clearAgentToolRegistryForTests, getAgentTool, prepareAgentToolCall, typ
 import { evaluateAgentToolPolicy } from '../../../src/services/chat/policyEngine';
 import { cancelProjectCanvasDerivations } from '../../../src/services/canvasDerivationGuard';
 import { importCapturedImage, importWsagentProjectMedia } from '../../../src/services/canvasResourceImportService';
+import { canReuseProjectFile, type ProjectFileStaging } from '../../../src/services/fs/projectFileStaging';
 
 const mocks = vi.hoisted(() => ({
   copy: vi.fn(), save: vi.fn(), read: vi.fn(), native: vi.fn(), reserve: vi.fn(), settle: vi.fn(), insertWsagent: vi.fn(),
+  trash: vi.fn(async () => undefined),
 }));
 vi.mock('../../../src/services/wsagentProjectMedia', () => ({ insertWsagentProjectMedia: mocks.insertWsagent }));
 vi.mock('../../../src/services/mediaUploadService', async (original) => ({
@@ -22,7 +24,7 @@ vi.mock('../../../src/services/mediaUploadService', async (original) => ({
 }));
 vi.mock('../../../src/services/clipboardService', () => ({ readNativeClipboard: mocks.native }));
 vi.mock('../../../src/services/fileService', () => ({
-  copyFileToProjectData: mocks.copy, saveDataUrlToProjectData: mocks.save,
+  copyFileToProjectData: mocks.copy, saveDataUrlToProjectData: mocks.save, moveToUndoTrash: mocks.trash,
   setBaseDataDir: vi.fn(), syncAuthorizedDirectories: vi.fn(),
   waitForPendingNodeFileDeletions: vi.fn(async () => undefined),
   resolveGroupUndoTrashPaths: vi.fn(async () => []),
@@ -251,13 +253,23 @@ describe('resource import tools', () => {
   });
 
   it('fails closed on copy failure without partial nodes, retry or raw error disclosure', async () => {
-    mocks.copy.mockResolvedValueOnce({ assetUrl: 'asset://ok', filePath: '/project/ok.png' })
+    mocks.copy.mockImplementationOnce(async (_path, _id, { staging }: { staging: ProjectFileStaging }) => {
+      await staging.write('/project/ok.png', async () => undefined);
+      expect(canReuseProjectFile('/project/ok.png')).toBe(false);
+      expect(canReuseProjectFile('/project/ok.png', staging)).toBe(true);
+      return { assetUrl: 'asset://ok', filePath: '/project/ok.png' };
+    }).mockResolvedValueOnce({ assetUrl: 'asset://reused', filePath: '/project/existing.png' })
       .mockRejectedValueOnce(new Error('unapproved C:\\secret\\key.png'));
-    const result = await importTool().execute(context(), { files: [{ path: '/a.png' }, { path: '/b.png' }] });
+    const result = await importTool().execute(context(), { files: [
+      { path: '/a.png' }, { path: '/project/existing.png' }, { uploadId: 'u1' }, { path: '/b.png' },
+    ] });
     expect(result).toMatchObject({ status: 'error', retryable: false });
     expect(JSON.stringify(result)).not.toContain('secret');
     expect(useAppStore.getState().nodes).toHaveLength(0);
-    expect(mocks.copy).toHaveBeenCalledTimes(2);
+    expect(mocks.copy).toHaveBeenCalledTimes(3);
+    expect(mocks.trash).toHaveBeenCalledExactlyOnceWith('/project/ok.png', 'p1', expect.any(Function));
+    expect(mocks.settle).toHaveBeenCalledWith(['u1'], false);
+    expect(canReuseProjectFile('/project/ok.png')).toBe(true);
   });
 
   it.each(['revision', 'project', 'cancel', 'canvas'] as const)('rejects stale writes after %s changes during copying', async (change) => {
@@ -275,15 +287,35 @@ describe('resource import tools', () => {
   });
 
   it('cancels a pending transfer when the project lifecycle is cancelled, even if switched back', async () => {
-    let finish!: (value: null) => void;
-    mocks.copy.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    let finish!: () => void;
+    mocks.copy.mockImplementationOnce(async (_path, _id, { staging }: { staging: ProjectFileStaging }) => {
+      await staging.write('/project/late.png', () => new Promise<void>((resolve) => { finish = resolve; }));
+      return { assetUrl: 'asset://late', filePath: '/project/late.png' };
+    });
     const resultPromise = importTool().execute(context(), { files: [{ path: '/a.png' }] });
     await vi.waitFor(() => expect(mocks.copy).toHaveBeenCalled());
     cancelProjectCanvasDerivations('p1');
     expect(await resultPromise).toMatchObject({ status: 'error', errorCode: 'IMPORT_CANCELLED' });
     expect(mocks.copy.mock.calls[0][2].signal.aborted).toBe(true);
-    finish(null);
+    expect(mocks.trash).not.toHaveBeenCalled();
+    finish();
+    await vi.waitFor(() => expect(mocks.trash).toHaveBeenCalledExactlyOnceWith('/project/late.png', 'p1', expect.any(Function)));
     expect(useAppStore.getState().nodes).toHaveLength(0);
+  });
+
+  it('recovers a failed write only once exclusive creation is confirmed', async () => {
+    mocks.read.mockResolvedValue([item(['image/png'], new Blob(['png'], { type: 'image/png' }))]);
+    for (const created of [false, true]) {
+      mocks.save.mockImplementationOnce(async (_data, _id, _name, { staging }: { staging: ProjectFileStaging }) => {
+        await staging.write('/project/partial.png', async (markCreated) => {
+          if (created) markCreated();
+          throw new Error('write failed');
+        });
+      });
+      expect(await pasteTool().execute(context(), {})).toMatchObject({ status: 'error' });
+      expect(mocks.trash).toHaveBeenCalledTimes(Number(created));
+    }
+    expect(canReuseProjectFile('/project/partial.png')).toBe(true);
   });
 
   it('does not read or copy anything for an already cancelled call', async () => {

@@ -2,11 +2,16 @@
 import type { Edge, Node } from '@xyflow/react';
 import type { BaseNodeData } from '../types';
 import { useAppStore } from '../store/useAppStore';
+import { collectKeepPaths } from '../store/store.nodes';
 import { blobToDataUrl, computeImageNodeDimensions, generateId } from '../store/store.utils';
 import { getNodeBounds } from '../utils/nodeBounds';
+import { isChatImageFileName } from '../utils/chatImageReference';
 import { getCanvasPointerPosition } from './canvasPointerService';
-import { copyFileToProjectData, saveDataUrlToProjectData } from './fileService';
-import { sanitizeFileName } from './fs/core';
+import { copyFileToProjectData, moveToUndoTrash, saveDataUrlToProjectData } from './fileService';
+import { getNativeProjectOwner, sanitizeFileName } from './fs/core';
+import { ProjectFileStaging } from './fs/projectFileStaging';
+import { usesTrashPath } from './fs/undoTrashJournal';
+import { isNodeMediaCopySource } from './nodeMediaCopy';
 import { readNativeClipboard } from './clipboardService';
 import { MediaUploadError, reserveUploadedMedia, settleUploadedMedia } from './mediaUploadService';
 import type { MediaResourceInput } from '../types/mediaUpload';
@@ -141,6 +146,24 @@ function cancellable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
+function stageImportFiles(projectId: string): ProjectFileStaging {
+  const owner = getNativeProjectOwner(projectId);
+  let guard: ReturnType<typeof import('./fs/nativeNodeTrash').createNativeNodeTrashGuard> | undefined;
+  return new ProjectFileStaging(async (path) => {
+    if (getNativeProjectOwner(projectId) !== owner) return;
+    // 聊天附件名也可由其他会话或未持久化的草稿持有，留给存储体检。
+    if (isChatImageFileName(path.split(/[\\/]/).at(-1) ?? '')) return;
+    if (owner) guard ??= import('./fs/nativeNodeTrash').then((fs) => fs.createNativeNodeTrashGuard(projectId, []));
+    const references = await guard;
+    if (references && usesTrashPath(path, references.references)) return;
+    await moveToUndoTrash(path, projectId, async () => {
+      if (getNativeProjectOwner(projectId) !== owner || references && !await references.isCurrent()) return false;
+      const live = useAppStore.getState();
+      return !isNodeMediaCopySource(path) && !usesTrashPath(path, collectKeepPaths(live.nodes, new Set(), live.messages));
+    });
+  });
+}
+
 async function importResources(
   context: ResourceImportContext,
   load: (signal: AbortSignal) => Promise<Resource[]>,
@@ -176,6 +199,7 @@ async function importResources(
   const x = position.x ?? linkedPosition?.x ?? origin.x;
   const y = position.y ?? linkedPosition?.y ?? origin.y;
   const nodes: Node<BaseNodeData>[] = [];
+  const staging = stageImportFiles(context.projectId);
   try {
     check();
     const resources = await cancellable(load(controller.signal), controller.signal);
@@ -194,16 +218,16 @@ async function importResources(
           saved = resource.saved;
         } else if ('dataUrl' in resource) {
           saved = await cancellable(saveDataUrlToProjectData(resource.dataUrl, context.projectId, resource.fileName,
-            { deduplicateByContent: true, throwOnError: true, assertCurrent: check }), controller.signal);
+            { deduplicateByContent: true, throwOnError: true, assertCurrent: check, staging }), controller.signal);
         } else if ('path' in resource) {
           saved = await cancellable(copyFileToProjectData(resource.path, context.projectId, {
-            signal: controller.signal, redactErrors: true, reuseExistingProjectFile: true,
+            signal: controller.signal, redactErrors: true, reuseExistingProjectFile: true, staging,
           }), controller.signal);
         } else {
           const dataUrl = await cancellable(blobToDataUrl(resource.blob), controller.signal);
           check();
           saved = await cancellable(saveDataUrlToProjectData(dataUrl, context.projectId,
-            `clipboard-${generateId()}.${resource.extension}`), controller.signal);
+            `clipboard-${generateId()}.${resource.extension}`, { assertCurrent: check, throwOnError: true, staging }), controller.signal);
         }
         check();
         if (!saved?.assetUrl) reject('IMPORT_COPY_FAILED', `第 ${index + 1} 项导入失败，请检查文件及目录授权；本批未添加节点`);
@@ -235,12 +259,14 @@ async function importResources(
       }
     }
     useAppStore.getState().addNodesWithEdges(nodes, edges);
+    staging.commit();
     useAppStore.getState().incrementRevision();
     return {
       nodes: nodes.map((node) => ({ nodeId: node.id, type: node.type, position: node.position })),
       revision: useAppStore.getState().getCurrentRevision(),
     };
   } catch (error) {
+    await staging.discard();
     if (error instanceof ResourceImportError) throw error;
     if (error instanceof MediaUploadError) throw new ResourceImportError(error.code, error.message);
     reject('IMPORT_FAILED', '资源导入失败，本批未添加节点；请检查素材与存储授权');
@@ -275,7 +301,7 @@ export async function importLocalResources(context: ResourceImportContext, files
   let reserved: string[] = [];
   let committed = false;
   try {
-    const result = await importResources(context, async () => {
+    const result = await importResources(context, async (signal) => {
       if (!files.length || files.length > MAX_ITEMS) reject('IMPORT_LIMIT', '每次导入 1 至 20 个媒体文件');
       for (const file of files) {
         if ((typeof file.path === 'string') === (typeof file.uploadId === 'string')
@@ -288,7 +314,11 @@ export async function importLocalResources(context: ResourceImportContext, files
       const pathResources = paths.length ? localResources(paths) : [];
       const ids = files.flatMap((file) => file.uploadId ? [file.uploadId] : []);
       if (ids.length && !context.conversationId) reject('IMPORT_CONTEXT_REQUIRED', '上传导入需要当前对话身份');
-      const uploaded = await reserveUploadedMedia({ ...context, conversationId: context.conversationId ?? '' }, ids);
+      const uploaded = await reserveUploadedMedia({ ...context, signal, conversationId: context.conversationId ?? '' }, ids);
+      if (signal.aborted) {
+        settleUploadedMedia(ids, false);
+        reject('IMPORT_CANCELLED', '资源导入已取消');
+      }
       reserved = ids;
       let pathIndex = 0;
       let uploadIndex = 0;

@@ -1,5 +1,6 @@
 /** 新结构节点回收前核对整作品引用；只排除本次删除节点，不改写回执或恢复材料。 */
 import { invoke } from '@tauri-apps/api/core';
+import { nativeChatImagePaths } from '../../utils/chatImageReference';
 import { configValuesEqual } from '../configPatch';
 import { readNativeProjectCapture } from '../indexedDb/nativeProjectRepository';
 import {
@@ -15,29 +16,25 @@ type Capture = NonNullable<Awaited<ReturnType<typeof readNativeProjectCapture>>>
 type ProjectRows = ReturnType<typeof nativeStorageProjectRows>;
 
 /** 原生生成历史已由回执保护；所有会话（包括可恢复会话）的附件另外参与核对。 */
-async function collectRelatedReferences(capture: Capture, rows: ProjectRows, roots: ReadonlyMap<string, string>): Promise<Set<string>> {
+async function collectRelatedReferences(capture: Capture, rows: ProjectRows,
+  collect: (value: unknown, rootRef: string) => void): Promise<void> {
   const { project, canvases } = capture.aggregate;
-  const paths = new Set<string>();
   const identities = new Set([project.id, ...canvases.map((item) => item.id),
     ...rows.retired.filter((item) => item.kind === 'canvas').map((item) => item.id)]);
   for (const id of identities) {
     const rootRef = canvases.find((item) => item.id === id)?.storageRootRef ?? project.storageRootRef;
-    const collect = (value: unknown) => {
-      for (const path of collectNativeStorageReferences(value, roots, rootRef)) paths.add(path);
-    };
     const conversations = [...await getProjectConversations(id), ...await getTrashConversations(id)];
     for (const conversation of conversations) {
       let offset = 0;
       while (true) {
         const page = await getConversationMessages(conversation.id, offset, 200);
-        collect(page.messages);
+        collect(page.messages, rootRef);
         offset += page.messages.length;
         if (offset >= page.total) break;
         if (!page.messages.length) throw new Error('节点回收的消息引用读取不完整');
       }
     }
   }
-  return paths;
 }
 
 async function resolveRoots(capture: Capture, canvasId: string): Promise<Map<string, string>> {
@@ -57,22 +54,24 @@ async function resolveRoots(capture: Capture, canvasId: string): Promise<Map<str
 }
 
 async function collectReferences(capture: Capture, rows: ProjectRows, roots: ReadonlyMap<string, string>,
-  canvasId: string, deleted: ReadonlySet<string>): Promise<Set<string>> {
+  canvasId: string, deleted: ReadonlySet<string>, chatImages: { rootRef: string; paths: ReadonlyMap<string, string> }): Promise<Set<string>> {
   const aggregate = { ...capture.aggregate, canvases: capture.aggregate.canvases.map((item) => item.id !== canvasId
     ? item : { ...item, nodes: item.nodes.filter((node) => !node || typeof node !== 'object'
       || !('id' in node) || typeof node.id !== 'string' || !deleted.has(node.id)) }) };
   // aggregate.canvas 是同一画布的兼容选择投影；不能重新带入已排除的删除前节点。
   aggregate.canvas = aggregate.canvases.find((item) => item.id === aggregate.canvas?.id) ?? null;
-  const references = collectNativeStorageReferences(aggregate, roots, capture.aggregate.project.storageRootRef);
-  for (const path of collectNativeStorageReferences([rows.exchange, rows.transfers], roots, capture.aggregate.project.storageRootRef)) {
-    references.add(path);
-  }
-  for (const path of await collectRelatedReferences(capture, rows, roots)) references.add(path);
+  const references = new Set<string>();
+  const collect = (value: unknown, rootRef = aggregate.project.storageRootRef) => {
+    for (const path of collectNativeStorageReferences(value, roots, rootRef, chatImages)) references.add(path);
+  };
+  collect(aggregate);
+  collect([rows.exchange, rows.transfers]);
+  await collectRelatedReferences(capture, rows, collect);
   return references;
 }
 
 export async function createNativeNodeTrashGuard(canvasId: string, deletedNodeIds: readonly string[]): Promise<{
-  references: ReadonlySet<string>; isCurrent: () => Promise<boolean>;
+  references: ReadonlySet<string>; chatImagePaths: ReadonlyMap<string, string>; isCurrent: () => Promise<boolean>;
 }> {
   const owner = getNativeProjectOwner(canvasId);
   if (!owner) throw new Error('节点回收的作品身份尚未登记');
@@ -87,8 +86,10 @@ export async function createNativeNodeTrashGuard(canvasId: string, deletedNodeId
   const rows = nativeStorageProjectRows(snapshot, owner);
   const roots = await resolveRoots(capture, canvasId);
   const deleted = new Set(deletedNodeIds);
-  const references = await collectReferences(capture, rows, roots, canvasId, deleted);
-  return { references, isCurrent: async () => {
+  const primary = capture.aggregate.project.storageRootRef;
+  const chatImages = { rootRef: primary, paths: nativeChatImagePaths(primary, capture.exchange) };
+  const references = await collectReferences(capture, rows, roots, canvasId, deleted, chatImages);
+  return { references, chatImagePaths: chatImages.paths, isCurrent: async () => {
     try {
       if (getNativeProjectOwner(canvasId) !== owner) return false;
       const [latest, currentSnapshot] = await Promise.all([
@@ -96,11 +97,11 @@ export async function createNativeNodeTrashGuard(canvasId: string, deletedNodeId
       ]);
       const latestCanvas = latest?.aggregate.canvases.find((item) => item.id === canvasId);
       if (!latest || latest.aggregate.project.id !== owner || !latestCanvas || latestCanvas.projectId !== owner
-        || latestCanvas.storageRootRef !== canvas.storageRootRef
+        || latestCanvas.storageRootRef !== canvas.storageRootRef || !configValuesEqual(latest.exchange, capture.exchange)
         || nativeStorageProjectProtected(currentSnapshot, owner)
         || !configValuesEqual(nativeStorageProjectRows(currentSnapshot, owner), rows)) return false;
       if (!configValuesEqual([...await resolveRoots(latest, canvasId)], [...roots])) return false;
-      const currentReferences = await collectReferences(latest, rows, roots, canvasId, deleted);
+      const currentReferences = await collectReferences(latest, rows, roots, canvasId, deleted, chatImages);
       if ([...currentReferences].some((path) => !references.has(path))) return false;
       // 允许本次删除的自动保存已经提交；扫描期间发生新变更仍保留原文件。
       const [settled, settledSnapshot] = await Promise.all([
@@ -108,7 +109,7 @@ export async function createNativeNodeTrashGuard(canvasId: string, deletedNodeId
       ]);
       return !!settled && getNativeProjectOwner(canvasId) === owner
         && settled.changeRevision === latest.changeRevision
-        && configValuesEqual(settled.aggregate, latest.aggregate)
+        && configValuesEqual(settled.aggregate, latest.aggregate) && configValuesEqual(settled.exchange, latest.exchange)
         && configValuesEqual(nativeStorageProjectRows(settledSnapshot, owner), rows)
         && configValuesEqual([...await resolveRoots(settled, canvasId)], [...roots]);
     } catch { return false; }

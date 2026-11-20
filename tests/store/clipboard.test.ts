@@ -496,6 +496,39 @@ describe('modifier-drag duplication', () => {
 });
 
 describe('cross-project paste (跨项目粘贴)', () => {
+  it.each([true, false])('分镜快照使用复制时显示的文件，同选源节点时复用新节点的文件（%s）', async (withSources) => {
+    const image = mediaNode('image', 'a');
+    const video: Node<BaseNodeData> = { ...node('video'), type: 'source-video', data: {
+      type: 'source-video', label: '成片', filePath: '/a/clip.mp4', videoUrl: 'asset://localhost/a/clip.mp4',
+      shotlistProductionSource: { nodeId: 'sheet', rowId: 'r', kind: 'video' },
+    } };
+    const sheet: Node<BaseNodeData> = { ...node('sheet'), type: 'ai-shotlist', data: {
+      type: 'ai-shotlist', label: '分镜', shotlistRows: [{ id: 'r', shotNo: '1',
+        frame: { kind: 'image', nodeId: 'image', filePath: '/a/stale.png' },
+        video: { kind: 'video', nodeId: 'video', assetId: 'old', relativePath: 'stale.mp4' } }],
+    } };
+    const nodes = [sheet, image, video];
+    fileMocks.copyFileToProjectData.mockImplementation(async (path: string) => {
+      const filePath = '/b/' + path.split('/').at(-1);
+      return { filePath, assetUrl: `asset://localhost${filePath}` };
+    });
+    useAppStore.setState({ currentProjectId: 'a', nodes, selectedNodeIds: withSources ? nodes.map((n) => n.id) : ['sheet'] });
+    useAppStore.getState().copySelectedNodes();
+    useAppStore.setState({ currentProjectId: 'b', nodes: [node('image')], edges: [] });
+    await useAppStore.getState().pasteNodes({ x: 0, y: 0 });
+    const inserted = useAppStore.getState().nodes;
+    const copied = inserted.find((n) => n.type === 'ai-shotlist')!;
+    const row = copied.data.shotlistRows![0];
+    expect(fileMocks.copyFileToProjectData).toHaveBeenCalledTimes(2);
+    expect(row.frame).toMatchObject({ filePath: '/b/original.png', url: 'asset://localhost/b/original.png' });
+    expect(row.video).toMatchObject({ filePath: '/b/clip.mp4', url: 'asset://localhost/b/clip.mp4' });
+    expect(row.frame?.nodeId).not.toBe('image');
+    expect(row.video?.assetId).toBeUndefined();
+    expect(row.video?.relativePath).toBeUndefined();
+    expect(inserted.find((n) => n.id === row.frame?.nodeId)?.data.filePath).toBe(withSources ? row.frame?.filePath : undefined);
+    expect(inserted.find((n) => n.id === row.video?.nodeId)?.data.shotlistProductionSource?.nodeId).toBe(withSources ? copied.id : undefined);
+    expect(sheet.data.shotlistRows![0].frame!.filePath).toBe('/a/stale.png');
+  });
   it('把媒体文件复制到目标项目，副本不再引用源项目', async () => {
     useAppStore.setState({
       currentProjectId: 'project-a',

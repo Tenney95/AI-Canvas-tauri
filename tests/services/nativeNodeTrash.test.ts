@@ -150,6 +150,20 @@ describe('新结构节点文件回收保护', () => {
     await expect(guard.isCurrent()).resolves.toBe(false);
   });
 
+  it('子根画布消息里的聊天图片令牌仍指向主根，并在移动前重查', async () => {
+    const name = 'chat-ref-11111111-1111-4111-8111-111111111111.png';
+    capture.aggregate.project.storageBindings.push({ rootRef: subrootRef, folderName: 'imports/recovery',
+      sourceRecordIds: [], source: 'project-managed' });
+    capture.aggregate.canvases.push({ ...canvas(otherCanvasId, []), storageRootRef: subrootRef });
+    mocks.getTrashConversations.mockImplementation(async (id: string) => id === otherCanvasId ? [{ id: 'saved-chat' }] : []);
+    const beforeMessage = await createNativeNodeTrashGuard(canvasId, ['removed']);
+    mocks.getConversationMessages.mockResolvedValue({ messages: [{ content: `参考图 @image{${name}|frame}` }], total: 1 });
+    await expect(beforeMessage.isCurrent()).resolves.toBe(false);
+    const afterMessage = await createNativeNodeTrashGuard(canvasId, ['removed']);
+    expect(afterMessage.references).toContain(`${root}/${name}`);
+    expect(afterMessage.references).not.toContain(`${subroot}/${name}`);
+  });
+
   it('归属登记、权威画布或素材根无法确认时保留文件', async () => {
     mocks.owner.mockReturnValueOnce(undefined);
     await expect(createNativeNodeTrashGuard(canvasId, ['removed'])).rejects.toThrow();

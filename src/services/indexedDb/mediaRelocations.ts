@@ -6,6 +6,7 @@ import { localMediaUrlToPath } from '../../utils/mediaUrl';
 import { assertDramaAssetWriteCurrent, type DramaAssetWriteOptions } from '../../types/dramaAssets';
 import { withLegacyProjectWrite as withLegacyRelocationWrite } from './legacyProjectWriteGuard';
 import { t } from '../../i18n';
+import type { AssetFileCopyResult } from '../fileService';
 
 export interface MediaRelocation {
   oldPath: string;
@@ -41,6 +42,82 @@ export function mediaFileAllocationKey(path: string): string {
   // macOS 默认卷忽略大小写及 Unicode 规范形式；只规范查重键，磁盘名称保持原样。
   if (/^(?:mac|darwin)/i.test(platform)) return normalized.normalize('NFC').toLowerCase();
   return /^win/i.test(platform) ? normalized.toLowerCase() : normalized;
+}
+
+const COPY_PLAN_PREFIX = 'asset-move-plan:';
+const copyPlanRange = () => IDBKeyRange.bound(COPY_PLAN_PREFIX, `${COPY_PLAN_PREFIX}\uffff`);
+const copyPlanKey = (assetId: string, oldPath: string, directory: string) =>
+  COPY_PLAN_PREFIX + JSON.stringify([assetId, mediaFileAllocationKey(oldPath), mediaFileAllocationKey(directory).replace(/\/+$/, '')]);
+interface AssetMovePlan { id: string; copy: AssetFileCopyResult }
+
+function validCopyPlans(rows: AssetMovePlan[]): boolean {
+  return rows.every((row) => typeof row?.copy?.path === 'string' && row.copy.path.length > 0
+    && /^[a-f0-9]{64}$/.test(row.copy.digest) && Number.isSafeInteger(row.copy.totalBytes) && row.copy.totalBytes >= 0);
+}
+
+export async function pendingAssetMoveTargets(): Promise<ReadonlySet<string>> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_METADATA);
+    const request = tx.objectStore(STORE_METADATA).getAll(copyPlanRange());
+    tx.oncomplete = () => {
+      const rows = request.result as AssetMovePlan[];
+      if (!validCopyPlans(rows)) { reject(new Error('资产移动记录无效')); return; }
+      resolve(new Set(rows.map((row) => mediaFileAllocationKey(row.copy.path))));
+    };
+    tx.onabort = () => reject(tx.error ?? new Error('资产移动记录读取失败'));
+  });
+}
+
+/** 发布副本前登记目标。中断后只复用同一素材、同一目标目录、同一内容的计划。 */
+export async function prepareAssetMoveCopy(assetId: string, oldPath: string, directory: string, proposed: AssetFileCopyResult,
+  replace?: AssetFileCopyResult) {
+  const db = await openDB();
+  const id = copyPlanKey(assetId, oldPath, directory);
+  return new Promise<{ copy: AssetFileCopyResult; resume: boolean }>((resolve, reject) => {
+    const tx = db.transaction(STORE_METADATA, 'readwrite', { durability: 'strict' });
+    let copy = proposed, resume = false, failure: Error | undefined;
+    const store = tx.objectStore(STORE_METADATA);
+    withLegacyRelocationWrite(tx, () => {
+      const request = store.getAll(copyPlanRange());
+      request.onsuccess = () => {
+        const plans = request.result as AssetMovePlan[];
+        if (!validCopyPlans(plans)) { failure = new Error('资产移动记录无效'); tx.abort(); return; }
+        const previous = plans.find((plan) => plan.id === id)?.copy;
+        if (replace && (!previous || previous.path !== replace.path || previous.digest !== replace.digest)) {
+          failure = new Error('资产移动计划已变化，请重试');
+          tx.abort();
+        } else if (!replace && previous && previous.digest === proposed.digest && previous.totalBytes === proposed.totalBytes) {
+          copy = previous;
+          resume = true;
+        } else if (plans.some((plan) => plan.id !== id && mediaFileAllocationKey(plan.copy.path) === mediaFileAllocationKey(proposed.path))) {
+          failure = new Error('其他资产移动已占用目标名称，请重试');
+          tx.abort();
+        } else {
+          store.put({ id, copy: proposed });
+        }
+      };
+    }, (error) => { failure = error; });
+    tx.oncomplete = () => resolve({ copy, resume });
+    tx.onabort = () => reject(failure ?? tx.error ?? new Error('资产移动准备未保存'));
+  });
+}
+
+/** 发布前取消且目标仍不存在时解除占位，不影响其他请求登记的新计划。 */
+export async function releaseAssetMoveCopy(assetId: string, oldPath: string, directory: string, copy: AssetFileCopyResult): Promise<void> {
+  const db = await openDB();
+  const id = copyPlanKey(assetId, oldPath, directory);
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_METADATA, 'readwrite');
+    const store = tx.objectStore(STORE_METADATA);
+    const read = store.get(id);
+    read.onsuccess = () => {
+      const previous = (read.result as AssetMovePlan | undefined)?.copy;
+      if (previous?.path === copy.path && previous.digest === copy.digest) store.delete(id);
+    };
+    tx.oncomplete = () => resolve();
+    tx.onabort = () => reject(tx.error ?? new Error('资产移动准备未释放'));
+  });
 }
 
 /** 精确文件引用迁移；显式修复另同步真实 @asset 路径 token，普通正文不改。 */
@@ -274,6 +351,10 @@ export async function persistMediaRelocation(move: MediaRelocation, sharedNodeId
         const moves = [...(journal.result?.moves ?? []), { ...move, ownerId: sharedNodeId }];
         const pending = [...(journal.result?.pending ?? []), { ...move, ownerId: sharedNodeId }];
         tx.objectStore(STORE_METADATA).put({ id: JOURNAL_ID, moves, pending });
+        if (move.assetMove && !move.assetMove.repair) {
+          const directory = move.newPath.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+          tx.objectStore(STORE_METADATA).delete(copyPlanKey(move.assetMove.assetId, move.oldPath, directory));
+        }
         for (const name of stores) {
           const store = tx.objectStore(name);
           const request = store.openCursor();

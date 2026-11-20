@@ -40,7 +40,8 @@ export interface UndoTrashEntry {
 
 const prefix = (directory: string) => `undo-trash-v1:${encodeURIComponent(trashPathKey(directory))}:`;
 const activeMoves = new Set<string>();
-export const isUndoTrashName = (name: string): boolean => /^\d+-[a-f0-9-]{36}-[^/\\\0]+$/i.test(name);
+const shortUndoTrashName = /^\d+-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
+export const isUndoTrashName = (name: string): boolean => shortUndoTrashName.test(name) || /^\d+-[a-f0-9-]{36}-[^/\\\0]+$/i.test(name);
 
 export const isUndoTrashMoveActive = (entry: UndoTrashEntry): boolean => activeMoves.has(entry.id);
 
@@ -48,7 +49,7 @@ function toEntry(directory: string, row: JournalRow): UndoTrashEntry {
   const root = directory.replace(/\\/g, '/').slice(0, -'/.trash'.length);
   const { originalRelativePath, stagedName } = row;
   if (typeof originalRelativePath !== 'string' || !originalRelativePath || originalRelativePath.split('/').some((part) => !part || part === '..' || part === '.' || part.toLowerCase() === '.trash')
-    || typeof stagedName !== 'string' || !stagedName.endsWith(`-${originalRelativePath.split('/').at(-1)}`)
+    || typeof stagedName !== 'string' || !shortUndoTrashName.test(stagedName) && !stagedName.endsWith(`-${originalRelativePath.split('/').at(-1)}`)
     || /[\\:\0]/.test(originalRelativePath) || !isUndoTrashName(stagedName)
     || row.id !== `${prefix(directory)}${stagedName}`) throw new Error('节点暂存记录无效');
   const stagedAt = Number(stagedName.split('-')[0]);
@@ -81,14 +82,14 @@ async function writeJournal(update: (store: IDBObjectStore) => void): Promise<vo
 }
 
 export async function stageUndoTrashMove(directory: string, originalRelativePath: string, stagedName: string,
-  move: () => Promise<boolean>): Promise<boolean> {
+  move: (entry: UndoTrashEntry) => Promise<boolean>): Promise<boolean> {
   const row = { id: `${prefix(directory)}${stagedName}`, originalRelativePath, stagedName };
   const entry = toEntry(directory, row);
   activeMoves.add(entry.id);
   try {
     // 先提交原路径身份。移动失败时也保留意图，因为 IPC 失败时文件可能已经移动。
     await writeJournal((store) => { store.add(row); });
-    const moved = await move();
+    const moved = await move(entry);
     if (!moved) await forgetUndoTrashEntry(entry);
     return moved;
   } finally { activeMoves.delete(entry.id); }

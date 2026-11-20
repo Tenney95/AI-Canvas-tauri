@@ -1185,12 +1185,26 @@ pub async fn copy_asset_folder(
     result?
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AssetFileCopyResult {
     path: String,
     total_bytes: u64,
     digest: String,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
+pub enum AssetMoveCopy {
+    Plan { reserved_names: Vec<String> },
+    Publish { copy: AssetFileCopyResult, resume: bool },
+}
+
+#[derive(Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum AssetCopyDestination {
+    Folder(String),
+    Move { directory: String, plan: AssetMoveCopy },
 }
 
 pub(crate) fn file_digest(
@@ -1213,7 +1227,11 @@ pub(crate) fn file_digest(
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn asset_file_destination(source: &Path, parent: &Path) -> Result<PathBuf, String> {
+fn asset_file_destination(
+    source: &Path,
+    parent: &Path,
+    reserved_names: &[String],
+) -> Result<PathBuf, String> {
     let name = source
         .file_name()
         .and_then(|value| value.to_str())
@@ -1232,6 +1250,9 @@ fn asset_file_destination(source: &Path, parent: &Path) -> Result<PathBuf, Strin
                 None => format!("{stem} ({index})"),
             }
         };
+        if reserved_names.iter().any(|reserved| reserved.eq_ignore_ascii_case(&file_name)) {
+            continue;
+        }
         let candidate = parent.join(file_name);
         match fs::symlink_metadata(&candidate) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
@@ -1242,13 +1263,30 @@ fn asset_file_destination(source: &Path, parent: &Path) -> Result<PathBuf, Strin
     Err("同名文件过多，请更换目标目录".into())
 }
 
+fn valid_asset_move_name(source: &Path, name: &Path) -> bool {
+    if source.file_name() == name.file_name() {
+        return true;
+    }
+    if source.extension() != name.extension() {
+        return false;
+    }
+    let Some(stem) = source.file_stem().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    name.file_stem()
+        .and_then(|value| value.to_str())
+        .and_then(|value| value.strip_prefix(stem)?.strip_prefix(" (")?.strip_suffix(')'))
+        .is_some_and(|suffix| (1..=4).contains(&suffix.len())
+            && !suffix.starts_with('0') && suffix.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
 #[tauri::command]
 pub async fn copy_asset_file_to_folder(
     app: AppHandle,
     webview: Webview,
     task_id: String,
     source_path: String,
-    destination_directory: String,
+    destination_directory: AssetCopyDestination,
 ) -> Result<AssetFileCopyResult, String> {
     ensure_trusted_caller(&webview)?;
     if webview.label() != "main" {
@@ -1262,17 +1300,55 @@ pub async fn copy_asset_file_to_folder(
     {
         return Err("传输标识无效".into());
     }
+    let (directory, move_plan) = match destination_directory {
+        AssetCopyDestination::Folder(directory) => (directory, None),
+        AssetCopyDestination::Move { directory, plan } => (directory, Some(plan)),
+    };
     let source = crate::path_policy::authorize_existing_plain_file(&app, &source_path)?;
-    let parent =
-        crate::path_policy::authorize_existing_plain_directory(&app, &destination_directory)?;
+    let parent = crate::path_policy::authorize_existing_plain_directory(&app, &directory)?;
     let worker_id = task_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let bytes = plain_copy_metadata(&source)?.len();
         let digest = file_digest(&source, || is_cancelled(&worker_id))?;
-        let destination = asset_file_destination(&source, &parent)?;
+        let (destination, plan_only, resume) = match move_plan {
+            Some(AssetMoveCopy::Publish { copy: plan, resume }) => {
+                if bytes != plan.total_bytes || digest != plan.digest {
+                    return Err("源文件内容已变化，请重新移动".into());
+                }
+                let name = Path::new(&plan.path).file_name().ok_or("移动目标名称无效")?;
+                let exact = parent.join(name);
+                if exact != Path::new(&plan.path) || !valid_asset_move_name(&source, &exact) {
+                    return Err("移动目标目录已变化".into());
+                }
+                (exact, false, resume)
+            }
+            Some(AssetMoveCopy::Plan { reserved_names }) => {
+                (asset_file_destination(&source, &parent, &reserved_names)?, true, false)
+            }
+            None => (asset_file_destination(&source, &parent, &[])?, false, false),
+        };
         let authorized = authorize_path(&app, &destination.to_string_lossy(), PathAccess::Write)?;
-        if authorized.parent() != Some(parent.as_path()) {
+        if authorized.parent() != Some(parent.as_path()) || authorized == source {
             return Err("目标目录已变化".into());
+        }
+        let receipt = AssetFileCopyResult {
+            path: destination.to_string_lossy().into_owned(),
+            total_bytes: bytes,
+            digest: digest.clone(),
+        };
+        if plan_only {
+            return Ok(receipt);
+        }
+        if resume && destination.try_exists().map_err(|_| "无法检查移动目标")? {
+            let existing = crate::path_policy::authorize_existing_plain_file(&app, &receipt.path)?;
+            if existing != authorized
+                || plain_copy_metadata(&existing)?.len() != bytes
+                || file_digest(&existing, || is_cancelled(&worker_id))? != digest
+                || file_digest(&source, || is_cancelled(&worker_id))? != digest
+            {
+                return Err("asset-move-target-occupied".into());
+            }
+            return Ok(receipt);
         }
         let mut input = File::open(&source).map_err(|_| "无法打开源文件")?;
         stream_to_file(
@@ -1307,11 +1383,7 @@ pub async fn copy_asset_file_to_folder(
                 Ok(())
             },
         )?;
-        Ok(AssetFileCopyResult {
-            path: destination.to_string_lossy().into_owned(),
-            total_bytes: bytes,
-            digest,
-        })
+        Ok(receipt)
     })
     .await
     .map_err(|_| "文件复制任务失败".to_string());
@@ -1813,7 +1885,11 @@ mod tests {
         let root = test_directory("asset-file-move");
         let source = root.join("图片.png");
         fs::write(&source, b"original").unwrap();
-        let destination = asset_file_destination(&source, &root).unwrap();
+        let destination = asset_file_destination(&source, &root, &[]).unwrap();
+        assert!(valid_asset_move_name(&source, &destination));
+        assert!(!valid_asset_move_name(&source, &root.join("other.png")));
+        assert!(!valid_asset_move_name(&source, &root.join("图片 (1).txt")));
+        assert_eq!(asset_file_destination(&source, &root, &["图片 (1).png".into()]).unwrap(), root.join("图片 (2).png"));
         assert_eq!(
             destination.file_name().unwrap().to_string_lossy(),
             "图片 (1).png"

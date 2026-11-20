@@ -23,6 +23,13 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@tauri-apps/plugin-fs', async (importOriginal) => ({
   ...await importOriginal<typeof import('@tauri-apps/plugin-fs')>(),
+  mkdir: async (path: string) => { if (!mocks.directories.has(path)) mocks.directories.set(path, []); },
+  rename: async (source: string, target: string) => {
+    const size = mocks.sizes.get(source);
+    if (size === undefined || mocks.sizes.has(target)) throw new Error('unexpected rename');
+    mocks.sizes.set(target, size);
+    mocks.sizes.delete(source);
+  },
   remove: mocks.remove,
   readDir: mocks.readDir,
   stat: mocks.stat,
@@ -81,6 +88,10 @@ function addDirectory(path: string, names: string[]): void {
     isDirectory: name.endsWith('/'),
     isFile: !name.endsWith('/'),
   })));
+}
+
+function confirmedFile(path: string) {
+  return { path, root: '/' + path.split('/')[1], size: 10, digest: 'a'.repeat(64) };
 }
 
 function project(id: string): CanvasProject {
@@ -276,6 +287,7 @@ describe('storage health cross-project deletion protection', () => {
       ...project(id), nodes: [{ data: { filePath: `/${id}/used.png` } }],
     }));
     addDirectory('/a', ['used.png', 'unsaved.png']);
+    mocks.sizes.set('/b/unused.png', 10);
     addDirectory('/b', ['used.png', 'unused.png']);
   });
 
@@ -326,7 +338,7 @@ describe('storage health cross-project deletion protection', () => {
     expect(report.orphans.map((file) => file.path)).toEqual([
       `/a/ai-apps/${unusedHash}.json`, `/b/ai-apps/${previousHash}.json`,
     ]);
-    const removed = await deleteOrphanFile(`/a/ai-apps/${previousHash}.json`, async (path) => {
+    const removed = await deleteOrphanFile(confirmedFile(`/a/ai-apps/${previousHash}.json`), async (path) => {
       const fresh = await scanStorageHealth([], collectLive);
       return fresh.orphans.some((file) => file.path === path);
     });
@@ -339,7 +351,7 @@ describe('storage health cross-project deletion protection', () => {
       throw new Error('项目已切换');
     };
     await expect(scanStorageHealth([], collectLive)).rejects.toMatchObject({ area: 'references', reason: 'changed' });
-    expect(await deleteOrphanFile('/b/unused.png', async () => {
+    expect(await deleteOrphanFile(confirmedFile('/b/unused.png'), async () => {
       await scanStorageHealth([], collectLive);
       return true;
     })).toBe(false);
@@ -376,11 +388,11 @@ describe('storage health cross-project deletion protection', () => {
   });
 
   it.each([deleteOrphanFile, deleteDuplicateFile])('requires fresh verification before removal', async (removeFile) => {
-    expect(await removeFile('/b/unused.png')).toBe(false);
-    expect(await removeFile('/b/unused.png', async () => false)).toBe(false);
-    expect(await removeFile('/b/unused.png', async () => { throw new Error('read failed'); })).toBe(false);
+    expect(await removeFile(confirmedFile('/b/unused.png'))).toBe(false);
+    expect(await removeFile(confirmedFile('/b/unused.png'), async () => false)).toBe(false);
+    expect(await removeFile(confirmedFile('/b/unused.png'), async () => { throw new Error('read failed'); })).toBe(false);
     expect(mocks.remove).not.toHaveBeenCalled();
-    expect(await removeFile('/b/unused.png', async () => true)).toBe(true);
+    expect(await removeFile(confirmedFile('/b/unused.png'), async () => true)).toBe(true);
     expect(mocks.remove).toHaveBeenCalledOnce();
   });
 
@@ -390,7 +402,7 @@ describe('storage health cross-project deletion protection', () => {
     mocks.getProjectById.mockImplementation(async (id: string) => ({
       ...project(id), nodes: [{ data: { filePath: '/b/unused.png' } }],
     }));
-    const deleted = await deleteOrphanFile('/b/unused.png', async (path) => {
+    const deleted = await deleteOrphanFile(confirmedFile('/b/unused.png'), async (path) => {
       const fresh = await scanStorageHealth([], new Set());
       return fresh.orphans.some((file) => file.path === path);
     });

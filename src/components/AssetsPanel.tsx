@@ -30,6 +30,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { cursorPosition, getCurrentWindow } from '@tauri-apps/api/window';
 import { useAppStore } from '../store/useAppStore';
 import { listTopLevelProjects, listEpisodes, projectMemoryOwnerId, seriesOwnerId } from '../store/store.utils';
+import { mediaFileAllocationKey, pendingAssetMoveTargets } from '../services/indexedDb/mediaRelocations';
 import type { NativeProjectViewItem } from '../store/nativeProjectView';
 import {
   getProjectDataDir,
@@ -549,7 +550,7 @@ export default function AssetsPanel() {
         // （store.nodes 始终是当前项目的画布，其他项目无法从内存取节点）
         if (currentProjectId && viewIds.has(currentProjectId)) {
           for (const node of useAppStore.getState().nodes) {
-            const entry = extractFilesFromNodeData(node.data as Record<string, unknown>);
+            const entry = extractFilesFromNodeData(node.data as Record<string, unknown>, { projectId: currentProjectId, nodeId: node.id });
             if (!entry) continue;
             const key = imageHistoryReferenceKey(entry.path) ?? entry.path;
             if (!known.has(key) && !deletedFilePathsRef.current.has(entry.path)) {
@@ -585,6 +586,10 @@ export default function AssetsPanel() {
           setExternalFolders([]);
           setGlobalRootPath(null);
           setFolderScanTruncated(false);
+        } else if (isTauriEnv()) {
+          const pending = await pendingAssetMoveTargets();
+          if (!isCurrentRequest()) return;
+          if (pending.size) setPermanentFiles((previous) => previous.filter((file) => !pending.has(mediaFileAllocationKey(file.path))));
         }
         const discovered = new Map<string, AssetFileEntry>();
         publishFiles = () => {

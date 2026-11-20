@@ -39,9 +39,9 @@ type EpisodeFileSource = Pick<CanvasProject, 'id' | 'updatedAt' | 'exchangeEpoch
 };
 type ConvertFileSrc = ReturnType<typeof getConvertFileSrc>;
 
-function filesFromNodes(nodes: ReadonlyArray<{ data: unknown }>, episodeId: string, convertFileSrc: ConvertFileSrc): EpisodeFile[] {
+function filesFromNodes(nodes: ReadonlyArray<{ id: string; data: unknown }>, episodeId: string, convertFileSrc: ConvertFileSrc): EpisodeFile[] {
   return nodes.flatMap((node) => {
-    const file = extractFilesFromNodeData(node.data as Record<string, unknown>);
+    const file = extractFilesFromNodeData(node.data as Record<string, unknown>, { projectId: episodeId, nodeId: node.id });
     return file ? [{
       ...file,
       ...(file.category === 'video' && !file.assetUrl && convertFileSrc
@@ -173,7 +173,7 @@ export default function ProjectAssetsOverlay({
             data = await loadProjectData(source.id);
           }
           if (loadRequestRef.current !== requestId) return;
-          const epNodes = (data?.nodes as Array<{ data: unknown }> | undefined) ?? [];
+          const epNodes = (data?.nodes as Array<{ id: string; data: unknown }> | undefined) ?? [];
           const entries = filesFromNodes(epNodes, source.id, convertFileSrc);
           // 读取失败不建立缓存基线，下次刷新或重开仍可重试。
           if (data) episodeCache.current.set(source.id, { version, files: entries });

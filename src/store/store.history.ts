@@ -9,6 +9,7 @@ import type { AppState } from './useAppStore';
 import type { BaseNodeData, NodeGroup } from '../types';
 import * as fileService from '../services/fileService';
 import { waitForPendingNodeExits } from '../utils/nodeAnimations';
+import { hasPendingCanvasMediaImport, pendingNodeMediaImports } from '../services/canvasDerivationGuard';
 import { getHistoryGroupSize } from '../utils/historyOperationLabels';
 import { getGroupLayoutComparisonPosition, getGroupLayoutOffsetX, getGroupLayoutOffsetY,
   getGroupLayoutPosition, reconcileGroupLayoutOffsets } from '../utils/groupCollapseLayout';
@@ -557,6 +558,19 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
     await fileService.waitForPendingNodeFileDeletions();
 
     if (!isCurrent() || options?.isCurrent?.() === false) return false;
+    const beforeImport = get();
+    const imports = hasPendingCanvasMediaImport(beforeImport)
+      && pendingNodeMediaImports(beforeImport.currentProjectId, new Set(beforeImport.nodes.map((node) => node.id)));
+    if (imports) {
+      // 等到占位节点取得文件路径再保存重做快照；新操作或切换项目立即释放历史队列。
+      const sameHistory = () => isCurrent() && options?.isCurrent?.() !== false
+        && get().history === beforeImport.history && get().historyIndex === beforeImport.historyIndex;
+      let cancelled!: () => void;
+      const changed = new Promise<false>((resolve) => { cancelled = () => resolve(false); });
+      const unsubscribe = api.subscribe(() => { if (!sameHistory()) cancelled(); });
+      try { if (await Promise.race([imports, changed]) === false) return false; } finally { unsubscribe(); }
+      if (!sameHistory() || !isSameStructureIgnoringLayout(beforeImport, get())) return false;
+    }
 
     const { historyIndex, history, nodes, edges, groups, currentProjectId } = get();
     if (history.length === 0) return false;
@@ -592,6 +606,11 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
     const redoEntryIndex = checkpointIndex + 1;
     if (!nextHistory[redoEntryIndex] || !isSameStructure(nextHistory[redoEntryIndex], current)) {
       nextHistory.splice(redoEntryIndex, nextHistory.length - redoEntryIndex, current);
+    } else if (!nextHistory[redoEntryIndex].characterVisualChanges && (imports
+      || nextHistory[redoEntryIndex].nodes.some((node, index) => node.data.role === 'source'
+        && node.data.status === 'loading' && current.nodes[index].data.status !== 'loading'))) {
+      // 连续拖入时，上一个源节点的占位可能已在既有分支中，哪怕复制此刻已经结束。
+      nextHistory[redoEntryIndex] = current;
     }
 
     // Restore files BEFORE updating state so React renders with files already on disk.
@@ -601,8 +620,22 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
       entry.groups.filter((group) => !currentGroupIds.has(group.id)).map((group) => group.name),
       currentProjectId,
     );
-    // Restore parent folders first, including empty groups and legacy nested trash content.
-    for (const folder of revivedFolders) await fileService.restoreFromUndoTrash(folder, currentProjectId);
+    const restorePath = async (path: string): Promise<boolean> => {
+      const latest = get();
+      if (!isCurrent() || options?.isCurrent?.() === false || latest.history !== history
+        || latest.historyIndex !== historyIndex) return false;
+      const outcome = await fileService.restoreUndoTrashForHistory(path, currentProjectId);
+      if (outcome !== 'occupied' && outcome !== 'failed') return true;
+      if (isCurrent() && options?.isCurrent?.() !== false) {
+        const name = path.split(/[/\\]/).at(-1) ?? '';
+        get().showToast(outcome === 'occupied'
+          ? t('无法撤销，请移走项目中占用原位置的「{name}」后重试', { name })
+          : t('无法还原「{name}」，请检查项目目录后重试撤销', { name }), 'error');
+      }
+      return false;
+    };
+    // 先还原父目录；发生冲突时保持历史游标，已经还原的条目下次视为原位文件。
+    for (const folder of revivedFolders) if (!await restorePath(folder)) return false;
     const revivedPathGroups = await Promise.all(entry.nodes.map((node) => (
       currentNodeIds.has(node.id)
         ? Promise.resolve([])
@@ -610,7 +643,7 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
     )));
     const revivedPaths = [...new Set(revivedPathGroups.flat())];
     if (revivedPaths.length > 0) {
-      await Promise.allSettled(revivedPaths.map((filePath) => fileService.restoreFromUndoTrash(filePath, currentProjectId)));
+      for (const path of revivedPaths) if (!await restorePath(path)) return false;
       // 节点复活但文件没回来时，界面上只会表现为"打不开"，必须明说，别让用户以为撤销成功了
       void Promise.all(revivedPaths.map((filePath) => fileService.isFileMissing(filePath)))
         .then((missing) => {

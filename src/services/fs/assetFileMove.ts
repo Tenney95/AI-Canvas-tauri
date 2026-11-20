@@ -1,16 +1,18 @@
 /**
  * assetFileMove — 移动资产文件并导入到指定资产目录。
  */
-import { stat } from '@tauri-apps/plugin-fs';
-import { copyAssetFileToFolder, finishAssetFileMove, type FileTransferOptions } from '../fileService';
-import { completeMediaRelocation, pendingMediaRelocations, persistMediaRelocation, type MediaRelocation } from '../indexedDb/mediaRelocations';
-import { getAssetIndexById } from '../indexedDbService';
+import { exists, stat } from '@tauri-apps/plugin-fs';
+import { copyAssetFileToFolder, finishAssetFileMove, type AssetFileCopyResult, type FileTransferOptions } from '../fileService';
+import { completeMediaRelocation, mediaFileAllocationKey, pendingAssetMoveTargets, pendingMediaRelocations, persistMediaRelocation,
+  prepareAssetMoveCopy, releaseAssetMoveCopy, type MediaRelocation } from '../indexedDb/mediaRelocations';
+import { getAssetIndexById, getAssetIndexByPath } from '../indexedDbService';
 import { getGlobalFilesDir, resolveAssetFolderDirectory, type AssetFolderSelection } from './assetLibrary';
 import { getRelativeAssetPath, identifyAsset } from './assetIndex';
-import { getAssetUrlFromPath, notifyProjectDiskChanged, type AssetFileEntry } from './core';
+import { getAssetUrlFromPath, notifyProjectDiskChanged, stripVerbatimPrefix, type AssetFileEntry } from './core';
 
 const MOVE_DOMAIN = 'global-assets';
-const normalize = (path: string) => path.replace(/^\\\\\?\\/, '').replace(/\\/g, '/').replace(/\/+$/, '');
+const activeMoves = new Set<string>();
+const normalize = (path: string) => stripVerbatimPrefix(path).replace(/\\/g, '/').replace(/\/+$/, '');
 const key = (path: string) => /^[a-z]:\//i.test(normalize(path)) || normalize(path).startsWith('//') ? normalize(path).toLowerCase() : normalize(path);
 const parent = (path: string) => normalize(path).slice(0, normalize(path).lastIndexOf('/'));
 const checkCancelled = (signal?: AbortSignal) => { if (signal?.aborted) throw new DOMException('文件操作已取消', 'AbortError'); };
@@ -28,6 +30,17 @@ export async function moveAssetFile(
   file: AssetFileEntry, selection: AssetFolderSelection, roots: readonly string[],
   onRelocated: (move: MediaRelocation) => void, options?: FileTransferOptions,
 ): Promise<{ path: string; moved: boolean }> {
+  const source = mediaFileAllocationKey(file.path);
+  if (activeMoves.has(source)) throw new Error('此资产正在移动，请稍后重试');
+  activeMoves.add(source);
+  try { return await moveAssetFileToFolder(file, selection, roots, onRelocated, options); }
+  finally { activeMoves.delete(source); }
+}
+
+async function moveAssetFileToFolder(
+  file: AssetFileEntry, selection: AssetFolderSelection, roots: readonly string[],
+  onRelocated: (move: MediaRelocation) => void, options?: FileTransferOptions,
+) {
   if (file.category !== 'image' || !['global', 'folder'].includes(file.source ?? '') || file.availability === 'offline') {
     throw new Error('仅支持移动全局资产中的本地图片');
   }
@@ -40,12 +53,13 @@ export async function moveAssetFile(
 
   // 上次引用已提交但回收失败时，重试原操作；不再创建第二份副本。
   let move = (await pendingMediaRelocations(MOVE_DOMAIN)).find((item) => item.assetMove
+    && (!file.assetId || file.assetId === item.assetMove.assetId)
     && key(item.oldPath) === key(file.path) && key(parent(item.newPath)) === key(destination.directory));
   if (!move) {
     const previous = file.assetId ? await getAssetIndexById(file.assetId) : undefined;
     if (previous && key(previous.path) !== key(file.path)) throw new Error('资产位置已变化，请刷新列表后重试');
     const identity = await identifyAsset(file.path, { assetId: file.assetId, source: file.source as 'global' | 'folder', rootPath: sourceRoot });
-    const copy = await copyAssetFileToFolder(file.path, destination.directory, options);
+    const copy = await publishMoveCopy(identity.assetId, file.path, destination.directory, options);
     checkCancelled(options?.signal);
     const targetStat = await stat(copy.path);
     const relativePath = getRelativeAssetPath(copy.path, destination.rootPath);
@@ -63,6 +77,38 @@ export async function moveAssetFile(
   await completeMediaRelocation(move);
   notifyProjectDiskChanged();
   return { path: move.newPath, moved: true };
+}
+
+async function publishMoveCopy(assetId: string, source: string, directory: string, options?: FileTransferOptions) {
+  const targets = await pendingAssetMoveTargets();
+  const directoryKey = mediaFileAllocationKey(directory).replace(/\/+$/, '');
+  const reservedNames = [...targets].filter((path) => parent(path) === directoryKey).map((path) => path.split('/').at(-1)!);
+  const plan = async (replace?: AssetFileCopyResult) => {
+    const proposed = await copyAssetFileToFolder(source, directory, options, { kind: 'plan', reservedNames });
+    checkCancelled(options?.signal);
+    return prepareAssetMoveCopy(assetId, source, directory, proposed, replace);
+  };
+  let prepared = await plan();
+  for (;;) {
+    const indexed = await getAssetIndexByPath(normalize(prepared.copy.path));
+    if (!indexed || indexed.assetId === assetId) {
+      try {
+        return await copyAssetFileToFolder(source, directory, options, { kind: 'publish', ...prepared });
+      } catch (error) {
+        if (!prepared.resume || (error instanceof Error ? error.message : error) !== 'asset-move-target-occupied') {
+          if (!await exists(prepared.copy.path).catch(() => true)) {
+            await releaseAssetMoveCopy(assetId, source, directory, prepared.copy);
+          }
+          throw error;
+        }
+      }
+    }
+    // 原计划名已被独立文件或旧资产索引占用。保留占用者，重新登记一个空闲名字。
+    const name = normalize(prepared.copy.path).split('/').at(-1)!;
+    if (reservedNames.includes(name) && !prepared.resume) throw new Error('移动目标已被占用，请刷新后重试');
+    reservedNames.push(name);
+    prepared = await plan(prepared.copy);
+  }
 }
 
 /** 外部拖入是复制导入；每个文件独立落盘，取消保留已完成的副本。 */

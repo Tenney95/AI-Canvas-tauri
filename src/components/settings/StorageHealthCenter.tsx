@@ -4,8 +4,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../store/useAppStore';
 import { isTauriEnv, revealFileInFolder } from '../../services/fileService';
 import {
-  scanStorageHealth, prepareTrashCleanup, clearTrashDir, deleteOrphanFile, deleteDuplicateFile, verifyStorageCleanupFile, collectStorageLiveFilePaths, StorageHealthScanError,
-  type StorageHealthReport, type TrashInfo, type OrphanFileInfo, type DuplicateFileGroup, type CleanupResult, type StorageLiveReferences,
+  scanStorageHealth, prepareTrashCleanup, clearTrashDir, deleteOrphanFile, verifyStorageCleanupFile, collectStorageLiveFilePaths, StorageHealthScanError, StorageCleanupStagedError,
+  type StorageHealthReport, type StorageCleanupVerifier, type TrashInfo, type OrphanFileInfo, type DuplicateFileGroup, type CleanupResult, type StorageLiveReferences,
 } from '../../services/fs/storageHealth';
 import { parseChatImageReferences } from '../../utils/chatImageReference';
 import { estimateBrowserStorage, formatBytes, STORAGE_PRESSURE_RATIO, type StorageEstimate } from '../../services/storageQuota';
@@ -22,6 +22,7 @@ type CleanupSelection = (
   | { kind: 'duplicates'; entries: DuplicateFileGroup['files']; groupKey: string }
 );
 type CleanupRequest = CleanupSelection & { projectId: string | null };
+type CleanupSummary = CleanupResult & { failedNames: string[]; retained: Array<{ name: string; path: string }> };
 
 const CATEGORY_COLORS: Record<string, string> = {
   '图片': 'var(--node-image)', '视频': 'var(--node-video)', '音频': 'var(--node-audio)',
@@ -141,7 +142,7 @@ export default function StorageHealthCenter() {
   const [repairTarget, setRepairTarget] = useState<AssetRepairTarget | null>(null);
   const [pendingCleanup, setPendingCleanup] = useState<CleanupRequest | null>(null);
   const [cleaning, setCleaning] = useState(false);
-  const [cleanupResult, setCleanupResult] = useState<(CleanupResult & { failedNames: string[] }) | null>(null);
+  const [cleanupResult, setCleanupResult] = useState<CleanupSummary | null>(null);
   const mounted = useRef(true);
   const scanLock = useRef(false);
   const cleanupLock = useRef(false);
@@ -166,7 +167,9 @@ export default function StorageHealthCenter() {
         estimateBrowserStorage().then((quota) => {
           if (mounted.current && run === scanRun.current) setBrowserStorage(quota);
         }),
-        desktop ? scanStorageHealth(useAppStore.getState().projects, () => collectLiveReferences(projectId), folders, { signal: controller.signal }) : null,
+        desktop ? scanStorageHealth(useAppStore.getState().projects, () => collectLiveReferences(projectId), folders, {
+          captureOrphanDigests: true, signal: controller.signal,
+        }) : null,
       ]);
       if (!mounted.current || run !== scanRun.current) return;
       if (controller.signal.aborted) throw new DOMException('Cancelled', 'AbortError');
@@ -241,25 +244,23 @@ export default function StorageHealthCenter() {
     cleanupController.current = controller;
     setCleaning(true);
     setCleanupResult(null);
-    const result: CleanupResult & { failedNames: string[] } = { deletedCount: 0, failedCount: 0, reclaimedSize: 0, failedNames: [] };
+    const result: CleanupSummary = { deletedCount: 0, failedCount: 0, reclaimedSize: 0, failedNames: [], retained: [] };
     const request = pendingCleanup;
     // 整批盘点一次；每个文件删除前仍重读引用，只跳过无关目录和内容摘要。
     let fresh: StorageHealthReport | null = null;
-    let verifiedSize = 0;
     const selectedPaths = new Set(request.entries.filter((entry) => 'path' in entry).map((entry) => entry.path));
-    const verifyUnreferenced = async (path: string) => {
+    const verifyUnreferenced: StorageCleanupVerifier = async (path, staged) => {
       if (!fresh || request.kind === 'trash' || !mounted.current || useAppStore.getState().currentProjectId !== request.projectId) return false;
       const expected = request.entries.find((file) => file.path === path);
       const orphan = fresh.orphans.find((file) => file.path === path);
-      if (!expected || !orphan || orphan.size !== expected.size) return false;
+      if (!expected || !orphan || orphan.size !== expected.size || orphan.root !== expected.root || orphan.projectId !== expected.projectId) return false;
       const group = request.kind === 'duplicates' ? fresh.duplicates.find((group) => group.key === request.groupKey) : undefined;
       const keeper = group?.files.find((file) => !selectedPaths.has(file.path) && !file.canDelete);
       if (request.kind === 'duplicates' && (!keeper || !group?.files.some((file) => file.path === path && file.canDelete))) return false;
       const verified = await verifyStorageCleanupFile(useAppStore.getState().projects, () => collectLiveReferences(request.projectId), expected, {
-        signal: controller.signal,
+        signal: controller.signal, staged,
         ...(request.kind === 'duplicates' && keeper ? { duplicate: { key: request.groupKey, keeper } } : {}),
       });
-      verifiedSize = verified ? expected.size : 0;
       return verified && mounted.current && useAppStore.getState().currentProjectId === request.projectId;
     };
     try {
@@ -303,15 +304,14 @@ export default function StorageHealthCenter() {
             result.reclaimedSize += cleared.reclaimedSize;
             if (cleared.failedCount) result.failedNames.push(name);
           } else if ('path' in entry) {
-            const removed = request.kind === 'duplicates'
-              ? await deleteDuplicateFile(entry.path, verifyUnreferenced)
-              : await deleteOrphanFile(entry.path, verifyUnreferenced);
-            if (removed) { result.deletedCount++; result.reclaimedSize += verifiedSize; }
+            const removed = await deleteOrphanFile(entry, verifyUnreferenced, controller.signal);
+            if (removed) { result.deletedCount++; result.reclaimedSize += entry.size; }
             else { result.failedCount++; result.failedNames.push(name); }
           }
-        } catch {
+        } catch (error) {
           result.failedCount += 'fileCount' in entry ? Math.max(1, entry.reclaimableCount) : 1;
           result.failedNames.push(name);
+          if (error instanceof StorageCleanupStagedError) result.retained.push({ name, path: error.stagedPath });
         }
       }
     } finally {
@@ -395,6 +395,12 @@ export default function StorageHealthCenter() {
         <p>{t('已清理 {count} 个文件，释放 {size}；未清理 {failed} 项', {
           count: cleanupResult.deletedCount, size: formatBytes(cleanupResult.reclaimedSize), failed: cleanupResult.failedCount,
         })}</p>
+        {cleanupResult.retained.map((file) => <p key={file.path}>
+          {t('已保留在项目 .trash：{name}', { name: file.name })}{' '}
+          <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => {
+            void revealFileInFolder(file.path).catch(() => showToast(t('打开文件所在位置失败，请确认文件仍存在且可访问'), 'error'));
+          }}>{t('打开所在位置')}</button>
+        </p>)}
         {cleanupResult.failedNames.length > 0 && <details className="mt-1">
           <summary className="cursor-pointer">{t('查看未清理项')}</summary>
           <p className="mt-1 text-xs">{t('文件可能仍被引用、已发生变化或无法访问；请重新扫描后核对。')}</p>

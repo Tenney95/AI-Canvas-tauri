@@ -122,6 +122,8 @@ export interface ShotFrameBinding {
   url?: string;
   filePath?: string;
   assetId?: string;
+  /** 项目保存时保留的相对路径，加载后同时补回运行期 filePath。 */
+  relativePath?: string;
   /** 视频源时长，供「时长」栏对齐真实片长 */
   sourceDuration?: number;
 }

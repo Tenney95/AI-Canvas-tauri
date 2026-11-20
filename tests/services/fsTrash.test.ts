@@ -54,6 +54,7 @@ import {
   recoverUndoTrashReferences,
   resolveNodeUndoTrashPaths,
   restoreFromUndoTrash,
+  restoreUndoTrashForHistory,
   waitForPendingNodeFileDeletions,
 } from '../../src/services/fs/trash';
 import { readUndoTrashEntries } from '../../src/services/fs/undoTrashJournal';
@@ -186,6 +187,29 @@ describe('undo trash media moves', () => {
     await expect(restoreFromUndoTrash(originalPath)).resolves.toBe(false);
   });
 
+  it.each(['a'.repeat(235), '猫'.repeat(80)])('长原名可以按日志恢复，暂存名不超过文件系统限制', async (base) => {
+    const path = `D:/project/media/${base}.png`;
+    await moveToUndoTrash(path);
+    const staged = fsMocks.rename.mock.calls[0][1] as string;
+    expect(staged.split('/').at(-1)).toMatch(/^\d+-[a-f0-9-]{36}$/i);
+    fsMocks.exists.mockImplementation(async (candidate: string) => candidate === staged || !candidate.includes('/.trash/') && candidate !== path);
+    await expect(restoreFromUndoTrash(path)).resolves.toBe(true);
+    expect(fsMocks.rename).toHaveBeenLastCalledWith(staged, path);
+  });
+
+  it('只有原件与暂存件同时存在才报告占用，移走占用文件后可重试', async () => {
+    const path = 'D:/project/media/name-in-use.png';
+    await moveToUndoTrash(path);
+    const staged = fsMocks.rename.mock.calls[0][1];
+    fsMocks.exists.mockImplementation(async (candidate: string) => candidate === staged || !candidate.includes('/.trash/'));
+    await expect(restoreUndoTrashForHistory(path)).resolves.toBe('occupied');
+    expect(fsMocks.rename).toHaveBeenCalledTimes(1);
+    fsMocks.exists.mockImplementation(async (candidate: string) => candidate === staged || candidate !== path && !candidate.includes('/.trash/'));
+    await expect(restoreUndoTrashForHistory(path)).resolves.toBe('restored');
+    fsMocks.exists.mockImplementation(async (candidate: string) => !candidate.includes('/.trash/'));
+    await expect(restoreUndoTrashForHistory(path)).resolves.toBe('untracked');
+  });
+
   it('等待接口能挡住"还原跑在暂存前面"的竞争', async () => {
     const originalPath = 'D:/project/media/slow-video.mp4';
     let finishRename: (() => void) | null = null;
@@ -227,6 +251,17 @@ describe('删除节点文件的项目归属校验', () => {
     expect(fsMocks.rename).not.toHaveBeenCalled();
     expect(coreMocks.invoke).not.toHaveBeenCalled();
     expect(coreMocks.notifyProjectDiskChanged).not.toHaveBeenCalled();
+  });
+
+  it('视频手选参考和本地预览保留共享文件，删除视频节点本身不回收借用的素材', async () => {
+    const image = 'D:/data/project-b/frame.png';
+    const preview = 'D:/data/project-b/preview.png';
+    const data = { videoReferences: [{ url: 'file:///D:/data/project-b/frame.png', previewUrl: preview },
+      { url: 'https://example.com/reference.png' }, { url: 'asset://provider-asset' }] };
+    const keep = collectNodeFileReferences(data);
+    expect(keep).toEqual(new Set([image, preview]));
+    expect(await resolveNodeUndoTrashPaths(data, 'project-b')).toEqual([]);
+    expect(await resolveNodeUndoTrashPaths({ filePath: image.toUpperCase() }, 'project-b', keep)).toEqual([]);
   });
 
   it('路径归属判定兼容反斜杠、大小写与同前缀目录', () => {

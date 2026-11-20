@@ -9,6 +9,7 @@ import { getRelativeAssetPath } from './assetIndex';
 import { isProjectAgentInternalFile } from '../../utils/agentProjectWorkspace';
 import { isNativeMediaPendingFile } from '../../utils/nativeMediaPendingFile';
 import { isNativeProjectBindingFile } from '../../utils/nativeProjectBindingFile';
+import { mediaFileAllocationKey, pendingAssetMoveTargets } from '../indexedDb/mediaRelocations';
 
 export interface RecentAssetEntry {
   file: AssetFileEntry;
@@ -34,13 +35,16 @@ export async function markRecentAssetUsed(file: Pick<AssetFileEntry, 'path' | 'a
 /** 有界读取现有索引；取消关联的目录和失效文件不得被最近使用入口重新暴露。 */
 export async function loadRecentAssets(scope: RecentAssetsScope, signal?: AbortSignal): Promise<RecentAssetEntry[]> {
   if (!isTauriEnv() || signal?.aborted) return [];
-  const [usage, globalRoot, convert] = await Promise.all([getRecentAssetUsage(), getGlobalFilesDir(), getConvertFileSrc()]);
+  const [usage, globalRoot, convert, pending] = await Promise.all([
+    getRecentAssetUsage(), getGlobalFilesDir(), getConvertFileSrc(), pendingAssetMoveTargets(),
+  ]);
   const entries: RecentAssetEntry[] = [];
   for (const record of usage) {
     if (signal?.aborted) return [];
     try {
       const index = await getAssetIndexById(record.assetId);
-      if (!index || isNativeMediaPendingFile(index.path) || isNativeProjectBindingFile(index.path)) continue;
+      if (!index || isNativeMediaPendingFile(index.path) || isNativeProjectBindingFile(index.path)
+        || index.source !== 'project' && pending.has(mediaFileAllocationKey(index.path))) continue;
       let root: string | null | undefined;
       if (index.source === 'folder') {
         root = scope.folderRoots.find((candidate) => getRelativeAssetPath(index.path, candidate) !== undefined);

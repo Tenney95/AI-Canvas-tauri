@@ -6,14 +6,16 @@ import type { AssetFileEntry } from '../../src/services/fs/core';
 import type { MediaRelocation } from '../../src/services/indexedDb/mediaRelocations';
 
 const mocks = vi.hoisted(() => ({
-  copy: vi.fn(), finish: vi.fn(), persist: vi.fn(), complete: vi.fn(), pending: vi.fn(), identify: vi.fn(),
-  resolve: vi.fn(), stat: vi.fn(), index: vi.fn(), order: [] as string[],
+  copy: vi.fn(), plan: vi.fn(), finish: vi.fn(), persist: vi.fn(), complete: vi.fn(), pending: vi.fn(), identify: vi.fn(),
+  resolve: vi.fn(), stat: vi.fn(), index: vi.fn(), targetIndex: vi.fn(), order: [] as string[],
 }));
 vi.mock('../../src/services/fileService', () => ({ copyAssetFileToFolder: mocks.copy, finishAssetFileMove: mocks.finish }));
-vi.mock('@tauri-apps/plugin-fs', () => ({ stat: mocks.stat }));
-vi.mock('../../src/services/indexedDbService', () => ({ getAssetIndexById: mocks.index }));
+vi.mock('@tauri-apps/plugin-fs', () => ({ stat: mocks.stat, exists: async () => false }));
+vi.mock('../../src/services/indexedDbService', () => ({ getAssetIndexById: mocks.index, getAssetIndexByPath: mocks.targetIndex }));
 vi.mock('../../src/services/indexedDb/mediaRelocations', () => ({
-  persistMediaRelocation: mocks.persist, completeMediaRelocation: mocks.complete, pendingMediaRelocations: mocks.pending,
+  persistMediaRelocation: mocks.persist, completeMediaRelocation: mocks.complete, pendingMediaRelocations: mocks.pending, prepareAssetMoveCopy: mocks.plan,
+  releaseAssetMoveCopy: vi.fn(),
+  mediaFileAllocationKey: (path: string) => path.replace(/\\/g, '/').toLowerCase(), pendingAssetMoveTargets: async () => new Set(),
 }));
 vi.mock('../../src/services/fs/assetLibrary', () => ({ getGlobalFilesDir: async () => 'D:/data/file', resolveAssetFolderDirectory: mocks.resolve }));
 vi.mock('../../src/services/fs/core', () => ({ getAssetUrlFromPath: async (path: string) => `asset://${path}`,
@@ -34,7 +36,14 @@ beforeEach(() => {
   mocks.stat.mockResolvedValue({ mtime: new Date(20) });
   mocks.identify.mockResolvedValue({ assetId: 'stable-id' });
   mocks.index.mockResolvedValue(undefined);
-  mocks.copy.mockImplementation(async () => { mocks.order.push('copy'); return copied; });
+  mocks.copy.mockImplementation(async (_path, _directory, _options, mode) => {
+    mocks.order.push(mode?.kind === 'plan' ? 'plan' : 'copy');
+    return copied;
+  });
+  mocks.plan.mockImplementation(async (_id, _path, _directory, copy) => {
+    mocks.order.push('reserve');
+    return { copy, resume: false };
+  });
   mocks.persist.mockImplementation(async () => { mocks.order.push('persist'); });
   mocks.finish.mockImplementation(async () => { mocks.order.push('recycle'); });
   mocks.complete.mockImplementation(async () => { mocks.order.push('complete'); });
@@ -44,7 +53,7 @@ describe('资产文件夹拖放服务', () => {
   it('先复制校验、提交引用、更新内存，最后回收；保留稳定身份', async () => {
     let relocated: MediaRelocation | undefined;
     await expect(moveAssetFile(file, target, ['D:/assets'], (move) => { relocated = move; mocks.order.push('memory'); })).resolves.toEqual({ path: copied.path, moved: true });
-    expect(mocks.order).toEqual(['copy', 'persist', 'memory', 'recycle', 'complete']);
+    expect(mocks.order).toEqual(['plan', 'reserve', 'copy', 'persist', 'memory', 'recycle', 'complete']);
     expect(mocks.identify).toHaveBeenCalledWith(file.path, expect.objectContaining({ assetId: 'stable-id', rootPath: 'D:/assets' }));
     expect(relocated).toMatchObject({ oldPath: file.path, newPath: copied.path, relativePath: '人物/图 (1).png',
       assetMove: { rootPath: 'D:/assets', source: 'folder', digest: copied.digest, mtimeMs: 20 } });
@@ -73,13 +82,29 @@ describe('资产文件夹拖放服务', () => {
     expect(mocks.complete).not.toHaveBeenCalled();
     mocks.pending.mockResolvedValue([pending]);
     await moveAssetFile(file, target, ['D:/assets'], vi.fn());
-    expect(mocks.copy).toHaveBeenCalledTimes(1); expect(mocks.persist).toHaveBeenCalledTimes(1); expect(mocks.complete).toHaveBeenCalledWith(pending);
+    expect(mocks.copy).toHaveBeenCalledTimes(2); expect(mocks.persist).toHaveBeenCalledTimes(1); expect(mocks.complete).toHaveBeenCalledWith(pending);
   });
   it('副本完成时取消不迁移或回收原件', async () => {
     const controller = new AbortController();
-    mocks.copy.mockImplementationOnce(async () => { controller.abort(); return copied; });
+    mocks.copy.mockResolvedValueOnce(copied).mockImplementationOnce(async () => { controller.abort(); return copied; });
     await expect(moveAssetFile(file, target, ['D:/assets'], vi.fn(), { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
     expect(mocks.persist).not.toHaveBeenCalled(); expect(mocks.finish).not.toHaveBeenCalled();
+  });
+  it('复制后登记失败，重试只核对第一次登记的副本', async () => {
+    mocks.stat.mockRejectedValueOnce(new Error('busy'));
+    await expect(moveAssetFile(file, target, ['D:/assets'], vi.fn())).rejects.toThrow('busy');
+    mocks.plan.mockResolvedValueOnce({ copy: copied, resume: true });
+    await moveAssetFile(file, target, ['D:/assets'], vi.fn());
+    expect(mocks.copy).toHaveBeenLastCalledWith(file.path, 'D:/assets/人物', undefined, { kind: 'publish', copy: copied, resume: true });
+    expect(mocks.finish).toHaveBeenCalledExactlyOnceWith(file.path, copied);
+  });
+  it('原计划的文件被替换时另选目标，保留占用文件', async () => {
+    const next = { ...copied, path: 'D:/assets/人物/图 (2).png' };
+    mocks.plan.mockResolvedValueOnce({ copy: copied, resume: true }).mockResolvedValueOnce({ copy: next, resume: false });
+    mocks.copy.mockResolvedValueOnce(next).mockRejectedValueOnce('asset-move-target-occupied').mockResolvedValueOnce(next).mockResolvedValueOnce(next);
+    await expect(moveAssetFile(file, target, ['D:/assets'], vi.fn())).resolves.toEqual({ path: next.path, moved: true });
+    expect(mocks.plan).toHaveBeenLastCalledWith(file.assetId, file.path, 'D:/assets/人物', next, copied);
+    expect(mocks.finish).toHaveBeenCalledExactlyOnceWith(file.path, next);
   });
   it.each([{ source: 'project' as const }, { availability: 'offline' as const }, { category: 'video' as const }, { path: 'virtual://image' }, { path: 'D:/other/a.png' }])('拒绝非全局在线图片或未登记来源 %o', async (change) => {
     await expect(moveAssetFile({ ...file, ...change }, target, ['D:/assets'], vi.fn())).rejects.toThrow();

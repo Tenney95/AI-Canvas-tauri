@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   digests: new Map<string, string>(),
   roots: new Map<string, string>(),
   exists: vi.fn(),
+  rename: vi.fn(),
+  mkdir: vi.fn(),
   readDir: vi.fn(),
   lstat: vi.fn(),
   stat: vi.fn(),
@@ -55,6 +57,8 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   stat: mocks.stat,
   remove: mocks.remove,
   exists: mocks.exists,
+  rename: mocks.rename,
+  mkdir: mocks.mkdir,
 }));
 vi.mock('../../src/services/fs/core', () => ({
   isTauriEnv: () => true,
@@ -77,8 +81,12 @@ vi.mock('../../src/services/indexedDb/projectImportRepository', () => ({ listPro
 vi.mock('../../src/services/indexedDb/schema', () => ({ openDB: mocks.openDB, STORE_METADATA: 'metadata' }));
 vi.mock('../../src/services/indexedDb/legacyProjectWriteGuard', () => ({ assertLegacyProjectWritesAllowed: mocks.assertLegacyProjectWritesAllowed }));
 
-import { clearTrashDir, collectNodeFilePaths, collectStorageLiveFilePaths, deleteOrphanFile, prepareTrashCleanup, scanStorageHealth, verifyStorageCleanupFile } from '../../src/services/fs/storageHealth';
-import { stageUndoTrashMove } from '../../src/services/fs/undoTrashJournal';
+import { clearTrashDir, collectNodeFilePaths, collectStorageLiveFilePaths, deleteOrphanFile, prepareTrashCleanup, scanStorageHealth, verifyStorageCleanupFile, type StorageCleanupVerifier } from '../../src/services/fs/storageHealth';
+import { readUndoTrashEntries, stageUndoTrashMove } from '../../src/services/fs/undoTrashJournal';
+
+function confirmedFile(path: string) {
+  return { path, root: '/' + path.split('/')[1], size: mocks.sizes.get(path) ?? 0, digest: mocks.digests.get(path) ?? 'f'.repeat(64) };
+}
 
 function project(id: string): CanvasProject {
   return { id, name: id, createdAt: 1, updatedAt: 1 };
@@ -133,6 +141,15 @@ describe('storage health accounting and cleanup', () => {
       return { isDirectory: directory, isFile: !directory, isSymlink: false,
         size: mocks.sizes.get(path) ?? 0, mtime: new Date(0) };
     };
+    mocks.mkdir.mockImplementation(async (path: string) => { if (!mocks.directories.has(path)) mocks.directories.set(path, []); });
+    mocks.rename.mockImplementation(async (source: string, target: string) => {
+      const size = mocks.sizes.get(source);
+      if (size === undefined || mocks.sizes.has(target)) throw new Error('unexpected rename');
+      mocks.sizes.set(target, size);
+      mocks.sizes.delete(source);
+      mocks.digests.set(target, mocks.digests.get(source) ?? 'f'.repeat(64));
+      mocks.digests.delete(source);
+    });
     mocks.lstat.mockImplementation(fileInfo);
     mocks.stat.mockImplementation(fileInfo);
     mocks.fingerprintAssetImage.mockImplementation(async (path: string) => ({
@@ -183,6 +200,98 @@ describe('storage health accounting and cleanup', () => {
     expect(mocks.lstat).not.toHaveBeenCalledWith('/p/unrelated.mp4');
   });
 
+  it('扫描后原路径换为同大小的不同图片，旧确认不会移动新图', async () => {
+    addFiles('/p', { 'image.png': 10, 'used.png': 20 });
+    const projects = [project('p')], refs = new Set(['/p/used.png']);
+    const { orphans: [file] } = await scanStorageHealth(projects, refs, [], { captureOrphanDigests: true });
+    expect(mocks.fingerprintAssetImage.mock.calls.map(([path]) => path)).toEqual([file.path]);
+    mocks.digests.set(file.path, 'a'.repeat(64));
+    const removed = await deleteOrphanFile(file, () => verifyStorageCleanupFile(projects, refs, file));
+    expect(removed).toBe(false);
+    expect(mocks.rename).not.toHaveBeenCalled();
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
+
+  it('移动瞬间换入同大小的不同文件时保留实际暂存件和原路径日志', async () => {
+    addFiles('/p', { 'image.png': 10 });
+    const projects = [project('p')], refs = new Set<string>();
+    const { orphans: [file] } = await scanStorageHealth(projects, refs, [], { captureOrphanDigests: true });
+    const rename = mocks.rename.getMockImplementation()!;
+    mocks.rename.mockImplementationOnce(async (source, target) => {
+      mocks.digests.set(source, 'b'.repeat(64));
+      await rename(source, target);
+    });
+    await expect(deleteOrphanFile(file, (_path, staged) => verifyStorageCleanupFile(projects, refs, file, { staged })))
+      .rejects.toMatchObject({ stagedPath: expect.stringContaining('/p/.trash/') });
+    const [entry] = await readUndoTrashEntries('/p/.trash');
+    expect(entry.originalPath).toBe(file.path);
+    expect(mocks.digests.get(entry.stagedPath)).toBe('b'.repeat(64));
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
+
+  it('移动后原路径被新图片占用，永久清理只删除已核对的暂存件', async () => {
+    addFiles('/p', { 'image.png': 10 });
+    const projects = [project('p')], refs = new Set<string>();
+    const { orphans: [file] } = await scanStorageHealth(projects, refs, [], { captureOrphanDigests: true });
+    const removed = await deleteOrphanFile(file, (_path, staged) => {
+      if (staged) { mocks.sizes.set(file.path, 10); mocks.digests.set(file.path, 'c'.repeat(64)); }
+      return verifyStorageCleanupFile(projects, refs, file, { staged });
+    });
+    expect(removed).toBe(true);
+    expect(mocks.digests.get(file.path)).toBe('c'.repeat(64));
+    expect(mocks.sizes.get(file.path)).toBe(10);
+    expect(mocks.remove.mock.calls).toEqual([[mocks.rename.mock.calls[0][1]]]);
+    expect(await readUndoTrashEntries('/p/.trash')).toEqual([]);
+  });
+
+  it('旧项目在其他盘符时使用扫描到的根，确认后改根则保留原文件', async () => {
+    const root = 'D:/作品/旧项目';
+    mocks.roots.set('p', root);
+    addFiles(root, { 'image.png': 10 });
+    const projects = [project('p')], refs = new Set<string>();
+    const { orphans: [file] } = await scanStorageHealth(projects, refs, [], { captureOrphanDigests: true });
+    const verify: StorageCleanupVerifier = (_path, staged) =>
+      verifyStorageCleanupFile(projects, refs, file, { staged });
+    expect(file.root).toBe(root);
+    mocks.roots.set('p', 'E:/作品/旧项目');
+    expect(await deleteOrphanFile(file, verify)).toBe(false);
+    expect(mocks.rename).not.toHaveBeenCalled();
+    mocks.roots.set('p', root);
+    expect(await deleteOrphanFile(file, verify)).toBe(true);
+    expect(mocks.rename).toHaveBeenCalledWith(file.path, expect.stringContaining(root + '/.trash/'));
+  });
+
+  it('新项目子根的本次暂存可清理，既有 .trash 文件仍受保护', async () => {
+    const native = nativeProject(), root = native.secondaryPath;
+    addFiles('/native', {});
+    addFiles(root, { 'unused.png': 10 });
+    addFiles(root + '/.trash', { 'older.png': 10 });
+    mocks.directories.get(root)!.push('.trash');
+    const projects = [native.view], refs = new Set<string>();
+    const { orphans: [file], trashes } = await scanStorageHealth(projects, refs, [], { captureOrphanDigests: true });
+    expect(trashes[0].files[0].referenced).toBe(true);
+    expect(file.root).toBe(root);
+    expect(await deleteOrphanFile(file, (_path, staged) => verifyStorageCleanupFile(projects, refs, file, { staged }))).toBe(true);
+    expect(mocks.rename).toHaveBeenCalledWith(file.path, expect.stringContaining(root + '/.trash/'));
+    expect(mocks.sizes.has(root + '/.trash/older.png')).toBe(true);
+  });
+
+  it('空文件的身份变化会使确认失效，移动失败保留源文件', async () => {
+    addFiles('/p', { 'empty.txt': 0 });
+    const projects = [project('p')], refs = new Set<string>();
+    const { orphans: [file] } = await scanStorageHealth(projects, refs, [], { captureOrphanDigests: true });
+    const initialStat = mocks.lstat.getMockImplementation()!;
+    mocks.lstat.mockImplementation(async (path) => ({ ...await initialStat(path), mtime: new Date(10) }));
+    expect(await deleteOrphanFile(file, () => verifyStorageCleanupFile(projects, refs, file))).toBe(false);
+    expect(mocks.rename).not.toHaveBeenCalled();
+    mocks.lstat.mockImplementation(initialStat);
+    mocks.rename.mockRejectedValueOnce(new Error('busy'));
+    expect(await deleteOrphanFile(file, () => verifyStorageCleanupFile(projects, refs, file))).toBe(false);
+    expect(mocks.sizes.get(file.path)).toBe(0);
+    expect(mocks.remove).not.toHaveBeenCalled();
+    expect(mocks.fingerprintAssetImage).not.toHaveBeenCalled();
+  });
+
   it('引用核对期间新增实时引用或目标祖先变为链接时保留文件', async () => {
     addFiles('/p', { 'image.png': 10 });
     const file = { path: '/p/image.png', name: 'image.png', size: 10 };
@@ -207,7 +316,7 @@ describe('storage health accounting and cleanup', () => {
     expect(mocks.readDir).not.toHaveBeenCalledWith('/p/agent-results');
     const file = { path: '/p/_verify_v215.py', name: '_verify_v215.py', size: 4 };
     expect(await verifyStorageCleanupFile([owner], new Set(), file)).toBe(false);
-    expect(await deleteOrphanFile(file.path, async () => true)).toBe(false);
+    expect(await deleteOrphanFile(confirmedFile(file.path), async () => true)).toBe(false);
     expect(mocks.remove).not.toHaveBeenCalled();
   });
 
@@ -285,7 +394,7 @@ describe('storage health accounting and cleanup', () => {
     expect(report.issues).toContainEqual(expect.objectContaining({ reason: 'native-protected' }));
     expect(mocks.invoke).toHaveBeenCalledWith('resolve_native_project_media_subroot', expect.objectContaining({ projectId: native.projectId, create: false }));
     expect(mocks.readDir).not.toHaveBeenCalledWith(`${native.secondaryPath}/.thumbnail`);
-    expect(await deleteOrphanFile('/native/paid-result.png', async () => true)).toBe(false);
+    expect(await deleteOrphanFile(confirmedFile('/native/paid-result.png'), async () => true)).toBe(false);
     expect(await clearTrashDir('/native/.trash', async () => true, [{ path: '/native/.trash/old.png', size: 5, digest: 'f'.repeat(64) }]))
       .toMatchObject({ deletedCount: 0, failedCount: 1 });
     await expect(prepareTrashCleanup(report.trashes)).rejects.toThrow();
@@ -329,10 +438,11 @@ describe('storage health accounting and cleanup', () => {
     expect(mocks.readDir).not.toHaveBeenCalledWith('/native/.private');
     for (const path of ['/native/used.png', '/native/media/paid.png', '/native/imports/retained.png',
       '/native/.trash/old.png', '/native/.ai-canvas-native-project.json']) {
-      expect(await deleteOrphanFile(path, async () => true)).toBe(false);
+      expect(await deleteOrphanFile(confirmedFile(path), async () => true)).toBe(false);
     }
-    expect(await deleteOrphanFile('/native/unused.png', async () => true)).toBe(true);
-    expect(mocks.remove.mock.calls.map(([path]) => path)).toEqual(['/native/unused.png']);
+    expect(await deleteOrphanFile(confirmedFile('/native/unused.png'), async () => true)).toBe(true);
+    expect(mocks.rename).toHaveBeenCalledWith('/native/unused.png', expect.stringContaining('/native/.trash/'));
+    expect(mocks.remove).toHaveBeenCalledWith(mocks.rename.mock.calls[0][1]);
   });
 
   it('从作品主根保护回收站会话和未发送草稿引用的助手参考图', async () => {
@@ -348,7 +458,7 @@ describe('storage health accounting and cleanup', () => {
 
     const report = await scanStorageHealth([native.view], live);
     expect(report.orphans.map((file) => file.path)).toEqual(['/native/unused.png']);
-    expect(await deleteOrphanFile(`/native/${sent}`, async () => true)).toBe(false);
+    expect(await deleteOrphanFile(confirmedFile(`/native/${sent}`), async () => true)).toBe(false);
     expect(await verifyStorageCleanupFile([native.view], live, { path: `/native/${draft}`, name: draft, size: 20 })).toBe(false);
     expect(mocks.remove).not.toHaveBeenCalled();
   });
@@ -371,9 +481,10 @@ describe('storage health accounting and cleanup', () => {
 
     expect(report).toMatchObject({ complete: true, reclaimableSize: 7 });
     expect(report.orphans.map((file) => file.path)).toEqual(['/legacy/unused.png']);
-    expect(await deleteOrphanFile('/native/pending.png', async () => true)).toBe(false);
-    expect(await deleteOrphanFile('/legacy/unused.png', async () => true)).toBe(true);
-    expect(mocks.remove.mock.calls.map(([path]) => path)).toEqual(['/legacy/unused.png']);
+    expect(await deleteOrphanFile(confirmedFile('/native/pending.png'), async () => true)).toBe(false);
+    expect(await deleteOrphanFile(confirmedFile('/legacy/unused.png'), async () => true)).toBe(true);
+    expect(mocks.rename).toHaveBeenCalledWith('/legacy/unused.png', expect.stringContaining('/legacy/.trash/'));
+    expect(mocks.remove).toHaveBeenCalledWith(mocks.rename.mock.calls[0][1]);
   });
 
   it('新项目相对引用继承所属素材根，不把子根文件误保护为同名主根文件', async () => {
@@ -387,9 +498,10 @@ describe('storage health accounting and cleanup', () => {
 
     expect(report.complete).toBe(true);
     expect(report.orphans.map((file) => file.path)).toEqual(['/native/same.png']);
-    expect(await deleteOrphanFile(`${native.secondaryPath}/same.png`, async () => true)).toBe(false);
-    expect(await deleteOrphanFile('/native/same.png', async () => true)).toBe(true);
-    expect(mocks.remove.mock.calls.map(([path]) => path)).toEqual(['/native/same.png']);
+    expect(await deleteOrphanFile(confirmedFile(`${native.secondaryPath}/same.png`), async () => true)).toBe(false);
+    expect(await deleteOrphanFile(confirmedFile('/native/same.png'), async () => true)).toBe(true);
+    expect(mocks.rename).toHaveBeenCalledWith('/native/same.png', expect.stringContaining('/native/.trash/'));
+    expect(mocks.remove).toHaveBeenCalledWith(mocks.rename.mock.calls[0][1]);
   });
 
   it('实时引用使用当前画布的子根，拒绝未绑定素材根的相对引用', async () => {
@@ -419,7 +531,7 @@ describe('storage health accounting and cleanup', () => {
       return true;
     });
 
-    expect(await deleteOrphanFile('/native/unused.png', verify)).toBe(false);
+    expect(await deleteOrphanFile(confirmedFile('/native/unused.png'), verify)).toBe(false);
     expect(verify).toHaveBeenCalledOnce();
     expect(mocks.sizes.has('/native/unused.png')).toBe(true);
     expect(mocks.remove).not.toHaveBeenCalled();
@@ -439,7 +551,7 @@ describe('storage health accounting and cleanup', () => {
 
     expect(report.complete).toBe(true);
     expect(report.orphans.map((file) => file.path)).toEqual(['/native/unused.png']);
-    expect(await deleteOrphanFile('/native/historical.png', async () => true)).toBe(false);
+    expect(await deleteOrphanFile(confirmedFile('/native/historical.png'), async () => true)).toBe(false);
     expect(mocks.remove).not.toHaveBeenCalled();
   });
 
@@ -464,7 +576,7 @@ describe('storage health accounting and cleanup', () => {
       return true;
     });
 
-    expect(await deleteOrphanFile('/native/unused.png', verify)).toBe(false);
+    expect(await deleteOrphanFile(confirmedFile('/native/unused.png'), verify)).toBe(false);
     expect(verify).toHaveBeenCalledOnce();
     expect(mocks.sizes.has('/native/unused.png')).toBe(true);
     expect(mocks.remove).not.toHaveBeenCalled();
@@ -475,7 +587,7 @@ describe('storage health accounting and cleanup', () => {
     addFiles('/native', { 'unknown.png': 10 });
     mocks.readNativeStorageSnapshot.mockRejectedValue(new Error('snapshot unavailable'));
     await expect(scanStorageHealth([native.view], new Set())).rejects.toThrow('存储引用读取不完整');
-    expect(await deleteOrphanFile('/native/unknown.png', async () => true)).toBe(false);
+    expect(await deleteOrphanFile(confirmedFile('/native/unknown.png'), async () => true)).toBe(false);
     expect(mocks.remove).not.toHaveBeenCalled();
   });
 
@@ -520,7 +632,7 @@ describe('storage health accounting and cleanup', () => {
     mocks.sizes.set('/a/.trash/old.png', 5);
     mocks.assertLegacyProjectWritesAllowed.mockRejectedValue(new Error('项目模型状态已改变'));
     await expect(scanStorageHealth([project('a')], new Set())).rejects.toThrow('存储引用读取不完整');
-    expect(await deleteOrphanFile('/a/orphan.png', async () => true)).toBe(false);
+    expect(await deleteOrphanFile(confirmedFile('/a/orphan.png'), async () => true)).toBe(false);
     expect(await clearTrashDir('/a/.trash', async () => true, [{ path: '/a/.trash/old.png', size: 5, digest: 'f'.repeat(64) }])).toMatchObject({ deletedCount: 0, failedCount: 1 });
     expect(mocks.remove).not.toHaveBeenCalled();
   });
@@ -531,7 +643,7 @@ describe('storage health accounting and cleanup', () => {
       mocks.assertLegacyProjectWritesAllowed.mockRejectedValue(new Error('项目模型状态已改变'));
       return true;
     });
-    expect(await deleteOrphanFile('/a/orphan.png', verify)).toBe(false);
+    expect(await deleteOrphanFile(confirmedFile('/a/orphan.png'), verify)).toBe(false);
     expect(verify).toHaveBeenCalledOnce();
     expect(mocks.remove).not.toHaveBeenCalled();
   });
@@ -570,7 +682,7 @@ describe('storage health accounting and cleanup', () => {
 
     const report = await scanStorageHealth([project('a')], new Set());
     expect(report.orphans.map((file) => file.path)).toEqual(['/a/unused.png']);
-    expect(await deleteOrphanFile('/a/renamed.png', async () => true)).toBe(false);
+    expect(await deleteOrphanFile(confirmedFile('/a/renamed.png'), async () => true)).toBe(false);
     expect(mocks.remove).not.toHaveBeenCalled();
   });
 

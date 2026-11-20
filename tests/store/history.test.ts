@@ -34,7 +34,7 @@ const fileMocks = vi.hoisted(() => ({
     if (sceneId) return [`project/director/scenes/${sceneId}`];
     return data.filePath ? [data.filePath] : [];
   }),
-  restoreFromUndoTrash: vi.fn(async () => undefined),
+  restoreUndoTrashForHistory: vi.fn<typeof import('../../src/services/fileService').restoreUndoTrashForHistory>(async () => 'untracked'),
   // 重做前会先确认文件属于当前项目，默认放行以保持既有断言
   isProjectOwnedFile: vi.fn(async () => true),
   // 撤销前要等文件暂存落定，默认立即完成
@@ -141,6 +141,16 @@ beforeEach(() => {
 });
 
 describe('节点回收的实时引用保护', () => {
+  it('回收前按作品绑定解析未保存的聊天消息和输入框上的参考图', () => {
+    const sent = 'chat-ref-11111111-1111-4111-8111-111111111111.png';
+    const draft = 'chat-ref-22222222-2222-4222-8222-222222222222.png';
+    useAppStore.setState({ currentProjectId: 'project-1', messages: [{ id: 'message', conversationId: 'chat',
+      role: 'user', content: `@image{${sent}|one}`, status: 'done', timestamp: 1 }],
+      chatImageDrafts: { chat: [{ fileName: draft, label: 'two', size: 1 }] } });
+    const context = createNodeFileDeletionContext(useAppStore.getState, [], new Set(), 'project-1');
+    expect(context.getLiveKeepPaths((name) => `imports/root/${name}`)).toEqual(
+      new Set([`imports/root/${sent}`, `imports/root/${draft}`]));
+  });
   it('移动前重新读取新增节点及聊天引用，项目切换或待删节点变化时拒绝继续', () => {
     const removed = node('removed', { filePath: 'project/removed.png' });
     useAppStore.setState({ currentProjectId: 'project-1', nodes: [removed], messages: [] });
@@ -169,6 +179,54 @@ describe('shared canvas deletion', () => {
     nodeExitMocks.playNodeExit.mockReturnValueOnce(pending);
     return async () => { finish(); await pending; await Promise.resolve(); };
   }
+
+  it('直接撤销仍在复制的拖入节点，重做得到已落盘的图片', async () => {
+    useAppStore.setState({ currentProjectId: 'project-1', nodes: [] });
+    useAppStore.getState().addNode(node('import', { status: 'loading' }));
+    let finish!: () => void;
+    const work = new Promise<void>((resolve) => { finish = resolve; }).then(() =>
+      useAppStore.getState().updateNodeDataTransient('import', { filePath: 'project/ready.png', status: 'success' }));
+    void trackCanvasMediaImport('project-1', work, 'import');
+    const undo = useAppStore.getState().undo();
+    await vi.waitFor(() => expect(fileMocks.waitForPendingNodeFileDeletions).toHaveBeenCalled());
+    await Promise.resolve();
+    expect(useAppStore.getState().nodes).toHaveLength(1);
+    finish();
+    await expect(undo).resolves.toBe(true);
+    expect(useAppStore.getState().nodes).toHaveLength(0);
+    await expect(useAppStore.getState().redo()).resolves.toBe(true);
+    expect(useAppStore.getState().nodes[0].data).toMatchObject({ status: 'success', filePath: 'project/ready.png' });
+  });
+
+  it.each(['project', 'history'])('等待导入时切换目标或产生新历史会取消原撤销（%s）', async (change) => {
+    useAppStore.setState({ currentProjectId: 'project-1', nodes: [] });
+    useAppStore.getState().addNode(node('import', { status: 'loading' }));
+    let finish!: () => void;
+    void trackCanvasMediaImport('project-1', new Promise<void>((resolve) => { finish = resolve; }), 'import');
+    try {
+      const undo = useAppStore.getState().undo();
+      await vi.waitFor(() => expect(fileMocks.waitForPendingNodeFileDeletions).toHaveBeenCalled());
+      await Promise.resolve();
+      if (change === 'project') useAppStore.setState({ currentProjectId: 'project-2' });
+      else useAppStore.getState().addNode(node('new'));
+      await expect(undo).resolves.toBe(false);
+      expect(useAppStore.getState().nodes.map(({ id }) => id)).toContain('import');
+    } finally { finish(); }
+  });
+
+  it('同批撤销遇到同名文件时保持历史位置，移走占用文件后继续还原', async () => {
+    const first = node('first', { filePath: 'project/a.png' }), second = node('second', { filePath: 'project/b.png' });
+    useAppStore.setState({ currentProjectId: 'project-1', nodes: [], historyIndex: 0,
+      history: [{ nodes: [first, second], edges: [], groups: [] }], showToast: vi.fn() });
+    fileMocks.restoreUndoTrashForHistory.mockResolvedValueOnce('restored').mockResolvedValueOnce('occupied');
+    await expect(useAppStore.getState().undo()).resolves.toBe(false);
+    expect(useAppStore.getState().nodes).toHaveLength(0);
+    expect(useAppStore.getState().historyIndex).toBe(0);
+    expect(useAppStore.getState().showToast).toHaveBeenCalledWith(expect.stringContaining('b.png'), 'error');
+    fileMocks.restoreUndoTrashForHistory.mockResolvedValueOnce('untracked').mockResolvedValueOnce('restored');
+    await expect(useAppStore.getState().undo()).resolves.toBe(true);
+    expect(useAppStore.getState().nodes.map(({ id }) => id)).toEqual(['first', 'second']);
+  });
 
   it('does nothing for an empty selection and clears selected edges immediately before one undoable removal', async () => {
     useAppStore.setState({ nodes: [node('a'), node('b')], edges: [{ id: 'edge', source: 'a', target: 'b' }] });
@@ -265,7 +323,7 @@ describe('shared canvas deletion', () => {
     expect(useAppStore.getState().nodes.find((item) => item.id === child.id)?.data).toMatchObject({
       status: 'success', filePath: 'project/import.png',
     });
-    expect(fileMocks.restoreFromUndoTrash).toHaveBeenCalledWith('project/import.png', 'project-1');
+    expect(fileMocks.restoreUndoTrashForHistory).toHaveBeenCalledWith('project/import.png', 'project-1');
     expect(useAppStore.getState().history).toHaveLength(2);
   });
 
@@ -1277,7 +1335,7 @@ describe('batch canvas history', () => {
     ]);
     expect(useAppStore.getState().groups).toEqual(groups);
     expect(useAppStore.getState()).toMatchObject({ historyIndex: -1 });
-    expect(fileMocks.restoreFromUndoTrash).toHaveBeenCalledWith('project/node-a.png', 'project-1');
+    expect(fileMocks.restoreUndoTrashForHistory).toHaveBeenCalledWith('project/node-a.png', 'project-1');
 
     await expect(useAppStore.getState().redo()).resolves.toBe(true);
 
@@ -1309,7 +1367,7 @@ describe('batch canvas history', () => {
     await vi.waitFor(() => expect(useAppStore.getState().nodes).toEqual([]));
 
     await expect(useAppStore.getState().undo()).resolves.toBe(true);
-    expect(fileMocks.restoreFromUndoTrash).toHaveBeenCalledWith(
+    expect(fileMocks.restoreUndoTrashForHistory).toHaveBeenCalledWith(
       'project/director/scenes/scene-history', 'project-1',
     );
 
@@ -1356,7 +1414,7 @@ describe('batch canvas history', () => {
     ]);
     expect(useAppStore.getState().nodes[0].style).toEqual({ width: 400, height: 300 });
     expect(useAppStore.getState().groups).toEqual(groups);
-    expect(fileMocks.restoreFromUndoTrash).toHaveBeenCalledWith('project/Group', expect.anything());
+    expect(fileMocks.restoreUndoTrashForHistory).toHaveBeenCalledWith('project/Group', expect.anything());
 
     await expect(useAppStore.getState().redo()).resolves.toBe(true);
     expect(useAppStore.getState().nodes.map((item) => item.id)).toEqual(['node-b']);
@@ -1379,10 +1437,10 @@ describe('batch canvas history', () => {
     await vi.waitFor(() => expect(useAppStore.getState().nodes).toEqual([]));
     expect(fileMocks.deleteNodeFiles).toHaveBeenLastCalledWith([folder.data, child.data], expect.any(Set), 'project-1', ['Folder'],
       expect.objectContaining({ deletedNodeIds: expect.any(Array), getLiveKeepPaths: expect.any(Function) }));
-    fileMocks.restoreFromUndoTrash.mockClear();
+    fileMocks.restoreUndoTrashForHistory.mockClear();
     await useAppStore.getState().undo();
-    expect(fileMocks.restoreFromUndoTrash).toHaveBeenNthCalledWith(1, 'project/Folder', 'project-1');
-    expect(fileMocks.restoreFromUndoTrash).toHaveBeenNthCalledWith(2, 'project/Folder/image.png', 'project-1');
+    expect(fileMocks.restoreUndoTrashForHistory).toHaveBeenNthCalledWith(1, 'project/Folder', 'project-1');
+    expect(fileMocks.restoreUndoTrashForHistory).toHaveBeenNthCalledWith(2, 'project/Folder/image.png', 'project-1');
     await useAppStore.getState().redo();
     expect(fileMocks.deleteNodeFiles).toHaveBeenLastCalledWith([folder.data, child.data], expect.any(Set), 'project-1', ['Folder'],
       expect.objectContaining({ deletedNodeIds: expect.any(Array), getLiveKeepPaths: expect.any(Function) }));
@@ -1456,11 +1514,11 @@ describe('batch canvas history', () => {
     // 放掉足够多的微任务，让 undo 跑到「文件还原」那一步为止
     for (let tick = 0; tick < 20; tick += 1) await Promise.resolve();
     // 暂存还没落定，此时还原会扑空——文件随后才被搬走，节点复活也是死的
-    expect(fileMocks.restoreFromUndoTrash).not.toHaveBeenCalled();
+    expect(fileMocks.restoreUndoTrashForHistory).not.toHaveBeenCalled();
 
     finishStaging();
     await expect(undoResult).resolves.toBe(true);
-    expect(fileMocks.restoreFromUndoTrash).toHaveBeenCalledWith('project/clip.mp4', 'project-1');
+    expect(fileMocks.restoreUndoTrashForHistory).toHaveBeenCalledWith('project/clip.mp4', 'project-1');
   });
 
   it('undoes and redoes a node move from the gesture start position', async () => {

@@ -623,6 +623,7 @@ const settings = {
   // ── StorageHealthCenter ──
   '图片': 'Images',
   '其他': 'Other',
+  '已保留在项目 .trash：{name}': 'Kept in the project .trash folder: {name}',
   '存储健康中心': 'Storage Health Center',
   '扫描中…': 'Scanning…',
   '重新扫描': 'Rescan',

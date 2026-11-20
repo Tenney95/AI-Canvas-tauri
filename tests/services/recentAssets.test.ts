@@ -28,6 +28,20 @@ function index(assetId: string, path = `/global/file/${assetId}.png`, patch: Par
 const scope = { folderRoots: ['/external'], projectIds: ['project'] };
 
 describe('最近使用持久化与资产解析', () => {
+  it('旧索引里的计划目标不显示在最近使用，计划结束后重新可见', async () => {
+    const db = await import('../../src/services/indexedDbService');
+    const journal = await import('../../src/services/indexedDb/mediaRelocations');
+    const { loadRecentAssets } = await import('../../src/services/fs/recentAssets');
+    const entry = index('stale');
+    await db.putAssetIndex(entry);
+    await db.recordRecentAssetUsage(entry.assetId, 1);
+    const pending = vi.spyOn(journal, 'pendingAssetMoveTargets').mockResolvedValue(new Set([journal.mediaFileAllocationKey(entry.path)]));
+    try {
+      expect(await loadRecentAssets(scope)).toEqual([]);
+      pending.mockResolvedValue(new Set());
+      expect((await loadRecentAssets(scope)).map((item) => item.file.assetId)).toEqual([entry.assetId]);
+    } finally { pending.mockRestore(); }
+  });
   it('导入回收只删除本轮ID与当前位置均匹配的索引', async () => {
     const db = await import('../../src/services/indexedDbService');
     await db.putAssetIndex(index('own', '/project/Library/import-one/own.png'));

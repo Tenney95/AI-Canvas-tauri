@@ -13,6 +13,23 @@ beforeEach(() => {
 const move = { projectId: 'p', oldPath: 'D:/p/a.png', newPath: 'D:/p/group/a-new.png',
   oldAssetUrl: 'asset://old', assetUrl: 'asset://new', relativePath: 'group/a-new.png' };
 
+it('发布前保留移动目标，中断重试复用原名，引用提交后才释放目标', async () => {
+  const journal = await import('../../src/services/indexedDb/mediaRelocations');
+  const directory = 'D:/library/图片';
+  const original = { path: directory + '/a.png', totalBytes: 4, digest: 'a'.repeat(64) };
+  const next = { ...original, path: directory + '/a (1).png' };
+  await expect(journal.prepareAssetMoveCopy('asset-a', move.oldPath, directory, original)).resolves.toEqual({ copy: original, resume: false });
+  await expect(journal.prepareAssetMoveCopy('asset-b', '/other/a.png', directory, original)).rejects.toThrow('占用');
+  await expect(journal.prepareAssetMoveCopy('asset-a', move.oldPath, directory, next)).resolves.toEqual({ copy: original, resume: true });
+  expect(await journal.pendingAssetMoveTargets()).toEqual(new Set([journal.mediaFileAllocationKey(original.path)]));
+  await expect(journal.prepareAssetMoveCopy('asset-a', move.oldPath, directory, next, original)).resolves.toEqual({ copy: next, resume: false });
+  await journal.releaseAssetMoveCopy('asset-a', move.oldPath, directory, original);
+  expect(await journal.pendingAssetMoveTargets()).toEqual(new Set([journal.mediaFileAllocationKey(next.path)]));
+  await journal.persistMediaRelocation({ ...move, projectId: 'global-assets', newPath: next.path, relativePath: '图片/a (1).png',
+    assetMove: { assetId: 'asset-a', rootPath: 'D:/library', source: 'folder', digest: next.digest, totalBytes: 4, mtimeMs: 0 } });
+  expect(await journal.pendingAssetMoveTargets()).toEqual(new Set());
+});
+
 it('repairs exact encoded asset tokens without changing prose, malformed tokens or ordinary move prompts', async () => {
   const relocation = await import('../../src/services/indexedDb/mediaRelocations');
   const { openDB } = await import('../../src/services/indexedDb/schema');

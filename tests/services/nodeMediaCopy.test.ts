@@ -12,7 +12,8 @@ vi.mock('../../src/services/fs/core', () => ({ isTauriEnv: () => true }));
 import { copyNodeMedia, discardCopiedNodeMedia, isNodeMediaCopySource, needsNodeMediaCopy } from '../../src/services/nodeMediaCopy';
 
 const source: BaseNodeData = { type: 'ai-image', label: 'image', filePath: '/p/source.png',
-  imageUrl: 'asset:///p/source.png', thumbnailUrl: 'asset:///p/source.png', assetId: 'old', relativePath: 'source.png' };
+  imageUrl: 'asset:///p/source.png', thumbnailUrl: 'asset:///p/source.png', assetId: 'old', relativePath: 'source.png',
+  artifactId: 'chat-result', storageRootRef: 'original-root', outputHistory: [{ id: 'old-record' }] };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -37,6 +38,11 @@ describe('independent node media files', () => {
     expect(a.filePath).not.toBe(source.filePath);
     expect(a.assetId).toBeUndefined();
     expect(a.relativePath).toBeUndefined();
+    expect(a.artifactId).toBeUndefined();
+    expect(a.storageRootRef).toBeUndefined();
+    expect(a.outputHistory).toBeUndefined();
+    expect(source.artifactId).toBe('chat-result');
+    expect(source.outputHistory).toEqual([{ id: 'old-record' }]);
     expect(a.thumbnailUrl).toBe(a.imageUrl);
     expect(source.filePath).toBe('/p/source.png');
   });
@@ -65,6 +71,17 @@ describe('independent node media files', () => {
     await expect(copyNodeMedia({ ...source, storyboardOverrides: [{ filePath: '/p/cell.png', url: 'asset:///p/cell.png' }] }, 'p')).rejects.toThrow('复制失败');
     expect(mock.trash).toHaveBeenCalledExactlyOnceWith('/p/new.png');
     expect(isNodeMediaCopySource('/p/source.png')).toBe(false);
+  });
+
+  it('does not publish a shotlist with an unresolved source-project binding', async () => {
+    const sheet: BaseNodeData = { type: 'ai-shotlist', label: '分镜', shotlistRows: [
+      { id: 'row', shotNo: '1', frame: { nodeId: 'frame', kind: 'image', filePath: '/a/frame.png' },
+        video: { nodeId: 'missing', kind: 'video', assetId: 'original-asset', relativePath: 'lost.mp4' } },
+    ] };
+    expect(needsNodeMediaCopy(sheet)).toBe(false);
+    expect(needsNodeMediaCopy(sheet, true)).toBe(true);
+    await expect(copyNodeMedia(sheet, 'b', { copiedSources: new Map(), targetId: (id) => `new-${id}` })).rejects.toThrow();
+    expect(mock.trash).toHaveBeenCalledExactlyOnceWith('/p/copy-1.png');
   });
 
   it('persists remote media and does not allow content deduplication', async () => {
