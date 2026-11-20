@@ -20,7 +20,7 @@ import { PollTaskFailedError } from './pollTask';
 import { getHttpResponseError } from './ai/httpUtils';
 import { createMediaDownloadAccess } from './ai/mediaDownloadAccess';
 import { isSafeNativeProtocolTaskId, validateNativeProtocolContext } from './nativeProtocolContext';
-import { COMFY_AUDIO_OUTPUT_KINDS, findComfyOutputFiles, buildComfyFileUrl, type ComfyOutputs } from './comfyOutputs';
+import { COMFY_AUDIO_OUTPUT_KINDS, findComfyOutputFiles, buildComfyFileUrl, type ComfyOutputFile, type ComfyOutputs } from './comfyOutputs';
 import type { MediaDownloadAccess } from '../types/aiTypes';
 import type { CanvasContext } from '../types/project';
 
@@ -87,7 +87,7 @@ export async function cancelNativeWorkflowNodeTask(context: CanvasContext, nodeI
   } else return record;
 
   for (const task of receipt.tasks) {
-    if (task.state === 'completed') continue;
+    if (task.state === 'completed' || task.comfyOutputFiles) continue;
     assertCurrent();
     if (task.state === 'failed' || await cancelTask(task.taskId).catch(() => false)) {
       assertCurrent();
@@ -243,8 +243,8 @@ export async function assertWorkflowContract(descriptor: NativeWorkflowDescripto
   if (normalizeNativeMediaProviderBase(base) !== descriptor.providerBase) throw new Error('原工作流服务地址已变化，未提交生成');
 }
 
-export async function queryNativeWorkflowOriginal(descriptor: NativeWorkflowDescriptor, task: Pick<NativeWorkflowTask, 'taskId' | 'recoveryContext'>,
-  operationId: string, signal: AbortSignal): Promise<CloudWorkflowOutput[]> {
+export async function queryNativeWorkflowOriginal(descriptor: NativeWorkflowDescriptor, task: Pick<NativeWorkflowTask, 'taskId' | 'recoveryContext' | 'comfyOutputFiles'>,
+  operationId: string, signal: AbortSignal, retainComfyFiles?: (files: ComfyOutputFile[]) => Promise<void>): Promise<CloudWorkflowOutput[]> {
   const state = useAppStore.getState();
   if (descriptor.adapter === 'muse-webview') {
     await assertWorkflowContract(descriptor);
@@ -257,9 +257,14 @@ export async function queryNativeWorkflowOriginal(descriptor: NativeWorkflowDesc
     const { comfyBaseUrlFor } = await import('./comfyServers');
     if (!workflow || descriptor.digest !== await nativeWorkflowDigest(['comfyui-native-media-v1', workflow.id, workflow.fileContent, workflow.serverId, descriptor.category])
       || normalizeNativeMediaProviderBase(comfyBaseUrlFor(workflow.id)) !== descriptor.providerBase) throw new Error('原 ComfyUI 工作流或服务已变化，原任务保留');
-    const { pollComfyHistory } = await import('./comfyPolling');
-    return pollComfyHistory(descriptor.providerBase, task.taskId, '原 ComfyUI 任务尚未取回',
-      (outputs) => nativeComfyOutputs(descriptor.providerBase, outputs, descriptor.category), signal);
+    let files = task.comfyOutputFiles;
+    if (!files) {
+      const { pollComfyHistory } = await import('./comfyPolling');
+      files = await pollComfyHistory(descriptor.providerBase, task.taskId, '原 ComfyUI 任务尚未取回',
+        (outputs) => nativeComfyOutputFiles(outputs, descriptor.category), signal);
+      await retainComfyFiles?.(files);
+    }
+    return files.map((file) => ({ url: buildComfyFileUrl(descriptor.providerBase, file), kind: descriptor.category }));
   }
   if (descriptor.adapter === 'runninghub-model' || descriptor.adapter === 'runninghub-workflow') {
     const { runningHubConnection } = await import('./workflowExecutionService');
@@ -296,11 +301,11 @@ export async function queryNativeWorkflowOriginal(descriptor: NativeWorkflowDesc
     workflowId: workflow.id, remoteWorkflowId: manifest.workflowId, origin: new URL(connection.baseUrl).origin, state: 'disconnected',
     ...(manifest.version === 2 ? { manifest, poll } : {}) }, signal);
 }
-export function nativeComfyOutputs(baseUrl: string, outputs: ComfyOutputs, category: MediaKind): CloudWorkflowOutput[] | null {
+export function nativeComfyOutputFiles(outputs: ComfyOutputs, category: MediaKind): ComfyOutputFile[] | null {
   const files = findComfyOutputFiles(outputs, category === 'audio' ? COMFY_AUDIO_OUTPUT_KINDS : [category]);
   if (!files.length) return null;
   if (files.length > 128) throw new Error('ComfyUI 产物超过上限，未截断交付');
-  return files.map((file) => ({ url: buildComfyFileUrl(baseUrl, file), kind: category }));
+  return files;
 }
 async function workflowDownloadAccess(descriptor: NativeWorkflowDescriptor): Promise<MediaDownloadAccess | undefined> {
   if (descriptor.adapter === 'comfyui' || descriptor.adapter === 'muse-webview') return undefined;
@@ -352,7 +357,10 @@ export async function resumeNativeWorkflowTask(operationId: string, externalSign
         if (task.state === 'failed') continue;
         if (task.outputs) { try { for (const file of task.outputs) await readNativeMediaLocalResult(record.canvasId, file); continue; } catch { assertCurrent(); } }
         try {
-          const outputs = await queryNativeWorkflowOriginal(receipt.descriptor, task, receipt.operationId, controller.signal); assertCurrent();
+          const outputs = await queryNativeWorkflowOriginal(receipt.descriptor, task, receipt.operationId, controller.signal, async (comfyOutputFiles) => {
+            ({ record, receipt } = await retainNativeWorkflowTaskOutputs(record, taskId, { comfyOutputFiles }));
+          });
+          assertCurrent();
           await markComfyVideoSaving();
           const files = await saveOutputs(record, outputs, controller.signal, assertCurrent, await workflowDownloadAccess(receipt.descriptor));
           if (task.outputs) {

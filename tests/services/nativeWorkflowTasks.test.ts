@@ -21,10 +21,10 @@ vi.mock('../../src/services/nativeMediaMessages', () => ({ projectNativeMediaMes
 vi.mock('../../src/services/comfyPolling', () => ({ pollComfyHistory: driver.query, comfyFetch: vi.fn() }));
 
 import { createNativeProject, readNativeProjectCapture, saveNativeProjectView } from '../../src/services/indexedDb/nativeProjectRepository';
-import { prepareNativeMediaTask, listNativeMediaTasks } from '../../src/services/indexedDb/nativeMediaTaskRepository';
+import { claimNativeMediaRecovery, prepareNativeMediaTask, listNativeMediaTasks } from '../../src/services/indexedDb/nativeMediaTaskRepository';
 import { bindNativeMediaOrigin } from '../../src/services/nativeMediaOrigin';
-import { createNativeWorkflowReceipt, beginNativeWorkflowSubmission, retainNativeWorkflowSubmission, retainNativeWorkflowTaskOutputs } from '../../src/services/nativeWorkflowRepository';
-import { nativeWorkflowDigest, nativeComfyOutputs, submitNativeWorkflowTask, resumeNativeWorkflowTask, isNativeWorkflowExecution } from '../../src/services/nativeWorkflowTasks';
+import { createNativeWorkflowReceipt, readNativeWorkflowReceipt, beginNativeWorkflowSubmission, retainNativeWorkflowSubmission, retainNativeWorkflowTaskOutputs } from '../../src/services/nativeWorkflowRepository';
+import { nativeWorkflowDigest, nativeComfyOutputFiles, submitNativeWorkflowTask, resumeNativeWorkflowTask, isNativeWorkflowExecution } from '../../src/services/nativeWorkflowTasks';
 import { registerNativeVideoSubmissionGuard } from '../../src/services/nativeVideoSubmissionGuard';
 
 const base = 'http://127.0.0.1:8188';
@@ -71,7 +71,7 @@ it('正常提交后自动查询全部候选并交付原对话，不要求再点�
   expect(record).toMatchObject({ status: 'delivered', remoteTaskId: 'original-prompt', origin: { messageId: 'original-message' } });
   expect(record.localResults).toEqual([output('a'), output('b')]);
 });
-it('新项目 ComfyUI 视频在落盘前切换保存中，保存失败后续取同一个 prompt', async () => {
+it('新项目 ComfyUI 视频在落盘前切换保存中，保存失败且 history 清空仍可续取原视频', async () => {
   const { context, descriptor } = await fixture();
   const nodeId = 'video-node', promptId = 'original-video-prompt';
   const video = { id: nodeId, type: 'ai-video', data: { status: 'loading', mediaTaskStage: undefined as string | undefined } };
@@ -109,12 +109,56 @@ it('新项目 ComfyUI 视频在落盘前切换保存中，保存失败后续取�
   expect(commit).not.toHaveBeenCalled();
   expect(clearProgress).toHaveBeenCalledExactlyOnceWith(nodeId, 'original-progress');
 
+  driver.query.mockRejectedValue(new Error('history 已清空'));
   video.data.mediaTaskStage = undefined;
   await resumeNativeWorkflowTask(record.operationId);
   expect(commit).toHaveBeenCalledWith(expect.objectContaining({ operationId: record.operationId }), file.relativePath,
     context, expect.any(AbortSignal));
-  expect(driver.query).toHaveBeenCalledTimes(2);
+  expect(driver.query).toHaveBeenCalledTimes(1);
   expect(submit).toHaveBeenCalledOnce();
+});
+it('首次下载前已登记全部安全文件描述，重启后只从原 ComfyUI 地址续取同一候选集合', async () => {
+  const { context, nodeId, descriptor } = await fixture();
+  const originalFiles = [{ filename: 'a.png', subfolder: '生成图', type: 'output' }, { filename: 'b.png', type: 'output' }];
+  const historyFiles = [{ ...originalFiles[0], url: 'ignored' }, originalFiles[1], { filename: '../outside.png', type: 'output' }];
+  driver.query.mockImplementationOnce(async (_base: string, _taskId: string, _message: string, extract: (outputs: ComfyOutputs) => unknown) =>
+    extract({ save: { images: historyFiles } }));
+  const atFirstDownload = vi.fn();
+  driver.persist.mockImplementationOnce(async () => {
+    const [record] = await listNativeMediaTasks(context.projectId);
+    atFirstDownload((await readNativeWorkflowReceipt(record.operationId))?.tasks);
+    throw new Error('下载中断');
+  });
+  const submit = vi.fn(async () => ({ taskId: 'original-prompt' }));
+  await expect(submitNativeWorkflowTask({ nodeId, descriptor, requestMaterial: {}, beforeSubmit: () => {}, submit }))
+    .rejects.toMatchObject({ name: 'NativeMediaTaskPending' });
+  const [record] = await listNativeMediaTasks(context.projectId);
+  expect(atFirstDownload).toHaveBeenCalledExactlyOnceWith([{ taskId: 'original-prompt', state: 'submitted', comfyOutputFiles: originalFiles }]);
+  driver.query.mockRejectedValue(new Error('history 已清空'));
+  driver.state = { ...driver.state, config: { comfyUIUrl: 'http://127.0.0.1:8189', providers: {} },
+    projectExecutionContext: { ...context, runtimeEpoch: 'restarted-runtime' } };
+  await expect(resumeNativeWorkflowTask(record.operationId)).rejects.toThrow('原 ComfyUI 工作流或服务已变化');
+  expect(driver.persist).toHaveBeenCalledTimes(1);
+  driver.state.config = { comfyUIUrl: base, providers: {} };
+  await resumeNativeWorkflowTask(record.operationId);
+  expect(driver.persist.mock.calls.slice(1).map(([url]) => url)).toEqual([
+    `${base}/view?filename=a.png&subfolder=${encodeURIComponent('生成图')}&type=output`, `${base}/view?filename=b.png&type=output`]);
+  expect((await listNativeMediaTasks(context.projectId))[0]).toMatchObject({ status: 'delivered', localResults: [output('a'), output('b')] });
+  expect(driver.query).toHaveBeenCalledOnce();
+  expect(submit).toHaveBeenCalledOnce();
+});
+it('history 返回时租约已被接管，过期任务不能写入文件描述或开始下载', async () => {
+  const { context, nodeId, descriptor } = await fixture();
+  driver.query.mockImplementationOnce(async (_base: string, _id: string, _message: string, extract: (outputs: ComfyOutputs) => unknown) => {
+    const [record] = await listNativeMediaTasks(context.projectId);
+    await claimNativeMediaRecovery(record.operationId, { ...context, runtimeEpoch: 'new-runtime' });
+    return extract({ save: { images: [{ filename: 'old.png', type: 'output' }] } });
+  });
+  await expect(submitNativeWorkflowTask({ nodeId, descriptor, requestMaterial: {}, beforeSubmit: () => {},
+    submit: async () => ({ taskId: 'original-prompt' }) })).rejects.toMatchObject({ name: 'NativeMediaTaskPending' });
+  const [record] = await listNativeMediaTasks(context.projectId);
+  expect((await readNativeWorkflowReceipt(record.operationId))?.tasks).toEqual([{ taskId: 'original-prompt', state: 'submitted' }]);
+  expect(driver.persist).not.toHaveBeenCalled();
 });
 it('任务候选已保存后重启可在原workflow和凭据均移除时离线交付，不重复POST或查询', async () => {
   const { context, nodeId, descriptor } = await fixture();
@@ -145,8 +189,8 @@ it('Comfy正式输出收齐多候选，视频不接收预览PNG，输出路径�
   const outputs = { preview: { images: [{ filename: 'preview.png', type: 'temp' }] }, save: { images: [
     { filename: 'frame-a.png', type: 'output' }, { filename: 'frame-b.png', type: 'output' }, { filename: '../outside.png', type: 'output' },
     { filename: 'movie.mp4', type: 'output' }] } };
-  expect(nativeComfyOutputs(base, outputs, 'image')).toHaveLength(2);
-  expect(nativeComfyOutputs(base, outputs, 'video')).toEqual([{ kind: 'video', url: `${base}/view?filename=movie.mp4&type=output` }]);
+  expect(nativeComfyOutputFiles(outputs, 'image')).toHaveLength(2);
+  expect(nativeComfyOutputFiles(outputs, 'video')).toEqual([{ filename: 'movie.mp4', type: 'output' }]);
 });
 
 it('引用准备后切到旧项目，原native守卫仍要求新仓储失败关闭，不降级成旧请求', async () => {

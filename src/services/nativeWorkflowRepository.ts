@@ -1,4 +1,4 @@
-/** 工作流子提交与原任务的耐久收据。只保留身份、摘要和本机产物，不保留生成请求或媒体地址。 */
+/** 工作流子提交与原任务的耐久收据。保存身份、摘要、安全取件描述和本机产物，不保留生成请求或媒体地址。 */
 import type { CanvasContext } from '../types/project';
 import type { NativeMediaLocalOutput, NativeMediaSubmissionPreparation, MediaKind } from '../types/media';
 import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
@@ -8,6 +8,7 @@ import { assertNoPendingNativeSharedSync, EXCHANGE, ROOTS, CANVASES, EPISODES, R
 import { validateNativeMediaLocalOutputs } from './nativeMediaCollection';
 import { configValuesEqual } from './configPatch';
 import { validateNativeProtocolContext } from './nativeProtocolContext';
+import { sanitizeComfyOutputFile, type ComfyOutputFile } from './comfyOutputs';
 
 export type NativeWorkflowAdapter = 'runninghub-workflow' | 'runninghub-model' | 'workflow-api' | 'comfyui' | 'muse-webview';
 export interface NativeWorkflowDescriptor {
@@ -17,6 +18,7 @@ export interface NativeWorkflowDescriptor {
 export interface NativeWorkflowTask {
   taskId: string; state: 'submitted' | 'failed' | 'completed'; outputs?: NativeMediaLocalOutput[];
   recoveryContext?: Record<string, unknown>;
+  comfyOutputFiles?: ComfyOutputFile[];
 }
 export interface NativeWorkflowReceipt {
   projectId: string; kind: 'native-workflow-v1'; operationId: string; ownerProjectId: string; canvasId: string;
@@ -59,8 +61,18 @@ export function validateNativeWorkflowReceipt(value: NativeWorkflowReceipt): Nat
     ids.add(slot.id);
     for (const id of slot.taskIds) { if (!bounded(id)) return fail(); if (!taskIds.includes(id)) taskIds.push(id); }
   }
-  if (value.tasks.length !== taskIds.length || value.tasks.some((task, index) => !fields(task, ['taskId', 'state', 'outputs', 'recoveryContext']) || task.taskId !== taskIds[index]
+  if (value.tasks.length !== taskIds.length || value.tasks.some((task, index) => !fields(task, ['taskId', 'state', 'outputs', 'recoveryContext', 'comfyOutputFiles']) || task.taskId !== taskIds[index]
     || !['submitted', 'completed', 'failed'].includes(task.state) || task.state !== 'completed' && task.outputs !== undefined)) return fail();
+  let comfyFileCount = 0;
+  for (const task of value.tasks) {
+    if (task.comfyOutputFiles === undefined) continue;
+    if (descriptor.adapter !== 'comfyui' || task.state === 'failed' || !Array.isArray(task.comfyOutputFiles) || !task.comfyOutputFiles.length) return fail();
+    comfyFileCount += task.comfyOutputFiles.length;
+    if (comfyFileCount > 128) return fail();
+    for (const file of task.comfyOutputFiles) {
+      if (!fields(file, ['filename', 'subfolder', 'type']) || !configValuesEqual(file, sanitizeComfyOutputFile(file))) return fail();
+    }
+  }
   for (const task of value.tasks) if (task.state === 'completed') validateNativeMediaLocalOutputs(task.outputs!);
   for (const task of value.tasks) if (task.recoveryContext) validateNativeProtocolContext(task.recoveryContext);
   if (value.syncOutputs) validateNativeMediaLocalOutputs(value.syncOutputs);
@@ -207,7 +219,7 @@ export function sealNativeWorkflowSubmissions(main: NativeMediaTaskRecord, conte
   }, options);
 }
 export async function retainNativeWorkflowTaskOutputs(main: NativeMediaTaskRecord, taskId: string,
-  result: { outputs: NativeMediaLocalOutput[] } | { failed: true }, options: NativeProjectOptions = {}) {
+  result: { outputs: NativeMediaLocalOutput[] } | { comfyOutputFiles: ComfyOutputFile[] } | { failed: true }, options: NativeProjectOptions = {}) {
   if ('outputs' in result) {
     validateNativeMediaLocalOutputs(result.outputs);
     const { readNativeMediaLocalResult } = await import('./nativeMediaLocalResult');
@@ -217,13 +229,18 @@ export async function retainNativeWorkflowTaskOutputs(main: NativeMediaTaskRecor
     const task = receipt.tasks.find((item) => item.taskId === taskId); if (!task) return fail();
     if ('failed' in result) {
       if (current.status === 'failed' && task.state === 'failed') return;
-      if (!ACTIVE_NATIVE_MEDIA_STATES.includes(current.status) || task.state === 'completed' || current.localResult || current.localResults) return fail();
+      if (!ACTIVE_NATIVE_MEDIA_STATES.includes(current.status) || task.state === 'completed' || task.comfyOutputFiles || current.localResult || current.localResults) return fail();
       // 仅结束已确认的远端任务；其他在途槽位和已保存子产物继续参与父状态判定。
       task.state = 'failed';
       current.status = parentStatus(receipt);
       return;
     }
     if (current.status !== 'submitted' || task.state === 'failed') return fail();
+    if ('comfyOutputFiles' in result) {
+      if (task.comfyOutputFiles && !configValuesEqual(task.comfyOutputFiles, result.comfyOutputFiles)) return fail();
+      task.comfyOutputFiles = structuredClone(result.comfyOutputFiles);
+      return;
+    }
     if (task.state === 'completed') {
       if (!configValuesEqual(task.outputs, result.outputs)) return fail();
       return;
