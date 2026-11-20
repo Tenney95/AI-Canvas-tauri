@@ -25,6 +25,28 @@ export const springGentle: Transition = { type: 'spring', visualDuration: 0.5, b
 export const fadeFast: Transition = { duration: 0.18, ease: EASE_OUT_EXPO };
 export const fadeNormal: Transition = { duration: 0.24, ease: EASE_OUT_EXPO };
 
+/** 工作流、预设和 Skill 管理面板共用的进出场动效。 */
+export const managerBackdropVariants = {
+  hidden: { opacity: 0 },
+  visible: { opacity: 1 },
+};
+
+export const managerPanelVariants = {
+  hidden: { opacity: 0, scale: 0.95, y: 20 },
+  visible: {
+    opacity: 1,
+    scale: 1,
+    y: 0,
+    transition: { type: 'spring' as const, stiffness: 350, damping: 30 },
+  },
+  exit: {
+    opacity: 0,
+    scale: 0.95,
+    y: 20,
+    transition: { duration: 0.15, ease: 'easeIn' as const },
+  },
+};
+
 /**
  * 面板进出场动画。不变量：initial 里出现的属性，animate 必须都写回去，
  * 否则属性会永远停在初始值（漏写 opacity 就是面板看不见却能点）。

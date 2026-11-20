@@ -18,6 +18,7 @@ import { workflowInputNodes } from '../services/runninghubWorkflowService';
 import { workflowPromptRoles } from '../services/comfyPromptRoles';
 import { readBinaryFile } from '../services/fileService';
 import { nativeDropClientPosition } from '../utils/nativeDropPosition';
+import { managerBackdropVariants, managerPanelVariants } from '../utils/motion';
 
 const CATEGORIES: { value: WorkflowCategory; label: string }[] = [
   { value: 'ai-text', label: '生成文本' },
@@ -90,27 +91,6 @@ const IONODE_LABELS: Record<WorkflowIONodeType, string> = {
 /* ============================================
    Framer-motion animation variants
    ============================================ */
-
-const backdropVariants = {
-  hidden: { opacity: 0 },
-  visible: { opacity: 1 },
-};
-
-const panelVariants = {
-  hidden: { opacity: 0, scale: 0.95, y: 20 },
-  visible: {
-    opacity: 1,
-    scale: 1,
-    y: 0,
-    transition: { type: 'spring' as const, stiffness: 350, damping: 30 },
-  },
-  exit: {
-    opacity: 0,
-    scale: 0.95,
-    y: 20,
-    transition: { duration: 0.15, ease: 'easeIn' as const },
-  },
-};
 
 const itemVariants = {
   hidden: { opacity: 0, y: 6 },
@@ -526,7 +506,7 @@ export default function WorkflowPanel() {
           <motion.div
             data-tauri-drag-region
             className="wf-panel-backdrop"
-            variants={backdropVariants}
+            variants={managerBackdropVariants}
             initial="hidden"
             animate="visible"
             exit="hidden"
@@ -538,7 +518,7 @@ export default function WorkflowPanel() {
             <motion.div
               ref={panelRef}
               className="wf-panel"
-              variants={panelVariants}
+              variants={managerPanelVariants}
               initial="hidden"
               animate="visible"
               exit="exit"

@@ -10,32 +10,12 @@ import { isAgentPackageSkill } from '../../../types/agentPackage';
 import AnimatedButton from '../../shared/AnimatedButton';
 import PopupCloseButton from '../../shared/PopupCloseButton';
 import { confirmAction } from '../../../services/confirmDialog';
+import { managerBackdropVariants, managerPanelVariants } from '../../../utils/motion';
 
 interface SkillManagerProps {
   open: boolean;
   onClose: () => void;
 }
-
-const backdropVariants = {
-  hidden: { opacity: 0 },
-  visible: { opacity: 1 },
-};
-
-const panelVariants = {
-  hidden: { opacity: 0, scale: 0.95, y: 20 },
-  visible: {
-    opacity: 1,
-    scale: 1,
-    y: 0,
-    transition: { type: 'spring' as const, stiffness: 350, damping: 30 },
-  },
-  exit: {
-    opacity: 0,
-    scale: 0.95,
-    y: 20,
-    transition: { duration: 0.15, ease: 'easeIn' as const },
-  },
-};
 
 function formatDate(ts: number): string {
   if (!ts) return '-';
@@ -83,7 +63,7 @@ export default function SkillManager({ open, onClose }: SkillManagerProps) {
           <motion.div
             data-tauri-drag-region
             className="preset-modal-overlay"
-            variants={backdropVariants}
+            variants={managerBackdropVariants}
             initial="hidden"
             animate="visible"
             exit="hidden"
@@ -94,7 +74,7 @@ export default function SkillManager({ open, onClose }: SkillManagerProps) {
           <div className="preset-modal-wrapper">
             <motion.div
               className="preset-modal preset-modal--manager"
-              variants={panelVariants}
+              variants={managerPanelVariants}
               initial="hidden"
               animate="visible"
               exit="exit"

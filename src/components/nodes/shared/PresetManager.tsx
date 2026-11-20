@@ -36,6 +36,7 @@ import { groupPresetsByFolder, resolvePresetFolderId, UNGROUPED_PRESET_FOLDER_ID
 import { serializePresetShare } from '../../../services/presetShareService';
 import { copyText } from '../../../services/clipboardService';
 import { exportJsonTextFile } from '../../../services/fileService';
+import { managerBackdropVariants, managerPanelVariants } from '../../../utils/motion';
 
 const PLACEHOLDER_MARKER = '\u200B'; // zero-width space as placeholder pill
 
@@ -106,31 +107,6 @@ function deserializeToEditor(root: HTMLElement, text: string) {
     });
   }
 }
-
-/* ============================================
-   Framer-motion animation variants
-   ============================================ */
-
-const backdropVariants = {
-  hidden: { opacity: 0 },
-  visible: { opacity: 1 },
-};
-
-const panelVariants = {
-  hidden: { opacity: 0, scale: 0.95, y: 20 },
-  visible: {
-    opacity: 1,
-    scale: 1,
-    y: 0,
-    transition: { type: 'spring' as const, stiffness: 350, damping: 30 },
-  },
-  exit: {
-    opacity: 0,
-    scale: 0.95,
-    y: 20,
-    transition: { duration: 0.15, ease: 'easeIn' as const },
-  },
-};
 
 export default function PresetManager() {
   const t = useT();
@@ -531,7 +507,7 @@ export default function PresetManager() {
           <motion.div
             data-tauri-drag-region
             className="preset-modal-overlay"
-            variants={backdropVariants}
+            variants={managerBackdropVariants}
             initial="hidden"
             animate="visible"
             exit="hidden"
@@ -543,7 +519,7 @@ export default function PresetManager() {
           <div className="preset-modal-wrapper">
             <motion.div
               className="preset-modal preset-modal--manager"
-              variants={panelVariants}
+              variants={managerPanelVariants}
               initial="hidden"
               animate="visible"
               exit="exit"

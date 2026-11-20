@@ -875,3 +875,9 @@ cargo test --lib blender_runtime::result::tests
 - 图片节点的裁切和合成共用启动占位逻辑，沿用独立的任务引用、项目／修订守卫和既有保存流程。Tauri 桌面端准备一张项目图片，分别确认裁切和合成，核对对应弹窗关闭、原图右侧出现一个带对应名称的占位、结果保存及撤销行为。处理中撤销、删除占位或切换项目，核对失效结果不再回填。两种操作交错和切项目仍需在桌面验收。已有参数化用例见 [nodeCriticalInteractions.test.tsx](../../tests/components/nodeCriticalInteractions.test.tsx#L1592)。
 
 在仓库根目录可运行 `npm test -- tests/services/appearanceThemeService.test.ts tests/services/apimartGen.test.ts tests/services/providerCatalogService.test.ts tests/services/generateVideo.test.ts`，图片编辑可运行 `npm test -- tests/components/nodeCriticalInteractions.test.tsx -t 'ImageNode (crop|compose) result saving'`。
+
+## 2026-11-20 管理弹窗与视频能力声明精简
+
+已实现，按范围分别提交。本次未运行测试，待用户验收。
+
+- 工作流、预设和 Skill 管理弹窗共用遮罩与面板动效常量，保留各自的挂载方式、交互和原动画配置。Tauri 桌面端依次打开三个入口，核对打开和关闭、遮罩点击以及各自的操作入口。切换性能模式和系统减少动态效果后再重试，确认关闭时序、可点击区域和焦点行为。工作流交互的已有用例见 [workflowEditorInteraction.test.tsx](../../tests/components/workflowEditorInteraction.test.tsx)，动画本身需实机验收。
