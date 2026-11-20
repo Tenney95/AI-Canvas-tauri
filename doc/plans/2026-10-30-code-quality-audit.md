@@ -885,3 +885,9 @@ cargo test --lib blender_runtime::result::tests
 - Seedance 2.0 标准版、Fast 和 Mini 在模块初始化时共用一份基础能力定义，静态展开与原声明逐字一致。Tauri 桌面端使用已配置的 Seedance 2.0 模型分别打开三档参数面板，核对标准版可选 480p、720p、1080p 和 4k，Fast 和 Mini 仍为 480p、720p。另核对原连接的渠道覆盖与 2.5 自动时长。分辨率、渠道和克隆隔离的覆盖入口见 [seedanceModelCapabilities.test.ts](../../tests/services/seedanceModelCapabilities.test.ts)。
 
 在仓库根目录可运行 `npm test -- tests/components/workflowEditorInteraction.test.tsx tests/services/chat/providerConfigTools.test.ts tests/services/seedanceModelCapabilities.test.ts`。
+
+## 2026-11-20 剪贴板节点与桌面跨库复制局部精简
+
+已实现，按范围分别提交。本次未运行测试，待用户验收。
+
+- 剪贴板复用原有媒体扩展名表，十处已准备好媒体的成功节点共用同步组装。读取、落盘回退、图片尺寸测量、节点 ID、批次历史及原生路径的后台复制沿用原流程。Tauri 桌面端在有媒体的项目和默认项目分别通过右键粘贴及键盘粘贴，从图片、HTML 图和本地文件 URI 等来源核对标签、落点、媒体路径和大小。批量粘贴后撤销／重做，重开已保存项目并检查媒体可用性。复核落盘失败回退与导入期间切换项目或剧本页。现有 [clipboard.test.ts](../../tests/store/clipboard.test.ts#L102) 覆盖纯文本切换场景，媒体路径仍待验收。

@@ -16,6 +16,7 @@ import { registerCanvasImport, isCanvasDerivationFresh, completeCanvasDerivation
 import { AI_APP_COPY_MESSAGE, isAiAppNode } from '../services/aiApps/aiAppCreation';
 import { collectCanvasDescendantIds } from '../utils/canvasHierarchy';
 import { clearGroupLayoutData } from '../utils/groupCollapseLayout';
+import { FILE_EXT_IMAGE, FILE_EXT_VIDEO, FILE_EXT_AUDIO } from '../utils/sourceFileType';
 
 export interface ClipboardSlice {
   clipboard: {
@@ -31,7 +32,13 @@ export interface ClipboardSlice {
   pasteExternalFromDataTransfer: (dt: any, position: { x: number; y: number }, maxItems?: number, actionName?: string) => Promise<void>;
 }
 
-// ---- helper: 粘贴媒体落盘 ----
+// ---- helper: 粘贴媒体落盘与节点构造 ----
+
+interface PastedMedia {
+  url: string;
+  filePath?: string;
+  fileName?: string;
+}
 
 /** mime 子类型 → 文件扩展名（仅列出不一致的） */
 const EXT_BY_MIME_SUBTYPE: Record<string, string> = { jpeg: 'jpg', 'svg+xml': 'svg', mpeg: 'mp3' };
@@ -53,7 +60,7 @@ async function persistPastedMedia(
   dataUrl: string,
   label: string,
   fallbackExt: string,
-): Promise<{ url: string; filePath?: string; fileName?: string }> {
+): Promise<PastedMedia> {
   if (projectId) {
     try {
       const fileName = fileService.buildNodeFileName(label, extFromDataUrl(dataUrl, fallbackExt), 'paste');
@@ -65,6 +72,33 @@ async function persistPastedMedia(
     } catch { /* 落盘失败 → 回退内存态 */ }
   }
   return { url: dataUrl };
+}
+
+const PASTED_MEDIA_URL_FIELD = {
+  'ai-image': 'imageUrl',
+  'ai-video': 'videoUrl',
+  'ai-audio': 'audioUrl',
+} as const;
+const PASTED_AUDIO_DIMENSIONS = { nodeWidth: 260, nodeHeight: 140 };
+
+function createPastedMediaNode(
+  id: string,
+  type: keyof typeof PASTED_MEDIA_URL_FIELD,
+  position: Node<BaseNodeData>['position'],
+  label: string,
+  media: PastedMedia,
+  imageDimensions?: Awaited<ReturnType<typeof computeImageNodeDimensions>>,
+): Node<BaseNodeData> {
+  return {
+    id,
+    type,
+    position,
+    data: {
+      label, type, role: 'source', [PASTED_MEDIA_URL_FIELD[type]]: media.url,
+      filePath: media.filePath, fileName: media.fileName, status: 'success',
+      ...(type === 'ai-audio' ? PASTED_AUDIO_DIMENSIONS : imageDimensions),
+    },
+  };
 }
 
 export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice> = (set, get) => ({
@@ -253,16 +287,7 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
           const media = await persistPastedMedia(projectId, dataUrl, '粘贴图像', 'png');
           const dims = await computeImageNodeDimensions(media.url);
 
-          const newNode: Node<BaseNodeData> = {
-            id: `node-${generateId()}`,
-            type: 'ai-image',
-            position: nodePos,
-            data: {
-              label: '粘贴图像', type: 'ai-image', role: 'source', imageUrl: media.url,
-              filePath: media.filePath, fileName: media.fileName, status: 'success', ...dims,
-            },
-          };
-          addPastedNode(newNode);
+          addPastedNode(createPastedMediaNode(`node-${generateId()}`, 'ai-image', nodePos, '粘贴图像', media, dims));
           pastedCount++;
         } else if (item.types.some((t) => t.startsWith('video/'))) {
           const videoType = item.types.find((t) => t.startsWith('video/'))!;
@@ -270,16 +295,7 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
           const dataUrl = await blobToDataUrl(blob);
           const media = await persistPastedMedia(projectId, dataUrl, '粘贴视频', 'mp4');
 
-          const newNode: Node<BaseNodeData> = {
-            id: `node-${generateId()}`,
-            type: 'ai-video',
-            position: nodePos,
-            data: {
-              label: '粘贴视频', type: 'ai-video', role: 'source', videoUrl: media.url,
-              filePath: media.filePath, fileName: media.fileName, status: 'success',
-            },
-          };
-          addPastedNode(newNode);
+          addPastedNode(createPastedMediaNode(`node-${generateId()}`, 'ai-video', nodePos, '粘贴视频', media));
           pastedCount++;
         } else if (item.types.some((t) => t.startsWith('audio/'))) {
           const audioType = item.types.find((t) => t.startsWith('audio/'))!;
@@ -287,16 +303,7 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
           const dataUrl = await blobToDataUrl(blob);
           const media = await persistPastedMedia(projectId, dataUrl, '粘贴音频', 'mp3');
 
-          const newNode: Node<BaseNodeData> = {
-            id: `node-${generateId()}`,
-            type: 'ai-audio',
-            position: nodePos,
-            data: {
-              label: '粘贴音频', type: 'ai-audio', role: 'source', audioUrl: media.url,
-              filePath: media.filePath, fileName: media.fileName, status: 'success', nodeWidth: 260, nodeHeight: 140,
-            },
-          };
-          addPastedNode(newNode);
+          addPastedNode(createPastedMediaNode(`node-${generateId()}`, 'ai-audio', nodePos, '粘贴音频', media));
           pastedCount++;
         } else if (item.types.includes('text/html')) {
           const htmlBlob = await item.getType('text/html');
@@ -321,16 +328,7 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
             if (dataUrl) {
               const media = await persistPastedMedia(projectId, dataUrl, '粘贴图像', 'png');
               const dims = await computeImageNodeDimensions(media.url);
-              const newNode: Node<BaseNodeData> = {
-                id: `node-${generateId()}`,
-                type: 'ai-image',
-                position: nodePos,
-                data: {
-                  label: '粘贴图像', type: 'ai-image', role: 'source', imageUrl: media.url,
-                  filePath: media.filePath, fileName: media.fileName, status: 'success', ...dims,
-                },
-              };
-              addPastedNode(newNode);
+              addPastedNode(createPastedMediaNode(`node-${generateId()}`, 'ai-image', nodePos, '粘贴图像', media, dims));
               pastedCount++;
             }
           }
@@ -344,14 +342,10 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
             const filePath = fileService.fileUriToPath(uri);
             const ext = filePath.split('.').pop()?.toLowerCase() || '';
 
-            const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'];
-            const videoExts = ['mp4', 'webm', 'avi', 'mov', 'mkv'];
-            const audioExts = ['mp3', 'wav', 'ogg', 'flac', 'aac'];
-
             let mediaType: 'image' | 'video' | 'audio' | null = null;
-            if (imageExts.includes(ext)) mediaType = 'image';
-            else if (videoExts.includes(ext)) mediaType = 'video';
-            else if (audioExts.includes(ext)) mediaType = 'audio';
+            if (FILE_EXT_IMAGE.includes(ext)) mediaType = 'image';
+            else if (FILE_EXT_VIDEO.includes(ext)) mediaType = 'video';
+            else if (FILE_EXT_AUDIO.includes(ext)) mediaType = 'audio';
 
             if (mediaType) {
               const dataUrl = await fileService.readFileToDataUrl(filePath);
@@ -364,40 +358,13 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
                 if (mediaType === 'image') {
                   const media = await persistPastedMedia(projectId, dataUrl, baseLabel, ext);
                   const dims = await computeImageNodeDimensions(media.url);
-                  const newNode: Node<BaseNodeData> = {
-                    id: `node-${generateId()}`,
-                    type: 'ai-image',
-                    position: uriNodePos,
-                    data: {
-                      label: srcName, type: 'ai-image', role: 'source', imageUrl: media.url,
-                      filePath: media.filePath, fileName: media.fileName, status: 'success', ...dims,
-                    },
-                  };
-                  addPastedNode(newNode);
+                  addPastedNode(createPastedMediaNode(`node-${generateId()}`, 'ai-image', uriNodePos, srcName, media, dims));
                 } else if (mediaType === 'video') {
                   const media = await persistPastedMedia(projectId, dataUrl, baseLabel, ext);
-                  const newNode: Node<BaseNodeData> = {
-                    id: `node-${generateId()}`,
-                    type: 'ai-video',
-                    position: uriNodePos,
-                    data: {
-                      label: srcName, type: 'ai-video', role: 'source', videoUrl: media.url,
-                      filePath: media.filePath, fileName: media.fileName, status: 'success',
-                    },
-                  };
-                  addPastedNode(newNode);
+                  addPastedNode(createPastedMediaNode(`node-${generateId()}`, 'ai-video', uriNodePos, srcName, media));
                 } else if (mediaType === 'audio') {
                   const media = await persistPastedMedia(projectId, dataUrl, baseLabel, ext);
-                  const newNode: Node<BaseNodeData> = {
-                    id: `node-${generateId()}`,
-                    type: 'ai-audio',
-                    position: uriNodePos,
-                    data: {
-                      label: srcName, type: 'ai-audio', role: 'source', audioUrl: media.url,
-                      filePath: media.filePath, fileName: media.fileName, status: 'success', nodeWidth: 260, nodeHeight: 140,
-                    },
-                  };
-                  addPastedNode(newNode);
+                  addPastedNode(createPastedMediaNode(`node-${generateId()}`, 'ai-audio', uriNodePos, srcName, media));
                 }
                 pastedCount++;
               }
@@ -461,52 +428,31 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
       }
       get().addNodeTransient(node);
     };
-    const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'];
-    const videoExts = ['mp4', 'webm', 'avi', 'mov', 'mkv'];
-    const audioExts = ['mp3', 'wav', 'ogg', 'flac', 'aac'];
 
     // 粘贴媒体统一先落盘到项目目录（与上传一致），失败/浏览器环境回退 dataUrl
     const addImageNode = async (dataUrl: string, idx: number) => {
       const media = await persistPastedMedia(projectId, dataUrl, '粘贴图像', 'png');
       const dims = await computeImageNodeDimensions(media.url);
-      const newNode: Node<BaseNodeData> = {
-        id: `node-${generateId()}`,
-        type: 'ai-image',
-        position: { x: position.x + offsets[idx].x, y: position.y + offsets[idx].y },
-        data: {
-          label: '粘贴图像', type: 'ai-image', role: 'source', imageUrl: media.url,
-          filePath: media.filePath, fileName: media.fileName, status: 'success', ...dims,
-        },
-      };
-      addPastedNode(newNode);
+      addPastedNode(createPastedMediaNode(
+        `node-${generateId()}`, 'ai-image', { x: position.x + offsets[idx].x, y: position.y + offsets[idx].y },
+        '粘贴图像', media, dims,
+      ));
     };
 
     const addVideoNode = async (dataUrl: string, idx: number) => {
       const media = await persistPastedMedia(projectId, dataUrl, '粘贴视频', 'mp4');
-      const newNode: Node<BaseNodeData> = {
-        id: `node-${generateId()}`,
-        type: 'ai-video',
-        position: { x: position.x + offsets[idx].x, y: position.y + offsets[idx].y },
-        data: {
-          label: '粘贴视频', type: 'ai-video', role: 'source', videoUrl: media.url,
-          filePath: media.filePath, fileName: media.fileName, status: 'success',
-        },
-      };
-      addPastedNode(newNode);
+      addPastedNode(createPastedMediaNode(
+        `node-${generateId()}`, 'ai-video', { x: position.x + offsets[idx].x, y: position.y + offsets[idx].y },
+        '粘贴视频', media,
+      ));
     };
 
     const addAudioNode = async (dataUrl: string, idx: number) => {
       const media = await persistPastedMedia(projectId, dataUrl, '粘贴音频', 'mp3');
-      const newNode: Node<BaseNodeData> = {
-        id: `node-${generateId()}`,
-        type: 'ai-audio',
-        position: { x: position.x + offsets[idx].x, y: position.y + offsets[idx].y },
-        data: {
-          label: '粘贴音频', type: 'ai-audio', role: 'source', audioUrl: media.url,
-          filePath: media.filePath, fileName: media.fileName, status: 'success', nodeWidth: 260, nodeHeight: 140,
-        },
-      };
-      addPastedNode(newNode);
+      addPastedNode(createPastedMediaNode(
+        `node-${generateId()}`, 'ai-audio', { x: position.x + offsets[idx].x, y: position.y + offsets[idx].y },
+        '粘贴音频', media,
+      ));
     };
 
     const addTextNode = (text: string, idx: number, fileName?: string) => {
@@ -545,7 +491,7 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
         const fileName = filePath.split(/[\\/]/).pop() || 'file';
         const extLower = fileName.split('.').pop()?.toLowerCase() || '';
 
-        if (imageExts.includes(extLower)) {
+        if (FILE_EXT_IMAGE.includes(extLower)) {
           const nodeId = `node-${generateId()}`;
           const newNode: Node<BaseNodeData> = {
             id: nodeId,
@@ -580,7 +526,7 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
           }).catch((err) => {
             get().updateNodeDataTransient(nodeId, { status: 'error', error: err instanceof Error ? err.message : '复制失败' });
           }), nodeId);
-        } else if (videoExts.includes(extLower)) {
+        } else if (FILE_EXT_VIDEO.includes(extLower)) {
           const nodeId = `node-${generateId()}`;
           const newNode: Node<BaseNodeData> = {
             id: nodeId, type: 'ai-video',
@@ -602,7 +548,7 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
           }).catch((err) => {
             get().updateNodeDataTransient(nodeId, { status: 'error', error: err instanceof Error ? err.message : '复制失败' });
           }), nodeId);
-        } else if (audioExts.includes(extLower)) {
+        } else if (FILE_EXT_AUDIO.includes(extLower)) {
           const nodeId = `node-${generateId()}`;
           const newNode: Node<BaseNodeData> = {
             id: nodeId, type: 'ai-audio',
@@ -630,13 +576,13 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
         const dataUrl = await trackCanvasMediaImport(currentProjectId, fileService.readFileToDataUrl(p.filePath));
         if (dataUrl) {
           const ext = (p.filePath || '').split('.').pop()?.toLowerCase() || '';
-          if (imageExts.includes(ext)) {
+          if (FILE_EXT_IMAGE.includes(ext)) {
             await trackCanvasMediaImport(currentProjectId, addImageNode(dataUrl, pastedCount));
             pastedCount++;
-          } else if (videoExts.includes(ext)) {
+          } else if (FILE_EXT_VIDEO.includes(ext)) {
             await trackCanvasMediaImport(currentProjectId, addVideoNode(dataUrl, pastedCount));
             pastedCount++;
-          } else if (audioExts.includes(ext)) {
+          } else if (FILE_EXT_AUDIO.includes(ext)) {
             await trackCanvasMediaImport(currentProjectId, addAudioNode(dataUrl, pastedCount));
             pastedCount++;
           }
@@ -699,8 +645,7 @@ async function parseDataTransferItems(dt: DataTransfer): Promise<ParsedDTItem[]>
       items.push({ kind: 'markdown', file });
       continue;
     }
-    const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'];
-    if (imageExts.includes(ext)) {
+    if (FILE_EXT_IMAGE.includes(ext)) {
       try {
         const dataUrl = await blobToDataUrl(file);
         items.push({ kind: 'image', dataUrl });
@@ -725,7 +670,7 @@ async function parseDataTransferItems(dt: DataTransfer): Promise<ParsedDTItem[]>
     // Fallback: try reading as dataUrl
     try {
       const dataUrl = await blobToDataUrl(file);
-      if (imageExts.includes(ext)) {
+      if (FILE_EXT_IMAGE.includes(ext)) {
         items.push({ kind: 'image', dataUrl });
       }
     } catch {
