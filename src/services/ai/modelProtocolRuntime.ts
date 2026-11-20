@@ -607,8 +607,8 @@ export async function runConfiguredModelProtocol(
       if (!nativeRemoteId && isSafeNativeProtocolTaskId(receivedId, [provider.apiKey || ''])) nativeRemoteId = receivedId;
       const retained = await recordNativeMediaSubmission(prepared.operationId, prepared.lease, nativeRemoteId ? { taskId: nativeRemoteId }
         : !nativeSent || httpError?.definitiveFailure ? { notStarted: true } : { unknown: true }).catch(() => prepared);
-      if (usesMinimaxProtocol && options.category !== 'audio' && retained.status === 'failed' && httpError?.definitiveFailure) {
-        throw nativeMinimaxRejection(httpError);
+      if (retained.status === 'failed' && httpError?.definitiveFailure) {
+        throw usesMinimaxProtocol ? nativeMinimaxRejection(httpError) : error;
       }
       throw createNativeMediaPendingError(retained, error);
     }

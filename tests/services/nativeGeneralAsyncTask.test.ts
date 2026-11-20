@@ -103,6 +103,26 @@ it.each([422, 504])('MiniMax 原生提交 HTTP %i 区分确认拒绝与结果未
   expect(driver.deliver).not.toHaveBeenCalled();
 });
 
+it.each([401, 403, 504])('声明式中转提交 HTTP %i 与原回执一致，明确拒绝时返回脱敏错误', async (status) => {
+  const { context, input } = await fixture();
+  const model: GeneralModelConfig = { id: 'model', modelId: 'remote-audio', name: '测试音频', category: 'audio', providerConfigId: 'custom',
+    executionProfile: { preset: 'custom', protocol: { version: 2, mode: 'sync',
+      submit: { method: 'POST', path: '/generate' }, response: { type: 'json', result: { urlPath: 'url' } } } } };
+  driver.fetch.mockResolvedValueOnce(Response.json({ error: { message: `access denied for ${input.apiKey}` } }, { status }));
+  const result = runConfiguredModelProtocol({ model, category: 'audio', nodeId: input.nodeId, beforeSubmit: input.beforeSubmit, variables: {} });
+  if (status === 504) {
+    await expect(result).rejects.toMatchObject({ name: 'NativeMediaTaskPending', remoteTaskKnown: false });
+  } else {
+    await expect(result).rejects.toMatchObject({ name: 'ModelProtocolHttpError', status, definitiveFailure: true,
+      message: expect.stringContaining('access denied') });
+    await expect(result).rejects.toHaveProperty('message', expect.not.stringContaining(input.apiKey));
+  }
+  const [record] = await listNativeMediaTasks(context.projectId);
+  expect(record.status).toBe(status === 504 ? 'outcome-unknown' : 'failed');
+  expect(record.remoteTaskId).toBeUndefined();
+  expect(driver.fetch).toHaveBeenCalledOnce(); expect(driver.deliver).not.toHaveBeenCalled();
+});
+
 it('完整解析多个原ID与每项多个URL，不能悄悄省略无效候选', () => {
   expect(nativeGeneralTaskIds({ data: [{ task_id: 'original-a' }, { task_id: 'original-b' }], task_id: 'original-a' })).toEqual(['original-a', 'original-b']);
   expect(nativeGeneralTaskUrls({ result: { audios: [{ url: ['https://cdn.example/a.wav', 'https://cdn.example/b.wav'] }, { url: 'https://cdn.example/c.wav' }] } }, 'audios')).toHaveLength(3);
