@@ -7,6 +7,7 @@ import { resolveRunningHubParameters, runningHubFieldValue, runningHubParameterK
 import { runningHubConnection, isRunningHubWorkflow, saveCloudWorkflowOutputs, getCloudWorkflowPersistedOutput } from '../../workflowExecutionService';
 import { runningHubSiteId } from '../../runninghubSiteCredentials';
 import { runningHubRequest, uploadRunningHubMedia, RunningHubRequestError } from './runninghubClient';
+import { RUNNINGHUB_AUDIO_OUTPUT_TYPE } from './runninghubModelResult';
 import { pollTask, PollTaskFailedError } from '../../pollTask';
 import { cancelNodePolling, cleanupNodePolling, getPendingTasksForProject, registerNodePolling, removePendingTask, savePendingTask, updatePendingTask } from '../../pollManager';
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../../canvasDerivationGuard';
@@ -100,7 +101,7 @@ export function parseRunningHubOutputs(payload: unknown, kind: RunningHubMediaKi
     const type = item.fileType.toLowerCase().replace(/^\./, '');
     const mediaKind = /^(?:image|png|jpg|jpeg|webp|gif|avif|bmp)$/.test(type) ? 'image'
       : /^(?:video|mp4|webm|mov|mkv)$/.test(type) ? 'video'
-        : /^(?:audio|wav|mp3|ogg|flac|m4a|aac)$/.test(type) ? 'audio' : undefined;
+        : RUNNINGHUB_AUDIO_OUTPUT_TYPE.test(type) ? 'audio' : undefined;
     const nodeId = typeof item.nodeId === 'string' ? item.nodeId : typeof item.nodeId === 'number' && Number.isSafeInteger(item.nodeId) ? String(item.nodeId) : undefined;
     if (mediaKind !== kind || (outputNodeIds.length && (!nodeId || !outputNodeIds.includes(nodeId)))) continue;
     result.push({ url: url.toString(), kind, nodeId });

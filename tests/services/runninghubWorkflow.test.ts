@@ -258,6 +258,20 @@ describe('RunningHub 云任务生命周期', () => {
     expect(JSON.stringify(pending())).not.toContain(connection.apiKey);
     completeRunningHubNodeTask('n1'); expect(pending()).toEqual([]);
   });
+  it('音频工作流按返回顺序保存 Opus 和 PCM，跳过同批的视频', async () => {
+    setup('audio');
+    outputs = [
+      { fileUrl: 'https://cdn.test/first', fileType: '.OPUS', nodeId: '9' },
+      { fileUrl: 'https://cdn.test/video', fileType: 'mp4', nodeId: '10' },
+      { fileUrl: 'https://cdn.test/second', fileType: 'pcm', nodeId: '11' },
+    ];
+    const result = await generate('audio');
+    expect(result.map((output) => [output.kind, output.sourceUrl])).toEqual([
+      ['audio', outputs[0].fileUrl], ['audio', outputs[2].fileUrl],
+    ]);
+    expect(mocks.persist.mock.calls.map(([url]) => url)).toEqual([outputs[0].fileUrl, outputs[2].fileUrl]);
+    expect(submitCalls()).toHaveLength(1);
+  });
   it('画布先恢复、原对话后加载时同步同一产物，不重复保存或写入其他会话', async () => {
     savePendingTask({ nodeId: 'n1', projectId: 'p1', taskId, taskType: 'runninghub-workflow', provider: 'runninghubwf', nodeType: 'ai-image', submitted: true, runninghubWorkflowId: 'wf1', runninghubMessage: { projectId: 'p1', conversationId: 'c1', messageId: 'm1', deliveryMode: 'both' } });
     await resumeRunningHubNodeTask('n1');

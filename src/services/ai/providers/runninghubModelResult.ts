@@ -1,6 +1,8 @@
 /** RunningHub 标准模型首次取图与旧任务续查共享的状态和产物合同。 */
 import type { RunningHubMediaKind, RunningHubOutput } from '../../../types/runninghub';
 
+export const RUNNINGHUB_AUDIO_OUTPUT_TYPE = /^(audio|mp3|wav|flac|ogg|m4a|aac|pcm|opus)$/;
+
 /** 标准模型的首次查询和续查使用同一状态映射，服务商确认取消时按失败终态处理。 */
 export function readRunningHubModelStatus(value: unknown): string {
   const status = typeof value === 'string' ? value.toUpperCase() : '';
@@ -21,7 +23,7 @@ export function parseRunningHubModelOutputs(results: unknown, kind: RunningHubMe
     const format = String(result.outputType || url.pathname.split('.').pop() || '').toLowerCase().replace(/^\./, '');
     const resultKind = /^(image|png|jpg|jpeg|webp|gif|bmp|tiff|avif)$/.test(format) ? 'image'
       : /^(video|mp4|webm|mov|mkv|avi)$/.test(format) ? 'video'
-        : /^(audio|mp3|wav|flac|ogg|m4a|aac|pcm|opus)$/.test(format) ? 'audio' : undefined;
+        : RUNNINGHUB_AUDIO_OUTPUT_TYPE.test(format) ? 'audio' : undefined;
     if ((resultKind && resultKind !== kind) || /^(json|txt|obj|glb|gltf|zip)$/.test(format)) continue;
     outputs.push({ url: result.url, kind });
   }
