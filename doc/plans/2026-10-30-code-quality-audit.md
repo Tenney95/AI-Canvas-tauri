@@ -947,7 +947,10 @@ cargo test --lib blender_runtime::result::tests
 
 ## 2026-11-20 旧目录枚举、下拉样式与 Topaz 参数精简
 
-本次未运行测试，待用户验收。
+已实现，按范围分别提交。本次未运行测试，待用户验收。
 
 - 移除无生产调用的旧单层目录枚举和两个无用导入。原专用测试的磁盘删除断言移到现用扫描的三种来源用例，保留对过滤、计数和流式结果的覆盖。Tauri 桌面端在测试项目及可丢弃目录中核对项目、全局和外部素材列表。普通素材、普通 `.pending` 文件和点文件继续列出，新旧原生暂存件在列表隐藏、磁盘文件保留。现有扫描回归见 [assetFolderNavigation.test.ts](../../tests/services/assetFolderNavigation.test.ts#L107) 和 [projectThumbnailExclusion.test.ts](../../tests/services/projectThumbnailExclusion.test.ts)。
 - 删除动画生成帧数、高级预设步骤类型及合成面板混合模式和字体的旧原生下拉样式。Tauri 桌面端在有动画节点、预设与图片素材的测试项目中依次打开这四类控件，分别用鼠标和键盘切换选项，核对定位、焦点和选值。切换深浅主题并缩窄窗口，核对预设网格对齐及菜单可见。相关键盘和弹层边界用例见 [selectPortalBoundary.test.ts](../../tests/components/selectPortalBoundary.test.ts)。
+- RunningHub Topaz 六个图像端点共用输出宽高构造，五个视频端点共用参考视频和输出宽高构造。各端点只在目录初始化时创建独立字段和嵌套 schema，目录静态展开后与原源码逐字节一致。Tauri 桌面端在已配置的 RunningHub 连接中，核对图像端点仍是选填宽高、默认 1920×1080，视频端点仍需参考视频和宽高、默认 1280×720。检查边界 1 和 32000 及越界拒绝，核对字段顺序、各增强模式的其余选项。目录摘要、对象隔离和请求构造用例见 [runninghubModelManifest.test.ts](../../tests/services/runninghubModelManifest.test.ts#L14) 和 [runninghubMedia.test.ts](../../tests/services/runninghubMedia.test.ts#L173)。
+
+在仓库根目录可运行 `npm test -- tests/services/assetFolderNavigation.test.ts tests/services/projectThumbnailExclusion.test.ts tests/services/configSecretStorage.test.ts tests/components/selectPortalBoundary.test.ts tests/services/runninghubModelManifest.test.ts tests/services/runninghubMedia.test.ts`。
