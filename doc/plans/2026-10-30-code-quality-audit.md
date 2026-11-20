@@ -904,3 +904,9 @@ cargo test --lib blender_runtime::result::tests
 - 自定义视频模型的参考视频与参考音频共用单件时长字段的更新逻辑，六个控件沿用原解析、禁用条件和提交入口。Tauri 桌面端从厂商设置展开一个自定义视频模型的能力编辑器，为两类素材设置不同最短和最长值，分别填写 0、清空输入并切换严格上限，核对未编辑的另一类、宽度及总时长等字段。保存后重开检查生效值与清空状态。已有归一化回归见 [providerVideoCapabilityEditor.test.ts](../../tests/components/providerVideoCapabilityEditor.test.ts)，六个控件的直接交互仍待桌面验收。
 
 在仓库根目录可运行 `npm test -- tests/services/mediaModelCapabilities.test.ts tests/services/apimartGen.test.ts tests/components/slashCommandFolders.test.tsx tests/components/providerVideoCapabilityEditor.test.ts`。
+
+## 2026-11-20 RunningHub 参数与预览显示精简
+
+已实现，按范围分别提交。本次未运行测试，待用户验收。
+
+- RunningHub 的 Seedance 2.5 与 Seedream 5.0 Pro 八个端点共用四组参数构造。逐处展开后与原目录源码一致，每个端点仍单独创建参数及嵌套对象。Tauri 桌面端可在已配置的 RunningHub 连接选择对应端点，核对字段顺序、默认值、枚举和参考素材槽。目录哈希与对象隔离的已有用例见 [runninghubModelManifest.test.ts](../../tests/services/runninghubModelManifest.test.ts#L14)。
