@@ -891,3 +891,6 @@ cargo test --lib blender_runtime::result::tests
 已实现，按范围分别提交。本次未运行测试，待用户验收。
 
 - 剪贴板复用原有媒体扩展名表，十处已准备好媒体的成功节点共用同步组装。读取、落盘回退、图片尺寸测量、节点 ID、批次历史及原生路径的后台复制沿用原流程。Tauri 桌面端在有媒体的项目和默认项目分别通过右键粘贴及键盘粘贴，从图片、HTML 图和本地文件 URI 等来源核对标签、落点、媒体路径和大小。批量粘贴后撤销／重做，重开已保存项目并检查媒体可用性。复核落盘失败回退与导入期间切换项目或剧本页。现有 [clipboard.test.ts](../../tests/store/clipboard.test.ts#L102) 覆盖纯文本切换场景，媒体路径仍待验收。
+- 桌面跨库复制的预检、暂存、提交和清理收敛到一处。两个方向继续各自提供源库、目标库和保存回调。静态展开与原流程一致，包括提交前按原规则回收、开始提交后保留媒体与索引。Tauri 桌面端使用带参考图、声音和关联武器的资产分别复制到项目和全局库，核对新身份、归属、依赖和独立编辑。回归暂存中取消、切换项目和保存回调失败，预期沿用对应的清理或保留规则。现有 [dramaAssetTransferService.test.ts](../../tests/services/dramaAssetTransferService.test.ts#L319) 直接覆盖全局到项目，项目到全局仍需直接验收。
+
+在仓库根目录可运行 `npm test -- tests/store/clipboard.test.ts tests/services/dramaAssetTransferService.test.ts tests/services/episodeAssetService.test.ts`。

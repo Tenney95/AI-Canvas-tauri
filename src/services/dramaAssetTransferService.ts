@@ -463,10 +463,17 @@ async function importDramaAssets(input: ImportInput, options: DramaAssetTransfer
   }
 }
 
-/** Materialize global files into the target project before accepting the new cards. */
-export async function copyGlobalDramaAssetsToProject(
-  input: CopyGlobalDramaAssetsToProjectInput, options: DramaAssetTransferOptions = {},
+type CopyProjectDramaAssetsToGlobalInput = {
+  ownerId: string; assets: readonly DramaAsset[]; allAssets?: readonly DramaAsset[]; nodes: readonly Node<BaseNodeData>[];
+  commit: (assets: DramaAsset[]) => Promise<void>;
+};
+
+async function copyDramaAssetsBetweenScopes(
+  request: { from: 'global'; input: CopyGlobalDramaAssetsToProjectInput }
+    | { from: 'project'; input: CopyProjectDramaAssetsToGlobalInput },
+  options: DramaAssetTransferOptions,
 ): Promise<DramaAssetTransferResult> {
+  const { input } = request;
   assertDramaAssetWriteCurrent(options);
   if (!isTauriEnv()) throw new Error(t('创作资产包导入仅支持桌面应用'));
   if (!input.assets.length || input.assets.length > DRAMA_ASSET_TRANSFER_LIMITS.assets) throw new Error(t('没有可导出的资产或数量超过限制'));
@@ -474,11 +481,17 @@ export async function copyGlobalDramaAssetsToProject(
   try {
     workspace = await createDramaAssetArchiveWorkspace(options);
     assertDramaAssetWriteCurrent(options);
-    const selection = await completeExportSelection({ scope: 'global', name: t('全局创作资产'), assets: input.assets,
-      allAssets: input.allAssets }, options);
+    const source: ExportInput = request.from === 'global'
+      ? { scope: 'global', name: t('全局创作资产'), assets: input.assets, allAssets: input.allAssets }
+      : { scope: 'project', name: t('创作资产'), ownerId: input.ownerId,
+        assets: input.assets, allAssets: input.allAssets, nodes: request.input.nodes };
+    const selection = await completeExportSelection(source, options);
     const document = await prepareExportAssets(selection, workspace, options);
     assertDramaAssetWriteCurrent(options);
-    return await commitImportedDocument(document, workspace, { scope: 'project', ownerId: input.ownerId, commit: input.commit }, options);
+    const target: ImportInput = request.from === 'global'
+      ? { scope: 'project', ownerId: input.ownerId, commit: input.commit }
+      : { scope: 'global', commit: input.commit };
+    return await commitImportedDocument(document, workspace, target, options);
   } catch (error) {
     if (error instanceof DramaAssetCommitError) throw error;
     assertDramaAssetWriteCurrent(options);
@@ -487,29 +500,18 @@ export async function copyGlobalDramaAssetsToProject(
   } finally { await cleanup(workspace?.directory, options); }
 }
 
-/** The inverse copy uses the same atomic global import and independent media identities. */
-export async function copyProjectDramaAssetsToGlobal(
-  input: { ownerId: string; assets: readonly DramaAsset[]; allAssets?: readonly DramaAsset[]; nodes: readonly Node<BaseNodeData>[];
-    commit: (assets: DramaAsset[]) => Promise<void> }, options: DramaAssetTransferOptions = {},
+/** Materialize global files into the target project before accepting the new cards. */
+export function copyGlobalDramaAssetsToProject(
+  input: CopyGlobalDramaAssetsToProjectInput, options: DramaAssetTransferOptions = {},
 ): Promise<DramaAssetTransferResult> {
-  assertDramaAssetWriteCurrent(options);
-  if (!isTauriEnv()) throw new Error(t('创作资产包导入仅支持桌面应用'));
-  if (!input.assets.length || input.assets.length > DRAMA_ASSET_TRANSFER_LIMITS.assets) throw new Error(t('没有可导出的资产或数量超过限制'));
-  let workspace: DramaAssetArchiveWorkspace | undefined;
-  try {
-    workspace = await createDramaAssetArchiveWorkspace(options);
-    assertDramaAssetWriteCurrent(options);
-    const selection = await completeExportSelection({ scope: 'project', name: t('创作资产'), ownerId: input.ownerId,
-      assets: input.assets, allAssets: input.allAssets, nodes: input.nodes }, options);
-    const document = await prepareExportAssets(selection, workspace, options);
-    assertDramaAssetWriteCurrent(options);
-    return await commitImportedDocument(document, workspace, { scope: 'global', commit: input.commit }, options);
-  } catch (error) {
-    if (error instanceof DramaAssetCommitError) throw error;
-    assertDramaAssetWriteCurrent(options);
-    if (error instanceof DramaAssetMediaError) throw error;
-    throw new Error(t('复制失败，请重试'), { cause: error });
-  } finally { await cleanup(workspace?.directory, options); }
+  return copyDramaAssetsBetweenScopes({ from: 'global', input }, options);
+}
+
+/** The inverse copy uses the same atomic global import and independent media identities. */
+export function copyProjectDramaAssetsToGlobal(
+  input: CopyProjectDramaAssetsToGlobalInput, options: DramaAssetTransferOptions = {},
+): Promise<DramaAssetTransferResult> {
+  return copyDramaAssetsBetweenScopes({ from: 'project', input }, options);
 }
 
 export function exportProjectDramaAssets(input: ExportProjectDramaAssetsInput, options: DramaAssetTransferOptions = {}): Promise<DramaAssetTransferResult | null> {
