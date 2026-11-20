@@ -86,7 +86,7 @@ import { nativeMediaInputMaterial } from '../services/nativeMediaInput';
 import { createNativeProject, saveNativeProjectView, saveNativeProjectContent, convertNativeProjectToSeries,
   appendNativeEpisodesInOrder, saveNativeEpisodeContent, readNativeProjectCapture, reorderNativeEpisodes,
   deleteNativeEpisode, deleteNativeProject, updateNativeProjectMetadata, updateNativeEpisodeMetadata,
-  updateNativeEpisodeComposite, readNativeEpisodeContent, readNativeProjectContent, saveNativeCanvasPreview,
+  updateNativeEpisodeComposite, readNativeEpisodeContent, readNativeProjectContent, readNativeProjectSelection, saveNativeCanvasPreview,
   saveNativeProjectTextModel, listNativeProjectPendingTransfers, type NativeProjectPendingTransfer } from '../services/indexedDb/nativeProjectRepository';
 import { listProjectCatalog, readOccupiedProjectIds, resolveProjectModel, type ProjectCatalogEntry } from '../services/projectModelRouter';
 import { readNativeProjectView } from '../services/nativeProjectNavigation';
@@ -1637,12 +1637,18 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         await readNativeVideoImageReference(record.ownerProjectId, record.imageReference);
         assertCurrent();
       }
-      const snapshot = await readNativeProjectCapture(record.ownerProjectId);
-      const canvas = snapshot?.aggregate.canvases.find((item) => item.id === record.canvasId);
-      if (!snapshot || !canvas || canvas.epoch !== record.canvasEpoch || canvas.episodeId !== record.episodeId
-        || canvas.revision !== expectedCanvasRevision || snapshot?.aggregate.content.revisions.assets !== expectedAssetsRevision
+      const readOptions = { signal: controller.signal };
+      const [selection, shared] = await Promise.all([
+        readNativeProjectSelection(record.ownerProjectId, record.canvasId, readOptions),
+        readNativeProjectContent(record.ownerProjectId, readOptions),
+      ]);
+      const canvas = selection?.canvas;
+      if (!selection || !canvas || !shared || selection.changeRevision !== shared.changeRevision
+        || !configValuesEqual(selection.project, shared.project) || selection.project.epoch !== record.projectEpoch
+        || canvas.epoch !== record.canvasEpoch || canvas.episodeId !== record.episodeId
+        || canvas.revision !== expectedCanvasRevision || shared.content.revisions.assets !== expectedAssetsRevision
         || nativeRuntime.get(get) !== runtime) throw new Error('原画布或共享素材已变化，媒体结果已保留');
-      const resultRootRef = snapshot.aggregate.project.storageRootRef;
+      const resultRootRef = selection.project.storageRootRef;
       let nodes = canvas.nodes.map((value) => {
         if (!value || typeof value !== 'object' || (value as { id?: unknown }).id !== record.nodeId) return value;
         const node = structuredClone(value) as { data?: Record<string, unknown> };
@@ -1673,7 +1679,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       // 老异步回执没有集合字段时也只接受明确摘要路径，不按普通文件名猜配已付费结果。
       const digest = nativeMediaContentDigest(relativePath);
       const displayFiles = files.length ? files : digest ? [{ relativePath, sha256: digest, category: record.category }] : [];
-      const displays = createNativeMediaDisplayResolver(snapshot.aggregate.project);
+      const displays = createNativeMediaDisplayResolver(selection.project);
       const displayPatches = new Map<string, Record<string, unknown>>();
       for (const [ordinal, file] of displayFiles.entries()) {
         assertCurrent();

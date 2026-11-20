@@ -10,10 +10,11 @@ import type { CanvasContext } from '../../src/types/project';
 import { useAppStore } from '../../src/store/useAppStore';
 import { createProjectSlice } from '../../src/store/store.projects';
 import { createHistorySlice } from '../../src/store/store.history';
-import { createNativeEpisode, createNativeProject, convertNativeProjectToSeries, listNativeProjectIdentities, readNativeProjectCapture, saveNativeCanvas,
-  openNativeProjectDatabase, TRANSFER, transact, type NativeProjectAggregate } from '../../src/services/indexedDb/nativeProjectRepository';
+import { createNativeEpisode, createNativeProject, convertNativeProjectToSeries, listNativeProjectIdentities, readNativeProjectCapture, readNativeProjectSelection, saveNativeCanvas,
+  EPISODE_CONTENTS, openNativeProjectDatabase, TRANSFER, transact, type NativeProjectAggregate } from '../../src/services/indexedDb/nativeProjectRepository';
 import { prepareNativeMediaTask, recordNativeMediaSubmission, listNativeMediaTasks } from '../../src/services/indexedDb/nativeMediaTaskRepository';
 import * as nativeDelivery from '../../src/services/nativeMediaDelivery';
+import { readNativeOutputHistory } from '../../src/services/nativeOutputHistory';
 import { sha256BytesHex } from '../../src/services/mediaDataUrl';
 import { videoInputFingerprintMaterial } from '../../src/services/videoBatchPlanning';
 import type { ProjectCatalogEntry } from '../../src/services/projectModelRouter';
@@ -546,6 +547,28 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     expect(state.history).toHaveLength(2); expect(state.history[0]).toBe(originalHistory); expect(state.historyIndex).toBe(1);
     expect(state.nodes[0].data).toMatchObject({ status: 'success', relativePath: mediaPath, videoUrl: mediaUrl });
     expect((await listNativeMediaTasks(projectId))[0]).toMatchObject({ status: 'delivered', remoteTaskId: 'original-paid-task', resultRelativePath: mediaPath });
+  });
+
+  it('第二集正文缺失时，第一集的节点、原任务回执和原始生成记录仍能一起落库', async () => {
+    const { store, receipt, context } = await fixture();
+    const db = (await openNativeProjectDatabase(false, {}))!;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(EPISODE_CONTENTS, 'readwrite');
+        tx.objectStore(EPISODE_CONTENTS).delete(episodeB);
+        tx.oncomplete = () => resolve(); tx.onabort = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+
+    await store.getState().commitNativeMediaResult(receipt, mediaPath, context);
+    expect(store.getState().nodes[0].data).toMatchObject({ status: 'success', videoUrl: mediaUrl });
+    const saved = await readNativeProjectSelection(projectId, canvasA);
+    expect(saved?.canvas?.nodes).toMatchObject([{ id: receipt.nodeId, data: { status: 'success', videoUrl: mediaPath } }]);
+    expect(await listNativeMediaTasks(projectId)).toMatchObject([{ status: 'delivered', remoteTaskId: receipt.remoteTaskId, resultRelativePath: mediaPath }]);
+    expect(await readNativeOutputHistory(canvasA)).toMatchObject([{ entry: {
+      nodeId: receipt.nodeId, projectId: canvasA, prompt: '保留原请求', output: mediaPath,
+    } }]);
+    expect(await readNativeOutputHistory(canvasB)).toEqual([]);
   });
 
   it.each(['ai-image', 'ai-video', 'ai-audio', 'ai-animation', 'ai-panorama'] as const)('%s的完整混合候选即使通用恢复隐藏展示字段，也按本回执原根SHA回填所有结果', async (sourceType) => {
