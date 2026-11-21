@@ -9,6 +9,7 @@ import { emptyDramaAssetLibrary } from '../../src/types/dramaAssets';
 
 const driver = vi.hoisted(() => ({
   state: null as unknown as AppState, states: [] as unknown[], refs: [] as Array<{ current: unknown }>,
+  stateSetters: new WeakMap<unknown[], Array<(next: unknown) => void>>(),
   memos: [] as Array<{ value: unknown; deps: readonly unknown[] }>,
   layouts: [] as Array<{ deps?: readonly unknown[]; cleanup?: () => void }>, pending: [] as Array<() => void>,
   stateIndex: 0, refIndex: 0, memoIndex: 0, layoutIndex: 0, runEffects: false, stateWrites: 0,
@@ -32,7 +33,13 @@ vi.mock('react', async () => {
     useState: <T,>(initial?: T | (() => T)) => {
       const index = driver.stateIndex++; const states = driver.states;
       if (!(index in states)) states[index] = typeof initial === 'function' ? (initial as () => T)() : initial;
-      return [states[index], (next: T | ((old: T) => T)) => { driver.stateWrites++; states[index] = typeof next === 'function' ? (next as (old: T) => T)(states[index] as T) : next; }];
+      const setters = driver.stateSetters.get(states) ?? [];
+      driver.stateSetters.set(states, setters);
+      setters[index] ??= (next) => {
+        driver.stateWrites++;
+        states[index] = typeof next === 'function' ? (next as (old: T) => T)(states[index] as T) : next;
+      };
+      return [states[index], setters[index]];
     },
     useRef: <T,>(initial: T) => driver.refs[driver.refIndex++] ??= { current: initial },
     useLayoutEffect: queueEffect,

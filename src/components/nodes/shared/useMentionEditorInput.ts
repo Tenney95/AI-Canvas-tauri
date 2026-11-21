@@ -168,14 +168,14 @@ export function useMentionInputState(editorRef: RefObject<HTMLDivElement | null>
     if (!textInputActiveRef.current || !root) return;
     const selection = readMentionTextSelection(root);
     if (selection) textInputSelectionRef.current = selection;
-  }, []);
+  }, [editorRef]);
   const textInputSelection = useCallback(() => {
     textInputActiveRef.current = true;
     rememberTextInputSelection();
     const length = editorRef.current ? serializeDOM(editorRef.current).length : 0;
     const saved = textInputSelectionRef.current;
     return saved ? { start: Math.min(saved.start, length), end: Math.min(saved.end, length) } : { start: length, end: length };
-  }, [rememberTextInputSelection]);
+  }, [editorRef, rememberTextInputSelection]);
   const replacementChipRef = useRef<MentionChipTarget | null>(null);
   const [chipMenu, setChipMenu] = useState<{ target: MentionChipTarget; x: number; y: number } | null>(null);
   const selectFirstMentionRef = useRef<(() => void) | null>(null);
@@ -194,7 +194,7 @@ export function useMentionInputState(editorRef: RefObject<HTMLDivElement | null>
       sel.removeAllRanges();
       sel.addRange(saved);
     }
-  }, []);
+  }, [editorRef]);
 
   // 收起搜索时返回提示词光标，仍保留 @ 范围供下一次选择使用。
   const focusMentionCursor = useCallback(() => {
@@ -205,7 +205,7 @@ export function useMentionInputState(editorRef: RefObject<HTMLDivElement | null>
     const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(saved.cloneRange());
-  }, []);
+  }, [editorRef]);
 
 
   return {
@@ -242,7 +242,7 @@ export function useMentionInputHistory(
     // IME 中间态仍实时回写，整次组合输入只在结束时形成一个撤销步骤。
     if (!composingRef.current) historyRef.current.record(captureMentionEditorSnapshot(el, nextPrompt), group);
     onChange(nextPrompt, previousPrompt);
-  }, [nodeMetaMap, onChange]);
+  }, [composingRef, disabledRef, editorRef, historyRef, nodeMetaMap, onChange, syncedPromptRef]);
 
   const applyHistory = useCallback((direction: 'undo' | 'redo') => {
     if (disabledRef.current) return;
@@ -266,7 +266,7 @@ export function useMentionInputHistory(
     setChipMenu(null);
     setShowMention(false);
     onChange(snapshot.prompt, previousPrompt);
-  }, [nodeMetaMap, onChange]);
+  }, [cancelChipDragRef, composingRef, disabledRef, editorRef, historyRef, lastFocusedWfValueRef, nodeMetaMap, onChange, replacementChipRef, savedMentionRangeRef, setChipMenu, setShowMention, syncedPromptRef]);
 
   useEffect(() => {
     const el = editorRef.current;
@@ -287,7 +287,7 @@ export function useMentionInputHistory(
     };
     el.addEventListener('beforeinput', beforeInput);
     return () => el.removeEventListener('beforeinput', beforeInput);
-  }, [applyHistory]);
+  }, [applyHistory, composingRef, disabledRef, editorRef, historyRef]);
 
   return { emitDOM, applyHistory };
 }
@@ -371,12 +371,12 @@ export function useMentionInputActions({
     sel.removeAllRanges();
     sel.addRange(r);
     return true;
-  }, [isCurrentChipTarget]);
+  }, [disabledRef, isCurrentChipTarget, replacementChipRef, setShowAssetPicker, setShowMention]);
 
   const closeRefmodSettings = useCallback(() => {
     refmodSessionRef.current = undefined;
     setRefmodSession(undefined);
-  }, []);
+  }, [refmodSessionRef, setRefmodSession]);
 
   const openRefmodSettings = useCallback((asset: ComfyRefmodAsset, thumbnailUrl?: string, chip?: HTMLElement, manualIndex?: number) => {
     const root = editorRef.current;
@@ -412,7 +412,7 @@ export function useMentionInputActions({
       setRefmodSession(session); setRefmodUiError('');
       setShowMention(false); setMentionQuery('');
     } catch (cause) { setRefmodUiError(cause instanceof Error ? cause.message : translate('读取 ComfyUI 角色引用失败')); }
-  }, [nodeId, localComfyWorkflow, canMentionRefmod, currentProjectId, isCurrentChipTarget]);
+  }, [editorRef, nodeId, localComfyWorkflow, canMentionRefmod, currentProjectId, replacementChipRef, savedMentionRangeRef, refmodSessionRef, setRefmodSession, setRefmodUiError, setShowMention, setMentionQuery, isCurrentChipTarget]);
 
   const editRefmodChip = useCallback((chip: HTMLElement) => {
     try {
@@ -423,7 +423,7 @@ export function useMentionInputActions({
       const asset = saved ?? { ...mention.selection, id: comfyRefmodKey(mention.selection), name: mention.label, tags: [], updatedAt: 0 };
       openRefmodSettings(asset, resolveComfyRefmodChipPresentation(raw)?.thumbnailUrl, chip);
     } catch (cause) { setRefmodUiError(cause instanceof Error ? cause.message : translate('无法编辑角色引用')); }
-  }, [openRefmodSettings]);
+  }, [openRefmodSettings, setRefmodUiError]);
 
   const applyRefmodMention = useCallback(async (selection: ComfyRefmodSelection) => {
     const session = refmodSessionRef.current;
@@ -484,7 +484,7 @@ export function useMentionInputActions({
     caret.removeAllRanges(); caret.addRange(range);
     savedMentionRangeRef.current = null;
     emitDOM(); closeRefmodSettings();
-  }, [deleteAtChar, emitDOM, closeRefmodSettings]);
+  }, [refmodSessionRef, editorRef, savedMentionRangeRef, emitDOM, closeRefmodSettings, disabledRef, editorOwnerRef, selectedWorkflowRef, deleteAtChar]);
 
   const removeManualRefmod = useCallback((reference: ComfyRefmodSelection) => {
     const state = useAppStore.getState();
@@ -496,7 +496,7 @@ export function useMentionInputActions({
     }
     state.updateNodeData(node.id, { comfyRefmods: manualRefmods.filter((item) => item !== reference) });
     setRefmodUiError('');
-  }, [nodeId, currentProjectId, currentEditorData, selectedWorkflow, manualRefmods]);
+  }, [currentProjectId, currentEditorData, selectedWorkflowRef, selectedWorkflow, manualRefmods, setRefmodUiError, nodeId]);
 
   // ── Insert a canvas node chip ──
   const insertChipAtCursor = useCallback(
@@ -519,7 +519,7 @@ export function useMentionInputActions({
       sel.addRange(range);
       emitDOM();
     },
-    [nodeMetaMap, emitDOM],
+    [editorRef, nodeMetaMap, emitDOM],
   );
 
   // ── Insert a workflow IO chip ──
@@ -549,7 +549,7 @@ export function useMentionInputActions({
       sel.addRange(range);
       emitDOM();
     },
-    [emitDOM],
+    [editorRef, emitDOM],
   );
 
   // ── Mention selection handlers ──
@@ -574,7 +574,7 @@ export function useMentionInputActions({
       setShowMention(false);
       setMentionQuery('');
     },
-    [currentProjectId, deleteAtChar, insertChipAtCursor],
+    [currentProjectId, deleteAtChar, editorRef, insertChipAtCursor, savedMentionRangeRef, setMentionQuery, setShowMention],
   );
 
   const handleSelectWorkflowMention = useCallback(
@@ -598,7 +598,7 @@ export function useMentionInputActions({
       setShowMention(false);
       setMentionQuery('');
     },
-    [currentProjectId, deleteAtChar, insertWorkflowChipAtCursor],
+    [currentProjectId, deleteAtChar, editorRef, insertWorkflowChipAtCursor, savedMentionRangeRef, setMentionQuery, setShowMention],
   );
 
   const insertDramaChipAtCursor = useCallback(
@@ -621,7 +621,7 @@ export function useMentionInputActions({
       sel.addRange(range);
       emitDOM();
     },
-    [emitDOM],
+    [editorRef, emitDOM],
   );
 
   /** 二级菜单：引用角色的某一张参考图，或把全部参考图拼成一张 */
@@ -644,7 +644,7 @@ export function useMentionInputActions({
       setMentionQuery('');
       setDramaRefPickerId(null);
     },
-    [isCurrentEditorOwner, restoreMentionCursor, deleteAtChar, insertDramaChipAtCursor],
+    [isCurrentEditorOwner, restoreMentionCursor, deleteAtChar, insertDramaChipAtCursor, setShowMention, setMentionQuery, setDramaRefPickerId],
   );
 
   const handleSelectDramaMention = useCallback(
@@ -664,7 +664,7 @@ export function useMentionInputActions({
       setShowMention(false);
       setMentionQuery('');
     },
-    [isCurrentEditorOwner, restoreMentionCursor, deleteAtChar, insertDramaChipAtCursor],
+    [isCurrentEditorOwner, restoreMentionCursor, deleteAtChar, insertDramaChipAtCursor, setShowMention, setMentionQuery],
   );
 
   // ── Insert an asset reference chip ──
@@ -688,7 +688,7 @@ export function useMentionInputActions({
       sel.addRange(range);
       emitDOM();
     },
-    [emitDOM],
+    [editorRef, emitDOM],
   );
 
   const handleSelectAsset = useCallback(
@@ -708,7 +708,7 @@ export function useMentionInputActions({
       setShowMention(false);
       setMentionQuery('');
     },
-    [isCurrentEditorOwner, deleteAtChar, insertAssetChipAtCursor],
+    [isCurrentEditorOwner, editorRef, savedMentionRangeRef, deleteAtChar, insertAssetChipAtCursor, setShowAssetPicker, setShowMention, setMentionQuery],
   );
 
   // ── Input handler: detect @ and / ──
@@ -755,7 +755,7 @@ export function useMentionInputActions({
     const inputType = (event.nativeEvent as InputEvent).inputType;
     const group = ['insertText', 'deleteContentBackward', 'deleteContentForward'].includes(inputType) ? inputType : null;
     emitDOM(group);
-  }, [emitDOM, onSlashTrigger, showMention]);
+  }, [disabledRef, editorRef, emitDOM, onSlashTrigger, replacementChipRef, savedMentionRangeRef, setMentionQuery, setShowMention, showMention]);
 
   // ── KeyDown: mention navigation / submit / chip deletion ──
   const handleKeyDown = useCallback(
@@ -945,16 +945,7 @@ export function useMentionInputActions({
         }
       }
     },
-    [
-      showMention,
-      canSubmit,
-      onSubmit,
-      submitOnShiftEnter,
-      submitShortcut,
-      emitDOM,
-      applyHistory,
-      editRefmodChip,
-    ],
+    [disabledRef, composingRef, editorRef, historyRef, submitShortcut, submitOnShiftEnter, showMention, editRefmodChip, emitDOM, applyHistory, selectFirstMentionRef, setShowMention, canSubmit, onSubmit],
   );
 
   // ── Paste: plain text only ──
@@ -973,7 +964,7 @@ export function useMentionInputActions({
       sel.addRange(range);
       emitDOM();
     },
-    [emitDOM],
+    [disabledRef, emitDOM],
   );
 
   return {

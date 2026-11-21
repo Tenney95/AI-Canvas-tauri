@@ -1,5 +1,5 @@
 import type { useT } from '../../../i18n';
-import { lazy, Suspense, useState, useCallback, useRef, useEffect, useMemo, useId } from 'react';
+import { Suspense, useState, useCallback, useRef, useEffect, useMemo, useId, type LazyExoticComponent } from 'react';
 import { createPortal } from 'react-dom';
 import { useAppStore, type AppState } from '../../../store/useAppStore';
 import { Icon } from '@iconify/react';
@@ -23,8 +23,6 @@ import type { DramaAssetCategory } from '../../../types/dramaAssets';
 import type { listGlobalDramaAssets } from '../../../services/dramaAssetPrompt';
 import { type resolveDramaMentionItems, resolveGlobalAssetPickerItems } from './mentionEditorSources';
 
-const AssetFolderNavigation = lazy(() => import('../../assets/AssetFolderNavigation'));
-
 interface MentionAssetPickerOptions {
   t: ReturnType<typeof useT>;
   showMention: boolean;
@@ -39,12 +37,13 @@ interface MentionAssetPickerOptions {
   focusMentionCursor: () => void;
   disabled: boolean;
   nodeId?: string;
+  AssetFolderNavigation: LazyExoticComponent<typeof import('../../assets/AssetFolderNavigation').default>;
 }
 
 export function useMentionAssetPicker({
   t, showMention, setShowMention, resourceSearchExpanded, globalDramaAssetsLoading,
   globalDramaAssetsError, currentProjectId, globalAssets, isCurrentEditorOwner, currentNodeType,
-  focusMentionCursor, disabled, nodeId,
+  focusMentionCursor, disabled, nodeId, AssetFolderNavigation,
 }: MentionAssetPickerOptions) {
   // ── 资产引用弹窗 ──
   const assetFolders = useAppStore((s) => s.config.assetFolders);
@@ -68,7 +67,6 @@ export function useMentionAssetPicker({
   const assetTagRowRef = useRef<HTMLDivElement>(null);
   const assetTagListRef = useRef<HTMLDivElement>(null);
   const assetTagListId = useId();
-  const [assetVisible, setAssetVisible] = useState(40);
   const assetSentinelRef = useRef<HTMLDivElement | null>(null);
 
   // ── 打开资产弹窗（保持 @ 处的光标范围，关闭 @ 菜单）──
@@ -81,7 +79,7 @@ export function useMentionAssetPicker({
     setAssetCreativeKind(null);
     setActiveAssetTag(null);
     setAssetTagsExpanded(false);
-  }, [focusMentionCursor]);
+  }, [focusMentionCursor, setShowMention]);
 
   const closeAssetPicker = useCallback(() => {
     setShowAssetPicker(false);
@@ -91,10 +89,12 @@ export function useMentionAssetPicker({
 
   // 只在搜索/资产弹窗打开时读取目录；键入关键词只过滤本轮缓存。
   const shouldLoadAssets = showAssetPicker || (showMention && resourceSearchExpanded);
-  useEffect(() => {
-    if (!shouldLoadAssets) return;
-    let alive = true;
-    const controller = new AbortController();
+  const assetLoadRequest = useMemo(() => shouldLoadAssets
+    ? { assetFolders, assetLoadRevision, currentProjectId, nodeId } : null,
+  [shouldLoadAssets, assetFolders, assetLoadRevision, currentProjectId, nodeId]);
+  const [activeAssetLoad, setActiveAssetLoad] = useState<typeof assetLoadRequest>(null);
+  if (assetLoadRequest && assetLoadRequest !== activeAssetLoad) {
+    setActiveAssetLoad(assetLoadRequest);
     setAssetList([]);
     setAssetFolderEntries([]);
     setAssetGlobalRootPath(null);
@@ -102,6 +102,12 @@ export function useMentionAssetPicker({
     setAssetLoading(true);
     setAssetLoadError(false);
     setAssetScanTruncated(false);
+  }
+  useEffect(() => {
+    if (!assetLoadRequest) return;
+    const { assetFolders, currentProjectId } = assetLoadRequest;
+    let alive = true;
+    const controller = new AbortController();
     void Promise.allSettled([listGlobalFolderContents({ signal: controller.signal }), listExternalFolderContents(assetFolders ?? [], { maxFilesPerFolder: 3000, signal: controller.signal }), getAllAssetMeta()])
       .then(([globalResult, folderResult, metaResult]) => {
         if (!alive || useAppStore.getState().currentProjectId !== currentProjectId) return;
@@ -136,7 +142,7 @@ export function useMentionAssetPicker({
       .catch(() => { if (alive && useAppStore.getState().currentProjectId === currentProjectId) setAssetLoadError(true); })
       .finally(() => { if (alive && useAppStore.getState().currentProjectId === currentProjectId) setAssetLoading(false); });
     return () => { alive = false; controller.abort(); };
-  }, [shouldLoadAssets, assetFolders, assetLoadRevision, currentProjectId, nodeId]);
+  }, [assetLoadRequest]);
 
   // 标签合并 + 派生标签 chip
   const taggedAssets = useMemo(
@@ -212,8 +218,10 @@ export function useMentionAssetPicker({
     });
   }, [folderAssets, assetSearch, activeAssetTag]);
 
-  // 增量渲染：过滤变化时重置
-  useEffect(() => { setAssetVisible(40); }, [assetSearch, activeAssetTag, showAssetPicker, assetFolderSelection, assetCreativeKind]);
+  const assetFilters = useMemo(() => ({ assetSearch, activeAssetTag, showAssetPicker, assetFolderSelection, assetCreativeKind }),
+    [assetSearch, activeAssetTag, showAssetPicker, assetFolderSelection, assetCreativeKind]);
+  const [assetPage, setAssetPage] = useState<{ filters: typeof assetFilters; visible: number }>();
+  const assetVisible = assetPage?.filters === assetFilters ? assetPage.visible : 40;
   const visibleAssets = useMemo(() => filteredAssets.slice(0, assetVisible), [filteredAssets, assetVisible]);
   const visibleCreativePickerItems = useMemo(() => creativePickerItems.slice(0, assetVisible), [creativePickerItems, assetVisible]);
   const assetPickerResultCount = assetCreativeKind ? creativePickerItems.length : filteredAssets.length;
@@ -225,12 +233,15 @@ export function useMentionAssetPicker({
     const root = el.closest('.asset-picker-grid') as HTMLElement | null;
     const io = new IntersectionObserver((entries) => {
       if (entries[0]?.isIntersecting) {
-        setAssetVisible((c) => (c < assetPickerResultCount ? c + 40 : c));
+        setAssetPage((page) => {
+          const visible = page?.filters === assetFilters ? page.visible : 40;
+          return visible < assetPickerResultCount ? { filters: assetFilters, visible: visible + 40 } : page;
+        });
       }
     }, { root, rootMargin: '200px' });
     io.observe(el);
     return () => io.disconnect();
-  }, [showAssetPicker, disabled, assetLoading, globalDramaAssetsLoading, assetCreativeKind, assetFolderSelection, assetPickerResultCount, assetVisible]);
+  }, [showAssetPicker, disabled, assetLoading, globalDramaAssetsLoading, assetCreativeKind, assetFilters, assetPickerResultCount, assetVisible]);
 
   const resetAssetSelection = useCallback(() => {
     setAssetList([]);

@@ -77,6 +77,7 @@ import { useComfyDomImageSources } from '../../../hooks/useComfyDomImageSources'
 import { useMentionAssetPicker } from './useMentionAssetPicker';
 
 const ComfyRefmodMentionSettings = lazy(() => import('./ComfyRefmodMentionSettings'));
+const AssetFolderNavigation = lazy(() => import('../../assets/AssetFolderNavigation'));
 const EMPTY_REFMODS: ComfyRefmodSelection[] = [];
 const EMPTY_CANVAS_NODES: AppState['nodes'] = [];
 const EMPTY_CANVAS_EDGES: AppState['edges'] = [];
@@ -237,16 +238,16 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     const root = editorRef.current;
     return !disabledRef.current && isCurrentEditorOwner() && target.projectId === currentProjectId
       && target.nodeId === nodeId && !!root && root.contains(target.chip) && serializeDOM(root) === target.prompt;
-  }, [currentProjectId, nodeId, isCurrentEditorOwner]);
+  }, [disabledRef, isCurrentEditorOwner, currentProjectId, nodeId]);
   useEffect(() => {
     const history = historyRef.current;
     return () => history.clear();
-  }, []);
+  }, [historyRef]);
   useEffect(() => () => {
     cancelChipDragRef.current?.();
     cancelChipDragRef.current = null;
     lastChipClickRef.current = null;
-  }, [currentProjectId, nodeId, prompt]);
+  }, [cancelChipDragRef, currentProjectId, lastChipClickRef, nodeId, prompt]);
 
   const currentNodeType = currentEditorData?.type;
   const {
@@ -255,7 +256,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   } = useMentionAssetPicker({
     t, showMention, setShowMention, resourceSearchExpanded, globalDramaAssetsLoading,
     globalDramaAssetsError, currentProjectId, globalAssets, isCurrentEditorOwner, currentNodeType,
-    focusMentionCursor, disabled, nodeId,
+    focusMentionCursor, disabled, nodeId, AssetFolderNavigation,
   });
   useLayoutEffect(() => {
     disabledRef.current = disabled;
@@ -271,7 +272,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     refmodSessionRef.current = undefined;
     savedMentionRangeRef.current = null;
     replacementChipRef.current = null;
-  }, [disabled]);
+  }, [cancelChipDragRef, disabled, disabledRef, replacementChipRef, savedMentionRangeRef]);
   // ── Selected workflow and its IO nodes ──
   const selectedWorkflowRef = useRef(selectedWorkflow);
   useLayoutEffect(() => {
@@ -360,12 +361,12 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     normalizeChipSlots(el);
     if (cursorOffset !== null) restoreCursor(el, cursorOffset);
     syncHistory();
-  }, [compositionRevision, currentProjectId, nodeId, prompt, nodeMetaMap, globalAssets, dramaAssets]);
+  }, [compositionRevision, currentProjectId, nodeId, prompt, nodeMetaMap, globalAssets, dramaAssets, composingRef, syncedPromptRef, cancelChipDragRef, replacementChipRef, setChipMenu, textInputSelectionRef, savedMentionRangeRef, setShowAssetPicker, resetAssetSelection, historyRef]);
 
   useLayoutEffect(() => {
     const root = editorRef.current;
     if (root && !composingRef.current) syncMentionChipLocale(root, nodeMetaMap, t);
-  }, [compositionRevision, nodeMetaMap, t]);
+  }, [composingRef, compositionRevision, nodeMetaMap, t]);
 
   const history = useMentionInputHistory(input, nodeMetaMap, onChange, setShowMention);
   const { emitDOM } = history;
@@ -459,7 +460,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       savedMentionRangeRef.current = null;
       replacementChipRef.current = null;
     }
-  }, [showMention, showAssetPicker]);
+  }, [showMention, showAssetPicker, savedMentionRangeRef, replacementChipRef]);
 
   // ── Track last focused workflow chip value area ──
   // 用于点击 connected-nodes-strip 缩略图时把文本插入到正确的 value 区
@@ -476,7 +477,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     };
     editor.addEventListener('focusin', handler);
     return () => editor.removeEventListener('focusin', handler);
-  }, []);
+  }, [lastFocusedWfValueRef]);
 
   // ── Click outside closes mention ──
   useEffect(() => {
@@ -584,7 +585,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       }
       insertChipAtCursor(id, label);
     },
-  }), [insertChipAtCursor, emitDOM, nodeMetaMap, textInputSelection, rememberTextInputSelection, showMention, chipMenu]);
+  }), [showMention, chipMenu, replacementChipRef, setChipMenu, textInputSelection, textInputActiveRef, rememberTextInputSelection, disabledRef, lastFocusedWfValueRef, insertChipAtCursor, emitDOM, nodeMetaMap]);
 
   // ── 芯片 hover：读取对应内容的小卡片，保留原有引用高亮联动 ──
   const lastHoverKeyRef = useRef<string | null>(null);
@@ -660,7 +661,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const closeChipMenu = useCallback((restoreFocus = false) => {
     setChipMenu(null);
     if (restoreFocus) editorRef.current?.focus({ preventScroll: true });
-  }, []);
+  }, [setChipMenu]);
   const handleChipContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     const root = editorRef.current;
     if (!root || disabledRef.current || composingRef.current || !isCurrentEditorOwner()) return;
@@ -677,7 +678,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     replacementChipRef.current = null;
     setShowMention(false);
     setChipMenu({ target: { chip, prompt: serializeDOM(root), projectId: currentProjectId, nodeId }, x: event.clientX, y: event.clientY });
-  }, [currentProjectId, nodeId, isCurrentEditorOwner, handleEditorMouseLeave]);
+  }, [disabledRef, composingRef, isCurrentEditorOwner, cancelChipDragRef, lastChipClickRef, handleEditorMouseLeave, historyRef, replacementChipRef, setChipMenu, currentProjectId, nodeId]);
   const replaceMenuChip = useCallback(() => {
     closeChipMenu();
     if (!chipMenu || !isCurrentChipTarget(chipMenu.target)) return;
@@ -692,7 +693,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       : target.chip.hasAttribute('data-wf-id') || target.chip.hasAttribute('data-refmod-raw') ? 'workflow' : 'nodes');
     setComfySection(target.chip.hasAttribute('data-refmod-raw') ? 'roles' : 'inputs');
     setShowMention(true);
-  }, [chipMenu, closeChipMenu, isCurrentChipTarget, focusMentionCursor]);
+  }, [closeChipMenu, chipMenu, isCurrentChipTarget, replacementChipRef, savedMentionRangeRef, focusMentionCursor]);
   const deleteMenuChip = useCallback(() => {
     closeChipMenu();
     if (!chipMenu || !isCurrentChipTarget(chipMenu.target)) return;
@@ -744,7 +745,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         } else lastChipClickRef.current = { chip: source, time: now, x: release.clientX, y: release.clientY };
       },
     });
-  }, [currentProjectId, emitDOM, handleEditorMouseLeave, editRefmodChip]);
+  }, [disabledRef, cancelChipDragRef, handleEditorMouseLeave, emitDOM, lastChipClickRef, currentProjectId, editRefmodChip]);
   useEffect(() => {
     const dismissTransientReferences = () => {
       cancelChipDragRef.current?.();
@@ -755,7 +756,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     };
     document.addEventListener(REFERENCE_PREVIEW_EVENT, dismissTransientReferences);
     return () => document.removeEventListener(REFERENCE_PREVIEW_EVENT, dismissTransientReferences);
-  }, [handleEditorMouseLeave]);
+  }, [cancelChipDragRef, handleEditorMouseLeave, lastChipClickRef]);
   const chipPreview = useMemo<MentionChipPreview | null>(() => {
     if (!chipTip || chipTip.ownerNodeId !== nodeId || chipTip.ownerProjectId !== currentProjectId) return null;
     const { source } = chipTip;
@@ -806,7 +807,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       owner.current = null;
       releaseMentionHighlight(owner);
     };
-  }, [currentProjectId, nodeId, handleEditorMouseLeave]);
+  }, [currentProjectId, nodeId, handleEditorMouseLeave, lastChipClickRef]);
 
   // ── @ 面板数据：输入图（画布节点） / 资产库（短剧资产） / ComfyUI 节点（工作流 IO） ──
   const dramaThumbOf = useCallback((item: { imageNodeId?: string; imageUrl?: string; referenceImages?: Array<CharacterReferenceImage | DramaAssetReferenceImage> }) => {
@@ -1124,7 +1125,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     setMentionDropdownPosition((current) => (
       current.left === nextPosition.left && current.top === nextPosition.top ? current : nextPosition
     ));
-  }, [portalDropdown]);
+  }, [portalDropdown, savedMentionRangeRef]);
 
   const handleMentionHeightChange = useCallback((height: number, animated: boolean) => {
     mentionDropdownHeightRef.current = height;
