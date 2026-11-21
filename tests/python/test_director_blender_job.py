@@ -231,10 +231,13 @@ class SavedBlenderSceneTests(unittest.TestCase):
             owner.node_tree.links.new.assert_called_once()
 
     def test_console_material_and_world_initialize_empty_5x_node_trees(self):
-        template = SCRIPT.parent.parent / "scripts/startup/bl_app_templates_user/ai_canvas_director/__init__.py"
-        source = ast.parse(template.read_text(encoding="utf-8"))
-        selected = [node for node in source.body if isinstance(node, ast.FunctionDef)
-                    and node.name in {"_ensure_material", "_set_world"}]
+        template = SCRIPT.parent.parent / "scripts/startup/bl_app_templates_user/ai_canvas_director"
+        selected = [
+            node
+            for file, function in [("scene_geometry.py", "_ensure_material"), ("__init__.py", "_set_world")]
+            for node in ast.parse((template / file).read_text(encoding="utf-8")).body
+            if isinstance(node, ast.FunctionDef) and node.name == function
+        ]
         material = empty_shader_owner()
         material.get = lambda key: {"owner": "director", "role": "test"}.get(key)
         world = empty_shader_owner()

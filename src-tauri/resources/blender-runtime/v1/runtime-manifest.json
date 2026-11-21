@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "packageId": "ai-canvas-blender-runtime",
-  "packageVersion": "1.5.0",
+  "packageVersion": "1.5.1",
   "templateId": "ai_canvas_director",
   "templateVersion": 1,
   "jobProtocol": "ai-canvas-blender-job-v1",
@@ -9,7 +9,11 @@
   "resultManifestSchemaVersion": 1,
   "createdWithBlenderVersion": "5.2.1 LTS",
   "compatibility": {
-    "targets": ["windows-x86_64", "macos-x86_64", "macos-aarch64"],
+    "targets": [
+      "windows-x86_64",
+      "macos-x86_64",
+      "macos-aarch64"
+    ],
     "supportedVersionSeries": [
       "4.5",
       "5.0",
@@ -21,8 +25,20 @@
     {
       "id": "template-init",
       "relativePath": "scripts/startup/bl_app_templates_system/ai_canvas_director/__init__.py",
-      "bytes": 93996,
-      "sha256": "08e6d0c278affdead5a4d7b08519be0cd404f4ff35dfb2ead07ef032c373c190"
+      "bytes": 55195,
+      "sha256": "9fe7ea19a56effa304937a381fca6e0d611a7bfcec08144c2e787ab9a40bdbf8"
+    },
+    {
+      "id": "template-camera-preview",
+      "relativePath": "scripts/startup/bl_app_templates_system/ai_canvas_director/camera_preview.py",
+      "bytes": 23463,
+      "sha256": "660ae1cdea2a462831a243e9fbbcfb738296467a7ed52e1174a673f4a33bd743"
+    },
+    {
+      "id": "template-scene-geometry",
+      "relativePath": "scripts/startup/bl_app_templates_system/ai_canvas_director/scene_geometry.py",
+      "bytes": 17707,
+      "sha256": "c1fc9d8eed9b95ffbf65cebfa8df80c1314525d2c6e19b0fa35063f2167ca0e7"
     },
     {
       "id": "template-startup-blend",

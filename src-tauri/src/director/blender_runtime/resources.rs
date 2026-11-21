@@ -19,6 +19,12 @@ const RUNTIME_MANIFEST_BYTES: &[u8] =
 const TEMPLATE_INIT_BYTES: &[u8] = include_bytes!(
     "../../../resources/blender-runtime/v1/scripts/startup/bl_app_templates_user/ai_canvas_director/__init__.py"
 );
+const TEMPLATE_CAMERA_PREVIEW_BYTES: &[u8] = include_bytes!(
+    "../../../resources/blender-runtime/v1/scripts/startup/bl_app_templates_user/ai_canvas_director/camera_preview.py"
+);
+const TEMPLATE_SCENE_GEOMETRY_BYTES: &[u8] = include_bytes!(
+    "../../../resources/blender-runtime/v1/scripts/startup/bl_app_templates_user/ai_canvas_director/scene_geometry.py"
+);
 const TEMPLATE_STARTUP_BLEND_BYTES: &[u8] = include_bytes!(
     "../../../resources/blender-runtime/v1/scripts/startup/bl_app_templates_user/ai_canvas_director/startup.blend"
 );
@@ -36,7 +42,7 @@ const JOB_SCRIPT_BYTES: &[u8] =
 
 const SCHEMA_VERSION: u32 = 1;
 const PACKAGE_ID: &str = "ai-canvas-blender-runtime";
-const PACKAGE_VERSION: &str = "1.5.0";
+const PACKAGE_VERSION: &str = "1.5.1";
 const TEMPLATE_ID: &str = "ai_canvas_director";
 const TEMPLATE_VERSION: u32 = 1;
 const JOB_PROTOCOL: &str = "ai-canvas-blender-job-v1";
@@ -68,6 +74,10 @@ const INSTALL_VERSION_DIRECTORY: &str = PACKAGE_VERSION;
 const INSTALLED_MANIFEST_PATH: &str = "runtime-manifest.json";
 const TEMPLATE_INIT_PATH: &str =
     "scripts/startup/bl_app_templates_system/ai_canvas_director/__init__.py";
+const TEMPLATE_CAMERA_PREVIEW_PATH: &str =
+    "scripts/startup/bl_app_templates_system/ai_canvas_director/camera_preview.py";
+const TEMPLATE_SCENE_GEOMETRY_PATH: &str =
+    "scripts/startup/bl_app_templates_system/ai_canvas_director/scene_geometry.py";
 const TEMPLATE_STARTUP_BLEND_PATH: &str =
     "scripts/startup/bl_app_templates_system/ai_canvas_director/startup.blend";
 const CHARACTER_FEMALE_BLEND_PATH: &str = "scripts/startup/bl_app_templates_system/ai_canvas_director/assets/characters/ai_canvas_female_white.blend";
@@ -76,7 +86,11 @@ const CHARACTER_LICENSE_PATH: &str = "scripts/startup/bl_app_templates_system/ai
 const JOB_SCRIPT_PATH: &str = "jobs/ai_canvas_director_job_v1.py";
 
 const TEMPLATE_INIT_SHA256: &str =
-    "08e6d0c278affdead5a4d7b08519be0cd404f4ff35dfb2ead07ef032c373c190";
+    "9fe7ea19a56effa304937a381fca6e0d611a7bfcec08144c2e787ab9a40bdbf8";
+const TEMPLATE_CAMERA_PREVIEW_SHA256: &str =
+    "660ae1cdea2a462831a243e9fbbcfb738296467a7ed52e1174a673f4a33bd743";
+const TEMPLATE_SCENE_GEOMETRY_SHA256: &str =
+    "c1fc9d8eed9b95ffbf65cebfa8df80c1314525d2c6e19b0fa35063f2167ca0e7";
 const TEMPLATE_STARTUP_BLEND_SHA256: &str =
     "a3e806fc2b910598b5f24c90127d02494fcbaf79a53f7e2eb7aee95f7f85e340";
 const CHARACTER_FEMALE_BLEND_SHA256: &str =
@@ -87,7 +101,9 @@ const CHARACTER_LICENSE_SHA256: &str =
     "c232257c8a2545520aa120cda96acb23d00a355d2e3339cba20b7ebf56f28a09";
 const JOB_SCRIPT_SHA256: &str = "a62fbf9a553ce2615ea7be0415eb86a9907afec68b45e4a367ba1e0e969f9e3c";
 
-const TEMPLATE_INIT_SIZE: u64 = 93_996;
+const TEMPLATE_INIT_SIZE: u64 = 55_195;
+const TEMPLATE_CAMERA_PREVIEW_SIZE: u64 = 23_463;
+const TEMPLATE_SCENE_GEOMETRY_SIZE: u64 = 17_707;
 const TEMPLATE_STARTUP_BLEND_SIZE: u64 = 91_348;
 const CHARACTER_FEMALE_BLEND_SIZE: u64 = 560_000;
 const CHARACTER_MALE_BLEND_SIZE: u64 = 543_063;
@@ -112,13 +128,29 @@ struct EmbeddedResource {
     encoding: EmbeddedResourceEncoding,
 }
 
-const EMBEDDED_RESOURCES: [EmbeddedResource; 6] = [
+const EMBEDDED_RESOURCES: [EmbeddedResource; 8] = [
     EmbeddedResource {
         id: "template-init",
         relative_path: TEMPLATE_INIT_PATH,
         bytes: TEMPLATE_INIT_SIZE,
         sha256: TEMPLATE_INIT_SHA256,
         content: TEMPLATE_INIT_BYTES,
+        encoding: EmbeddedResourceEncoding::CanonicalLfText,
+    },
+    EmbeddedResource {
+        id: "template-camera-preview",
+        relative_path: TEMPLATE_CAMERA_PREVIEW_PATH,
+        bytes: TEMPLATE_CAMERA_PREVIEW_SIZE,
+        sha256: TEMPLATE_CAMERA_PREVIEW_SHA256,
+        content: TEMPLATE_CAMERA_PREVIEW_BYTES,
+        encoding: EmbeddedResourceEncoding::CanonicalLfText,
+    },
+    EmbeddedResource {
+        id: "template-scene-geometry",
+        relative_path: TEMPLATE_SCENE_GEOMETRY_PATH,
+        bytes: TEMPLATE_SCENE_GEOMETRY_SIZE,
+        sha256: TEMPLATE_SCENE_GEOMETRY_SHA256,
+        content: TEMPLATE_SCENE_GEOMETRY_BYTES,
         encoding: EmbeddedResourceEncoding::CanonicalLfText,
     },
     EmbeddedResource {

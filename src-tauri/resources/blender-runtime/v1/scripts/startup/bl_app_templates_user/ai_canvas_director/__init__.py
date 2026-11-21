@@ -10,21 +10,31 @@ import math
 import os
 import time
 from pathlib import Path
-
-import bmesh
-import blf
 import bpy
-import gpu
 from bpy.app.handlers import persistent
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, StringProperty
 from bpy_extras.io_utils import ImportHelper
-from gpu_extras.batch import batch_for_shader
-from mathutils import Matrix, Vector
+from mathutils import Vector
 
+if __package__:
+    from . import camera_preview, scene_geometry
+else:
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    def _load_template_module(name):
+        path = Path(__file__).with_name(f"{name}.py")
+        spec = spec_from_file_location(f"ai_canvas_director_{name}", path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Director template module unavailable: {name}")
+        module = module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    camera_preview = _load_template_module("camera_preview")
+    scene_geometry = _load_template_module("scene_geometry")
 
 TEMPLATE_ID = "ai_canvas_director"
 TEMPLATE_VERSION = 1
-EDITOR_SESSION_KEY = "ai_canvas_director_editor_session_v1"
 EDITOR_BLEND_NAME = "project.blend"
 EDITOR_BLEND_STAGING_NAME = ".project-return-staging.blend"
 EDITOR_FRAME_NAME = "frame.png"
@@ -32,1110 +42,16 @@ EDITOR_FRAME_STAGING_NAME = ".frame-return-staging.png"
 EDITOR_RESULT_NAME = "job-result.json"
 EDITOR_RESULT_STAGING_NAME = ".job-result.json.tmp"
 MAX_FRAME = 10_000_000
-DIRECTOR_COLLECTION_NAME = "AI Canvas Director Console"
-DIRECTOR_OWNER_KEY = "ai_canvas_console_owner"
-DIRECTOR_OWNER_TOKEN = "ai_canvas_director_console_v1"
-DIRECTOR_MANAGED_KEY = "ai_canvas_console_managed"
-DIRECTOR_KIND_KEY = "ai_canvas_console_kind"
-DIRECTOR_ASSET_KEY = "ai_canvas_console_asset"
-DIRECTOR_INSTANCE_KEY = "ai_canvas_console_instance"
 DIRECTOR_IMPORTED_KEY = "ai_canvas_console_imported"
-DIRECTOR_COLLECTION_SCENE_KEY = "ai_canvas_console_collection"
-DIRECTOR_MATERIAL_ROLE_KEY = "ai_canvas_console_material_role"
 DIRECTOR_PREVIOUS_WORLD_KEY = "ai_canvas_console_previous_world"
 DIRECTOR_CONSOLE_ATTEMPTS_KEY = "ai_canvas_console_activation_attempts"
 DIRECTOR_IMPORT_SUFFIXES = {".fbx", ".glb", ".gltf", ".obj"}
-DIRECTOR_BUILTIN_CHARACTERS = {
-    "FEMALE": (
-        "ai_canvas_female_white.blend",
-        "女性白模",
-        "female",
-        {"Armature", "Eyebrows", "Eyes", "Superhero_Female"},
-    ),
-    "MALE": (
-        "ai_canvas_male_white.blend",
-        "男性白模",
-        "male",
-        {"Armature", "Eyebrows", "Eyes", "SuperHero_Male"},
-    ),
-}
-CAMERA_PREVIEW_MARGIN = 16
-CAMERA_PREVIEW_HEADER_HEIGHT = 28
-CAMERA_PREVIEW_REFRESH_SECONDS = 0.12
-
-
-_CAMERA_PREVIEW_STATE = {
-    "handler": None,
-    "window_pointer": 0,
-    "area_pointer": 0,
-    "region_pointer": 0,
-    "offscreen": None,
-    "offscreen_size": None,
-    "close_rect": None,
-    "close_hover": False,
-    "drawing": False,
-    "stopping": False,
-    "dirty": True,
-    "texture_valid": False,
-    "last_render_at": 0.0,
-    "render_count": 0,
-    "generation": 0,
-    "last_error": None,
-}
-
-
-def _has_editor_session():
-    return isinstance(bpy.app.driver_namespace.get(EDITOR_SESSION_KEY), dict)
-
-
 def _editor_operator_poll(context):
     return (
         context.scene is not None
         and context.mode == "OBJECT"
-        and _has_editor_session()
+        and camera_preview._has_editor_session()
     )
-
-
-def _collection_contains(root, target):
-    if root == target:
-        return True
-    return any(_collection_contains(child, target) for child in root.children)
-
-
-def _collection_scenes(collection):
-    return [
-        scene for scene in bpy.data.scenes
-        if _collection_contains(scene.collection, collection)
-    ]
-
-
-def _existing_director_collection(scene):
-    collection_name = scene.get(DIRECTOR_COLLECTION_SCENE_KEY)
-    if not isinstance(collection_name, str) or not collection_name:
-        return None
-    collection = bpy.data.collections.get(collection_name)
-    if (
-        collection is None
-        or collection.get(DIRECTOR_OWNER_KEY) != DIRECTOR_OWNER_TOKEN
-        or not _collection_contains(scene.collection, collection)
-        or _collection_scenes(collection) != [scene]
-    ):
-        return None
-    return collection
-
-
-def _director_collection(scene):
-    collection = _existing_director_collection(scene)
-    if collection is not None:
-        return collection
-    collection = bpy.data.collections.new(DIRECTOR_COLLECTION_NAME)
-    collection[DIRECTOR_OWNER_KEY] = DIRECTOR_OWNER_TOKEN
-    scene.collection.children.link(collection)
-    scene[DIRECTOR_COLLECTION_SCENE_KEY] = collection.name
-    return collection
-
-
-def _mark_console_datablock(datablock, kind, asset_id=None, instance_id=None):
-    datablock[DIRECTOR_OWNER_KEY] = DIRECTOR_OWNER_TOKEN
-    datablock[DIRECTOR_MANAGED_KEY] = True
-    datablock[DIRECTOR_KIND_KEY] = kind
-    if asset_id is not None:
-        datablock[DIRECTOR_ASSET_KEY] = asset_id
-    if instance_id is not None:
-        datablock[DIRECTOR_INSTANCE_KEY] = instance_id
-
-
-def _mark_console_object(obj, kind, asset_id=None, instance_id=None):
-    _mark_console_datablock(obj, kind, asset_id, instance_id)
-
-
-def _ensure_material(name, color, roughness=0.65, metallic=0.0):
-    material = next(
-        (
-            candidate for candidate in bpy.data.materials
-            if candidate.get(DIRECTOR_OWNER_KEY) == DIRECTOR_OWNER_TOKEN
-            and candidate.get(DIRECTOR_MATERIAL_ROLE_KEY) == name
-        ),
-        None,
-    )
-    if material is None:
-        material = bpy.data.materials.new(name)
-        material[DIRECTOR_OWNER_KEY] = DIRECTOR_OWNER_TOKEN
-        material[DIRECTOR_MATERIAL_ROLE_KEY] = name
-    material.diffuse_color = (*color, 1.0)
-    if hasattr(material, "use_nodes"):
-        material.use_nodes = True
-    shader = next(
-        (node for node in material.node_tree.nodes if node.type == "BSDF_PRINCIPLED"),
-        None,
-    )
-    if shader is None:
-        shader = material.node_tree.nodes.new("ShaderNodeBsdfPrincipled")
-    output = next(
-        (node for node in material.node_tree.nodes if node.type == "OUTPUT_MATERIAL"),
-        None,
-    )
-    if output is None:
-        output = material.node_tree.nodes.new("ShaderNodeOutputMaterial")
-    if not output.inputs["Surface"].is_linked:
-        material.node_tree.links.new(shader.outputs[0], output.inputs["Surface"])
-    if shader is not None:
-        base_color = shader.inputs.get("Base Color")
-        if base_color is not None:
-            base_color.default_value = material.diffuse_color
-        shader_roughness = shader.inputs.get("Roughness")
-        if shader_roughness is not None:
-            shader_roughness.default_value = roughness
-        shader_metallic = shader.inputs.get("Metallic")
-        if shader_metallic is not None:
-            shader_metallic.default_value = metallic
-    return material
-
-
-def _new_mesh_object(name, collection, build_mesh, location, scale, material, kind):
-    mesh = bpy.data.meshes.new(f"{name}_mesh")
-    bm = bmesh.new()
-    try:
-        build_mesh(bm)
-        bm.to_mesh(mesh)
-    finally:
-        bm.free()
-    mesh.update()
-    obj = bpy.data.objects.new(name, mesh)
-    collection.objects.link(obj)
-    obj.location = location
-    obj.scale = scale
-    if material is not None:
-        mesh.materials.append(material)
-    _mark_console_object(obj, kind)
-    return obj
-
-
-def _new_box(name, collection, location, dimensions, material, kind):
-    return _new_mesh_object(
-        name,
-        collection,
-        lambda bm: bmesh.ops.create_cube(bm, size=1.0, calc_uvs=True),
-        location,
-        dimensions,
-        material,
-        kind,
-    )
-
-
-def _new_sphere(name, collection, location, diameter, material, kind):
-    return _new_mesh_object(
-        name,
-        collection,
-        lambda bm: bmesh.ops.create_uvsphere(
-            bm,
-            u_segments=24,
-            v_segments=12,
-            radius=0.5,
-            calc_uvs=True,
-        ),
-        location,
-        (diameter, diameter, diameter),
-        material,
-        kind,
-    )
-
-
-def _select_objects(context, objects, active=None):
-    for obj in context.view_layer.objects:
-        obj.select_set(False)
-    selected = []
-    for obj in objects:
-        try:
-            obj.select_set(True)
-            selected.append(obj)
-        except RuntimeError:
-            continue
-    if selected:
-        context.view_layer.objects.active = active if active in selected else selected[0]
-
-
-def _remove_console_objects(scene, kinds):
-    collection = _existing_director_collection(scene)
-    if collection is None:
-        return 0
-    protected_instances = {
-        obj.get(DIRECTOR_INSTANCE_KEY)
-        for obj in bpy.data.objects
-        if obj.get(DIRECTOR_OWNER_KEY) == DIRECTOR_OWNER_TOKEN
-        and obj.get(DIRECTOR_MANAGED_KEY) is True
-        and obj.get(DIRECTOR_KIND_KEY) in kinds
-        and isinstance(obj.get(DIRECTOR_INSTANCE_KEY), str)
-        and (
-            len(obj.users_collection) != 1
-            or obj.users_collection[0] != collection
-        )
-    }
-    removed = 0
-    for obj in list(collection.objects):
-        if obj.get(DIRECTOR_OWNER_KEY) != DIRECTOR_OWNER_TOKEN:
-            continue
-        if obj.get(DIRECTOR_MANAGED_KEY) is not True:
-            continue
-        if obj.get(DIRECTOR_KIND_KEY) not in kinds:
-            continue
-        if obj.get(DIRECTOR_INSTANCE_KEY) in protected_instances:
-            continue
-        if len(obj.users_collection) != 1 or obj.users_collection[0] != collection:
-            collection.objects.unlink(obj)
-            removed += 1
-            continue
-        data = obj.data
-        bpy.data.objects.remove(obj, do_unlink=True)
-        if data is not None and data.users == 0:
-            if isinstance(data, bpy.types.Mesh):
-                bpy.data.meshes.remove(data)
-            elif isinstance(data, bpy.types.Light):
-                bpy.data.lights.remove(data)
-        removed += 1
-    _remove_unused_console_datablocks(kinds, protected_instances)
-    return removed
-
-
-IMPORT_DATABLOCK_GROUPS = (
-    "actions",
-    "armatures",
-    "cameras",
-    "curves",
-    "images",
-    "lights",
-    "materials",
-    "meshes",
-    "node_groups",
-    "shape_keys",
-    "textures",
-)
-
-
-def _remove_unused_console_datablocks(kinds, protected_instances=None):
-    protected_instances = protected_instances or set()
-    while True:
-        removed_any = False
-        for group_name in IMPORT_DATABLOCK_GROUPS:
-            group = getattr(bpy.data, group_name)
-            for datablock in list(group):
-                if datablock.get(DIRECTOR_OWNER_KEY) != DIRECTOR_OWNER_TOKEN:
-                    continue
-                if datablock.get(DIRECTOR_MANAGED_KEY) is not True:
-                    continue
-                if datablock.get(DIRECTOR_KIND_KEY) not in kinds:
-                    continue
-                if datablock.get(DIRECTOR_INSTANCE_KEY) in protected_instances:
-                    continue
-                if datablock.users != 0:
-                    continue
-                group.remove(datablock)
-                removed_any = True
-        if not removed_any:
-            return
-
-
-def _snapshot_import_state():
-    snapshot = {
-        "objects": {obj.as_pointer() for obj in bpy.data.objects},
-        "collections": {collection.as_pointer() for collection in bpy.data.collections},
-    }
-    for group_name in IMPORT_DATABLOCK_GROUPS:
-        snapshot[group_name] = {
-            datablock.as_pointer() for datablock in getattr(bpy.data, group_name)
-        }
-    return snapshot
-
-
-def _remove_new_import_data(before):
-    for obj in list(bpy.data.objects):
-        if obj.as_pointer() in before["objects"]:
-            continue
-        bpy.data.objects.remove(obj, do_unlink=True)
-    for collection in list(bpy.data.collections):
-        if collection.as_pointer() in before["collections"]:
-            continue
-        if collection.objects:
-            continue
-        bpy.data.collections.remove(collection, do_unlink=True)
-    while True:
-        removed_any = False
-        for group_name in IMPORT_DATABLOCK_GROUPS:
-            group = getattr(bpy.data, group_name)
-            for datablock in list(group):
-                if datablock.as_pointer() in before[group_name] or datablock.users != 0:
-                    continue
-                group.remove(datablock)
-                removed_any = True
-        if not removed_any:
-            return
-
-
-def _new_import_datablocks(before):
-    for group_name in IMPORT_DATABLOCK_GROUPS:
-        for datablock in getattr(bpy.data, group_name):
-            if datablock.as_pointer() not in before[group_name]:
-                yield datablock
-
-
-def _path_is_link_or_junction(path):
-    return path.is_symlink() or (
-        hasattr(path, "is_junction") and path.is_junction()
-    )
-
-
-def _builtin_character_path(asset):
-    character = DIRECTOR_BUILTIN_CHARACTERS.get(asset)
-    if character is None:
-        raise RuntimeError("Unsupported AI Canvas built-in character")
-    filename, label, slug, object_names = character
-    try:
-        template_directory = Path(__file__).resolve(strict=True).parent
-        assets_directory = template_directory / "assets"
-        unresolved_directory = assets_directory / "characters"
-        if any(
-            _path_is_link_or_junction(path)
-            for path in (assets_directory, unresolved_directory)
-        ):
-            raise RuntimeError("AI Canvas built-in character directory is invalid")
-        character_directory = unresolved_directory.resolve(strict=True)
-        unresolved_path = character_directory / filename
-        if _path_is_link_or_junction(unresolved_path):
-            raise RuntimeError("AI Canvas built-in character path is invalid")
-        character_path = unresolved_path.resolve(strict=True)
-    except OSError as error:
-        raise RuntimeError("AI Canvas built-in character is unavailable") from error
-    try:
-        character_path.relative_to(template_directory)
-    except ValueError as error:
-        raise RuntimeError("AI Canvas built-in character escaped the template") from error
-    if character_path.parent != character_directory or not character_path.is_file():
-        raise RuntimeError("AI Canvas built-in character path is invalid")
-    return character_path, label, slug, object_names
-
-
-def _evaluated_mesh_bound_points(context, objects):
-    context.view_layer.update()
-    depsgraph = context.evaluated_depsgraph_get()
-    points = []
-    for obj in objects:
-        if obj.type != "MESH":
-            continue
-        evaluated = obj.evaluated_get(depsgraph)
-        points.extend(
-            evaluated.matrix_world @ vertex.co
-            for vertex in evaluated.data.vertices
-        )
-    return points
-
-
-def _hierarchy_members(roots):
-    members = []
-    pending = list(roots)
-    seen = set()
-    while pending:
-        obj = pending.pop()
-        pointer = obj.as_pointer()
-        if pointer in seen:
-            continue
-        seen.add(pointer)
-        members.append(obj)
-        pending.extend(obj.children)
-    return members
-
-
-def _translate_roots_to_cursor(context, objects, cursor):
-    points = _evaluated_mesh_bound_points(context, objects)
-    if not points:
-        raise RuntimeError("AI Canvas built-in character has no mesh bounds")
-    minimum = Vector((
-        min(point.x for point in points),
-        min(point.y for point in points),
-        min(point.z for point in points),
-    ))
-    maximum = Vector((
-        max(point.x for point in points),
-        max(point.y for point in points),
-        max(point.z for point in points),
-    ))
-    delta = Vector((
-        cursor.x - ((minimum.x + maximum.x) * 0.5),
-        cursor.y - ((minimum.y + maximum.y) * 0.5),
-        cursor.z - minimum.z,
-    ))
-    object_set = set(objects)
-    roots = [obj for obj in objects if obj.parent not in object_set]
-    if not roots:
-        raise RuntimeError("AI Canvas built-in character hierarchy is invalid")
-    for obj in roots:
-        matrix = obj.matrix_world.copy()
-        matrix.translation += delta
-        obj.matrix_world = matrix
-    context.view_layer.update()
-
-
-def _validate_builtin_character(objects, before):
-    if len(objects) != 4:
-        raise RuntimeError("AI Canvas built-in character object count is invalid")
-    armatures = [obj for obj in objects if obj.type == "ARMATURE"]
-    meshes = [obj for obj in objects if obj.type == "MESH"]
-    if len(armatures) != 1 or len(meshes) != 3:
-        raise RuntimeError("AI Canvas built-in character structure is invalid")
-    if any(obj.type not in {"ARMATURE", "MESH"} for obj in objects):
-        raise RuntimeError("AI Canvas built-in character contains unsupported objects")
-    if any(
-        obj.library is not None
-        or (obj.data is not None and obj.data.library is not None)
-        for obj in objects
-    ):
-        raise RuntimeError("AI Canvas built-in character was not appended locally")
-    object_set = set(objects)
-    if any(obj.parent is not None and obj.parent not in object_set for obj in objects):
-        raise RuntimeError("AI Canvas built-in character hierarchy is invalid")
-    rig = armatures[0]
-    if len(rig.data.bones) != 65 or rig.data.bones.get("root") is None:
-        raise RuntimeError("AI Canvas built-in character rig is invalid")
-    for mesh in meshes:
-        if mesh.parent is not rig:
-            raise RuntimeError("AI Canvas built-in character mesh parent is invalid")
-        if not any(
-            modifier.type == "ARMATURE" and modifier.object is rig
-            for modifier in mesh.modifiers
-        ):
-            raise RuntimeError("AI Canvas built-in character skin binding is invalid")
-    if any(
-        image.as_pointer() not in before["images"]
-        for image in bpy.data.images
-    ):
-        raise RuntimeError("AI Canvas built-in character contains external images")
-    if any(
-        datablock.library is not None
-        for datablock in _new_import_datablocks(before)
-    ):
-        raise RuntimeError("AI Canvas built-in character contains linked data")
-    if any(
-        getattr(datablock, "use_fake_user", False)
-        for datablock in _new_import_datablocks(before)
-    ):
-        raise RuntimeError("AI Canvas built-in character contains persistent data")
-    return rig, meshes
-
-
-def _rotate_around_world_z(context, obj, angle):
-    context.view_layer.update()
-    pivot = obj.matrix_world.translation.copy()
-    obj.matrix_world = (
-        Matrix.Translation(pivot)
-        @ Matrix.Rotation(angle, 4, "Z")
-        @ Matrix.Translation(-pivot)
-        @ obj.matrix_world
-    )
-    context.view_layer.update()
-
-
-def _is_managed_character_object(obj):
-    return (
-        obj.get(DIRECTOR_OWNER_KEY) == DIRECTOR_OWNER_TOKEN
-        and obj.get(DIRECTOR_MANAGED_KEY) is True
-        and obj.get(DIRECTOR_KIND_KEY) == "character"
-        and isinstance(obj.get(DIRECTOR_INSTANCE_KEY), str)
-    )
-
-
-def _managed_character_objects():
-    return [obj for obj in bpy.data.objects if _is_managed_character_object(obj)]
-
-
-def _configure_character_selection(rig, meshes, allow_mesh_selection=False):
-    rig.hide_select = False
-    rig.show_in_front = True
-    for mesh in list(meshes):
-        if not allow_mesh_selection:
-            mesh.select_set(False)
-        mesh.hide_select = not allow_mesh_selection
-
-
-def _target_bounds(context):
-    candidates = [
-        obj for obj in context.selected_objects
-        if obj.type not in {"CAMERA", "LIGHT"}
-    ]
-    points = []
-    for obj in candidates:
-        points.extend(obj.matrix_world @ Vector(corner) for corner in obj.bound_box)
-    if not points:
-        return Vector((0.0, 0.0, 1.2)), 1.0
-    minimum = Vector((
-        min(point.x for point in points),
-        min(point.y for point in points),
-        min(point.z for point in points),
-    ))
-    maximum = Vector((
-        max(point.x for point in points),
-        max(point.y for point in points),
-        max(point.z for point in points),
-    ))
-    center = (minimum + maximum) * 0.5
-    radius = max((maximum - minimum).length * 0.5, 0.5)
-    return center, radius
-
-
-def _active_protocol_camera(scene):
-    camera = scene.camera
-    if camera is not None and camera.type == "CAMERA" and camera.get("ai_canvas_camera_id"):
-        return camera
-    return next(
-        (
-            obj for obj in scene.objects
-            if obj.type == "CAMERA" and obj.get("ai_canvas_camera_id")
-        ),
-        None,
-    )
-
-
-def _camera_preview_is_active():
-    return (
-        not _CAMERA_PREVIEW_STATE["stopping"]
-        and _CAMERA_PREVIEW_STATE["handler"] is not None
-        and _CAMERA_PREVIEW_STATE["area_pointer"] != 0
-        and _CAMERA_PREVIEW_STATE["region_pointer"] != 0
-    )
-
-
-def _camera_preview_target_context():
-    if bpy.app.background:
-        return None
-    window_manager = bpy.context.window_manager
-    current_window = bpy.context.window
-    current_window_is_available = (
-        current_window is not None
-        and any(
-            window.as_pointer() == current_window.as_pointer()
-            for window in window_manager.windows
-        )
-    )
-    if current_window_is_available:
-        windows = (current_window,)
-    elif len(window_manager.windows) == 1:
-        windows = (window_manager.windows[0],)
-    else:
-        return None
-    candidates = []
-    for window in windows:
-        screen = window.screen
-        if screen is None:
-            continue
-        for area in screen.areas:
-            if area.type != "VIEW_3D":
-                continue
-            region = next(
-                (candidate for candidate in area.regions if candidate.type == "WINDOW"),
-                None,
-            )
-            if region is not None:
-                candidates.append((area.width * area.height, window, screen, area, region))
-    if not candidates:
-        return None
-    _, window, screen, area, region = max(candidates, key=lambda item: item[0])
-    return window, screen, area, region
-
-
-def _camera_preview_owner():
-    area_pointer = _CAMERA_PREVIEW_STATE["area_pointer"]
-    region_pointer = _CAMERA_PREVIEW_STATE["region_pointer"]
-    window_pointer = _CAMERA_PREVIEW_STATE["window_pointer"]
-    if not area_pointer or not region_pointer or not window_pointer:
-        return None
-    for window in bpy.context.window_manager.windows:
-        if window.as_pointer() != window_pointer or window.screen is None:
-            continue
-        for area in window.screen.areas:
-            if area.as_pointer() != area_pointer or area.type != "VIEW_3D":
-                continue
-            region = next(
-                (
-                    candidate for candidate in area.regions
-                    if candidate.as_pointer() == region_pointer
-                    and candidate.type == "WINDOW"
-                ),
-                None,
-            )
-            if region is not None:
-                return window, area, region
-    return None
-
-
-def _tag_camera_preview_ui_redraw(owner=None):
-    if bpy.app.background:
-        return
-    owner = owner or _camera_preview_owner()
-    if owner is None:
-        return
-    window, preview_area, _region = owner
-    preview_area.tag_redraw()
-    if window.screen is not None:
-        for area in window.screen.areas:
-            if area.type == "PROPERTIES":
-                area.tag_redraw()
-
-
-def _camera_preview_geometry(region, scene):
-    if region.width < 320 or region.height < 260:
-        return None
-    render = scene.render
-    render_width = max(render.resolution_x * render.pixel_aspect_x, 1.0)
-    render_height = max(render.resolution_y * render.pixel_aspect_y, 1.0)
-    aspect = max(0.25, min(render_width / render_height, 4.0))
-    maximum_width = max(region.width - CAMERA_PREVIEW_MARGIN * 2, 1)
-    width = min(420, max(280, int(region.width * 0.23)), maximum_width)
-    maximum_total_height = min(320, max(180, int(region.height * 0.32)))
-    maximum_image_height = maximum_total_height - CAMERA_PREVIEW_HEADER_HEIGHT
-    image_height = max(1, int(round(width / aspect)))
-    if image_height > maximum_image_height:
-        image_height = maximum_image_height
-        width = min(width, int(round(image_height * aspect)))
-    if width < 180 or image_height < 100:
-        return None
-    x = region.width - width - CAMERA_PREVIEW_MARGIN
-    y = CAMERA_PREVIEW_MARGIN
-    total_height = image_height + CAMERA_PREVIEW_HEADER_HEIGHT
-    close_size = 22
-    close_x = x + width - close_size - 3
-    close_y = y + image_height + 3
-    return {
-        "x": x,
-        "y": y,
-        "width": width,
-        "image_height": image_height,
-        "total_height": total_height,
-        "close_rect": (close_x, close_y, close_size, close_size),
-    }
-
-
-def _camera_preview_rounded_mesh(x, y, width, height, corner_radii, segments=5):
-    maximum_radius = min(width, height) * 0.5
-    radii = tuple(
-        max(0.0, min(float(radius), maximum_radius))
-        for radius in corner_radii
-    )
-    corner_specs = (
-        (x + radii[0], y + radii[0], radii[0], math.pi, math.pi * 1.5),
-        (
-            x + width - radii[1],
-            y + radii[1],
-            radii[1],
-            math.pi * 1.5,
-            math.pi * 2.0,
-        ),
-        (
-            x + width - radii[2],
-            y + height - radii[2],
-            radii[2],
-            0.0,
-            math.pi * 0.5,
-        ),
-        (
-            x + radii[3],
-            y + height - radii[3],
-            radii[3],
-            math.pi * 0.5,
-            math.pi,
-        ),
-    )
-    boundary = []
-    for center_x, center_y, radius, start_angle, end_angle in corner_specs:
-        if radius == 0.0:
-            boundary.append((center_x, center_y))
-            continue
-        for step in range(segments + 1):
-            angle = start_angle + (end_angle - start_angle) * step / segments
-            boundary.append((
-                center_x + math.cos(angle) * radius,
-                center_y + math.sin(angle) * radius,
-            ))
-    positions = [(x + width * 0.5, y + height * 0.5), *boundary]
-    indices = []
-    for boundary_index in range(len(boundary)):
-        current = boundary_index + 1
-        following = (boundary_index + 1) % len(boundary) + 1
-        indices.append((0, current, following))
-    return positions, indices
-
-
-def _draw_camera_preview_rect(
-    x,
-    y,
-    width,
-    height,
-    color,
-    corner_radii=(0.0, 0.0, 0.0, 0.0),
-):
-    positions, indices = _camera_preview_rounded_mesh(
-        x,
-        y,
-        width,
-        height,
-        corner_radii,
-    )
-    shader = gpu.shader.from_builtin("UNIFORM_COLOR")
-    batch = batch_for_shader(
-        shader,
-        "TRIS",
-        {"pos": positions},
-        indices=indices,
-    )
-    shader.bind()
-    shader.uniform_float("color", color)
-    batch.draw(shader)
-
-
-def _draw_camera_preview_texture(texture, x, y, width, height, corner_radii):
-    positions, indices = _camera_preview_rounded_mesh(
-        x,
-        y,
-        width,
-        height,
-        corner_radii,
-    )
-    texture_coordinates = [
-        ((position_x - x) / width, (position_y - y) / height)
-        for position_x, position_y in positions
-    ]
-    shader = gpu.shader.from_builtin("IMAGE")
-    batch = batch_for_shader(
-        shader,
-        "TRIS",
-        {"pos": positions, "texCoord": texture_coordinates},
-        indices=indices,
-    )
-    shader.uniform_sampler("image", texture)
-    batch.draw(shader)
-
-
-def _draw_camera_preview_cross(x, y, size, color):
-    inset = 7
-    shader = gpu.shader.from_builtin("UNIFORM_COLOR")
-    batch = batch_for_shader(
-        shader,
-        "LINES",
-        {"pos": (
-            (x + inset, y + inset),
-            (x + size - inset, y + size - inset),
-            (x + size - inset, y + inset),
-            (x + inset, y + size - inset),
-        )},
-    )
-    shader.bind()
-    shader.uniform_float("color", color)
-    batch.draw(shader)
-
-
-def _draw_camera_preview_text(text, x, y, size=13.0, color=(0.92, 0.94, 1.0, 1.0)):
-    font_id = 0
-    blf.size(font_id, size)
-    blf.color(font_id, *color)
-    blf.position(font_id, x, y, 0.0)
-    blf.draw(font_id, text)
-
-
-def _draw_camera_preview_centered_text(
-    text,
-    x,
-    y,
-    height,
-    size=13.0,
-    color=(0.92, 0.94, 1.0, 1.0),
-):
-    font_id = 0
-    blf.size(font_id, size)
-    _text_width, text_height = blf.dimensions(font_id, text)
-    baseline_compensation = 3.0
-    text_y = y + (height - text_height) * 0.5 + baseline_compensation
-    _draw_camera_preview_text(text, x, text_y, size, color)
-
-
-def _capture_camera_preview_gpu_state():
-    return {
-        "blend": gpu.state.blend_get(),
-        "depth_mask": gpu.state.depth_mask_get(),
-        "depth_test": gpu.state.depth_test_get(),
-        "line_width": gpu.state.line_width_get(),
-        "viewport": tuple(gpu.state.viewport_get()),
-        "scissor": tuple(gpu.state.scissor_get()),
-    }
-
-
-def _restore_camera_preview_gpu_state(state):
-    restore_operations = (
-        (gpu.state.viewport_set, state["viewport"]),
-        (gpu.state.scissor_set, state["scissor"]),
-        (gpu.state.line_width_set, (state["line_width"],)),
-        (gpu.state.depth_mask_set, (state["depth_mask"],)),
-        (gpu.state.depth_test_set, (state["depth_test"],)),
-        (gpu.state.blend_set, (state["blend"],)),
-    )
-    for operation, arguments in restore_operations:
-        try:
-            operation(*arguments)
-        except Exception:
-            pass
-
-
-def _free_camera_preview_offscreen():
-    offscreen = _CAMERA_PREVIEW_STATE.get("offscreen")
-    _CAMERA_PREVIEW_STATE["offscreen"] = None
-    _CAMERA_PREVIEW_STATE["offscreen_size"] = None
-    if offscreen is not None:
-        try:
-            offscreen.free()
-        except Exception:
-            pass
-
-
-def _ensure_camera_preview_offscreen(width, height):
-    size = (width, height)
-    if (
-        _CAMERA_PREVIEW_STATE["offscreen"] is not None
-        and _CAMERA_PREVIEW_STATE["offscreen_size"] == size
-    ):
-        return _CAMERA_PREVIEW_STATE["offscreen"], False
-    _free_camera_preview_offscreen()
-    offscreen = gpu.types.GPUOffScreen(width, height)
-    _CAMERA_PREVIEW_STATE["offscreen"] = offscreen
-    _CAMERA_PREVIEW_STATE["offscreen_size"] = size
-    _CAMERA_PREVIEW_STATE["texture_valid"] = False
-    return offscreen, True
-
-
-def _stop_camera_preview():
-    if _CAMERA_PREVIEW_STATE["stopping"]:
-        return
-    _CAMERA_PREVIEW_STATE["stopping"] = True
-    _CAMERA_PREVIEW_STATE["generation"] += 1
-    try:
-        owner = _camera_preview_owner()
-    except (ReferenceError, RuntimeError):
-        owner = None
-    handler = _CAMERA_PREVIEW_STATE.get("handler")
-    _CAMERA_PREVIEW_STATE["handler"] = None
-    if handler is not None:
-        try:
-            bpy.types.SpaceView3D.draw_handler_remove(handler, "WINDOW")
-        except Exception:
-            pass
-    if bpy.app.timers.is_registered(_camera_preview_refresh_tick):
-        try:
-            bpy.app.timers.unregister(_camera_preview_refresh_tick)
-        except Exception:
-            pass
-    _free_camera_preview_offscreen()
-    _CAMERA_PREVIEW_STATE.update({
-        "window_pointer": 0,
-        "area_pointer": 0,
-        "region_pointer": 0,
-        "close_rect": None,
-        "close_hover": False,
-        "drawing": False,
-        "stopping": False,
-        "dirty": True,
-        "texture_valid": False,
-        "last_render_at": 0.0,
-        "render_count": 0,
-        "last_error": None,
-    })
-    _tag_camera_preview_ui_redraw(owner)
-
-
-def _camera_preview_refresh_tick():
-    if not _camera_preview_is_active():
-        return None
-    owner = _camera_preview_owner()
-    if not _has_editor_session() or owner is None:
-        _stop_camera_preview()
-        return None
-    _CAMERA_PREVIEW_STATE["dirty"] = True
-    owner[1].tag_redraw()
-    return CAMERA_PREVIEW_REFRESH_SECONDS
-
-
-def _draw_camera_preview():
-    if not _camera_preview_is_active() or _CAMERA_PREVIEW_STATE["drawing"]:
-        return
-    context = bpy.context
-    area = context.area
-    region = context.region
-    if (
-        area is None
-        or region is None
-        or area.as_pointer() != _CAMERA_PREVIEW_STATE["area_pointer"]
-        or region.as_pointer() != _CAMERA_PREVIEW_STATE["region_pointer"]
-        or area.type != "VIEW_3D"
-    ):
-        return
-    geometry = _camera_preview_geometry(region, context.scene)
-    if geometry is None:
-        _CAMERA_PREVIEW_STATE["close_rect"] = None
-        return
-    _CAMERA_PREVIEW_STATE["close_rect"] = geometry["close_rect"]
-    x = geometry["x"]
-    y = geometry["y"]
-    width = geometry["width"]
-    image_height = geometry["image_height"]
-    total_height = geometry["total_height"]
-
-    _CAMERA_PREVIEW_STATE["drawing"] = True
-    gpu_state = None
-    try:
-        gpu_state = _capture_camera_preview_gpu_state()
-        offscreen, created = _ensure_camera_preview_offscreen(width, image_height)
-        should_render = (
-            created
-            or _CAMERA_PREVIEW_STATE["dirty"]
-        )
-        if should_render:
-            try:
-                camera = _active_protocol_camera(context.scene)
-                if camera is None:
-                    raise RuntimeError("protocol camera unavailable")
-                depsgraph = context.evaluated_depsgraph_get()
-                evaluated_camera = camera.evaluated_get(depsgraph)
-                render = context.scene.render
-                projection_matrix = evaluated_camera.calc_matrix_camera(
-                    depsgraph,
-                    x=max(render.resolution_x, 1),
-                    y=max(render.resolution_y, 1),
-                    scale_x=render.pixel_aspect_x,
-                    scale_y=render.pixel_aspect_y,
-                )
-                view_matrix = evaluated_camera.matrix_world.inverted()
-                offscreen.draw_view3d(
-                    context.scene,
-                    context.view_layer,
-                    context.space_data,
-                    region,
-                    view_matrix,
-                    projection_matrix,
-                    do_color_management=True,
-                    draw_background=True,
-                )
-                _CAMERA_PREVIEW_STATE["texture_valid"] = True
-                _CAMERA_PREVIEW_STATE["last_error"] = None
-            except Exception as error:
-                _CAMERA_PREVIEW_STATE["texture_valid"] = False
-                _CAMERA_PREVIEW_STATE["last_error"] = type(error).__name__
-            finally:
-                _CAMERA_PREVIEW_STATE["dirty"] = False
-                _CAMERA_PREVIEW_STATE["last_render_at"] = time.monotonic()
-                _CAMERA_PREVIEW_STATE["render_count"] += 1
-
-        gpu.state.viewport_set(*gpu_state["viewport"])
-        gpu.state.scissor_set(*gpu_state["scissor"])
-        gpu.state.depth_test_set("NONE")
-        gpu.state.depth_mask_set(False)
-        gpu.state.blend_set("ALPHA")
-
-        _draw_camera_preview_rect(
-            x - 2,
-            y - 2,
-            width + 4,
-            total_height + 4,
-            (0.03, 0.035, 0.055, 0.96),
-            (10.0, 10.0, 10.0, 10.0),
-        )
-        rendered = _CAMERA_PREVIEW_STATE["texture_valid"]
-        if rendered:
-            _draw_camera_preview_texture(
-                offscreen.texture_color,
-                x,
-                y,
-                width,
-                image_height,
-                (7.0, 7.0, 0.0, 0.0),
-            )
-        else:
-            _draw_camera_preview_rect(
-                x,
-                y,
-                width,
-                image_height,
-                (0.08, 0.09, 0.12, 1.0),
-                (7.0, 7.0, 0.0, 0.0),
-            )
-
-        header_y = y + image_height
-        _draw_camera_preview_rect(
-            x,
-            header_y,
-            width,
-            CAMERA_PREVIEW_HEADER_HEIGHT,
-            (0.055, 0.06, 0.085, 0.96),
-            (0.0, 0.0, 7.0, 7.0),
-        )
-        _draw_camera_preview_centered_text(
-            "摄像机实时预览",
-            x + 9,
-            header_y,
-            CAMERA_PREVIEW_HEADER_HEIGHT,
-            13.0,
-        )
-        close_x, close_y, close_size, _ = geometry["close_rect"]
-        close_color = (
-            (0.72, 0.16, 0.18, 0.95)
-            if _CAMERA_PREVIEW_STATE["close_hover"]
-            else (0.18, 0.19, 0.24, 0.95)
-        )
-        _draw_camera_preview_rect(
-            close_x,
-            close_y,
-            close_size,
-            close_size,
-            close_color,
-            (4.0, 4.0, 4.0, 4.0),
-        )
-        _draw_camera_preview_cross(
-            close_x,
-            close_y,
-            close_size,
-            (0.96, 0.96, 0.98, 1.0),
-        )
-        if not rendered:
-            _draw_camera_preview_text(
-                "预览暂不可用",
-                x + 12,
-                y + max(image_height * 0.5, 18),
-                13.0,
-                (0.75, 0.78, 0.86, 1.0),
-            )
-    except Exception as error:
-        _CAMERA_PREVIEW_STATE["last_error"] = type(error).__name__
-    finally:
-        try:
-            if gpu_state is not None:
-                _restore_camera_preview_gpu_state(gpu_state)
-        finally:
-            _CAMERA_PREVIEW_STATE["drawing"] = False
-
-
-def _start_camera_preview():
-    if bpy.app.background or not _has_editor_session():
-        return False
-    if _camera_preview_is_active():
-        return True
-    target = _camera_preview_target_context()
-    if target is None:
-        return False
-    window, screen, area, region = target
-    try:
-        with bpy.context.temp_override(
-            window=window,
-            screen=screen,
-            area=area,
-            region=region,
-        ):
-            result = bpy.ops.ai_canvas.camera_preview_modal("INVOKE_DEFAULT")
-    except (RuntimeError, TypeError):
-        return False
-    return result == {"RUNNING_MODAL"} or _camera_preview_is_active()
 
 
 def _point_object_at(obj, target):
@@ -1158,27 +74,27 @@ def _new_light(name, collection, light_type, location, target, energy, color, si
     collection.objects.link(obj)
     obj.location = location
     _point_object_at(obj, target)
-    _mark_console_object(obj, kind)
+    scene_geometry._mark_console_object(obj, kind)
     return obj
 
 
 def _ensure_console_world(scene):
     if (
         scene.world is not None
-        and scene.world.get(DIRECTOR_OWNER_KEY) == DIRECTOR_OWNER_TOKEN
+        and scene.world.get(scene_geometry.DIRECTOR_OWNER_KEY) == scene_geometry.DIRECTOR_OWNER_TOKEN
     ):
         return scene.world
     previous_name = scene.world.name if scene.world is not None else ""
     scene[DIRECTOR_PREVIOUS_WORLD_KEY] = previous_name
     world = bpy.data.worlds.new("AI Canvas Director Console World")
-    world[DIRECTOR_OWNER_KEY] = DIRECTOR_OWNER_TOKEN
+    world[scene_geometry.DIRECTOR_OWNER_KEY] = scene_geometry.DIRECTOR_OWNER_TOKEN
     scene.world = world
     return world
 
 
 def _restore_console_world(scene):
     world = scene.world
-    if world is None or world.get(DIRECTOR_OWNER_KEY) != DIRECTOR_OWNER_TOKEN:
+    if world is None or world.get(scene_geometry.DIRECTOR_OWNER_KEY) != scene_geometry.DIRECTOR_OWNER_TOKEN:
         scene.pop(DIRECTOR_PREVIOUS_WORLD_KEY, None)
         return
     previous_name = scene.get(DIRECTOR_PREVIOUS_WORLD_KEY, "")
@@ -1212,7 +128,7 @@ def _set_world(scene, color, strength):
 
 
 def _configure_director_console_area():
-    if bpy.app.background or not _has_editor_session():
+    if bpy.app.background or not camera_preview._has_editor_session():
         return False
     window = bpy.context.window
     if window is None or window.screen is None:
@@ -1234,10 +150,10 @@ def _configure_director_console_area():
 def _activate_director_console_when_ready():
     if bpy.app.background:
         return None
-    if not _has_editor_session():
+    if not camera_preview._has_editor_session():
         return 0.1
     console_ready = _configure_director_console_area()
-    preview_ready = _camera_preview_is_active() or _start_camera_preview()
+    preview_ready = camera_preview._camera_preview_is_active() or camera_preview._start_camera_preview()
     if console_ready and preview_ready:
         bpy.app.driver_namespace.pop(DIRECTOR_CONSOLE_ATTEMPTS_KEY, None)
         return None
@@ -1268,7 +184,7 @@ def _hash_file(path):
 
 
 def _editor_session():
-    session = bpy.app.driver_namespace.get(EDITOR_SESSION_KEY)
+    session = bpy.app.driver_namespace.get(camera_preview.EDITOR_SESSION_KEY)
     required = {
         "jobDir",
         "outputDir",
@@ -1516,11 +432,11 @@ class AI_CANVAS_OT_add_builtin_character(bpy.types.Operator):
 
     def execute(self, context):
         scene = context.scene
-        before = _snapshot_import_state()
-        had_collection_property = DIRECTOR_COLLECTION_SCENE_KEY in scene
-        previous_collection_name = scene.get(DIRECTOR_COLLECTION_SCENE_KEY)
+        before = scene_geometry._snapshot_import_state()
+        had_collection_property = scene_geometry.DIRECTOR_COLLECTION_SCENE_KEY in scene
+        previous_collection_name = scene.get(scene_geometry.DIRECTOR_COLLECTION_SCENE_KEY)
         try:
-            character_path, label, slug, object_names = _builtin_character_path(
+            character_path, label, slug, object_names = scene_geometry._builtin_character_path(
                 self.asset,
             )
             with bpy.data.libraries.load(
@@ -1537,35 +453,35 @@ class AI_CANVAS_OT_add_builtin_character(bpy.types.Operator):
                     raise RuntimeError("AI Canvas built-in character names are invalid")
                 data_to.objects = sorted(object_names)
             objects = [obj for obj in data_to.objects if obj is not None]
-            rig, meshes = _validate_builtin_character(objects, before)
-            collection = _director_collection(scene)
+            rig, meshes = scene_geometry._validate_builtin_character(objects, before)
+            collection = scene_geometry._director_collection(scene)
             instance_id = f"{slug}-{time.time_ns():x}"
             asset_id = f"builtin-character-{slug}"
             for obj in objects:
                 collection.objects.link(obj)
-                _mark_console_object(obj, "character", asset_id, instance_id)
-            for datablock in _new_import_datablocks(before):
-                _mark_console_datablock(
+                scene_geometry._mark_console_object(obj, "character", asset_id, instance_id)
+            for datablock in scene_geometry._new_import_datablocks(before):
+                scene_geometry._mark_console_datablock(
                     datablock,
                     "character",
                     asset_id,
                     instance_id,
                 )
             rig.name = f"AI_character-{slug}-rig"
-            _rotate_around_world_z(context, rig, math.pi)
-            _translate_roots_to_cursor(
+            scene_geometry._rotate_around_world_z(context, rig, math.pi)
+            scene_geometry._translate_roots_to_cursor(
                 context,
                 objects,
                 scene.cursor.location.copy(),
             )
-            _configure_character_selection(rig, meshes)
-            _select_objects(context, [rig], rig)
+            scene_geometry._configure_character_selection(rig, meshes)
+            scene_geometry._select_objects(context, [rig], rig)
         except Exception:
-            _remove_new_import_data(before)
+            scene_geometry._remove_new_import_data(before)
             if had_collection_property:
-                scene[DIRECTOR_COLLECTION_SCENE_KEY] = previous_collection_name
-            elif DIRECTOR_COLLECTION_SCENE_KEY in scene:
-                del scene[DIRECTOR_COLLECTION_SCENE_KEY]
+                scene[scene_geometry.DIRECTOR_COLLECTION_SCENE_KEY] = previous_collection_name
+            elif scene_geometry.DIRECTOR_COLLECTION_SCENE_KEY in scene:
+                del scene[scene_geometry.DIRECTOR_COLLECTION_SCENE_KEY]
             self.report({"ERROR"}, "内置人物加载失败，请重新安装 Blender 导演台资源")
             return {"CANCELLED"}
 
@@ -1589,7 +505,7 @@ class AI_CANVAS_OT_toggle_character_mesh_selection(bpy.types.Operator):
         return _editor_operator_poll(context)
 
     def execute(self, context):
-        character_objects = _managed_character_objects()
+        character_objects = scene_geometry._managed_character_objects()
         meshes = [obj for obj in character_objects if obj.type == "MESH"]
         rigs = [obj for obj in character_objects if obj.type == "ARMATURE"]
         if not meshes or not rigs:
@@ -1598,8 +514,8 @@ class AI_CANVAS_OT_toggle_character_mesh_selection(bpy.types.Operator):
 
         active = context.view_layer.objects.active
         active_instance = (
-            active.get(DIRECTOR_INSTANCE_KEY)
-            if active is not None and _is_managed_character_object(active)
+            active.get(scene_geometry.DIRECTOR_INSTANCE_KEY)
+            if active is not None and scene_geometry._is_managed_character_object(active)
             else None
         )
         for rig in rigs:
@@ -1615,12 +531,12 @@ class AI_CANVAS_OT_toggle_character_mesh_selection(bpy.types.Operator):
                 (
                     candidate
                     for candidate in rigs
-                    if candidate.get(DIRECTOR_INSTANCE_KEY) == active_instance
+                    if candidate.get(scene_geometry.DIRECTOR_INSTANCE_KEY) == active_instance
                 ),
                 None,
             )
             if rig is not None:
-                _select_objects(context, [rig], rig)
+                scene_geometry._select_objects(context, [rig], rig)
         context.view_layer.update()
 
         if self.allow_mesh_selection:
@@ -1651,14 +567,14 @@ class AI_CANVAS_OT_add_blockout(bpy.types.Operator):
         return _editor_operator_poll(context)
 
     def execute(self, context):
-        collection = _director_collection(context.scene)
+        collection = scene_geometry._director_collection(context.scene)
         origin = context.scene.cursor.location.copy()
-        neutral = _ensure_material("AI Canvas Neutral", (0.55, 0.58, 0.65))
-        prop = _ensure_material("AI Canvas Prop", (0.85, 0.45, 0.2))
+        neutral = scene_geometry._ensure_material("AI Canvas Neutral", (0.55, 0.58, 0.65))
+        prop = scene_geometry._ensure_material("AI Canvas Prop", (0.85, 0.45, 0.2))
         created = []
 
         if self.asset == "CUBE":
-            created.append(_new_box(
+            created.append(scene_geometry._new_box(
                 "AI_blockout-cube",
                 collection,
                 origin + Vector((0.0, 0.0, 0.5)),
@@ -1667,7 +583,7 @@ class AI_CANVAS_OT_add_blockout(bpy.types.Operator):
                 "primitive",
             ))
         elif self.asset == "SPHERE":
-            created.append(_new_sphere(
+            created.append(scene_geometry._new_sphere(
                 "AI_blockout-sphere",
                 collection,
                 origin + Vector((0.0, 0.0, 0.5)),
@@ -1676,7 +592,7 @@ class AI_CANVAS_OT_add_blockout(bpy.types.Operator):
                 "primitive",
             ))
         elif self.asset == "FLOOR":
-            created.append(_new_box(
+            created.append(scene_geometry._new_box(
                 "AI_blockout-floor",
                 collection,
                 origin + Vector((0.0, 0.0, -0.05)),
@@ -1690,9 +606,9 @@ class AI_CANVAS_OT_add_blockout(bpy.types.Operator):
             root.location = origin
             root.empty_display_type = "PLAIN_AXES"
             root.empty_display_size = 0.3
-            _mark_console_object(root, "primitive")
+            scene_geometry._mark_console_object(root, "primitive")
             created.append(root)
-            tabletop = _new_box(
+            tabletop = scene_geometry._new_box(
                 "AI_blockout-tabletop",
                 collection,
                 (0.0, 0.0, 0.78),
@@ -1708,7 +624,7 @@ class AI_CANVAS_OT_add_blockout(bpy.types.Operator):
                 (-0.65, 0.28, 0.38),
                 (0.65, 0.28, 0.38),
             ), start=1):
-                leg = _new_box(
+                leg = scene_geometry._new_box(
                     f"AI_blockout-table-leg-{index}",
                     collection,
                     offset,
@@ -1718,7 +634,7 @@ class AI_CANVAS_OT_add_blockout(bpy.types.Operator):
                 )
                 leg.parent = root
                 created.append(leg)
-        _select_objects(context, created, created[0] if created else None)
+        scene_geometry._select_objects(context, created, created[0] if created else None)
         self.report({"INFO"}, f"已创建 {len(created)} 个基础对象")
         return {"FINISHED"}
 
@@ -1745,17 +661,17 @@ class AI_CANVAS_OT_apply_scene_preset(bpy.types.Operator):
         return _editor_operator_poll(context)
 
     def execute(self, context):
-        _remove_console_objects(context.scene, {"scene"})
-        collection = _director_collection(context.scene)
-        neutral = _ensure_material("AI Canvas Set Neutral", (0.42, 0.45, 0.52))
-        dark = _ensure_material("AI Canvas Road", (0.08, 0.09, 0.12), roughness=0.85)
-        concrete = _ensure_material("AI Canvas Concrete", (0.35, 0.37, 0.4), roughness=0.8)
-        green = _ensure_material("AI Canvas Green Screen", (0.04, 0.62, 0.12), roughness=0.9)
-        wood = _ensure_material("AI Canvas Office Wood", (0.34, 0.16, 0.07), roughness=0.72)
+        scene_geometry._remove_console_objects(context.scene, {"scene"})
+        collection = scene_geometry._director_collection(context.scene)
+        neutral = scene_geometry._ensure_material("AI Canvas Set Neutral", (0.42, 0.45, 0.52))
+        dark = scene_geometry._ensure_material("AI Canvas Road", (0.08, 0.09, 0.12), roughness=0.85)
+        concrete = scene_geometry._ensure_material("AI Canvas Concrete", (0.35, 0.37, 0.4), roughness=0.8)
+        green = scene_geometry._ensure_material("AI Canvas Green Screen", (0.04, 0.62, 0.12), roughness=0.9)
+        wood = scene_geometry._ensure_material("AI Canvas Office Wood", (0.34, 0.16, 0.07), roughness=0.72)
         created = []
 
         def box(name, location, dimensions, material=neutral):
-            obj = _new_box(name, collection, location, dimensions, material, "scene")
+            obj = scene_geometry._new_box(name, collection, location, dimensions, material, "scene")
             created.append(obj)
             return obj
 
@@ -1788,7 +704,7 @@ class AI_CANVAS_OT_apply_scene_preset(bpy.types.Operator):
             box("AI_set-green-floor", (0.0, 0.0, -0.05), (8.0, 8.0, 0.1), neutral)
             box("AI_set-green-screen", (0.0, 3.2, 2.0), (7.0, 0.1, 4.0), green)
 
-        _select_objects(context, created)
+        scene_geometry._select_objects(context, created)
         self.report({"INFO"}, "场景预设已应用；Director Scene 原对象保持不变")
         return {"FINISHED"}
 
@@ -1804,7 +720,7 @@ class AI_CANVAS_OT_clear_console_build(bpy.types.Operator):
         return _editor_operator_poll(context)
 
     def execute(self, context):
-        removed = _remove_console_objects(
+        removed = scene_geometry._remove_console_objects(
             context.scene,
             {"primitive", "character", "scene", "light"},
         )
@@ -1832,17 +748,17 @@ class AI_CANVAS_OT_ground_selected(bpy.types.Operator):
             if obj.type not in {"CAMERA", "LIGHT"}
         ]
         character_instances = {
-            obj.get(DIRECTOR_INSTANCE_KEY)
+            obj.get(scene_geometry.DIRECTOR_INSTANCE_KEY)
             for obj in selected
-            if obj.get(DIRECTOR_OWNER_KEY) == DIRECTOR_OWNER_TOKEN
-            and obj.get(DIRECTOR_MANAGED_KEY) is True
-            and obj.get(DIRECTOR_KIND_KEY) == "character"
-            and isinstance(obj.get(DIRECTOR_INSTANCE_KEY), str)
+            if obj.get(scene_geometry.DIRECTOR_OWNER_KEY) == scene_geometry.DIRECTOR_OWNER_TOKEN
+            and obj.get(scene_geometry.DIRECTOR_MANAGED_KEY) is True
+            and obj.get(scene_geometry.DIRECTOR_KIND_KEY) == "character"
+            and isinstance(obj.get(scene_geometry.DIRECTOR_INSTANCE_KEY), str)
         }
         movement_objects = list(selected)
         movement_pointers = {obj.as_pointer() for obj in movement_objects}
         for obj in bpy.data.objects:
-            if obj.get(DIRECTOR_INSTANCE_KEY) not in character_instances:
+            if obj.get(scene_geometry.DIRECTOR_INSTANCE_KEY) not in character_instances:
                 continue
             if obj.as_pointer() in movement_pointers:
                 continue
@@ -1853,8 +769,8 @@ class AI_CANVAS_OT_ground_selected(bpy.types.Operator):
             obj for obj in movement_objects
             if obj.parent not in movement_set
         ]
-        hierarchy = _hierarchy_members(roots)
-        points = _evaluated_mesh_bound_points(context, hierarchy)
+        hierarchy = scene_geometry._hierarchy_members(roots)
+        points = scene_geometry._evaluated_mesh_bound_points(context, hierarchy)
         if not points:
             points = [
                 obj.matrix_world @ Vector(corner)
@@ -1895,11 +811,11 @@ class AI_CANVAS_OT_apply_camera_preset(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return _editor_operator_poll(context) and _active_protocol_camera(context.scene) is not None
+        return _editor_operator_poll(context) and camera_preview._active_protocol_camera(context.scene) is not None
 
     def execute(self, context):
-        camera = _active_protocol_camera(context.scene)
-        target, radius = _target_bounds(context)
+        camera = camera_preview._active_protocol_camera(context.scene)
+        target, radius = scene_geometry._target_bounds(context)
         if self.preset == "CLOSE":
             offset = Vector((0.0, -max(1.4, radius * 2.2), radius * 0.1))
             lens = 85.0
@@ -1948,10 +864,10 @@ class AI_CANVAS_OT_set_focal_length(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return _editor_operator_poll(context) and _active_protocol_camera(context.scene) is not None
+        return _editor_operator_poll(context) and camera_preview._active_protocol_camera(context.scene) is not None
 
     def execute(self, context):
-        camera = _active_protocol_camera(context.scene)
+        camera = camera_preview._active_protocol_camera(context.scene)
         camera.data.lens = self.lens
         camera.data.keyframe_insert(data_path="lens", frame=context.scene.frame_current)
         self.report({"INFO"}, f"焦段已设置为 {self.lens:g} mm")
@@ -1969,13 +885,13 @@ class AI_CANVAS_OT_focus_selected(bpy.types.Operator):
         active = context.view_layer.objects.active
         return (
             _editor_operator_poll(context)
-            and _active_protocol_camera(context.scene) is not None
+            and camera_preview._active_protocol_camera(context.scene) is not None
             and active is not None
             and active.type not in {"CAMERA", "LIGHT"}
         )
 
     def execute(self, context):
-        camera = _active_protocol_camera(context.scene)
+        camera = camera_preview._active_protocol_camera(context.scene)
         target = context.view_layer.objects.active
         camera.data.dof.use_dof = True
         camera.data.dof.focus_object = target
@@ -2004,9 +920,9 @@ class AI_CANVAS_OT_apply_lighting_preset(bpy.types.Operator):
         return _editor_operator_poll(context)
 
     def execute(self, context):
-        _remove_console_objects(context.scene, {"light"})
-        collection = _director_collection(context.scene)
-        target, _radius = _target_bounds(context)
+        scene_geometry._remove_console_objects(context.scene, {"light"})
+        collection = scene_geometry._director_collection(context.scene)
+        target, _radius = scene_geometry._target_bounds(context)
         created = []
 
         def light(name, light_type, location, energy, color, size=3.0):
@@ -2040,7 +956,7 @@ class AI_CANVAS_OT_apply_lighting_preset(bpy.types.Operator):
             light("AI_console-night-key", "AREA", (3.5, -4.0, 4.0), 900, (0.12, 0.32, 1.0), 4.0)
             light("AI_console-night-rim", "AREA", (-2.0, 3.0, 3.0), 700, (1.0, 0.18, 0.06), 3.0)
 
-        _select_objects(context, created)
+        scene_geometry._select_objects(context, created)
         self.report({"INFO"}, "灯光预设已应用")
         return {"FINISHED"}
 
@@ -2073,7 +989,7 @@ class AI_CANVAS_OT_import_model(bpy.types.Operator, ImportHelper):
             self.report({"ERROR"}, "仅支持 OBJ、FBX、GLB 和 GLTF 模型")
             return {"CANCELLED"}
 
-        before = _snapshot_import_state()
+        before = scene_geometry._snapshot_import_state()
         scene = context.scene
         timeline = (
             scene.frame_start,
@@ -2097,7 +1013,7 @@ class AI_CANVAS_OT_import_model(bpy.types.Operator, ImportHelper):
                     import_pack_images=True,
                 )
         except Exception:
-            _remove_new_import_data(before)
+            scene_geometry._remove_new_import_data(before)
             self.report({"ERROR"}, "模型导入失败，请检查文件格式和外部资源")
             return {"CANCELLED"}
         finally:
@@ -2112,7 +1028,7 @@ class AI_CANVAS_OT_import_model(bpy.types.Operator, ImportHelper):
             scene.frame_set(current_frame)
 
         if result != {"FINISHED"}:
-            _remove_new_import_data(before)
+            scene_geometry._remove_new_import_data(before)
             self.report({"ERROR"}, "模型导入器未完成任务")
             return {"CANCELLED"}
         imported = [
@@ -2124,148 +1040,8 @@ class AI_CANVAS_OT_import_model(bpy.types.Operator, ImportHelper):
             return {"CANCELLED"}
         for obj in imported:
             obj[DIRECTOR_IMPORTED_KEY] = True
-        _select_objects(context, imported)
+        scene_geometry._select_objects(context, imported)
         self.report({"INFO"}, f"已导入 {len(imported)} 个对象到当前工程")
-        return {"FINISHED"}
-
-
-class AI_CANVAS_OT_camera_preview_modal(bpy.types.Operator):
-    bl_idname = "ai_canvas.camera_preview_modal"
-    bl_label = "摄像机实时预览"
-    bl_description = "在主 3D 视图右下角显示可关闭的实时摄像机预览"
-    bl_options = {"INTERNAL"}
-
-    @classmethod
-    def poll(cls, context):
-        return (
-            not bpy.app.background
-            and _has_editor_session()
-            and context.area is not None
-            and context.area.type == "VIEW_3D"
-            and context.region is not None
-            and context.region.type == "WINDOW"
-        )
-
-    def invoke(self, context, _event):
-        if _camera_preview_is_active():
-            return {"CANCELLED"}
-        generation = _CAMERA_PREVIEW_STATE["generation"] + 1
-        self._preview_generation = generation
-        handler = bpy.types.SpaceView3D.draw_handler_add(
-            _draw_camera_preview,
-            (),
-            "WINDOW",
-            "POST_PIXEL",
-        )
-        _CAMERA_PREVIEW_STATE.update({
-            "handler": handler,
-            "window_pointer": context.window.as_pointer(),
-            "area_pointer": context.area.as_pointer(),
-            "region_pointer": context.region.as_pointer(),
-            "close_rect": None,
-            "close_hover": False,
-            "drawing": False,
-            "stopping": False,
-            "dirty": True,
-            "texture_valid": False,
-            "last_render_at": 0.0,
-            "render_count": 0,
-            "generation": generation,
-            "last_error": None,
-        })
-        if not context.window_manager.modal_handler_add(self):
-            _stop_camera_preview()
-            return {"CANCELLED"}
-        try:
-            bpy.app.timers.register(
-                _camera_preview_refresh_tick,
-                first_interval=0.0,
-            )
-        except Exception:
-            _stop_camera_preview()
-            return {"CANCELLED"}
-        _tag_camera_preview_ui_redraw(_camera_preview_owner())
-        return {"RUNNING_MODAL"}
-
-    def modal(self, context, event):
-        if (
-            getattr(self, "_preview_generation", None)
-            != _CAMERA_PREVIEW_STATE["generation"]
-        ):
-            return {"FINISHED"}
-        if not _camera_preview_is_active():
-            return {"FINISHED"}
-        owner = _camera_preview_owner()
-        if not _has_editor_session() or owner is None:
-            _stop_camera_preview()
-            return {"FINISHED"}
-        owner_window, owner_area, owner_region = owner
-        same_window = (
-            context.window is not None
-            and context.window.as_pointer() == owner_window.as_pointer()
-        )
-        close_rect = _CAMERA_PREVIEW_STATE["close_rect"]
-        over_close = False
-        if same_window and close_rect is not None:
-            mouse_region_x = event.mouse_x - owner_region.x
-            mouse_region_y = event.mouse_y - owner_region.y
-            x, y, width, height = close_rect
-            over_close = (
-                x <= mouse_region_x <= x + width
-                and y <= mouse_region_y <= y + height
-            )
-        event_type = event.type
-        if event_type == "MOUSEMOVE":
-            if over_close != _CAMERA_PREVIEW_STATE["close_hover"]:
-                _CAMERA_PREVIEW_STATE["close_hover"] = over_close
-                owner_area.tag_redraw()
-            return {"PASS_THROUGH"}
-        if event_type == "LEFTMOUSE" and event.value == "PRESS" and over_close:
-            _stop_camera_preview()
-            return {"FINISHED"}
-        return {"PASS_THROUGH"}
-
-    def cancel(self, _context):
-        if (
-            getattr(self, "_preview_generation", None)
-            == _CAMERA_PREVIEW_STATE["generation"]
-        ):
-            _stop_camera_preview()
-
-
-class AI_CANVAS_OT_show_camera_preview(bpy.types.Operator):
-    bl_idname = "ai_canvas.show_camera_preview"
-    bl_label = "显示摄像机实时预览"
-    bl_description = "在主 3D 视图右下角重新打开摄像机实时预览"
-    bl_options = {"INTERNAL"}
-
-    @classmethod
-    def poll(cls, _context):
-        return (
-            not bpy.app.background
-            and _has_editor_session()
-            and not _camera_preview_is_active()
-        )
-
-    def execute(self, _context):
-        if not _start_camera_preview():
-            self.report({"ERROR"}, "当前工作区没有可用的 3D 视图")
-            return {"CANCELLED"}
-        return {"FINISHED"}
-
-
-class AI_CANVAS_OT_hide_camera_preview(bpy.types.Operator):
-    bl_idname = "ai_canvas.hide_camera_preview"
-    bl_label = "关闭摄像机实时预览"
-    bl_description = "关闭主 3D 视图右下角的摄像机实时预览"
-    bl_options = {"INTERNAL"}
-
-    @classmethod
-    def poll(cls, _context):
-        return _camera_preview_is_active()
-
-    def execute(self, _context):
-        _stop_camera_preview()
         return {"FINISHED"}
 
 
@@ -2277,7 +1053,7 @@ class AI_CANVAS_OT_show_console(bpy.types.Operator):
 
     @classmethod
     def poll(cls, _context):
-        return not bpy.app.background and _has_editor_session()
+        return not bpy.app.background and camera_preview._has_editor_session()
 
     def execute(self, _context):
         if not _configure_director_console_area():
@@ -2294,7 +1070,7 @@ class AI_CANVAS_OT_save_and_return(bpy.types.Operator):
 
     @classmethod
     def poll(cls, _context):
-        return _has_editor_session()
+        return camera_preview._has_editor_session()
 
     def execute(self, _context):
         frame_path = None
@@ -2322,8 +1098,8 @@ class AI_CANVAS_OT_save_and_return(bpy.types.Operator):
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
 
-        _stop_camera_preview()
-        bpy.app.driver_namespace.pop(EDITOR_SESSION_KEY, None)
+        camera_preview._stop_camera_preview()
+        bpy.app.driver_namespace.pop(camera_preview.EDITOR_SESSION_KEY, None)
 
         def quit_blender():
             bpy.ops.wm.quit_blender()
@@ -2343,7 +1119,7 @@ class AI_CANVAS_PT_director_session(bpy.types.Panel):
 
     @classmethod
     def poll(cls, _context):
-        return _has_editor_session()
+        return camera_preview._has_editor_session()
 
     def draw(self, context):
         layout = self.layout
@@ -2359,7 +1135,7 @@ class AI_CANVAS_PT_properties_base:
 
     @classmethod
     def poll(cls, _context):
-        return _has_editor_session()
+        return camera_preview._has_editor_session()
 
 
 class AI_CANVAS_PT_director_console(AI_CANVAS_PT_properties_base, bpy.types.Panel):
@@ -2369,19 +1145,19 @@ class AI_CANVAS_PT_director_console(AI_CANVAS_PT_properties_base, bpy.types.Pane
 
     def draw(self, _context):
         layout = self.layout
-        session = bpy.app.driver_namespace.get(EDITOR_SESSION_KEY, {})
+        session = bpy.app.driver_namespace.get(camera_preview.EDITOR_SESSION_KEY, {})
         layout.label(text="已连接当前 3D 导演台", icon="LINKED")
         revision = session.get("sceneRevision")
         if isinstance(revision, int):
             layout.label(text=f"场景版本：r{revision}")
-        if _camera_preview_is_active():
+        if camera_preview._camera_preview_is_active():
             layout.operator(
-                AI_CANVAS_OT_hide_camera_preview.bl_idname,
+                camera_preview.AI_CANVAS_OT_hide_camera_preview.bl_idname,
                 icon="X",
             )
         else:
             layout.operator(
-                AI_CANVAS_OT_show_camera_preview.bl_idname,
+                camera_preview.AI_CANVAS_OT_show_camera_preview.bl_idname,
                 icon="CAMERA_DATA",
             )
         layout.operator(AI_CANVAS_OT_save_and_return.bl_idname, icon="FILE_TICK")
@@ -2414,7 +1190,7 @@ class AI_CANVAS_PT_quick_build(AI_CANVAS_PT_properties_base, bpy.types.Panel):
         ).asset = "MALE"
         character_meshes = [
             obj
-            for obj in _managed_character_objects()
+            for obj in scene_geometry._managed_character_objects()
             if obj.type == "MESH"
         ]
         if character_meshes:
@@ -2540,9 +1316,9 @@ REGISTER_CLASSES = (
     AI_CANVAS_OT_focus_selected,
     AI_CANVAS_OT_apply_lighting_preset,
     AI_CANVAS_OT_import_model,
-    AI_CANVAS_OT_camera_preview_modal,
-    AI_CANVAS_OT_show_camera_preview,
-    AI_CANVAS_OT_hide_camera_preview,
+    camera_preview.AI_CANVAS_OT_camera_preview_modal,
+    camera_preview.AI_CANVAS_OT_show_camera_preview,
+    camera_preview.AI_CANVAS_OT_hide_camera_preview,
     AI_CANVAS_OT_show_console,
     AI_CANVAS_OT_save_and_return,
     AI_CANVAS_PT_director_console,
@@ -2589,12 +1365,12 @@ def _localize_workspace_names():
 
 @persistent
 def _teardown_camera_preview_before_load(_):
-    _stop_camera_preview()
+    camera_preview._stop_camera_preview()
 
 
 @persistent
 def _load_factory_startup(_):
-    bpy.app.driver_namespace.pop(EDITOR_SESSION_KEY, None)
+    bpy.app.driver_namespace.pop(camera_preview.EDITOR_SESSION_KEY, None)
     for scene in bpy.data.scenes:
         _configure_scene(scene)
     _localize_workspace_names()
@@ -2629,8 +1405,8 @@ def register():
 
 
 def unregister():
-    _stop_camera_preview()
-    bpy.app.driver_namespace.pop(EDITOR_SESSION_KEY, None)
+    camera_preview._stop_camera_preview()
+    bpy.app.driver_namespace.pop(camera_preview.EDITOR_SESSION_KEY, None)
     bpy.app.driver_namespace.pop(DIRECTOR_CONSOLE_ATTEMPTS_KEY, None)
     if bpy.app.timers.is_registered(_activate_director_console_when_ready):
         bpy.app.timers.unregister(_activate_director_console_when_ready)
