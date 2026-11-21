@@ -2,7 +2,7 @@
 
 ### 🔎 Large-file scan — 83
 
-2026-11-21，拆分前的盘点基线为 `53f67e73`。工作区按业务拆分达到 1500 物理行的自研文件。以下盘点和详细方案记录拆分前的基线，实际落地与验收见末尾的[分模块落地记录](#分模块落地记录)。本次未运行测试，待用户验收。
+2026-11-21，拆分前的盘点基线为 `53f67e73`。工作区按业务拆分达到 1500 物理行的自研文件。以下盘点和详细方案记录拆分前的基线，实际落地与验收见末尾的[分模块落地记录](#分模块落地记录)。
 
 | 口径 | 结果 |
 |---|---|
@@ -222,4 +222,8 @@ uv run .agents/skills/large-file-refactor/scripts/large-file-refactor.py .
 | 外观、词典和手册 | 外观设置和样式预览、`src/styles/`、英日韩设置/节点词典、`site/manual.html` 与 `site/manual.js` | 对照深浅主题、控件样式和菜单翻译，打开本地手册核对目录和搜索。 |
 | 视频剪辑 | `components/videoEditor/VideoEditorWindow.tsx` 及同目录导出模块 | 按原入口导出到文件和画布，回归取消、失败提示、截图和无损拼接。 |
 
-确认测试范围后，可在仓库根目录执行 `npm run typecheck` 和 `npm run test:typecheck`，再按上面对应模块运行既有用例。原生可在 `src-tauri/` 执行 `cargo check --lib` 及 `cargo test --lib`。此次收尾只核对源码、文件行数、差异和 Blender 资源清单。
+### 复测结果
+
+- 在仓库根目录使用 Node.js 22.22.0。ESLint、应用及测试类型检查和生产构建均通过。Vitest 按四个分片全量运行，15,413 项全部通过。素材目录测试等待 IndexedDB 刷新完成，三个组件测试套件使用与当前 React Reconciler 版本匹配的宿主。
+- 在 macOS arm64 的 `src-tauri/` 目录，`cargo check --lib --locked` 通过。`cargo test --lib --locked` 使用默认临时目录，并发与串行各 672 项通过。另用 `cargo test --lib --locked streams_176_mib_without_allocating_the_model_in_memory -- --ignored` 执行了默认跳过的压力用例，通过。
+- 在仓库根目录运行 Blender Python 回归，35 项通过。前一轮在真实 Blender 5.2.4 后台验证了模板加载、渲染和保存第 2 帧，产物大小及摘要与回执一致。Tauri 桌面节点回填、实际视频剪辑导出和 Windows 实机仍待验收。
