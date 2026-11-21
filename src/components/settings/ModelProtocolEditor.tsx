@@ -466,11 +466,7 @@ export default function ModelProtocolEditor({
     publishProtocol(parseModelExecutionProtocol(template.executionProfile.protocol!));
   };
 
-  const {
-    changeMode, changeAuthType, changeResponseType, insertSizeMapping, insertMultipartFile,
-    insertJsonReferenceArray, insertVideoReferenceField, updateSubmit, updatePoll, updateResponse,
-    updateResponseResult, updatePollResponse, updatePollResult, updatePollRetry,
-  } = createProtocolFormActions({ model, allowFormTransform, updateProtocol, setFormRevision });
+  const formActions = () => createProtocolFormActions({ model, allowFormTransform, updateProtocol, setFormRevision });
 
   const auth = protocol.auth ?? { type: 'bearer' as const };
   const availableVariables = workflowMode && initialPreviewVariables
@@ -692,14 +688,14 @@ export default function ModelProtocolEditor({
             <div className="provider-protocol-grid is-three">
               <label className="provider-protocol-field">
                 <span>{t('执行模式')}</span>
-                <Select fixedMenu value={protocol.mode} onChange={(selectedOptionValue) => changeMode(selectedOptionValue as ModelExecutionProtocol['mode'])}>
+                <Select fixedMenu value={protocol.mode} onChange={(selectedOptionValue) => formActions().changeMode(selectedOptionValue as ModelExecutionProtocol['mode'])}>
                   <option value="sync">{t('同步返回')}</option>
                   <option value="async">{t('异步轮询')}</option>
                 </Select>
               </label>
               <label className="provider-protocol-field">
                 <span>{t('鉴权方式')}</span>
-                <Select fixedMenu value={auth.type} onChange={(selectedOptionValue) => changeAuthType(selectedOptionValue as ModelProtocolAuthType)}>
+                <Select fixedMenu value={auth.type} onChange={(selectedOptionValue) => formActions().changeAuthType(selectedOptionValue as ModelProtocolAuthType)}>
                   <option value="bearer">Bearer</option>
                   <option value="header">{t('自定义 Header')}</option>
                   <option value="query">{t('Query 参数')}</option>
@@ -765,18 +761,18 @@ export default function ModelProtocolEditor({
             <div className="provider-protocol-grid is-request">
               <label className="provider-protocol-field">
                 <span>{t('方法')}</span>
-                <Select fixedMenu value={protocol.submit.method} onChange={(selectedOptionValue) => updateSubmit({ method: selectedOptionValue as 'GET' | 'POST' })}>
+                <Select fixedMenu value={protocol.submit.method} onChange={(selectedOptionValue) => formActions().updateSubmit({ method: selectedOptionValue as 'GET' | 'POST' })}>
                   <option value="POST">POST</option>
                   <option value="GET">GET</option>
                 </Select>
               </label>
               <label className="provider-protocol-field">
                 <span>{t('路径')}</span>
-                <input value={protocol.submit.path} onChange={(event) => updateSubmit({ path: event.target.value })} />
+                <input value={protocol.submit.path} onChange={(event) => formActions().updateSubmit({ path: event.target.value })} />
               </label>
               <label className="provider-protocol-field">
                 <span>{t('路径基准')}</span>
-                <Select fixedMenu value={protocol.submit.pathMode ?? 'append'} onChange={(selectedOptionValue) => updateSubmit({ pathMode: selectedOptionValue as 'append' | 'origin' })}>
+                <Select fixedMenu value={protocol.submit.pathMode ?? 'append'} onChange={(selectedOptionValue) => formActions().updateSubmit({ pathMode: selectedOptionValue as 'append' | 'origin' })}>
                   <option value="append">{t('连接地址')}</option>
                   <option value="origin">{t('域名根路径')}</option>
                 </Select>
@@ -787,7 +783,7 @@ export default function ModelProtocolEditor({
                 <span>{t('请求体编码')}</span>
                 <Select fixedMenu
                   value={protocol.submit.bodyEncoding ?? 'json'}
-                  onChange={(selectedOptionValue) => updateSubmit({
+                  onChange={(selectedOptionValue) => formActions().updateSubmit({
                     bodyEncoding: selectedOptionValue as ModelProtocolBodyEncoding,
                   })}
                 >
@@ -799,7 +795,7 @@ export default function ModelProtocolEditor({
               {model.category === 'image' || model.category === 'video' ? (
                 <label className="provider-protocol-field provider-protocol-size-insert">
                   <span>{t('插入尺寸字段')}</span>
-                  <Select fixedMenu value="" onChange={(selectedOptionValue) => insertSizeMapping(selectedOptionValue)}>
+                  <Select fixedMenu value="" onChange={(selectedOptionValue) => formActions().insertSizeMapping(selectedOptionValue)}>
                     <option value="">{t('选择映射')}</option>
                     <option value="size">size: widthxheight</option>
                     <option value="dimensions">width + height</option>
@@ -813,7 +809,7 @@ export default function ModelProtocolEditor({
               {model.category === 'image' && protocol.submit.bodyEncoding === 'multipart' ? (
                 <label className="provider-protocol-field">
                   <span>{t('插入文件字段')}</span>
-                  <Select fixedMenu value="" onChange={(selectedOptionValue) => insertMultipartFile(selectedOptionValue)}>
+                  <Select fixedMenu value="" onChange={(selectedOptionValue) => formActions().insertMultipartFile(selectedOptionValue)}>
                     <option value="">{t('选择字段')}</option>
                     <option value="image">image: imageUrls.0</option>
                     <option value="file">file: imageUrls.0</option>
@@ -824,7 +820,7 @@ export default function ModelProtocolEditor({
               {model.category === 'image' && protocol.submit.bodyEncoding !== 'multipart' ? (
                 <label className="provider-protocol-field">
                   <span>{t('插入参考图字段')}</span>
-                  <Select fixedMenu value="" onChange={(selectedOptionValue) => insertJsonReferenceArray(selectedOptionValue)}>
+                  <Select fixedMenu value="" onChange={(selectedOptionValue) => formActions().insertJsonReferenceArray(selectedOptionValue)}>
                     <option value="">{t('选择字段')}</option>
                     <option value="image">image: imageUrls</option>
                     <option value="image_urls">image_urls: imageUrls</option>
@@ -834,7 +830,7 @@ export default function ModelProtocolEditor({
               {model.category === 'video' && protocol.submit.bodyEncoding !== 'multipart' ? (
                 <label className="provider-protocol-field">
                   <span>{t('插入参考素材字段')}</span>
-                  <Select fixedMenu value="" onChange={(selectedOptionValue) => insertVideoReferenceField(selectedOptionValue)}>
+                  <Select fixedMenu value="" onChange={(selectedOptionValue) => formActions().insertVideoReferenceField(selectedOptionValue)}>
                     <option value="">{t('选择字段')}</option>
                     <option value="image_urls">image_urls</option>
                     <option value="first_image">first_image</option>
@@ -857,7 +853,7 @@ export default function ModelProtocolEditor({
                 value={protocol.submit.headers}
                 rows={4}
                 onValidityChange={updateFormValidity}
-                onChange={(value) => updateSubmit({ headers: value as Record<string, string> })}
+                onChange={(value) => formActions().updateSubmit({ headers: value as Record<string, string> })}
               />
               <JsonDraftField
                 fieldId="submit-query"
@@ -865,7 +861,7 @@ export default function ModelProtocolEditor({
                 value={protocol.submit.query}
                 rows={4}
                 onValidityChange={updateFormValidity}
-                onChange={(value) => updateSubmit({ query: value as Record<string, ProtocolJsonValue> })}
+                onChange={(value) => formActions().updateSubmit({ query: value as Record<string, ProtocolJsonValue> })}
               />
             </div>
             <JsonDraftField
@@ -877,7 +873,7 @@ export default function ModelProtocolEditor({
               rows={16}
               variables={availableVariables}
               onValidityChange={updateFormValidity}
-              onChange={(value) => updateSubmit({ body: value })}
+              onChange={(value) => formActions().updateSubmit({ body: value })}
             />
           </section>
 
@@ -893,7 +889,7 @@ export default function ModelProtocolEditor({
                     <span>{t('响应类型')}</span>
                     <Select fixedMenu
                       value={protocol.response.type}
-                      onChange={(selectedOptionValue) => changeResponseType(selectedOptionValue as ModelProtocolResponseType)}
+                      onChange={(selectedOptionValue) => formActions().changeResponseType(selectedOptionValue as ModelProtocolResponseType)}
                     >
                       <option value="json">JSON</option>
                       <option value="text">{t('原始文本')}</option>
@@ -906,7 +902,7 @@ export default function ModelProtocolEditor({
                       <input
                         value={responseResult.mimeType ?? ''}
                         placeholder={model.category === 'video' ? 'video/mp4' : model.category === 'audio' ? 'audio/mpeg' : 'image/png'}
-                        onChange={(event) => updateResponseResult({ mimeType: event.target.value || undefined })}
+                        onChange={(event) => formActions().updateResponseResult({ mimeType: event.target.value || undefined })}
                       />
                     </label>
                   ) : null}
@@ -914,7 +910,7 @@ export default function ModelProtocolEditor({
                     <span>{t('错误路径')}</span>
                     <input
                       value={protocol.response.errorPath ?? ''}
-                      onChange={(event) => updateResponse({ errorPath: event.target.value || undefined })}
+                      onChange={(event) => formActions().updateResponse({ errorPath: event.target.value || undefined })}
                     />
                   </label>
                 </div>
@@ -924,21 +920,21 @@ export default function ModelProtocolEditor({
                       <span>{t('URL 结果路径')}</span>
                       <input
                         value={responseResult.urlPath ?? ''}
-                        onChange={(event) => updateResponseResult({ urlPath: event.target.value || undefined })}
+                        onChange={(event) => formActions().updateResponseResult({ urlPath: event.target.value || undefined })}
                       />
                     </label>
                     <label className="provider-protocol-field">
                       <span>{t('文本结果路径')}</span>
                       <input
                         value={responseResult.textPath ?? ''}
-                        onChange={(event) => updateResponseResult({ textPath: event.target.value || undefined })}
+                        onChange={(event) => formActions().updateResponseResult({ textPath: event.target.value || undefined })}
                       />
                     </label>
                     <label className="provider-protocol-field">
                       <span>{t('Base64 结果路径')}</span>
                       <input
                         value={responseResult.base64Path ?? ''}
-                        onChange={(event) => updateResponseResult({ base64Path: event.target.value || undefined })}
+                        onChange={(event) => formActions().updateResponseResult({ base64Path: event.target.value || undefined })}
                       />
                     </label>
                     {responseResult.base64Path ? (
@@ -947,7 +943,7 @@ export default function ModelProtocolEditor({
                         <input
                           value={responseResult.mimeType ?? ''}
                           placeholder={model.category === 'video' ? 'video/mp4' : model.category === 'audio' ? 'audio/mpeg' : 'image/png'}
-                          onChange={(event) => updateResponseResult({ mimeType: event.target.value || undefined })}
+                          onChange={(event) => formActions().updateResponseResult({ mimeType: event.target.value || undefined })}
                         />
                       </label>
                     ) : null}
@@ -961,25 +957,25 @@ export default function ModelProtocolEditor({
                     <span>{t('任务 ID 路径')}</span>
                     <input
                       value={protocol.response.taskIdPath ?? ''}
-                      onChange={(event) => updateResponse({ taskIdPath: event.target.value })}
+                      onChange={(event) => formActions().updateResponse({ taskIdPath: event.target.value })}
                     />
                   </label>
                   <label className="provider-protocol-field">
                     <span>{t('轮询方法')}</span>
-                    <Select fixedMenu value={poll.method} onChange={(selectedOptionValue) => updatePoll({ method: selectedOptionValue as 'GET' | 'POST' })}>
+                    <Select fixedMenu value={poll.method} onChange={(selectedOptionValue) => formActions().updatePoll({ method: selectedOptionValue as 'GET' | 'POST' })}>
                       <option value="GET">GET</option>
                       <option value="POST">POST</option>
                     </Select>
                   </label>
                   <label className="provider-protocol-field">
                     <span>{t('轮询间隔 ms')}</span>
-                    <input type="number" min={1000} max={60000} value={poll.intervalMs ?? 3000} onChange={(event) => updatePoll({ intervalMs: Number(event.target.value) })} />
+                    <input type="number" min={1000} max={60000} value={poll.intervalMs ?? 3000} onChange={(event) => formActions().updatePoll({ intervalMs: Number(event.target.value) })} />
                   </label>
                   <label className="provider-protocol-field">
                     <span>{t('轮询请求体编码')}</span>
                     <Select fixedMenu
                       value={poll.bodyEncoding ?? 'json'}
-                      onChange={(selectedOptionValue) => updatePoll({
+                      onChange={(selectedOptionValue) => formActions().updatePoll({
                         bodyEncoding: selectedOptionValue as Exclude<ModelProtocolBodyEncoding, 'multipart'>,
                       })}
                     >
@@ -991,11 +987,11 @@ export default function ModelProtocolEditor({
                 <div className="provider-protocol-grid is-request">
                   <label className="provider-protocol-field provider-protocol-path-field">
                     <span>{t('轮询路径')}</span>
-                    <input value={poll.path} onChange={(event) => updatePoll({ path: event.target.value })} />
+                    <input value={poll.path} onChange={(event) => formActions().updatePoll({ path: event.target.value })} />
                   </label>
                   <label className="provider-protocol-field">
                     <span>{t('路径基准')}</span>
-                    <Select fixedMenu value={poll.pathMode ?? 'append'} onChange={(selectedOptionValue) => updatePoll({ pathMode: selectedOptionValue as 'append' | 'origin' })}>
+                    <Select fixedMenu value={poll.pathMode ?? 'append'} onChange={(selectedOptionValue) => formActions().updatePoll({ pathMode: selectedOptionValue as 'append' | 'origin' })}>
                       <option value="append">{t('连接地址')}</option>
                       <option value="origin">{t('域名根路径')}</option>
                     </Select>
@@ -1008,7 +1004,7 @@ export default function ModelProtocolEditor({
                     value={poll.headers}
                     rows={4}
                     onValidityChange={updateFormValidity}
-                    onChange={(value) => updatePoll({ headers: value as Record<string, string> })}
+                    onChange={(value) => formActions().updatePoll({ headers: value as Record<string, string> })}
                   />
                   <JsonDraftField
                     fieldId="poll-query"
@@ -1016,7 +1012,7 @@ export default function ModelProtocolEditor({
                     value={poll.query}
                     rows={4}
                     onValidityChange={updateFormValidity}
-                    onChange={(value) => updatePoll({ query: value as Record<string, ProtocolJsonValue> })}
+                    onChange={(value) => formActions().updatePoll({ query: value as Record<string, ProtocolJsonValue> })}
                   />
                 </div>
                 <JsonDraftField
@@ -1026,27 +1022,27 @@ export default function ModelProtocolEditor({
                   kind="value"
                   rows={5}
                   onValidityChange={updateFormValidity}
-                  onChange={(value) => updatePoll({ body: value })}
+                  onChange={(value) => formActions().updatePoll({ body: value })}
                 />
                 <div className="provider-protocol-grid is-three">
                   <label className="provider-protocol-field">
                     <span>{t('状态路径')}</span>
-                    <input value={pollResponse?.statusPath ?? ''} onChange={(event) => updatePollResponse({ statusPath: event.target.value })} />
+                    <input value={pollResponse?.statusPath ?? ''} onChange={(event) => formActions().updatePollResponse({ statusPath: event.target.value })} />
                   </label>
                   <label className="provider-protocol-field">
                     <span>{t('成功状态')}</span>
-                    <input value={pollResponse?.successValues.join(', ') ?? ''} onChange={(event) => updatePollResponse({ successValues: event.target.value.split(',').map((item) => item.trim()).filter(Boolean) })} />
+                    <input value={pollResponse?.successValues.join(', ') ?? ''} onChange={(event) => formActions().updatePollResponse({ successValues: event.target.value.split(',').map((item) => item.trim()).filter(Boolean) })} />
                   </label>
                   <label className="provider-protocol-field">
                     <span>{t('失败状态')}</span>
-                    <input value={pollResponse?.failureValues.join(', ') ?? ''} onChange={(event) => updatePollResponse({ failureValues: event.target.value.split(',').map((item) => item.trim()).filter(Boolean) })} />
+                    <input value={pollResponse?.failureValues.join(', ') ?? ''} onChange={(event) => formActions().updatePollResponse({ failureValues: event.target.value.split(',').map((item) => item.trim()).filter(Boolean) })} />
                   </label>
                 </div>
                 <label className="provider-protocol-field">
                   <span>{t('结果获取方式')}</span>
                   <Select fixedMenu value={pollResult?.download ? 'download' : 'response'} onChange={(value) => {
                     const mimeType = pollResult?.mimeType;
-                    updatePollResponse({ result: value === 'download'
+                    formActions().updatePollResponse({ result: value === 'download'
                       ? { mimeType, download: { method: 'GET', path: '' } }
                       : { mimeType, urlPath: 'url' } });
                   }}>
@@ -1060,11 +1056,11 @@ export default function ModelProtocolEditor({
                       <label className="provider-protocol-field provider-protocol-path-field">
                         <span>{t('结果下载路径（GET）')}</span>
                         <input value={pollResult.download.path} placeholder={t('按接口文档填写，包含本次任务 ID 变量')}
-                          onChange={(event) => updatePollResult({ download: { ...pollResult.download!, path: event.target.value } })} />
+                          onChange={(event) => formActions().updatePollResult({ download: { ...pollResult.download!, path: event.target.value } })} />
                       </label>
                       <label className="provider-protocol-field">
                         <span>{t('路径基准')}</span>
-                        <Select fixedMenu value={pollResult.download.pathMode ?? 'append'} onChange={(value) => updatePollResult({
+                        <Select fixedMenu value={pollResult.download.pathMode ?? 'append'} onChange={(value) => formActions().updatePollResult({
                           download: { ...pollResult.download!, pathMode: value as 'append' | 'origin' },
                         })}>
                           <option value="append">{t('连接地址')}</option>
@@ -1075,7 +1071,7 @@ export default function ModelProtocolEditor({
                     <label className="provider-protocol-field">
                       <span>{t('备用 MIME 类型')}</span>
                       <input value={pollResult.mimeType ?? ''} placeholder={model.category === 'audio' ? 'audio/mpeg' : 'video/mp4'}
-                        onChange={(event) => updatePollResult({ mimeType: event.target.value || undefined })} />
+                        onChange={(event) => formActions().updatePollResult({ mimeType: event.target.value || undefined })} />
                     </label>
                     <p className="text-xs text-canvas-text-muted">{t('仅在轮询成功后读取，同源校验与鉴权沿用当前连接；高级请求头和 Query 可在 JSON 中配置。')}</p>
                   </>
@@ -1083,19 +1079,19 @@ export default function ModelProtocolEditor({
                   <div className="provider-protocol-grid is-three">
                     <label className="provider-protocol-field">
                       <span>{t('URL 结果路径')}</span>
-                      <input value={pollResult?.urlPath ?? ''} onChange={(event) => updatePollResult({
+                      <input value={pollResult?.urlPath ?? ''} onChange={(event) => formActions().updatePollResult({
                         urlPath: event.target.value || undefined,
                       })} />
                     </label>
                     <label className="provider-protocol-field">
                       <span>{t('文本结果路径')}</span>
-                      <input value={pollResult?.textPath ?? ''} onChange={(event) => updatePollResult({
+                      <input value={pollResult?.textPath ?? ''} onChange={(event) => formActions().updatePollResult({
                         textPath: event.target.value || undefined,
                       })} />
                     </label>
                     <label className="provider-protocol-field">
                       <span>{t('Base64 结果路径')}</span>
-                      <input value={pollResult?.base64Path ?? ''} onChange={(event) => updatePollResult({
+                      <input value={pollResult?.base64Path ?? ''} onChange={(event) => formActions().updatePollResult({
                         base64Path: event.target.value || undefined,
                       })} />
                     </label>
@@ -1105,7 +1101,7 @@ export default function ModelProtocolEditor({
                         <input
                           value={pollResult.mimeType ?? ''}
                           placeholder={model.category === 'video' ? 'video/mp4' : model.category === 'audio' ? 'audio/mpeg' : 'image/png'}
-                          onChange={(event) => updatePollResult({ mimeType: event.target.value || undefined })}
+                          onChange={(event) => formActions().updatePollResult({ mimeType: event.target.value || undefined })}
                         />
                       </label>
                     ) : null}
@@ -1114,11 +1110,11 @@ export default function ModelProtocolEditor({
                 <div className="provider-protocol-grid">
                   <label className="provider-protocol-field">
                     <span>{t('错误路径')}</span>
-                    <input value={pollResponse?.errorPath ?? ''} onChange={(event) => updatePollResponse({ errorPath: event.target.value || undefined })} />
+                    <input value={pollResponse?.errorPath ?? ''} onChange={(event) => formActions().updatePollResponse({ errorPath: event.target.value || undefined })} />
                   </label>
                   <label className="provider-protocol-field">
                     <span>{t('进度路径')}</span>
-                    <input value={pollResponse?.progressPath ?? ''} onChange={(event) => updatePollResponse({ progressPath: event.target.value || undefined })} />
+                    <input value={pollResponse?.progressPath ?? ''} onChange={(event) => formActions().updatePollResponse({ progressPath: event.target.value || undefined })} />
                   </label>
                 </div>
                 <details className="border-t border-canvas-border pt-2.5 text-[12px] text-canvas-text-muted">
@@ -1134,7 +1130,7 @@ export default function ModelProtocolEditor({
                           min={1}
                           max={10000}
                           value={poll.maxAttempts ?? ''}
-                          onChange={(event) => updatePoll({
+                          onChange={(event) => formActions().updatePoll({
                             maxAttempts: Number.isFinite(event.target.valueAsNumber)
                               ? event.target.valueAsNumber
                               : undefined,
@@ -1148,7 +1144,7 @@ export default function ModelProtocolEditor({
                           min={1}
                           max={86400}
                           value={poll.maxDurationMs === undefined ? '' : poll.maxDurationMs / 1000}
-                          onChange={(event) => updatePoll({
+                          onChange={(event) => formActions().updatePoll({
                             maxDurationMs: Number.isFinite(event.target.valueAsNumber)
                               ? Math.round(event.target.valueAsNumber * 1000)
                               : undefined,
@@ -1162,7 +1158,7 @@ export default function ModelProtocolEditor({
                           min={0}
                           max={10}
                           value={pollRetry.maxRetries}
-                          onChange={(event) => updatePollRetry({ maxRetries: event.target.valueAsNumber })}
+                          onChange={(event) => formActions().updatePollRetry({ maxRetries: event.target.valueAsNumber })}
                         />
                       </label>
                     </div>
@@ -1171,7 +1167,7 @@ export default function ModelProtocolEditor({
                         <span>{t('退避策略')}</span>
                         <Select fixedMenu
                           value={pollRetry.backoff}
-                          onChange={(selectedOptionValue) => updatePollRetry({
+                          onChange={(selectedOptionValue) => formActions().updatePollRetry({
                             backoff: selectedOptionValue as ModelProtocolPollRetryConfig['backoff'],
                           })}
                         >
@@ -1187,14 +1183,14 @@ export default function ModelProtocolEditor({
                           min={1000}
                           max={300000}
                           value={pollRetry.maxDelayMs}
-                          onChange={(event) => updatePollRetry({ maxDelayMs: event.target.valueAsNumber })}
+                          onChange={(event) => formActions().updatePollRetry({ maxDelayMs: event.target.valueAsNumber })}
                         />
                       </label>
                       <label className="provider-protocol-field">
                         <span>{t('重试 HTTP 状态码')}</span>
                         <input
                           value={pollRetry.httpStatuses.join(', ')}
-                          onChange={(event) => updatePollRetry({
+                          onChange={(event) => formActions().updatePollRetry({
                             httpStatuses: event.target.value
                               .split(',')
                               .map((item) => item.trim())
@@ -1209,7 +1205,7 @@ export default function ModelProtocolEditor({
                         <input
                           type="checkbox"
                           checked={pollRetry.honorRetryAfter}
-                          onChange={(event) => updatePollRetry({ honorRetryAfter: event.target.checked })}
+                          onChange={(event) => formActions().updatePollRetry({ honorRetryAfter: event.target.checked })}
                         />
                         <span>{t('遵循 Retry-After')}</span>
                       </label>
@@ -1217,7 +1213,7 @@ export default function ModelProtocolEditor({
                         <input
                           type="checkbox"
                           checked={pollRetry.retryNetworkErrors}
-                          onChange={(event) => updatePollRetry({ retryNetworkErrors: event.target.checked })}
+                          onChange={(event) => formActions().updatePollRetry({ retryNetworkErrors: event.target.checked })}
                         />
                         <span>{t('重试网络错误')}</span>
                       </label>

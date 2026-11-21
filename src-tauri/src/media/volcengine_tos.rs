@@ -739,12 +739,13 @@ mod tests {
 
     #[test]
     fn signature_matches_official_tos_get_example() {
-        // Official TOS URL-signature example, not an AWS S3 signature.
+        // The published signature is for the Beijing endpoint and region.
+        // https://docs.volcengine.com/docs/torch-object-storage/url-contains-a-signature?lang=zh
         let credentials = Credentials { access_key_id: "testAK".into(), secret_access_key: "testSK".into() };
-        let url = signed_url("GET", "examplebucket.tos-ap-southeast-1.bytepluses.com", "/exampleobject", &credentials,
-            "ap-southeast-1", "20220101T000000Z", 86_400);
+        let url = signed_url("GET", "examplebucket.tos-cn-beijing.volces.com", "/exampleobject", &credentials,
+            "cn-beijing", "20220101T000000Z", 86_400);
         assert!(url.ends_with("X-Tos-Signature=353aa55583eceb222aad4bdcb70d4045a202a4af9a3096f25a656b82c8ec2f56"));
-        assert!(url.contains("X-Tos-Credential=testAK%2F20220101%2Fap-southeast-1%2Ftos%2Frequest"));
+        assert!(url.contains("X-Tos-Credential=testAK%2F20220101%2Fcn-beijing%2Ftos%2Frequest"));
         assert_eq!(timestamp(1_640_995_200).unwrap(), "20220101T000000Z");
         assert_eq!(timestamp(0).unwrap(), "19700101T000000Z");
     }

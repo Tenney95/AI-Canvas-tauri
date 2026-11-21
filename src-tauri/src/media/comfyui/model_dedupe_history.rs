@@ -323,6 +323,12 @@ pub async fn list_comfyui_model_dedupe_history(webview: Webview, app: tauri::App
 mod tests {
     use super::*;
 
+    fn create_history_directory(id: &str) -> PathBuf {
+        let directory = std::env::temp_dir().canonicalize().unwrap().join(id);
+        fs::create_dir(&directory).unwrap();
+        directory
+    }
+
     #[test]
     fn history_plan_rejects_absolute_and_parent_paths() {
         assert!(valid_relative("models/renamed-model.safetensors"));
@@ -340,8 +346,7 @@ mod tests {
 
     #[test]
     fn immutable_checkpoint_never_overwrites_existing_record() {
-        let directory = std::env::temp_dir().join(model_dedupe::opaque_id("history-test"));
-        fs::create_dir(&directory).unwrap();
+        let directory = create_history_directory(&model_dedupe::opaque_id("history-test"));
         let path = directory.join("checkpoint.json");
         write_json(&path, &FinalCheckpoint { status: HistoryStatus::Failed }, MAX_EVENT_BYTES).unwrap();
         assert!(write_json(&path, &FinalCheckpoint { status: HistoryStatus::Completed }, MAX_EVENT_BYTES).is_err());
@@ -361,8 +366,7 @@ mod tests {
     #[test]
     fn final_success_cannot_hide_missing_item_result() {
         let plan = fixture_plan();
-        let directory = std::env::temp_dir().join(&plan.id);
-        fs::create_dir(&directory).unwrap();
+        let directory = create_history_directory(&plan.id);
         write_json(&directory.join("final.json"), &FinalCheckpoint { status: HistoryStatus::Completed }, MAX_EVENT_BYTES).unwrap();
         let entry = read_entry(&directory, plan).unwrap();
         assert!(matches!(entry.status, HistoryStatus::Interrupted));
@@ -375,8 +379,7 @@ mod tests {
     #[test]
     fn processing_checkpoint_is_not_success_after_interruption() {
         let plan = fixture_plan();
-        let directory = std::env::temp_dir().join(&plan.id);
-        fs::create_dir(&directory).unwrap();
+        let directory = create_history_directory(&plan.id);
         let checkpoint = checkpoint_name(0, "processing");
         write_json(&directory.join(&checkpoint), &ItemCheckpoint { status: HistoryItemStatus::Processing, reclaimed_bytes: 0, message: None }, MAX_EVENT_BYTES).unwrap();
         let entry = read_entry(&directory, plan).unwrap();

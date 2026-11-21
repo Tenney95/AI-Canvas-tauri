@@ -675,6 +675,7 @@ mod tests {
             while Instant::now() < deadline {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
                         stream.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
                         let mut request = Vec::new();
                         let mut buffer = [0; 1024];
