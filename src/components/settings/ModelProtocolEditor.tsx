@@ -3,9 +3,8 @@
  */
 import Select from '../shared/Select';
 import { Icon } from '@iconify/react';
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type {
-  GeneralModelCategory,
   ImageReferenceRequestMode,
   ProviderModelSelection,
 } from '../../types';
@@ -15,12 +14,8 @@ import type {
   NormalizedModelExecutionProtocol,
   ModelProtocolAuthType,
   ModelProtocolBodyEncoding,
-  ModelProtocolPollTemplate,
   ModelProtocolPollRetryConfig,
-  ModelProtocolPollResponseConfig,
-  ModelProtocolRequestTemplate,
   ModelProtocolResponseType,
-  ModelProtocolResultConfig,
   ProtocolJsonValue,
   VideoModelCapability,
 } from '../../types/aiTypes';
@@ -29,49 +24,29 @@ import {
   getDefaultModelProtocolPollRetryConfig,
   getModelProtocolPreset,
   parseModelExecutionProtocol,
-  previewModelProtocolRequest,
-  previewModelProtocolResponse,
-  validateModelExecutionProtocol,
-  type ModelProtocolRequestPreview,
-  type ModelProtocolResponsePreviewEntry,
   type ModelProtocolVariables,
 } from '../../services/ai/modelProtocol';
-import {
-  getCategoryProtocolVariables,
-  getProtocolVariableDescription,
-} from '../../services/ai/modelProtocolVariables';
+import { getProtocolVariableDescription } from '../../services/ai/modelProtocolVariables';
 import PopupCloseButton from '../shared/PopupCloseButton';
 import {
-  assertRealProtocolTestVariables, buildVideoTestVariables, defaultVideoTestScenario,
-  describeProtocolTestRunBlocker, resolveProtocolTestRunDraft,
-  nativeProtocolTestMessages, pluginProtocolChoice, parsePluginProtocolChoice,
+  defaultVideoTestScenario,
+  pluginProtocolChoice, parsePluginProtocolChoice,
   type ProtocolChoice, type VideoTestReferences, type VideoTestScenario,
 } from './modelProtocolTestRun';
 import { useT } from '../../i18n';
 import { copyText } from '../../services/clipboardService';
-import { buildGoogleImageParts, resolveImageTemplateDimensions } from '../../services/ai/imageModelTemplates';
-import { resolveConfiguredImageOutput } from '../../services/ai/imageOutputParameters';
-import {
-  buildChatApiRequest,
-  isNativeTextProtocolPreset,
-  parseChatApiResponse,
-  resolveNativeTextChatProtocol,
-} from '../../services/ai/chatApiProtocol';
-import { corsSafeFetch } from '../../services/ai/httpTransport';
-import { parseResponseError } from '../../services/ai/httpUtils';
+import { isNativeTextProtocolPreset } from '../../services/ai/chatApiProtocol';
 import { createSeedanceQuickAdaptTemplate } from '../../services/ai/seedanceModelCapabilities';
 import { createH3QuickAdaptTemplate } from '../../services/ai/h3ModelCapabilities';
-import { assertModelProtocolResult, assertModelProtocolResultMapping, resolveConfiguredImageBackground } from '../../services/ai/modelCapabilityValidation';
-import {
-  discardProtocolTestSession, getProtocolTestSession, pauseProtocolTestSession,
-  resumeProtocolTestSession, startProtocolTestSession, subscribeProtocolTestSession,
-  ProtocolTestSessionError,
-} from '../../services/ai/modelProtocolTestSession';
 import { confirmAction } from '../../services/confirmDialog';
 import { useAppStore } from '../../store/useAppStore';
 import type { InstalledPlugin, PluginModelProtocolReference } from '../../types/plugin';
 import { listPluginProtocolPresets, type PluginProtocolPresetEntry } from '../../services/plugins/pluginProtocolPresetService';
-import { resolvePluginModelProtocol } from '../../services/ai/pluginModelProtocol';
+import {
+  CATEGORY_VARIABLES, PRESET_LABELS, createProtocolFormActions, getAvailableChoices, isJsonObject,
+  parseDraft, protocolDraftErrors, serializeJson,
+} from './modelProtocol/protocolFormMappings';
+import { createPreviewVariables, useProtocolTrial } from './modelProtocol/useProtocolTrial';
 
 const EMPTY_PLUGINS: InstalledPlugin[] = [];
 
@@ -105,47 +80,6 @@ interface JsonDraftFieldProps {
   onChange: (value: ProtocolJsonValue | undefined) => void;
   onValidityChange: (fieldId: string, error?: string) => void;
 }
-
-interface ProtocolPreviewState {
-  preview?: ModelProtocolRequestPreview;
-  error?: string;
-}
-
-interface ProtocolTestRunState {
-  status: 'idle' | 'running' | 'success' | 'error';
-  message?: string;
-  /** 成功时的结果摘要，不保留完整响应或内联媒体正文。 */
-  detail?: string;
-}
-
-interface ProtocolResponsePreviewState {
-  entries?: ModelProtocolResponsePreviewEntry[];
-  error?: string;
-}
-
-const PRESET_LABELS: Record<ProtocolChoice, string> = {
-  legacy: '自动兼容（旧方式）',
-  'openai-chat': 'OpenAI Chat',
-  'openai-responses': 'OpenAI Responses',
-  'anthropic-chat': 'Anthropic Messages',
-  'gemini-chat': 'Google Gemini generateContent',
-  'openai-image': 'OpenAI 同步图片（旧预设）',
-  'openai-gpt-image': 'OpenAI GPT-Image 官方 Images',
-  'gpt-image-gateway-json': 'GPT-Image 中转站 JSON（images 参考图）',
-  'google-image-native': 'Google Gemini 原生图片（文生图）',
-  'xai-image-native': 'xAI Images 原生图片（文生图）',
-  'agnes-video': 'Agnes 异步视频',
-  custom: '高级自定义 JSON',
-  plugin: '插件协议预设',
-};
-
-// 可用变量列表由 modelProtocolVariables 总表派生，避免与运行时实际提供的变量脱节
-const CATEGORY_VARIABLES: Record<GeneralModelCategory, string[]> = {
-  text: getCategoryProtocolVariables('text'),
-  image: getCategoryProtocolVariables('image'),
-  video: getCategoryProtocolVariables('video'),
-  audio: getCategoryProtocolVariables('audio'),
-};
 
 const SUBMIT_TASK_ID_DESCRIPTION = '仅用于轮询请求：提交响应中解析出的任务 ID';
 
@@ -184,128 +118,6 @@ function ProtocolVariablePanel({ variables, textareaId, onInsert, t, submitTaskI
       ><code className="font-mono">{`{{${variable}}}`}</code></button>)}
     </div>
   </aside>;
-}
-
-function createPreviewVariables(model: ProviderModelSelection): ModelProtocolVariables {
-  const common = {
-    model: model.id,
-    prompt: 'A cinematic product shot',
-  };
-  if (model.category === 'text') {
-    return {
-      ...common,
-      messages: [{ role: 'user', content: '介绍这个模型' }],
-      stream: false,
-    };
-  }
-  if (model.category === 'image') {
-    const imageSize = model.imageCapability?.defaultResolution ?? model.imageCapability?.resolutions?.[0] ?? '1K';
-    const aspectRatio = model.imageCapability?.defaultRatio ?? model.imageCapability?.ratios?.[0] ?? '1:1';
-    const imageUrls: string[] = [];
-    // 未完成的编辑草稿不能让整个设置窗口加载失败；真实发送仍严格校验尺寸。
-    let dimensions = { width: 1024, height: 1024 };
-    let imageBackground: string | undefined;
-    let imageOutput: ReturnType<typeof resolveConfiguredImageOutput> = {};
-    try { dimensions = resolveImageTemplateDimensions(model.imageCapability, imageSize, aspectRatio); } catch { /* 保留预览占位 */ }
-    try { imageBackground = resolveConfiguredImageBackground(model.imageCapability); } catch { /* 无效能力留待保存时报告 */ }
-    try { imageOutput = resolveConfiguredImageOutput(model.imageCapability, {}); } catch { /* 编辑草稿留待保存时校验 */ }
-    return {
-      ...common,
-      imageSize,
-      imageQuality: model.imageCapability?.qualities?.length ? model.imageCapability.defaultQuality : undefined,
-      imageBackground,
-      ...imageOutput,
-      aspectRatio,
-      size: `${dimensions.width}x${dimensions.height}`,
-      ...dimensions,
-      n: 1,
-      batchCount: 1,
-      imageUrls: imageUrls.length ? imageUrls : undefined,
-      googleImageParts: buildGoogleImageParts(common.prompt, imageUrls),
-    };
-  }
-  if (model.category === 'video') {
-    return {
-      ...common,
-      duration: model.videoCapability?.defaultDuration ?? model.videoCapability?.durations?.[0] ?? model.videoCapability?.minDuration,
-      aspectRatio: model.videoCapability?.defaultRatio ?? model.videoCapability?.ratios?.[0],
-      seedanceResolution: model.videoCapability?.defaultResolution ?? model.videoCapability?.resolutions?.[0],
-      fps: model.videoCapability?.defaultFrameRate ?? model.videoCapability?.frameRates?.[0],
-      n: 1,
-      batchCount: 1,
-    };
-  }
-  return {
-    ...common,
-    audioVoice: 'alloy',
-    audioFormat: 'wav',
-    audioSpeed: 1,
-    duration: 10,
-    musicTitle: 'Sample Track',
-    musicLyrics: '',
-    musicBpm: 120,
-    n: 1,
-    batchCount: 1,
-  };
-}
-
-function createResponseSample(): ProtocolJsonValue {
-  return {
-    task_id: 'task_example',
-    video_id: 'video_example',
-    id: 'task_example',
-    status: 'completed',
-    progress: 100,
-    url: 'https://cdn.example/result.mp4',
-    video_url: 'https://cdn.example/result.mp4',
-    data: [{
-      url: 'https://cdn.example/result.png',
-      b64_json: 'aGVsbG8=',
-      caption: '生成完成',
-    }],
-    result: {
-      url: 'https://cdn.example/result.png',
-      text: '生成完成',
-    },
-    choices: [{ message: { content: '生成完成' } }],
-    error: null,
-  };
-}
-
-function getAvailableChoices(category: GeneralModelCategory, current: ProtocolChoice): ProtocolChoice[] {
-  if (category === 'text') return ['legacy', 'openai-chat', 'openai-responses', 'anthropic-chat', 'gemini-chat', 'custom'];
-  if (category === 'image') return ['legacy', 'gpt-image-gateway-json', 'openai-gpt-image',
-    'google-image-native', 'xai-image-native', ...(current === 'openai-image' ? ['openai-image' as const] : []), 'custom'];
-  if (category === 'video') return ['legacy', 'agnes-video', 'custom'];
-  return ['legacy', 'custom'];
-}
-
-function parseDraft(value: string): { protocol?: NormalizedModelExecutionProtocol; error?: string } {
-  try {
-    const parsed: unknown = JSON.parse(value);
-    const errors = validateModelExecutionProtocol(parsed);
-    if (errors.length > 0) return { error: errors[0] };
-    return { protocol: parseModelExecutionProtocol(parsed) };
-  } catch (error) {
-    return { error: error instanceof Error ? error.message : '协议 JSON 无效' };
-  }
-}
-
-function protocolDraftErrors(protocol: NormalizedModelExecutionProtocol, category: GeneralModelCategory): string[] {
-  const errors = validateModelExecutionProtocol(protocol);
-  if (!errors.length) {
-    try { assertModelProtocolResultMapping(category, protocol); }
-    catch (error) { errors.push(error instanceof Error ? error.message : '结果映射无效'); }
-  }
-  return errors;
-}
-
-function serializeJson(value: unknown): string {
-  return JSON.stringify(value ?? {}, null, 2);
-}
-
-function isJsonObject(value: ProtocolJsonValue | undefined): value is Record<string, ProtocolJsonValue> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 function JsonDraftField({
@@ -405,24 +217,6 @@ function JsonDraftField({
   </div> : editor;
 }
 
-function createDefaultPoll(category: GeneralModelCategory): ModelProtocolPollTemplate {
-  return {
-    method: 'GET',
-    // 视频接口没有统一查询端点；保持无效直到用户按文档填写，避免重新制造
-    // /tasks/{id} 这类看似可执行、实则 404 的猜测协议。
-    path: category === 'video' ? '' : '/tasks/{{submit.task_id}}',
-    response: {
-      statusPath: 'status',
-      successValues: ['completed'],
-      failureValues: ['failed', 'error'],
-      result: category === 'text' ? { textPath: 'result.text' } : { urlPath: 'url' },
-      errorPath: 'error.message',
-      progressPath: 'progress',
-    },
-    intervalMs: 3000,
-  };
-}
-
 export default function ModelProtocolEditor({
   workflowMode = false,
   initialPreviewVariables,
@@ -468,27 +262,8 @@ export default function ModelProtocolEditor({
   const [error, setError] = useState<string | null>(() => initialPreset === 'custom'
     ? protocolDraftErrors(initialProtocol, model.category)[0] ?? null : null);
   const [formRevision, setFormRevision] = useState(0);
-  const [previewVariablesJson, setPreviewVariablesJson] = useState(
-    () => serializeJson(initialPreviewVariables ?? createPreviewVariables(model)),
-  );
-  const [testVariablesJson, setTestVariablesJson] = useState(
-    () => serializeJson(initialPreviewVariables ?? createPreviewVariables(model)),
-  );
-  const [testScenario, setTestScenario] = useState<VideoTestScenario>(() => defaultVideoTestScenario(model));
-  const [testReferences, setTestReferences] = useState<VideoTestReferences>({ firstImage: '', lastImage: '', images: '', videos: '', audios: '' });
   const trialVariablesId = useId();
-  const sessionIdentity = useMemo(() => ({
-    scopeId: testSessionScope ?? (model.provider || 'protocol-editor'), modelId: model.id, baseUrl,
-  }), [testSessionScope, model.provider, model.id, baseUrl]);
-  const sessionObserver = useMemo(() => ({
-    subscribe: (listener: () => void) => subscribeProtocolTestSession(sessionIdentity, listener),
-    getSnapshot: () => getProtocolTestSession(sessionIdentity),
-  }), [sessionIdentity]);
-  const session = useSyncExternalStore(sessionObserver.subscribe, sessionObserver.getSnapshot, () => undefined);
   useEffect(() => { onDraftInvalidChange?.(unsyncedDraft); }, [unsyncedDraft, onDraftInvalidChange]);
-  const [responseSampleJson, setResponseSampleJson] = useState(
-    () => serializeJson(createResponseSample()),
-  );
   const previewVariablesId = useId();
   const previewVariablesErrorId = `${previewVariablesId}-error`;
   const responseSampleId = useId();
@@ -500,15 +275,16 @@ export default function ModelProtocolEditor({
   const protocolSelectionRef = useRef<{ start: number; end: number } | null>(null);
   const pendingProtocolCaretRef = useRef<number | null>(null);
   const invalidFormFieldsRef = useRef(new Set<string>());
-  const testRunContext = useMemo(() => ({ identity: sessionIdentity, authenticated: !!apiKey.trim() }), [sessionIdentity, apiKey]);
-  const [testRunState, setTestRunState] = useState<{ context: object; value: ProtocolTestRunState }>(
-    () => ({ context: testRunContext, value: { status: 'idle' } }),
-  );
-  const testRun: ProtocolTestRunState = testRunState.context === testRunContext ? testRunState.value : { status: 'idle' };
-  const setTestRun = (value: ProtocolTestRunState) => setTestRunState({ context: testRunContext, value });
-  const testAbortRef = useRef<AbortController | null>(null);
-  useEffect(() => () => { testAbortRef.current?.abort(); pauseProtocolTestSession(sessionIdentity); }, [sessionIdentity, apiKey]);
-  useEffect(() => () => testAbortRef.current?.abort(), []);
+  const {
+    previewVariablesJson, setPreviewVariablesJson, testVariablesJson, setTestVariablesJson,
+    testScenario, setTestScenario, testReferences, setTestReferences, session, responseSampleJson,
+    setResponseSampleJson, testRun, previewState, supportsStructuredResponse, responsePreviewState,
+    runProtocolTest, resumeProtocolTest, cancelProtocolTest, trialRunning, sessionMessage,
+    testRunDisabledReason, discardTrial, resetTrialForTemplate,
+  } = useProtocolTrial({
+    model, initialPreviewVariables, workflowMode, testSessionScope, apiKey, baseUrl, preset,
+    protocol, protocolJson, error, invalidFormFieldsRef, pluginReference, pluginUnavailable, t,
+  });
   useEffect(() => {
     onValidityChange(!error && invalidFormFieldsRef.current.size === 0);
   }, [error, onValidityChange]);
@@ -675,10 +451,7 @@ export default function ModelProtocolEditor({
     const template = templateId === 'h3'
       ? createH3QuickAdaptTemplate('h3-standard', 'apimart')
       : createSeedanceQuickAdaptTemplate(templateId === 'sd2.0' ? '2.0-standard' : '2.5', 'apimart');
-    testAbortRef.current?.abort();
-    pauseProtocolTestSession(sessionIdentity);
-    testAbortRef.current = null;
-    setTestRun({ status: 'idle' });
+    resetTrialForTemplate();
     protocolSelectionRef.current = null;
     pendingProtocolCaretRef.current = null;
     invalidFormFieldsRef.current.clear();
@@ -693,195 +466,11 @@ export default function ModelProtocolEditor({
     publishProtocol(parseModelExecutionProtocol(template.executionProfile.protocol!));
   };
 
-  const changeMode = (mode: ModelExecutionProtocol['mode']) => {
-    if (!allowFormTransform()) return;
-    updateProtocol((draft) => {
-      draft.mode = mode;
-      if (mode === 'sync') {
-        delete draft.poll;
-        draft.response = {
-          type: 'json',
-          result: model.category === 'text'
-            ? { textPath: 'choices.0.message.content' }
-            : { urlPath: 'data.*.url' },
-          errorPath: draft.response.errorPath,
-        };
-      } else {
-        draft.response = {
-          type: 'json',
-          taskIdPath: draft.response.taskIdPath ?? 'task_id',
-          errorPath: draft.response.errorPath,
-        };
-        draft.poll ??= createDefaultPoll(model.category);
-      }
-    });
-  };
-
-  const changeAuthType = (type: ModelProtocolAuthType) => {
-    updateProtocol((draft) => {
-      if (type === 'header') draft.auth = { type, name: 'X-API-Key' };
-      else if (type === 'query') draft.auth = { type, name: 'api_key' };
-      else draft.auth = { type };
-    });
-  };
-
-  const changeResponseType = (responseType: ModelProtocolResponseType) => {
-    updateProtocol((draft) => {
-      draft.response.type = responseType;
-      if (responseType === 'json') {
-        const result = draft.response.result ?? {};
-        if (!result.urlPath && !result.textPath && !result.base64Path) {
-          if (model.category === 'text') result.textPath = 'choices.0.message.content';
-          else result.urlPath = 'data.*.url';
-        }
-        draft.response.result = result;
-        return;
-      }
-      if (responseType === 'text') delete draft.response.result;
-      else draft.response.result = draft.response.result?.mimeType
-        ? { mimeType: draft.response.result.mimeType }
-        : {};
-    });
-  };
-
-  const insertSizeMapping = (mapping: string) => {
-    if (!mapping) return;
-    if (!allowFormTransform()) return;
-    updateProtocol((draft) => {
-      const body = isJsonObject(draft.submit.body) ? draft.submit.body : {};
-      if (mapping === 'size') body.size = '{{size}}';
-      if (mapping === 'dimensions') {
-        body.width = '{{width}}';
-        body.height = '{{height}}';
-      }
-      if (mapping === 'image-semantic') {
-        body.resolution = '{{imageSize}}';
-        body.aspect_ratio = '{{aspectRatio}}';
-      }
-      if (mapping === 'video-standard') {
-        body.resolution = '{{videoResolution}}';
-        body.num_frames = '{{videoFrames}}';
-        body.frame_rate = '{{videoFps}}';
-      }
-      if (mapping === 'seedance') {
-        body.resolution = '{{seedanceResolution}}';
-        body.ratio = '{{seedanceRatio}}';
-        body.duration = '{{seedanceDuration}}';
-      }
-      if (mapping === 'seedance-openai') {
-        body.resolution = '{{seedanceResolution}}';
-        body.aspect_ratio = '{{aspectRatio}}';
-        body.duration = '{{duration}}';
-        body.generate_audio = '{{generateAudio}}';
-      }
-      draft.submit.body = body;
-    });
-    setFormRevision((current) => current + 1);
-  };
-
-  const insertMultipartFile = (fieldName: string) => {
-    if (!fieldName) return;
-    if (!allowFormTransform()) return;
-    updateProtocol((draft) => {
-      const body = isJsonObject(draft.submit.body) ? draft.submit.body : {};
-      body[fieldName] = {
-        $file: '{{imageUrls.0}}',
-        filename: 'reference.png',
-      };
-      draft.submit.bodyEncoding = 'multipart';
-      draft.submit.body = body;
-    });
-    setFormRevision((current) => current + 1);
-  };
-
-  const insertJsonReferenceArray = (fieldName: string) => {
-    if (!fieldName) return;
-    if (!allowFormTransform()) return;
-    updateProtocol((draft) => {
-      const body = isJsonObject(draft.submit.body) ? draft.submit.body : {};
-      body[fieldName] = '{{imageUrls}}';
-      draft.submit.bodyEncoding = 'json';
-      draft.submit.body = body;
-    });
-    setFormRevision((current) => current + 1);
-  };
-
-  const insertVideoReferenceField = (mapping: string) => {
-    if (!allowFormTransform()) return;
-    const mappings: Record<string, string> = {
-      image_urls: 'imageUrls',
-      first_image: 'firstImage',
-      last_image: 'lastImage',
-      reference_image_urls: 'referenceImageUrls',
-      video_urls: 'videoUrls',
-      reference_video_url: 'referenceVideoUrl',
-      reference_video_urls: 'referenceVideoUrls',
-      audio_urls: 'audioUrls',
-      audio_url: 'audioUrl',
-      reference_audio_urls: 'referenceAudioUrls',
-    };
-    const variable = mappings[mapping];
-    if (!variable) return;
-    updateProtocol((draft) => {
-      const body = isJsonObject(draft.submit.body) ? draft.submit.body : {};
-      body[mapping] = `{{${variable}}}`;
-      draft.submit.bodyEncoding = 'json';
-      draft.submit.body = body;
-    });
-    setFormRevision((current) => current + 1);
-  };
-
-  const updateSubmit = (patch: Partial<ModelProtocolRequestTemplate>) => {
-    updateProtocol((draft) => {
-      draft.submit = { ...draft.submit, ...patch };
-    });
-  };
-
-  const updatePoll = (patch: Partial<ModelProtocolPollTemplate>) => {
-    updateProtocol((draft) => {
-      draft.poll = { ...(draft.poll ?? createDefaultPoll(model.category)), ...patch };
-    });
-  };
-
-  const updateResponse = (patch: Partial<NormalizedModelExecutionProtocol['response']>) => {
-    updateProtocol((draft) => {
-      draft.response = { ...draft.response, ...patch };
-    });
-  };
-
-  const updateResponseResult = (patch: Partial<ModelProtocolResultConfig>) => {
-    updateProtocol((draft) => {
-      draft.response.result = { ...(draft.response.result ?? {}), ...patch };
-    });
-  };
-
-  const updatePollResponse = (patch: Partial<ModelProtocolPollResponseConfig>) => {
-    updateProtocol((draft) => {
-      const currentPoll = draft.poll ?? createDefaultPoll(model.category);
-      currentPoll.response = { ...currentPoll.response, ...patch };
-      draft.poll = currentPoll;
-    });
-  };
-
-  const updatePollResult = (patch: Partial<ModelProtocolResultConfig>) => {
-    updateProtocol((draft) => {
-      const currentPoll = draft.poll ?? createDefaultPoll(model.category);
-      currentPoll.response.result = { ...currentPoll.response.result, ...patch };
-      draft.poll = currentPoll;
-    });
-  };
-
-  const updatePollRetry = (patch: Partial<ModelProtocolPollRetryConfig>) => {
-    updateProtocol((draft) => {
-      const currentPoll = draft.poll ?? createDefaultPoll(model.category);
-      currentPoll.retry = {
-        ...getDefaultModelProtocolPollRetryConfig(),
-        ...currentPoll.retry,
-        ...patch,
-      };
-      draft.poll = currentPoll;
-    });
-  };
+  const {
+    changeMode, changeAuthType, changeResponseType, insertSizeMapping, insertMultipartFile,
+    insertJsonReferenceArray, insertVideoReferenceField, updateSubmit, updatePoll, updateResponse,
+    updateResponseResult, updatePollResponse, updatePollResult, updatePollRetry,
+  } = createProtocolFormActions({ model, allowFormTransform, updateProtocol, setFormRevision });
 
   const auth = protocol.auth ?? { type: 'bearer' as const };
   const availableVariables = workflowMode && initialPreviewVariables
@@ -896,204 +485,6 @@ export default function ModelProtocolEditor({
     ...getDefaultModelProtocolPollRetryConfig(),
     ...poll?.retry,
   };
-  const previewState = useMemo<ProtocolPreviewState>(() => {
-    if (preset !== 'custom') return {};
-    try {
-      if (error) throw new Error(error);
-      const parsed = JSON.parse(previewVariablesJson) as ProtocolJsonValue;
-      if (!isJsonObject(parsed)) throw new Error('示例变量必须是 JSON 对象');
-      const currentProtocol = resolveProtocolTestRunDraft(
-        preset, protocol, protocolJson,
-      );
-      return {
-        preview: previewModelProtocolRequest({
-          baseUrl: baseUrl.trim() || 'https://preview.invalid',
-          protocol: currentProtocol,
-          variables: parsed,
-        }),
-      };
-    } catch (previewError) {
-      return {
-        error: previewError instanceof Error ? previewError.message : '请求预览失败',
-      };
-    }
-  }, [preset, previewVariablesJson, protocol, protocolJson, baseUrl, error]);
-  const supportsStructuredResponse = protocol.mode === 'async'
-    || protocol.response.type === 'json';
-  const responsePreviewState = useMemo<ProtocolResponsePreviewState>(() => {
-    if (preset !== 'custom' || !supportsStructuredResponse) return {};
-    try {
-      if (error) throw new Error(error);
-      const parsed = JSON.parse(responseSampleJson) as ProtocolJsonValue;
-      if (!isJsonObject(parsed) && !Array.isArray(parsed)) {
-        throw new Error('响应示例必须是 JSON 对象或数组');
-      }
-      const currentProtocol = resolveProtocolTestRunDraft(
-        preset, protocol, protocolJson,
-      );
-      return { entries: previewModelProtocolResponse(currentProtocol, parsed) };
-    } catch (previewError) {
-      return {
-        error: previewError instanceof Error ? previewError.message : '返回值结构预览失败',
-      };
-    }
-  }, [preset, protocol, protocolJson, responseSampleJson, supportsStructuredResponse, error]);
-
-  /**
-   * 拿真实凭据把当前协议跑一次。
-   *
-   * 本地预览只能证明模板渲染得出来，证明不了厂商认这些字段——中转站最常见的失败
-   * 是 400 unsupported field，只有真发一次请求才看得到。这会产生真实调用与计费，
-   * 所以只在用户点按钮时执行；拿到任务 ID 后可暂停、续查，不重提生成。
-   */
-  const describeTestError = (testError: unknown): string => {
-    if (testError instanceof ProtocolTestSessionError) {
-      const messages = {
-        'invalid-identity': '试跑连接地址无效，请检查接口地址',
-        'existing-session': '已有试跑记录，请先继续查询或放弃记录',
-        'session-limit': '保留的试跑任务过多，请先处理已有记录',
-        'not-resumable': '当前任务暂时不能继续查询',
-        busy: '任务仍在处理中，请稍后操作',
-        paused: '查询已暂停',
-        'submission-uncertain': '提交状态不确定，请先到厂商后台确认',
-        'different-origin': '任务查询地址与当前连接不同源',
-      };
-      return t(messages[testError.code]);
-    }
-    return t(testError instanceof Error ? testError.message.split(apiKey || '\0').join('[REDACTED]') : '试跑失败');
-  };
-  const resultDetail = (result: { urls?: string[]; text?: string; taskId?: string }) => serializeJson({
-    ...result, urls: result.urls?.map((url) => url.startsWith('data:') ? '[inline media]' : url),
-    text: result.text?.slice(0, 2000),
-  }).split(apiKey || '\0').join('[REDACTED]');
-
-  const runProtocolTest = async () => {
-    if (testAbortRef.current && !testAbortRef.current.signal.aborted) return;
-    if (getProtocolTestSession(sessionIdentity)) return;
-    if (describeProtocolTestRunBlocker(preset, apiKey, baseUrl, !!error || invalidFormFieldsRef.current.size > 0)) return;
-    let variables: ModelProtocolVariables;
-    try {
-      const parsed = JSON.parse(testVariablesJson) as ProtocolJsonValue;
-      if (!isJsonObject(parsed)) throw new Error('试跑变量必须是 JSON 对象');
-      assertRealProtocolTestVariables(parsed);
-      variables = workflowMode ? parsed : { ...parsed, model: model.id };
-    } catch (parseError) {
-      setTestRun({
-        status: 'error',
-        message: describeTestError(parseError),
-      });
-      return;
-    }
-    testAbortRef.current?.abort();
-    const controller = new AbortController();
-    testAbortRef.current = controller;
-    setTestRun({ status: 'running' });
-    let lease: Awaited<ReturnType<typeof resolvePluginModelProtocol>> | undefined;
-    try {
-      if (preset === 'plugin') lease = await resolvePluginModelProtocol({ preset: 'plugin', plugin: pluginReference }, () => useAppStore.getState().installedPlugins, controller);
-      const nativeChatProtocol = lease?.adapter ?? (isNativeTextProtocolPreset(preset)
-        ? resolveNativeTextChatProtocol({ preset })
-        : undefined);
-      let result: { urls?: string[]; text?: string; taskId?: string };
-      if (nativeChatProtocol) {
-        const request = buildChatApiRequest({
-          protocol: nativeChatProtocol,
-          apiKey,
-          baseUrl,
-          model: model.id,
-          messages: nativeProtocolTestMessages(variables),
-          stream: false,
-          signal: controller.signal,
-        });
-        await lease?.assertCurrent();
-        controller.signal.throwIfAborted();
-        const response = await corsSafeFetch(request.url, request.init);
-        if (!response.ok) await parseResponseError(response, `API 请求失败 (${response.status})`);
-        const payload: unknown = await response.json();
-        await lease?.assertCurrent();
-        result = { text: parseChatApiResponse(payload, nativeChatProtocol).text };
-      } else {
-        const currentProtocol = resolveProtocolTestRunDraft(
-          preset, protocol, protocolJson, invalidFormFieldsRef.current.size > 0,
-        );
-        assertModelProtocolResultMapping(model.category, currentProtocol);
-        if (!workflowMode && model.category === 'video') {
-          variables = await buildVideoTestVariables(model, testScenario, testReferences, variables);
-        }
-        if (controller.signal.aborted) return;
-        result = await startProtocolTestSession({ identity: sessionIdentity, category: model.category, apiKey, protocol: currentProtocol, variables });
-      }
-      if (controller.signal.aborted) return;
-      assertModelProtocolResult(model.category, result);
-      const parts = [
-        result.urls?.length ? t('返回 {count} 个结果地址', { count: result.urls.length }) : '',
-        result.text ? t('返回文本 {count} 字', { count: result.text.length }) : '',
-        result.taskId ? t('任务 ID {id}', { id: result.taskId }) : '',
-      ].filter(Boolean);
-      setTestRun({
-        status: 'success',
-        message: parts.join('，') || t('调用成功，但没有解析出结果'),
-        detail: resultDetail(result),
-      });
-    } catch (runError) {
-      if (controller.signal.aborted) {
-        if (testAbortRef.current === controller) setTestRun({ status: 'error', message: t('协议调用已取消，请检查插件状态后重试。') });
-        return;
-      }
-      setTestRun({
-        status: 'error',
-        message: describeTestError(runError),
-      });
-    } finally {
-      lease?.release();
-      if (testAbortRef.current === controller) testAbortRef.current = null;
-    }
-  };
-
-  const resumeProtocolTest = async () => {
-    if (testAbortRef.current && !testAbortRef.current.signal.aborted) return;
-    if (!apiKey.trim() || !getProtocolTestSession(sessionIdentity)?.canResume) return;
-    setTestRun({ status: 'running' });
-    const controller = new AbortController();
-    testAbortRef.current = controller;
-    try {
-      const result = await resumeProtocolTestSession({ identity: sessionIdentity, apiKey });
-      if (controller.signal.aborted) return;
-      assertModelProtocolResult(session?.category ?? model.category, result);
-      setTestRun({ status: 'success', message: t('原任务查询完成，未重新提交生成'),
-        detail: resultDetail(result) });
-    } catch (queryError) {
-      if (controller.signal.aborted) return;
-      setTestRun({ status: 'error', message: describeTestError(queryError) });
-    } finally {
-      if (testAbortRef.current === controller) testAbortRef.current = null;
-    }
-  };
-
-  const cancelProtocolTest = () => {
-    testAbortRef.current?.abort();
-    testAbortRef.current = null;
-    pauseProtocolTestSession(sessionIdentity);
-    setTestRun({ status: 'idle' });
-  };
-
-  const trialRunning = testRun.status === 'running' || session?.status === 'submitting' || session?.status === 'polling';
-  const sessionMessage = session?.status === 'uncertain'
-    ? t('提交状态不确定，请先到厂商后台确认；不会自动重新提交。')
-    : session?.status === 'paused'
-      ? t('查询已暂停，任务仍保留；继续查询不会重新生成。')
-      : session?.status === 'failed' ? t('上游任务已失败，不能继续查询生成结果。') : '';
-
-  const testRunBlocker = describeProtocolTestRunBlocker(preset, apiKey, baseUrl, !!error || pluginUnavailable);
-  const testRunDisabledReason = testRunBlocker === 'legacy-preset'
-    ? t('「自动兼容」不走声明式协议，无法试跑')
-    : testRunBlocker === 'missing-base-url'
-      ? t('先填写接口地址')
-      : testRunBlocker === 'missing-api-key'
-        ? t('先填写 API Key')
-        : testRunBlocker === 'invalid-draft'
-          ? t('先修正当前协议草稿中的错误')
-          : '';
   const showReferenceRequest = model.category === 'image' && !workflowMode
     && (preset === 'openai-image' || preset === 'legacy');
 
@@ -1264,7 +655,7 @@ export default function ModelProtocolEditor({
           {session && !trialRunning ? <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => {
             void confirmAction(t('放弃查询记录不会停止上游任务；再次试跑会创建新任务并可能计费。'),
               { title: t('放弃试跑记录？'), okLabel: t('放弃记录'), cancelLabel: t('保留任务') }).then((confirmed) => {
-              if (confirmed) { discardProtocolTestSession(sessionIdentity); setTestRun({ status: 'idle' }); }
+              if (confirmed) discardTrial();
             }).catch(() => {});
           }}>{t('放弃记录')}</button> : null}
           <small className="text-[11px] text-canvas-text-muted">
