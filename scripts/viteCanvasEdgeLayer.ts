@@ -5,8 +5,8 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import type { Plugin } from 'vite';
-import { adaptCanvasFarNodeLayer } from './viteCanvasFarNodeLayer';
-import { adaptCanvasMiniMap } from './viteCanvasMiniMap';
+import { adaptCanvasFarNodeLayer } from './viteCanvasFarNodeLayer.ts';
+import { adaptCanvasMiniMap } from './viteCanvasMiniMap.ts';
 
 export const CANVAS_EDGE_LAYER_REACT_FLOW_VERSION = '12.10.2';
 export const CANVAS_EDGE_LAYER_ADAPTER_MARKER = '/* ai-canvas-edge-layer:12.10.2 */';

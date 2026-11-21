@@ -6,7 +6,7 @@ import react from "@vitejs/plugin-react";
 import {
   CANVAS_EDGE_LAYER_OPTIMIZE_INCLUDE,
   canvasEdgeLayerPlugin,
-} from "./scripts/viteCanvasEdgeLayer";
+} from "./scripts/viteCanvasEdgeLayer.ts";
 
 // https://vite.dev/config/
 export default defineConfig({
