@@ -72,8 +72,8 @@ const messageBubbleSource = readFileSync(
   new URL('../../src/components/chat/MessageBubble.tsx', import.meta.url),
   'utf8',
 );
-const panelsCssSource = readFileSync(
-  new URL('../../src/styles/panels.css', import.meta.url),
+const assetPanelCssSource = readFileSync(
+  new URL('../../src/styles/panels-assets.css', import.meta.url),
   'utf8',
 );
 
@@ -247,14 +247,14 @@ describe('ViewportImage', () => {
     expect(viewportImageSource).toContain('useViewportMediaSource');
     expect(viewportMediaHookSource).toContain('const observerPools = new Map');
     expect(viewportMediaHookSource.match(/new IntersectionObserver/g)).toHaveLength(1);
-    const waterfallCard = panelsCssSource.match(/\.assets-waterfall-card\s*\{[^}]*\}/s)?.[0];
+    const waterfallCard = assetPanelCssSource.match(/\.assets-waterfall-card\s*\{[^}]*\}/s)?.[0];
     expect(waterfallCard).toBeDefined();
     expect(waterfallCard).not.toMatch(/content-visibility|contain-intrinsic-size/);
-    expect(panelsCssSource).toMatch(
+    expect(assetPanelCssSource).toMatch(
       /\.drama-asset-card\s*\{(?=[^}]*content-visibility:\s*auto)(?=[^}]*contain-intrinsic-size:\s*auto 148px)[^}]*\}/s,
     );
-    expect(panelsCssSource).toMatch(/\.project-asset-card\s*\{[^}]*content-visibility:\s*auto/s);
-    expect(panelsCssSource).toMatch(/\.character-action-card\s*\{[^}]*content-visibility:\s*auto/s);
+    expect(assetPanelCssSource).toMatch(/\.project-asset-card\s*\{[^}]*content-visibility:\s*auto/s);
+    expect(assetPanelCssSource).toMatch(/\.character-action-card\s*\{[^}]*content-visibility:\s*auto/s);
   });
 
   it('actively releases offscreen video players and uses them in long media lists', () => {
