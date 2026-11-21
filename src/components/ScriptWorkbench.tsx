@@ -352,12 +352,14 @@ export default function ScriptWorkbench({
     () => isEpisodeEditorWriteLocked(currentEpisode?.id), () => false);
   const unsettledEditor = useSyncExternalStore(subscribeEpisodeEditorWrites,
     () => hasUnsettledEpisodeEditorSession(currentEpisode?.id), () => false);
+  const episodeProfile = currentEpisode?.creationProfile;
+  const episodeTeamOverride = currentEpisode?.teamProfileOverride;
   const teamProfile = useMemo(() => {
-    if (currentEpisode?.creationProfile && !config.creationProfiles?.some((profile) => profile.id === currentEpisode?.creationProfile?.id
-      && profile.version === currentEpisode?.creationProfile?.version)) return normalizeTeamProfile(config.agentTeamProfile);
-    try { return resolveCreationTeamProfile(currentEpisode?.creationProfile, currentEpisode?.teamProfileOverride); }
+    if (episodeProfile && !config.creationProfiles?.some((profile) => profile.id === episodeProfile.id
+      && profile.version === episodeProfile.version)) return normalizeTeamProfile(config.agentTeamProfile);
+    try { return resolveCreationTeamProfile(episodeProfile, episodeTeamOverride); }
     catch { return normalizeTeamProfile(config.agentTeamProfile); }
-  }, [config.agentTeamProfile, config.creationProfiles, currentEpisode?.creationProfile, currentEpisode?.teamProfileOverride]);
+  }, [config.agentTeamProfile, config.creationProfiles, episodeProfile, episodeTeamOverride]);
   const [externalCatalog, setExternalCatalog] = useState(() => readExternalAgentCatalog());
   const modelCatalog = useMemo(() => buildChatModelCatalog({ config, workflows }), [config, workflows]);
   const episodeTeamTasks = currentEpisodeId
