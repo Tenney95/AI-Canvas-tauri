@@ -317,7 +317,7 @@ describe('MentionEditor subscription boundaries', () => {
       ? { ...item, ioNodes: [{ nodeId: 'input', title: '已更新工作流输入', type: 'image' as const }] } : item);
     view = render();
     const items = picker(view.tree).items as Array<{ label: string; onSelect: () => void }>;
-    expect(items.some((item) => item.label === '已更新工作流输入')).toBe(true);
+    expect(items.some((item) => item.label === '#input 已更新工作流输入')).toBe(true);
     const stale = items.find((item) => item.label === '关闭后更名')!;
     driver.state.currentProjectId = 'other-project';
     expect(() => stale.onSelect()).not.toThrow();

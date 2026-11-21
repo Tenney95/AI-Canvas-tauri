@@ -77,6 +77,7 @@ import {
   resolveWorkflowMentionNodes,
   filterWorkflowMentions,
   workflowMentionFilterChips,
+  type WorkflowMentionItem,
 } from './mentionEditorSources';
 import { useComfyRefmodMentionOptions } from '../../../hooks/useComfyRefmodMentionOptions';
 import { buildComfyRefmodMention, parseComfyRefmodMentions, mergeComfyRefmodSelections } from '../../../utils/comfyRefmodMention';
@@ -1868,13 +1869,14 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       onSelect: () => handleSelectCanvasMention(node.id, node.label),
     })),
   ];
-  const workflowInputItems: MentionPickerItem[] = filterWorkflowMentions(filteredWorkflowMentions, workflowMediaFilter).map((node) => ({
+  const buildWorkflowPickerItem = (node: WorkflowMentionItem): MentionPickerItem => ({
     key: `wf:${node.id}`,
-    label: node.label,
+    label: localComfyWorkflow ? `#${node._ioNodeId} ${node.label}` : node.label,
     icon: MEDIA_ICONS[node._ioType === 'image' || node._ioType === 'video' || node._ioType === 'audio' ? node._ioType : 'text'],
     badge: t('工作流'),
     onSelect: () => handleSelectWorkflowMention(node._ioNodeId, node.label, node._ioType),
-  }));
+  });
+  const workflowInputItems = filterWorkflowMentions(filteredWorkflowMentions, workflowMediaFilter).map(buildWorkflowPickerItem);
   const refmodTabItems: MentionPickerItem[] = refmodOptions.entries
     .filter(({ asset, characterName }) => matchesMentionQuery(mentionQuery, [asset.name, asset.fileName, characterName, ...asset.tags]))
     .map(({ asset, thumbnailUrl, characterName }) => ({
@@ -2103,12 +2105,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         onSelect: () => handleSelectAsset(file),
       };
     } else if (candidate.source === 'workflow') {
-      const workflowNode = candidate.item;
-      item = {
-        key: `wf:${workflowNode.id}`, label: workflowNode.label, badge: t('工作流'),
-        icon: MEDIA_ICONS[workflowNode._ioType === 'image' || workflowNode._ioType === 'video' || workflowNode._ioType === 'audio' ? workflowNode._ioType : 'text'],
-        onSelect: () => handleSelectWorkflowMention(workflowNode._ioNodeId, workflowNode.label, workflowNode._ioType),
-      };
+      item = buildWorkflowPickerItem(candidate.item);
     } else {
       const { asset, thumbnailUrl } = candidate.item;
       item = { key: `refmod:${comfyRefmodKey(asset)}`, label: asset.name, thumbnailUrl, badge: t('ComfyUI 角色'),

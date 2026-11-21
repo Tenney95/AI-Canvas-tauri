@@ -158,7 +158,8 @@ describe('local ComfyUI text execution', () => {
     const workflow: WorkflowDefinition = { id: 'wf-local-text', name: '本地提示词增强', category: 'ai-text',
       adapterType: 'comfyui', fileName: 'local-text.json', fileContent: JSON.stringify(graph), createdAt: 1,
       ioNodes: [{ nodeId: '1', title: '提示词', type: 'prompt' },
-        ...(Object.hasOwn(graph, '3') ? [{ nodeId: '3', title: '参考图', type: 'image' as const }] : [])],
+        ...['3', '4'].filter((nodeId) => Object.hasOwn(graph, nodeId))
+          .map((nodeId) => ({ nodeId, title: '参考图', type: 'image' as const }))],
       defaultNodes: { prompt: '1', ...(Object.hasOwn(graph, '3') ? { image: '3' } : {}) } };
     useAppStore.setState((state) => ({ currentProjectId: 'text-project', workflows: [workflow],
       nodes: [{ id: 'text-node', type: 'ai-text', position: { x: 0, y: 0 },
@@ -211,6 +212,47 @@ describe('local ComfyUI text execution', () => {
     expect(sent['3'].inputs.image).toBe('uploaded-reference.png');
     expect(sent['7'].inputs.text).toEqual(['2', 0]);
     expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/prompt'))).toHaveLength(1);
+  });
+
+  it('keeps image numbers in the prompt and binds the selected LoadImage before assigning direct references', async () => {
+    const { workflow, fetchMock } = installTextWorkflow({
+      '1': { class_type: 'TE_text_display', inputs: { text: 'original saved input' } },
+      '2': { class_type: 'Writer', inputs: { prompt: ['1', 0], first: ['4', 0], second: ['3', 0] } },
+      '3': { class_type: 'LoadImage', inputs: { image: '' } },
+      '4': { class_type: 'LoadImage', inputs: { image: '' } },
+      '7': { class_type: 'SaveText', inputs: { text: ['2', 0] } },
+    });
+    const scene = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==';
+    const actor = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+    useAppStore.setState((state) => ({
+      nodes: [...state.nodes,
+        { id: 'scene', type: 'ai-image', position: { x: 0, y: 0 }, data: { type: 'ai-image', label: '城门',
+          output: 'https://expired.example/scene.png', imageUrl: `data:image/png;base64,${scene}` } },
+        { id: 'actor', type: 'source-image', position: { x: 0, y: 0 }, data: { type: 'source-image', label: '郎中',
+          imageUrl: `data:image/png;base64,${actor}` } },
+      ],
+      edges: [{ id: 'scene-edge', source: 'scene', target: 'text-node' }],
+    }));
+    const handleRequest = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url, init) => {
+      if (!url.endsWith('/upload/image')) return handleRequest(url, init);
+      const image = (init?.body as FormData).get('image') as File;
+      const bytes = Buffer.from(await image.arrayBuffer()).toString('base64');
+      const name = new Map([[scene, 'scene.png'], [actor, 'actor.png']]).get(bytes);
+      if (!name) throw new Error('Unexpected reference image');
+      return jsonResponse({ name, subfolder: 'refs', type: 'input' });
+    });
+    const prompt = '@wf{4|LoadImage|image}(@{scene:素材1)城门})是城门，@{actor:郎中}是郎中，回到@{scene:城门}。';
+    const result = await generateTextResult({ provider: 'comfyui', model: 'comfyui/workflow', nodeId: 'text-node',
+      workflowId: workflow.id, workflowInputs: { '4': '@{scene:素材1' }, prompt });
+
+    const submission = fetchMock.mock.calls.find(([url]) => url.endsWith('/prompt'));
+    const sent = JSON.parse(String(submission?.[1]?.body)).prompt;
+    expect(sent['1'].inputs.text).toBe('图片1是城门，图片2是郎中，回到图片1。');
+    expect(sent['4'].inputs.image).toBe('refs/scene.png');
+    expect(sent['3'].inputs.image).toBe('refs/actor.png');
+    expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/upload/image'))).toHaveLength(2);
+    expect(result.text).toBe('完整增强后的文本\n第二行');
   });
 
   it.each([false, true])('rejects an absent or ambiguous SaveText before submitting (multiple=%s)', async (multiple) => {

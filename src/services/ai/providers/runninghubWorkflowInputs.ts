@@ -10,29 +10,40 @@ export interface RunningHubInputRouting {
   defaults: WorkflowDefinition['defaultNodes'];
 }
 
-/** 括号可嵌套，避免文本或 URL 中的括号截断芯片赋值。 */
-export function splitRunningHubPrompt(raw: string) {
+/** 拆出工作流槽位赋值；保留内文时，槽内的素材引用继续参与正文编号。 */
+export function parseWorkflowInputMentions(raw: string, valuesInPrompt: 'inline' | 'omit') {
   const assignments: Array<{ key: string; type: string; value: string }> = [];
   const head = /@wf\{([^|}]+)\|([^|}]+)\|([^|}]+)\}\(/g;
+  // 素材名称可以带单个括号；整个素材标签作为一个词读取。
+  const boundary = /@(?:asset|drama|image)?\{[^}]*\}|[()]/g;
   const parts: string[] = [];
   let position = 0;
   for (let match = head.exec(raw); match; match = head.exec(raw)) {
     let depth = 1;
-    let end = head.lastIndex;
-    for (; end < raw.length && depth; end++) {
-      if (raw[end] === '(') depth++;
-      else if (raw[end] === ')') depth--;
+    boundary.lastIndex = head.lastIndex;
+    while (depth > 0) {
+      const token = boundary.exec(raw);
+      if (!token) throw new Error('工作流输入括号未闭合，请检查 @ 输入');
+      if (token[0] === '(') depth++;
+      else if (token[0] === ')') depth--;
     }
-    if (depth) throw new Error('工作流输入括号未闭合，请检查 @ 输入');
+    const end = boundary.lastIndex;
     parts.push(raw.slice(position, match.index));
-    assignments.push({ key: match[1], type: match[3], value: raw.slice(head.lastIndex, end - 1).replace(/\n$/, '') });
+    const value = raw.slice(head.lastIndex, end - 1);
+    assignments.push({ key: match[1], type: match[3], value: value.replace(/\n$/, '') });
+    if (valuesInPrompt === 'inline') parts.push(value);
     position = end;
     head.lastIndex = end;
   }
   parts.push(raw.slice(position));
-  const prompt = parts.join('').trim();
+  const prompt = parts.join('');
   if (prompt.includes('@wf{')) throw new Error('工作流输入格式无效，请重新选择 @ 输入节点');
   return { prompt, assignments };
+}
+
+export function splitRunningHubPrompt(raw: string) {
+  const { prompt, assignments } = parseWorkflowInputMentions(raw, 'omit');
+  return { prompt: prompt.trim(), assignments };
 }
 
 export async function resolveRunningHubInputRouting(workflow: WorkflowDefinition, rawPrompt: string, inputs: Record<string, string> = {}, signal?: AbortSignal): Promise<RunningHubInputRouting> {

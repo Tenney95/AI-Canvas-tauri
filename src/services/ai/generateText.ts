@@ -14,6 +14,7 @@ import {
 import { parseResponseError } from './httpUtils';
 import { corsSafeFetch } from './httpTransport';
 import { resolvePromptToChatContent, resolvePromptWithMediaRefs } from './promptResolver';
+import { parseWorkflowInputMentions } from './providers/runninghubWorkflowInputs';
 import { resolveChatContentImageDataUrls, resolveContentImageUrls } from './imageUtils';
 import { getProviderPolicy, resolveProviderCatalogId } from './providerPolicies';
 import { redactVolcengineError } from './providers/volcengineError';
@@ -87,12 +88,30 @@ export async function generateTextResult(params: AIGenerateParams): Promise<Text
     if (!workflow || (workflow.adapterType && workflow.adapterType !== 'comfyui') || workflow.category !== 'ai-text') {
       throw new Error('请先导入并选择本地 ComfyUI 文本工作流');
     }
-    const media = await resolvePromptWithMediaRefs(rawPrompt);
+    const slots = rawPrompt.includes('@wf{') ? parseWorkflowInputMentions(rawPrompt, 'inline') : undefined;
+    const media = await resolvePromptWithMediaRefs(slots?.prompt ?? rawPrompt);
     assertSourceCurrent();
+    let workflowInputs = params.workflowInputs;
+    if (slots) {
+      workflowInputs = { ...workflowInputs };
+      for (const slot of slots.assignments) {
+        const value = slot.value.trim();
+        // 指定的画布素材复用正文解析出的地址，避免同一张图的远端原图和本地副本各占一槽。
+        const nodeMention = /^@\{([^:}]+):[^}]*\}$/.exec(value);
+        let reference = nodeMention && media.references.find((item) =>
+          item.kind === slot.type && item.sourceNodeId === nodeMention[1]);
+        if (slot.type !== 'prompt' && !reference && /^@(?:asset|drama|image)?\{[^}]+\}$/.test(value)) {
+          const bound = await resolvePromptWithMediaRefs(value, { signal: params.signal });
+          assertSourceCurrent();
+          reference = bound.references.find((item) => item.kind === slot.type);
+        }
+        workflowInputs[slot.key] = reference?.url ?? slot.value;
+      }
+    }
     const references = mergeMediaReferences(media.references, collectConnectedReferenceMedia(params.nodeId).references);
     const { executeComfyUITextGenerate } = await import('../comfyWorkflowService');
     assertSourceCurrent();
-    return executeComfyUITextGenerate({ ...params, workflowId, prompt: media.prompt }, params.signal,
+    return executeComfyUITextGenerate({ ...params, workflowId, workflowInputs, prompt: media.prompt }, params.signal,
       [...new Set([...getMediaReferenceUrls(references, 'image', 'local'), ...(params.imageUrls ?? [])])], {
         videoUrls: getMediaReferenceUrls(references, 'video', 'local'),
         audioUrls: getMediaReferenceUrls(references, 'audio', 'local'),
