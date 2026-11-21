@@ -22,6 +22,7 @@ import type { AppState } from '../../src/store/useAppStore';
 import { registerProjectSwitchTests, registerStartupNavigationTests } from './projects/navigation';
 
 const fileMocks = vi.hoisted(() => ({
+  isTauriEnv: vi.fn(() => false),
   deleteProjectData: vi.fn(async () => undefined),
   deleteProjectDataDir: vi.fn(async () => undefined),
   flushUndoTrashDirs: vi.fn(async () => undefined),
@@ -104,7 +105,6 @@ const assetSyncMocks = vi.hoisted(() => ({ applySharedAssetSyncCommit: vi.fn() }
 
 vi.mock('../../src/services/fileService', () => ({
   ...fileMocks,
-  isTauriEnv: () => false,
   setBaseDataDir: vi.fn(),
   syncAuthorizedDirectories: vi.fn(async () => undefined),
 }));
@@ -169,6 +169,7 @@ beforeEach(() => {
     return { canvas, content: null, episodeContent: null, changeRevision: canvas.revision };
   });
   // 文件 IO 已隔离，但真实 serializer 仍依赖核心目录登记提供同一画布的归属证明。
+  fileMocks.isTauriEnv.mockReset().mockReturnValue(false);
   fileMocks.registerNativeProjectFolders.mockReset().mockImplementation(registerNativeProjectFoldersInCore);
   fileMocks.claimNativeProjectDataDir.mockClear();
   fileMocks.deleteProjectData.mockClear();
@@ -411,6 +412,21 @@ describe('project bootstrap lifetime', () => {
     await useAppStore.getState().initFromDb();
     expect(fileMocks.loadProjectData).toHaveBeenCalledTimes(2);
     expect(useAppStore.getState()).toMatchObject({ projectInitialized: true, projectLoadStatus: 'ready', currentProjectId: storedProject.id });
+  });
+
+  it('浏览器在空库中恢复上次画布时可创建默认项目', async () => {
+    stubInitializationActions();
+    useAppStore.setState((state) => ({ config: { ...state.config, startupView: 'last-project' } }));
+    fileMocks.loadProjectsList.mockResolvedValue([]);
+
+    await useAppStore.getState().initFromDb();
+
+    expect(fileMocks.claimNativeProjectDataDir).not.toHaveBeenCalled();
+    expect(nativeMocks.create).toHaveBeenCalledOnce();
+    expect(useAppStore.getState()).toMatchObject({
+      currentProjectId: nativeMocks.create.mock.calls[0]![0].canvasId,
+      projectName: '默认画布', projectLoadStatus: 'ready', projectInitialized: true,
+    });
   });
 
   it.each(['project-library', 'last-project'] as const)('a cold store still initializes with startup preference %s', async (startupView) => {
@@ -810,18 +826,20 @@ describe('project creation', () => {
     expect(showToast).toHaveBeenCalledWith('当前项目保存失败，已取消新建项目', 'error');
   });
 
-  it('新建作品写入新仓储，保存后切换到旧项目再打开仍保留画布', async () => {
+  it.each(['桌面', '浏览器'])('%s新建作品写入新仓储，保存后切换再打开仍保留画布', async (platform) => {
+    const tauri = platform === '桌面';
     stubInitializationActions();
     const old = { id: 'legacy-project', name: '旧项目', createdAt: 1, updatedAt: 1 };
     fileMocks.loadProjectsList.mockResolvedValue([old]);
     fileMocks.loadProjectData.mockResolvedValue({ ...old, nodes: [], edges: [], groups: [] });
     useAppStore.setState({ projects: [old], currentProjectId: null });
+    fileMocks.isTauriEnv.mockReturnValueOnce(tauri);
     const canvasId = await useAppStore.getState().createProject('新作品');
     expect(canvasId).toMatch(/^c2-/);
     expect(nativeMocks.create).toHaveBeenCalledOnce();
     expect(fileMocks.saveProject).not.toHaveBeenCalled();
     const projectId = nativeMocks.create.mock.calls[0]![0].projectId;
-    expect(fileMocks.claimNativeProjectDataDir).toHaveBeenCalledWith(projectId, '新作品');
+    if (tauri) expect(fileMocks.claimNativeProjectDataDir).toHaveBeenCalledWith(projectId, '新作品');
     useAppStore.setState({ nodes: [{ id: 'node', type: 'ai-text', position: { x: 0, y: 0 },
       data: { label: '保留内容', type: 'ai-text' } }] });
     expect(await useAppStore.getState().saveCurrentProjectSilent()).toBe(canvasId);
@@ -830,7 +848,7 @@ describe('project creation', () => {
     expect(await useAppStore.getState().switchProject(old.id)).toBe(old.id);
     expect(await useAppStore.getState().switchProject(canvasId!)).toBe(canvasId);
     expect(useAppStore.getState().nodes.map((node) => node.id)).toEqual(['node']);
-    expect(fileMocks.claimNativeProjectDataDir).toHaveBeenCalledOnce();
+    expect(fileMocks.claimNativeProjectDataDir).toHaveBeenCalledTimes(Number(tauri));
   });
 
   it('零集新剧集可以打开项目根，不会创建旧画布或删除作品', async () => {

@@ -98,7 +98,7 @@ export function createProjectNavigationActions(
         try {
           const [owner, canvas] = await Promise.all([resolveProjectModel(projectId), resolveProjectModel(canvasId)]);
           if (owner.dataModel !== 'missing' || canvas.dataModel !== 'missing') throw new Error('项目身份已被占用');
-          await fileService.claimNativeProjectDataDir(projectId, defaultName);
+          if (fileService.isTauriEnv()) await fileService.claimNativeProjectDataDir(projectId, defaultName);
           await createNativeProject({ projectId, canvasId, name: defaultName });
           nativeKnownIds.add(projectId); nativeKnownIds.add(canvasId);
           fileService.registerNativeProjectFolders([{ id: projectId, projectId }, { id: canvasId, projectId }]);
@@ -744,7 +744,11 @@ export function createProjectNavigationActions(
           const mapped = catalog.projects.filter((project) => project.id !== 'default');
           const recoveringWebview = await isWebviewRecovery();
           assertInitialization();
-          if (get().config.startupView === 'project-library' || recoveringWebview) {
+          const demoId = 'aicanvas-web-demo';
+          const demoProjectId = !recoveringWebview && typeof window !== 'undefined' && window.frameElement
+            && !fileService.isTauriEnv() && new URLSearchParams(window.location.search).get('demoProject') === demoId
+            && mapped.some((project) => project.id === demoId) ? demoId : null;
+          if ((!demoProjectId && get().config.startupView === 'project-library') || recoveringWebview) {
             // 启动页只读摘要；选定项目后才通过既有切换流程加载画布及项目域数据。
             set({
               projects: mapped,
@@ -760,7 +764,7 @@ export function createProjectNavigationActions(
               projectLoadStatus: 'ready',
             });
           } else if (mapped.length > 0) {
-            const rememberedProjectId = await getLastActiveProjectId().catch(() => null);
+            const rememberedProjectId = demoProjectId ?? await getLastActiveProjectId().catch(() => null);
             assertInitialization();
             const targetId = resolveOpenTargetId(mapped, rememberedProjectId
               && mapped.some((project) => project.id === rememberedProjectId)
@@ -796,7 +800,7 @@ export function createProjectNavigationActions(
                 dramaAssets: ownerData?.dramaAssets ?? emptyDramaAssetLibrary(),
                 projectLoadStatus: 'ready',
               });
-              rememberActiveProject(targetId);
+              if (!demoProjectId) rememberActiveProject(targetId);
             } else {
               set({
                 projects: mapped,
@@ -817,7 +821,7 @@ export function createProjectNavigationActions(
             const [owner, canvas] = await Promise.all([resolveProjectModel(projectId), resolveProjectModel(canvasId)]);
             assertInitialization();
             if (owner.dataModel !== 'missing' || canvas.dataModel !== 'missing') throw new Error('项目身份已被占用');
-            await fileService.claimNativeProjectDataDir(projectId, '默认画布');
+            if (fileService.isTauriEnv()) await fileService.claimNativeProjectDataDir(projectId, '默认画布');
             assertInitialization();
             await createNativeProject({ projectId, canvasId, name: '默认画布' });
             assertInitialization();

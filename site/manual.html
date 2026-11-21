@@ -1434,18 +1434,19 @@ themeButton.setAttribute("aria-pressed",String(dark));themeButton.textContent=da
 print",()=>{beforePrintTheme=root.dataset.theme;root.dataset.theme="light";document.querySelectorAll("details").forEach(detail=>{detailStates.set(detail,detail.
 open);detail.open=true})});window.addEventListener("afterprint",()=>{if(beforePrintTheme)root.dataset.theme=beforePrintTheme;detailStates.forEach((open,detail)=>{
 detail.open=open});detailStates.clear();syncTheme()});document.getElementById("print").addEventListener("click",()=>window.print());document.querySelectorAll(".\
-copy").forEach(button=>{button.addEventListener("click",async()=>{const content=document.getElementById(button.dataset.copy).textContent;const label=button.textContent;
-try{if(!navigator.clipboard?.writeText)throw new Error("Clipboard unavailable");await navigator.clipboard.writeText(content);button.textContent="已复制"}catch{
-const selection=window.getSelection();const range=document.createRange();range.selectNodeContents(document.getElementById(button.dataset.copy));selection.removeAllRanges();
-selection.addRange(range);button.textContent="已选中，请 Ctrl+C"}setTimeout(()=>{button.textContent=label},2500)})});const dialog=document.getElementById("\
-zoom");document.querySelectorAll("figure .shot-button").forEach(button=>{button.addEventListener("click",()=>{const clone=button.parentElement.cloneNode(true);clone.
-querySelector("button").tabIndex=-1;dialog.querySelector(".zoom-box").replaceChildren(clone);dialog.showModal()})});document.getElementById("zoom-close").addEventListener(
-"click",()=>dialog.close());dialog.addEventListener("click",event=>{if(event.target===dialog)dialog.close()});function updateUrlDemo(){const output=document.getElementById(
-"demo-output");try{const raw=document.getElementById("demo-base").value.trim().replace(/\/+$/,"");const base=new URL(raw);const path=document.getElementById("de\
-mo-path").value.trim();if(!["http:","https:"].includes(base.protocol)||base.username||base.password||base.search||base.hash)throw new Error("请填写不含密钥、查询参数和片段的 ht\
-tp(s) 基础地址。");if(!path.startsWith("/")||path.startsWith("//"))throw new Error("协议路径应以单个 / 开头。");output.textContent=document.getElementById(
-"demo-mode").value==="origin"?`${base.origin}${path}`:`${raw}${path}`}catch(error){output.textContent=error instanceof TypeError?"请输入完整的 http(s) 基础地址。":
-error.message}}["demo-base","demo-path","demo-mode"].forEach(id=>document.getElementById(id).addEventListener("input",updateUrlDemo));updateUrlDemo()})();
+copy").forEach(button=>{const label=button.textContent;let latestCopy=0;let resetLabelTimer;button.addEventListener("click",async()=>{const copy=++latestCopy;const source=document.
+getElementById(button.dataset.copy);let copied=false;try{if(navigator.clipboard?.writeText){await navigator.clipboard.writeText(source.textContent);copied=true}}catch{}
+if(copy!==latestCopy)return;if(!copied){const selection=window.getSelection();const range=document.createRange();range.selectNodeContents(source);selection.removeAllRanges();
+selection.addRange(range)}clearTimeout(resetLabelTimer);button.textContent=copied?"已复制":"已选中，请 Ctrl+C";resetLabelTimer=setTimeout(()=>{button.textContent=
+label},2500)})});const dialog=document.getElementById("zoom");document.querySelectorAll("figure .shot-button").forEach(button=>{button.addEventListener("click",
+()=>{const clone=button.parentElement.cloneNode(true);clone.querySelector("button").tabIndex=-1;dialog.querySelector(".zoom-box").replaceChildren(clone);dialog.
+showModal()})});document.getElementById("zoom-close").addEventListener("click",()=>dialog.close());dialog.addEventListener("click",event=>{if(event.target===dialog)
+dialog.close()});function updateUrlDemo(){const output=document.getElementById("demo-output");try{const raw=document.getElementById("demo-base").value.trim().replace(
+/\/+$/,"");const base=new URL(raw);const path=document.getElementById("demo-path").value.trim();if(!["http:","https:"].includes(base.protocol)||base.username||base.
+password||base.search||base.hash)throw new Error("请填写不含密钥、查询参数和片段的 http(s) 基础地址。");if(!path.startsWith("/")||path.startsWith(
+"//"))throw new Error("协议路径应以单个 / 开头。");output.textContent=document.getElementById("demo-mode").value==="origin"?`${base.origin}${path}`:`${raw}${path}`}catch(error){
+output.textContent=error instanceof TypeError?"请输入完整的 http(s) 基础地址。":error.message}}["demo-base","demo-path","demo-mode"].forEach(id=>document.
+getElementById(id).addEventListener("input",updateUrlDemo));updateUrlDemo()})();
 </script>
 </body>
 </html>

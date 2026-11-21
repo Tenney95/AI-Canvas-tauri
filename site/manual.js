@@ -158,21 +158,31 @@
   });
   document.getElementById('print').addEventListener('click', () => window.print());
   document.querySelectorAll('.copy').forEach(button => {
+    const label = button.textContent;
+    let latestCopy = 0;
+    let resetLabelTimer;
     button.addEventListener('click', async () => {
-      const content = document.getElementById(button.dataset.copy).textContent;
-      const label = button.textContent;
+      const copy = ++latestCopy;
+      const source = document.getElementById(button.dataset.copy);
+      let copied = false;
       try {
-        if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
-        await navigator.clipboard.writeText(content);
-        button.textContent = '已复制';
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(source.textContent);
+          copied = true;
+        }
       } catch {
+        // Clipboard access may be denied. Select the example for manual copying.
+      }
+      if (copy !== latestCopy) return;
+      if (!copied) {
         const selection = window.getSelection();
         const range = document.createRange();
-        range.selectNodeContents(document.getElementById(button.dataset.copy));
+        range.selectNodeContents(source);
         selection.removeAllRanges(); selection.addRange(range);
-        button.textContent = '已选中，请 Ctrl+C';
       }
-      setTimeout(() => { button.textContent = label; }, 2500);
+      clearTimeout(resetLabelTimer);
+      button.textContent = copied ? '已复制' : '已选中，请 Ctrl+C';
+      resetLabelTimer = setTimeout(() => { button.textContent = label; }, 2500);
     });
   });
   const dialog = document.getElementById('zoom');
