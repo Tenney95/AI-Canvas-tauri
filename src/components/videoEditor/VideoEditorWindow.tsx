@@ -7,7 +7,11 @@
  * 时间轴支持多片段（多选打开、分割），导出走关键帧对齐的无损直通。
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Icon } from '@iconify/react';
+import { FailureReport, VideoEditorExportControls } from './VideoEditorExportControls';
+import {
+  assertWindowProjectCurrent, deliverExportedFrame, deliverExportedVideo, describeFailure, encodeLosslessSegments,
+  withStage, type EditorFailure, type ExportDestination,
+} from './videoEditorExport';
 import {
   loadConfigWithoutSecrets as loadConfig,
   loadProjectData,
@@ -20,9 +24,7 @@ import {
   bindNativeVideoEditorContext,
   setBaseDataDir,
   syncAuthorizedDirectories,
-  saveBinaryToLocalFile,
   saveBinaryToProjectData,
-  buildNodeFileName,
   uploadSourceFileToProject,
   type AssetFileEntry,
 } from '../../services/fileService';
@@ -35,12 +37,10 @@ import {
   buildVideoEditorProjectId,
   getVideoEditorProject,
   saveVideoEditorProject,
-  assertVideoEditorProjectContext,
 } from '../../services/indexedDbService';
 import {
   createVideoInput,
   exportComposite,
-  exportLosslessConcat,
   VideoExportCanceledError,
   type ConcatSegment,
 } from '../../services/videoEditorMediaService';
@@ -53,8 +53,6 @@ import {
 import type { Input } from 'mediabunny';
 import {
   postVideoEditorAiTransitionRequest,
-  postVideoEditorExported,
-  postVideoEditorFrameExported,
   postVideoEditorModelsRequest,
   postVideoEditorReady,
   subscribeVideoEditorHost,
@@ -102,7 +100,6 @@ import {
 } from './timelineOps';
 
 type EditorPhase = 'loading' | 'ready' | 'error';
-type ExportDestination = 'canvas' | 'local';
 
 /** 取边界帧时往片段内部让开的时间量：正好落在边界上会取到相邻片段 */
 const BOUNDARY_FRAME_EPSILON = 0.02;
@@ -167,72 +164,6 @@ function appendToEditorOverlayTrack(
   return [...tracks, overlay];
 }
 
-/** 独立窗口开不了 devtools，错误详情必须能在界面上直接看到并复制 */
-interface EditorFailure {
-  stage: string;
-  message: string;
-  detail: string;
-}
-
-function describeFailure(stage: string, reason: unknown): EditorFailure {
-  if (reason instanceof Error) {
-    return {
-      stage,
-      // WebKit 的 fetch 失败只会给出 "Type error"，必须带上 name 才能分辨
-      message: `${reason.name}: ${reason.message}`,
-      detail: reason.stack || `${reason.name}: ${reason.message}`,
-    };
-  }
-  return { stage, message: String(reason), detail: String(reason) };
-}
-
-/** 给某个阶段的异步操作打上标签，失败时能立刻知道断在哪一步 */
-async function withStage<T>(stage: string, run: () => Promise<T>): Promise<T> {
-  try {
-    return await run();
-  } catch (reason) {
-    if (reason instanceof VideoExportCanceledError) throw reason;
-    const failure = describeFailure(stage, reason);
-    const error = new Error(`${stage}：${failure.message}`);
-    error.stack = failure.detail;
-    throw error;
-  }
-}
-
-/** 把失败详情摊在界面上并支持一键复制——这个窗口开不了 devtools */
-function FailureReport({ failure, fallback, copyDetailsLabel, stackLabel, failedSuffix }: {
-  failure: EditorFailure | null;
-  fallback: string;
-  copyDetailsLabel: string;
-  stackLabel: string;
-  failedSuffix: string;
-}) {
-  const t = useT();
-  if (!failure) return <span>{fallback}</span>;
-
-  const full = `[${failure.stage}] ${failure.message}\n${failure.detail}`;
-  return (
-    <div className="video-editor-failure">
-      <div className="video-editor-failure-line">
-        <strong>{t(failure.stage)}{failedSuffix}</strong>{failure.message}
-        <button
-          type="button"
-          className="video-editor-failure-copy"
-          onClick={() => { void navigator.clipboard?.writeText(full).catch(() => {}); }}
-        >
-          {copyDetailsLabel}
-        </button>
-      </div>
-      {failure.detail && failure.detail !== failure.message && (
-        <details className="video-editor-failure-detail">
-          <summary>{stackLabel}</summary>
-          <pre>{failure.detail}</pre>
-        </details>
-      )}
-    </div>
-  );
-}
-
 interface SessionParams {
   instanceId: string;
   projectId: string;
@@ -245,11 +176,6 @@ function persistWindowProject(record: VideoEditorProjectRecord): Promise<void> {
   const binding = readVideoEditorWindowBinding();
   return saveVideoEditorProject(record, binding?.expectedContext, binding?.expectedContext.modelGeneration === 1 ? binding.sessionId : undefined);
 }
-function assertWindowProjectCurrent(projectId: string): Promise<void> {
-  const binding = readVideoEditorWindowBinding();
-  return assertVideoEditorProjectContext(projectId, binding?.expectedContext, binding?.expectedContext.modelGeneration === 1 ? binding.sessionId : undefined);
-}
-
 function readSessionParams(): SessionParams | null {
   const params = new URLSearchParams(window.location.search);
   const instanceId = params.get('instanceId')?.trim();
@@ -1067,25 +993,11 @@ export default function VideoEditorWindow() {
           label: clip.fileName,
         }));
         try {
-          const result = await withStage('无损裁剪导出', () => exportLosslessConcat({
-            segments,
-            onProgress: setExportProgress,
-            signal: controller.signal,
-          }));
+          const result = await encodeLosslessSegments({
+            segments, timelineDuration, onProgress: setExportProgress, signal: controller.signal, t,
+          });
           bytes = result.bytes;
-
-          const drift = clips[0].sourceIn - result.actualStart;
-          notes.push(t('已无损导出 {count} 个片段，共 {time}s', {
-            count: clips.length, time: timelineDuration.toFixed(2),
-          }));
-          if (drift > 0.05) {
-            notes.push(t('首段按关键帧对齐，实际入点 {actual}s（比设定早 {drift}s）', {
-              actual: result.actualStart.toFixed(2), drift: drift.toFixed(2),
-            }));
-          }
-          notes.push(result.audioKept
-            ? t('音轨已按原始分组直通保留')
-            : t('未输出音轨：{reason}', { reason: result.audioDropReason ?? t('未知原因') }));
+          notes.push(...result.notes);
         } catch (reason) {
           if (reason instanceof VideoExportCanceledError) throw reason;
           // 直通做不到（例如素材参数不一致）不该把死路甩给用户，自动改走合成
@@ -1100,38 +1012,11 @@ export default function VideoEditorWindow() {
         }
       }
 
-      const fileName = buildNodeFileName(record.name, 'mp4', 'edited');
-      await assertWindowProjectCurrent(record.projectId);
-      if (destination === 'local') {
-        const savedPath = await withStage('保存到本地', () => saveBinaryToLocalFile(bytes, fileName, undefined,
-          { assertCurrent: () => assertWindowProjectCurrent(record.projectId) }));
-        if (!savedPath) {
-          setNotice(t('已取消保存到本地'));
-          return;
-        }
-        notes.push(t('已保存到本地：{fileName}', { fileName }));
-      } else {
-        const saved = await withStage('写入项目目录', async () => {
-          const result = await saveBinaryToProjectData(bytes, record.projectId, fileName,
-            { assertCurrent: () => assertWindowProjectCurrent(record.projectId) });
-          if (!result) throw new Error('项目数据目录不可写');
-          return result;
-        });
-        await assertWindowProjectCurrent(record.projectId);
-
-        await withStage('输出到画布', () => postVideoEditorExported(session.instanceId, {
-          videoUrl: saved.assetUrl,
-          filePath: saved.filePath,
-          fileName,
-          duration: timelineDuration,
-          // 合成路径按画布尺寸出片，直通路径保持源尺寸
-          width: compositing ? canvasSize.width : (firstSized?.width ?? 0),
-          height: compositing ? canvasSize.height : (firstSized?.height ?? 0),
-        }));
-        notes.push(t('已创建画布视频节点'));
-      }
-
-      setNotice(notes.join('；'));
+      const notice = await deliverExportedVideo({
+        destination, bytes, record, instanceId: session.instanceId, timelineDuration, notes, t,
+        size: compositing ? canvasSize : { width: firstSized?.width ?? 0, height: firstSized?.height ?? 0 },
+      });
+      setNotice(notice);
     } catch (reason) {
       if (!(reason instanceof VideoExportCanceledError)) {
         setFailure(describeFailure('导出', reason));
@@ -1234,30 +1119,8 @@ export default function VideoEditorWindow() {
 
     try {
       const bytes = await renderTimelineFramePng(playhead, '当前帧');
-      await assertWindowProjectCurrent(record.projectId);
-
-      // 同一工程会反复导帧，文件名带上时刻才不至于全靠去重后缀区分
-      const stamp = `${Math.round(playhead * 1000)}ms`;
-      const fileName = buildNodeFileName(`${record.name} 帧${stamp}`, 'png', `frame-${stamp}`);
-      const saved = await withStage('写入项目目录', async () => {
-        const result = await saveBinaryToProjectData(bytes, record.projectId, fileName,
-          { assertCurrent: () => assertWindowProjectCurrent(record.projectId) });
-        if (!result) throw new Error('项目数据目录不可写');
-        return result;
-      });
-      await assertWindowProjectCurrent(record.projectId);
-
-      await withStage('输出到画布', () => postVideoEditorFrameExported(session.instanceId, {
-        imageUrl: saved.assetUrl,
-        filePath: saved.filePath,
-        fileName,
-        time: playhead,
-        width: canvasSize.width,
-        height: canvasSize.height,
-      }));
-      setNotice(t('已导出 {time}s 的画面为图片节点 · {width}×{height}', {
-        time: playhead.toFixed(2), width: canvasSize.width, height: canvasSize.height,
-      }));
+      const notice = await deliverExportedFrame({ bytes, record, instanceId: session.instanceId, playhead, canvasSize, t });
+      setNotice(notice);
     } catch (reason) {
       setFailure(describeFailure('导出当前帧', reason));
       console.error('[videoEditor] 导出当前帧失败:', reason);
@@ -1486,95 +1349,12 @@ export default function VideoEditorWindow() {
     selectedClipIds, session, t,
   ]);
 
-  const closeWindow = useCallback(async () => {
-    const { getCurrentWindow } = await import('@tauri-apps/api/window');
-    await getCurrentWindow().close();
-  }, []);
-
-  const minimizeWindow = useCallback(async () => {
-    const { getCurrentWindow } = await import('@tauri-apps/api/window');
-    await getCurrentWindow().minimize();
-  }, []);
-
   return (
     <div className="video-editor-root">
-      <header className="video-editor-header" data-tauri-drag-region>
-        <h1 className="video-editor-title">{record?.name || t('视频编辑器')}</h1>
-          {activeProbe && (
-            <span className="video-editor-meta">
-              {activeProbe.width}×{activeProbe.height} · {allClips.length}{t('个片段')} ·{' '}
-              {timelineDuration.toFixed(2)}s
-            </span>
-          )}
-        <div className="video-editor-winctrls">
-          {exporting ? (
-            <>
-              <span className="video-editor-progress">
-                {exportStage ?? t('导出中')} {Math.round(exportProgress * 100)}%
-              </span>
-              <button
-                type="button"
-                className="video-editor-btn"
-                onClick={() => exportAbortRef.current?.abort()}
-              >
-                {t('取消')}
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                type="button"
-                className="video-editor-btn"
-                onClick={() => { void handleExportFrame(); }}
-                disabled={phase !== 'ready' || allClips.length === 0 || exportingFrame}
-                title={t('把播放头所在的画面导出为画布图片节点')}
-              >
-                <Icon icon="lucide:image-down" width={13} height={13} />
-                {exportingFrame ? t('导出当前帧…') : t('导出当前帧')}
-              </button>
-              <button
-                type="button"
-                className="video-editor-btn"
-                onClick={() => { void handleExport('local'); }}
-                disabled={phase !== 'ready' || allClips.length === 0 || exportingFrame}
-              >
-                <Icon icon="lucide:download" width={13} height={13} />
-                {t('导出到本地')}
-              </button>
-              <button
-                type="button"
-                className="video-editor-btn primary"
-                onClick={() => { void handleExport('canvas'); }}
-                disabled={phase !== 'ready' || allClips.length === 0 || exportingFrame}
-              >
-                <Icon icon="lucide:upload" width={13} height={13} />
-                {t('导出为新节点')}
-              </button>
-            </>
-          )}
-          <button
-            type="button"
-            className="video-editor-winbtn"
-            onClick={() => { void minimizeWindow(); }}
-            aria-label={t('最小化')}
-          >
-            <svg width="10" height="10" viewBox="0 0 10 10">
-              <rect x="0" y="5" width="10" height="1" fill="currentColor" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            className="video-editor-winbtn close"
-            onClick={() => { void closeWindow(); }}
-            aria-label={t('关闭')}
-          >
-            <svg width="10" height="10" viewBox="0 0 10 10">
-              <line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" strokeWidth="1.2" />
-              <line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" strokeWidth="1.2" />
-            </svg>
-          </button>
-        </div>
-      </header>
+      <VideoEditorExportControls projectName={record?.name} probe={activeProbe} clipCount={allClips.length}
+        timelineDuration={timelineDuration} ready={phase === 'ready'} exporting={exporting} exportingFrame={exportingFrame}
+        exportStage={exportStage} exportProgress={exportProgress} onCancel={() => exportAbortRef.current?.abort()}
+        onExport={handleExport} onExportFrame={handleExportFrame} />
 
       {phase === 'error' && (
         <div className="video-editor-error">
