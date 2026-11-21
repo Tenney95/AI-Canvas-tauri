@@ -37,6 +37,13 @@
       "skillPath": "skills/improve-animations/SKILL.md",
       "computedHash": "ff9991a8d6dabb24411daaf6de570e3b6826323459d514d90d7f6371bbdbdbe1"
     },
+    "large-file-refactor": {
+      "source": "paulrberg/dot-agents",
+      "ref": "2cc00850ea4e989dc334b2a30179c6b79940c9a8",
+      "sourceType": "github",
+      "skillPath": "skills/large-file-refactor/SKILL.md",
+      "computedHash": "9953b47db312243b08ae1f3068b8b1dc59d7b227455f6947ebe4bc9b6844b223"
+    },
     "review-animations": {
       "source": "emilkowalski/skills",
       "sourceType": "github",
