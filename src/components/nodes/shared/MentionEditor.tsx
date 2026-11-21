@@ -5,61 +5,46 @@ import { t as translate, useT } from '../../../i18n';
 import { lazy, Suspense, useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, useId, forwardRef, useImperativeHandle } from 'react';
 import { createPortal } from 'react-dom';
 import type { PromptSubmitShortcut, WorkflowIONodeType } from '../../../types';
-import { resolvePromptEnterAction } from '../../../utils/promptSubmitShortcut';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, type AppState } from '../../../store/useAppStore';
 import { createCanvasNodeDataSelector } from '../../../utils/canvasNodeDataSelector';
 import { getCanvasNodeById } from '../../../utils/canvasRenderProjection';
 import { Icon } from '@iconify/react';
-import { getAssetUrlFromPath, getFileCategory, listGlobalFolderContents, listExternalFolderContents, selectAssetFolderFiles, type AssetFileEntry, type AssetFolderEntry, type AssetFolderSelection } from '../../../services/fileService';
-import { getAllAssetMeta } from '../../../services/indexedDbService';
-import { springSmooth, fadeFast } from '../../../utils/motion';
+import { getAssetUrlFromPath, getFileCategory } from '../../../services/fileService';
+import { fadeFast } from '../../../utils/motion';
 import { calcAnchoredPosition, calcFixedPosition } from '../../../utils/popupPosition';
 import { resolveMentionPreview } from './connectedNodesPreviewInteractions';
 import { readMentionPreviewSource, resolveDramaMentionPreview, type MentionChipPreview, type MentionPreviewSource } from './mentionEditorPreview';
 import { mentionHoverSuppressed, subscribeMentionHoverGestures } from './mentionHoverGestures';
 import { AnimatePresence, motion } from 'framer-motion';
-import PopupCloseButton from '../../shared/PopupCloseButton';
 import MentionPicker, { type MentionPickerChip, type MentionPickerItem } from '../../shared/MentionPicker';
 import MentionChipMenu from './MentionChipMenu';
 import ViewportImage from '../../shared/ViewportImage';
 import VideoThumbnail from '../../shared/VideoThumbnail';
-import { useDialogFocus } from '../../../hooks/useDialogFocus';
-import { useComfyDomImageSources } from '../../../hooks/useComfyDomImageSources';
 import { useComfyImageSource } from '../../../hooks/useComfyImageSource';
 import { findDraggableMentionChip, startMentionChipDrag } from './mentionEditorChipDrag';
-import { readMentionTextSelection, selectMentionText } from './mentionEditorTextSelection';
 import {
   captureMentionEditorSelection,
   captureMentionEditorSnapshot,
-  MentionEditorHistory,
-  restoreMentionEditorSnapshot,
 } from './mentionEditorHistory';
 import {
   DRAMA_MENTION_MERGE_ALL,
-  buildDramaMentionId,
   buildDramaActionMentionId,
   buildDramaVoiceMentionId,
 } from '../../../types/dramaAssets';
-import type { CharacterReferenceImage, DramaAssetReferenceImage, DramaAssetCategory } from '../../../types/dramaAssets';
+import type { CharacterReferenceImage, DramaAssetReferenceImage } from '../../../types/dramaAssets';
 import { parseShotlistRowMentionId } from '../../../types/shotlist';
 import { findReferencePreviewSource, REFERENCE_PREVIEW_EVENT, requestReferencePreview } from '../../../utils/referencePreviewEvents';
 import { AVATAR_ASPECT, CHARACTER_REFERENCE_KIND_LABELS } from '../../character/characterReferencePresentation';
 import { findDramaAsset, listGlobalDramaAssets, resolveDramaActionMediaRef, resolveDramaAssetImageRef, resolveDramaVoiceRef } from '../../../services/dramaAssetPrompt';
 import {
   bestNodeThumb,
-  buildAssetChipEl,
   buildChipEl,
-  buildDramaChipEl,
-  buildWorkflowChipEl,
-  buildComfyRefmodChipEl,
   resolveComfyRefmodChipPresentation,
   syncComfyRefmodReferenceChips,
-  ensureCaretSlotBeforeChip,
   ensureCaretSlotAfterChip,
+  ensureCaretSlotBeforeChip,
   getNodeMetaMap,
-  isBrEl,
-  isChipEl,
   normalizeChipSlots,
   renderPromptToNodes,
   serializeDOM,
@@ -67,28 +52,31 @@ import {
   syncShotlistReferenceChips,
   syncMentionChipLocale,
   syncImageReferenceLabels,
-  ZWSP,
 } from './mentionEditorDom';
 import {
   matchesMentionQuery,
   resolveCanvasMentionNodes,
   resolveDramaMentionItems,
-  resolveGlobalAssetPickerItems,
   resolveWorkflowMentionNodes,
   filterWorkflowMentions,
   workflowMentionFilterChips,
   type WorkflowMentionItem,
 } from './mentionEditorSources';
 import { useComfyRefmodMentionOptions } from '../../../hooks/useComfyRefmodMentionOptions';
-import { buildComfyRefmodMention, parseComfyRefmodMentions, mergeComfyRefmodSelections } from '../../../utils/comfyRefmodMention';
+import { parseComfyRefmodMentions } from '../../../utils/comfyRefmodMention';
 import { comfyRefmodKey } from '../../../utils/comfyRefmod';
-import { prepareComfyRefmodSelections } from '../../../services/comfyRefmodWorkflow';
-import type { ComfyRefmodAsset, ComfyRefmodSelection } from '../../../types/comfyRefmod';
-import type { WorkflowDefinition } from '../../../types';
+import type { ComfyRefmodSelection } from '../../../types/comfyRefmod';
 import { workflowInputNodes } from '../../../services/runninghubWorkflowService';
 
+import {
+  restoreCursor, saveCursor, useMentionInputActions, useMentionInputHistory, useMentionInputState,
+  type MentionChipTarget, type RefmodEditSession,
+} from './useMentionEditorInput';
+import { selectMentionText } from './mentionEditorTextSelection';
+import { useComfyDomImageSources } from '../../../hooks/useComfyDomImageSources';
+import { useMentionAssetPicker } from './useMentionAssetPicker';
+
 const ComfyRefmodMentionSettings = lazy(() => import('./ComfyRefmodMentionSettings'));
-const AssetFolderNavigation = lazy(() => import('../../assets/AssetFolderNavigation'));
 const EMPTY_REFMODS: ComfyRefmodSelection[] = [];
 const EMPTY_CANVAS_NODES: AppState['nodes'] = [];
 const EMPTY_CANVAS_EDGES: AppState['edges'] = [];
@@ -109,29 +97,6 @@ function releaseMentionHighlight(owner: object) {
   const state = useAppStore.getState();
   if (state.hoveredMentionNodeId === id) state.setHoveredMentionNodeId(null);
 }
-interface RefmodEditSession {
-  asset: ComfyRefmodAsset;
-  thumbnailUrl?: string;
-  initial?: ComfyRefmodSelection;
-  manualIndex?: number;
-  existing: ComfyRefmodSelection[];
-  token?: string;
-  chip?: HTMLElement;
-  range?: Range;
-  projectId: string | null;
-  nodeId: string;
-  workflow: WorkflowDefinition;
-  nodeSnapshot: string;
-  prompt: string;
-}
-
-interface MentionChipTarget {
-  chip: HTMLElement;
-  prompt: string;
-  projectId: string | null;
-  nodeId?: string;
-}
-
 // 无缩略图时的卡片占位图标
 const MEDIA_ICONS: Record<'image' | 'video' | 'audio' | 'text', string> = {
   image: 'mdi:image-outline',
@@ -171,99 +136,6 @@ export interface MentionEditorHandle {
   /** 父弹窗收到 Escape 时优先收起引用菜单。 */
   dismissMenu?: () => boolean;
 }
-
-// ── Cursor save/restore ──
-type CursorPosition = { offset: number; workflowValue?: { index: number; offset: number; focused: boolean } };
-const createCursorWalker = (root: HTMLElement) => document.createTreeWalker(root, NodeFilter.SHOW_ALL, {
-  acceptNode(node) {
-    for (let parent = node.parentNode; parent && parent !== root; parent = parent.parentNode) {
-      if (!isChipEl(parent)) continue;
-      // 工作流的 value 可以编辑，其余胶囊内部都只是展示，不计入正文偏移。
-      return parent.hasAttribute('data-wf-id') && !!parent.querySelector('.prompt-chip-wf-value')?.contains(node)
-        ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
-    }
-    return NodeFilter.FILTER_ACCEPT;
-  },
-});
-const saveCursor = (root: HTMLElement): CursorPosition => {
-  const sel = window.getSelection();
-  if (!sel || !sel.rangeCount) return { offset: 0 };
-  const range = sel.getRangeAt(0);
-  if (!root.contains(range.startContainer)) return { offset: 0 };
-  let startContainer = range.startContainer;
-  let startOffset = range.startOffset;
-  if (startContainer === root) {
-    const next = root.childNodes[startOffset];
-    const previous = root.childNodes[startOffset - 1];
-    if (next?.nodeType === Node.TEXT_NODE) { startContainer = next; startOffset = 0; }
-    else if (previous?.nodeType === Node.TEXT_NODE) {
-      startContainer = previous;
-      startOffset = previous.textContent?.length ?? 0;
-    }
-  }
-  const startElement = startContainer.nodeType === Node.ELEMENT_NODE
-    ? startContainer as HTMLElement : startContainer.parentElement;
-  const value = startElement?.closest<HTMLElement>('.prompt-chip-wf-value');
-  let workflowValue: CursorPosition['workflowValue'];
-  if (value && value !== root && root.contains(value)) {
-    workflowValue = { index: Array.from(root.querySelectorAll('.prompt-chip-wf-value')).indexOf(value),
-      offset: saveCursor(value).offset, focused: document.activeElement === value };
-  }
-  const walker = createCursorWalker(root);
-  let offset = 0;
-  let node: Node | null;
-  while ((node = walker.nextNode())) {
-    if (node === startContainer) return { offset: offset + startOffset, workflowValue };
-    if (node.nodeType === Node.TEXT_NODE) offset += (node.textContent || '').length;
-    else if (isChipEl(node)) offset += 1;
-  }
-  return { offset, workflowValue };
-};
-
-const restoreCursor = (root: HTMLElement, position: CursorPosition): void => {
-  const sel = window.getSelection();
-  if (!sel) return;
-  const range = document.createRange();
-  const applyRange = () => { range.collapse(true); sel.removeAllRanges(); sel.addRange(range); };
-  if (position.workflowValue) {
-    const value = root.querySelectorAll<HTMLElement>('.prompt-chip-wf-value')[position.workflowValue.index];
-    if (value) {
-      if (position.workflowValue.focused) value.focus({ preventScroll: true });
-      restoreCursor(value, { offset: position.workflowValue.offset });
-      return;
-    }
-  }
-  const walker = createCursorWalker(root);
-  let count = 0;
-  let node: Node | null;
-  while ((node = walker.nextNode())) {
-    const nodeLen = node.nodeType === Node.TEXT_NODE ? (node.textContent || '').length : isChipEl(node) ? 1 : 0;
-    if (isChipEl(node) && count + nodeLen >= position.offset) {
-      if (position.offset <= count) {
-        ensureCaretSlotBeforeChip(node);
-        const before = node.previousSibling;
-        if (before?.nodeType === Node.TEXT_NODE) range.setStart(before, before.textContent?.length ?? 0);
-        else range.setStart(ensureCaretSlotAfterChip(node), 0);
-      } else range.setStart(ensureCaretSlotAfterChip(node), 0);
-      applyRange();
-      return;
-    }
-    if (node.nodeType === Node.TEXT_NODE && count + nodeLen >= position.offset) {
-      range.setStart(node, Math.max(0, position.offset - count));
-      applyRange();
-      return;
-    }
-    count += nodeLen;
-  }
-  range.selectNodeContents(root);
-  range.collapse(false);
-  sel.removeAllRanges();
-  sel.addRange(range);
-};
-
-// ═══════════════════════════════════════════════
-// Component
-// ═══════════════════════════════════════════════
 
 const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(function MentionEditor({
   value: prompt = '',
@@ -321,33 +193,13 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const [mentionDropdownResizing, setMentionDropdownResizing] = useState(false);
   const editorRef = useRef<HTMLDivElement>(null);
   useComfyDomImageSources(editorRef);
-  const disabledRef = useRef(disabled);
-  const historyRef = useRef(new MentionEditorHistory());
-  const syncedPromptRef = useRef(prompt);
-  const composingRef = useRef(false);
-  const [compositionRevision, setCompositionRevision] = useState(0);
-  const savedMentionRangeRef = useRef<Range | null>(null);
-  const textInputActiveRef = useRef(false);
-  const textInputSelectionRef = useRef<{ start: number; end: number } | null>(null);
-  const rememberTextInputSelection = useCallback(() => {
-    const root = editorRef.current;
-    if (!textInputActiveRef.current || !root) return;
-    const selection = readMentionTextSelection(root);
-    if (selection) textInputSelectionRef.current = selection;
-  }, []);
-  const textInputSelection = useCallback(() => {
-    textInputActiveRef.current = true;
-    rememberTextInputSelection();
-    const length = editorRef.current ? serializeDOM(editorRef.current).length : 0;
-    const saved = textInputSelectionRef.current;
-    return saved ? { start: Math.min(saved.start, length), end: Math.min(saved.end, length) } : { start: length, end: length };
-  }, [rememberTextInputSelection]);
-  const replacementChipRef = useRef<MentionChipTarget | null>(null);
-  const [chipMenu, setChipMenu] = useState<{ target: MentionChipTarget; x: number; y: number } | null>(null);
-  const selectFirstMentionRef = useRef<(() => void) | null>(null);
-  const lastFocusedWfValueRef = useRef<HTMLSpanElement | null>(null);
-  const cancelChipDragRef = useRef<(() => void) | null>(null);
-  const lastChipClickRef = useRef<{ chip: HTMLElement; time: number; x: number; y: number } | null>(null);
+  const input = useMentionInputState(editorRef, prompt, disabled);
+  const {
+    disabledRef, historyRef, syncedPromptRef, composingRef, compositionRevision,
+    setCompositionRevision, savedMentionRangeRef, textInputActiveRef, textInputSelectionRef, textInputSelection, rememberTextInputSelection,
+    replacementChipRef, chipMenu, setChipMenu, selectFirstMentionRef, lastFocusedWfValueRef,
+    cancelChipDragRef, lastChipClickRef, restoreMentionCursor, focusMentionCursor,
+  } = input;
   const [refmodSession, setRefmodSession] = useState<RefmodEditSession>();
   const refmodSessionRef = useRef<RefmodEditSession | undefined>(undefined);
   const [refmodUiError, setRefmodUiError] = useState('');
@@ -396,9 +248,15 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     lastChipClickRef.current = null;
   }, [currentProjectId, nodeId, prompt]);
 
-  // ── 资产引用弹窗 ──
-  const assetFolders = useAppStore((s) => s.config.assetFolders);
-  const [showAssetPicker, setShowAssetPicker] = useState(false);
+  const currentNodeType = currentEditorData?.type;
+  const {
+    showAssetPicker, setShowAssetPicker, resetAssetSelection, assetLoading, assetLoadError,
+    assetScanTruncated, setAssetLoadRevision, openAssetPicker, taggedAssets, renderAssetPicker,
+  } = useMentionAssetPicker({
+    t, showMention, setShowMention, resourceSearchExpanded, globalDramaAssetsLoading,
+    globalDramaAssetsError, currentProjectId, globalAssets, isCurrentEditorOwner, currentNodeType,
+    focusMentionCursor, disabled, nodeId,
+  });
   useLayoutEffect(() => {
     disabledRef.current = disabled;
     if (!disabled) return;
@@ -414,28 +272,6 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     savedMentionRangeRef.current = null;
     replacementChipRef.current = null;
   }, [disabled]);
-  const [assetList, setAssetList] = useState<AssetFileEntry[]>([]);
-  const [assetFolderEntries, setAssetFolderEntries] = useState<AssetFolderEntry[]>([]);
-  const [assetGlobalRootPath, setAssetGlobalRootPath] = useState<string | null>(null);
-  const [assetFolderSelection, setAssetFolderSelection] = useState<AssetFolderSelection>({ kind: 'all' });
-  const [assetCreativeKind, setAssetCreativeKind] = useState<DramaAssetCategory | null>(null);
-  const assetPickerDialogRef = useRef<HTMLDivElement>(null);
-  const [assetTagMap, setAssetTagMap] = useState<Record<string, string[]>>({});
-  const [assetLoading, setAssetLoading] = useState(false);
-  const [assetLoadError, setAssetLoadError] = useState(false);
-  const [assetScanTruncated, setAssetScanTruncated] = useState(false);
-  const [assetLoadRevision, setAssetLoadRevision] = useState(0);
-  const [assetSearch, setAssetSearch] = useState('');
-  const [activeAssetTag, setActiveAssetTag] = useState<string | null>(null);
-  const [assetTagsExpanded, setAssetTagsExpanded] = useState(false);
-  const [assetTagsOverflow, setAssetTagsOverflow] = useState(false);
-  const [visibleAssetTagCount, setVisibleAssetTagCount] = useState(Number.POSITIVE_INFINITY);
-  const assetTagRowRef = useRef<HTMLDivElement>(null);
-  const assetTagListRef = useRef<HTMLDivElement>(null);
-  const assetTagListId = useId();
-  const [assetVisible, setAssetVisible] = useState(40);
-  const assetSentinelRef = useRef<HTMLDivElement | null>(null);
-
   // ── Selected workflow and its IO nodes ──
   const selectedWorkflowRef = useRef(selectedWorkflow);
   useLayoutEffect(() => {
@@ -469,12 +305,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       setShowMention(false);
       setShowAssetPicker(false);
       setMentionQuery('');
-      setAssetList([]);
-      setAssetFolderEntries([]);
-      setAssetGlobalRootPath(null);
-      setAssetFolderSelection({ kind: 'all' });
-      setAssetCreativeKind(null);
-      setAssetTagMap({});
+      resetAssetSelection();
       editorOwnerRef.current = { projectId: currentProjectId, nodeId };
       historyRef.current.clear();
     }
@@ -536,66 +367,8 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     if (root && !composingRef.current) syncMentionChipLocale(root, nodeMetaMap, t);
   }, [compositionRevision, nodeMetaMap, t]);
 
-  // ── Emit prompt string to parent ──
-  const emitDOM = useCallback((group: string | null = null) => {
-    if (disabledRef.current) return;
-    const el = editorRef.current;
-    if (!el) return;
-    syncGlobalCharacterReferenceChips(el);
-    syncComfyRefmodReferenceChips(el);
-    syncImageReferenceLabels(el, nodeMetaMap);
-    const nextPrompt = serializeDOM(el);
-    const previousPrompt = syncedPromptRef.current;
-    syncedPromptRef.current = nextPrompt;
-    // IME 中间态仍实时回写，整次组合输入只在结束时形成一个撤销步骤。
-    if (!composingRef.current) historyRef.current.record(captureMentionEditorSnapshot(el, nextPrompt), group);
-    onChange(nextPrompt, previousPrompt);
-  }, [nodeMetaMap, onChange]);
-
-  const applyHistory = useCallback((direction: 'undo' | 'redo') => {
-    if (disabledRef.current) return;
-    const el = editorRef.current;
-    if (!el || composingRef.current) return;
-    cancelChipDragRef.current?.();
-    cancelChipDragRef.current = null;
-    historyRef.current.updateSelection(captureMentionEditorSelection(el));
-    const snapshot = historyRef.current[direction]();
-    if (!snapshot) return;
-    const previousPrompt = syncedPromptRef.current;
-    restoreMentionEditorSnapshot(el, snapshot);
-    syncGlobalCharacterReferenceChips(el);
-    syncComfyRefmodReferenceChips(el);
-    syncShotlistReferenceChips(el, nodeMetaMap);
-    syncImageReferenceLabels(el, nodeMetaMap);
-    syncedPromptRef.current = snapshot.prompt;
-    lastFocusedWfValueRef.current = (document.activeElement as HTMLElement | null)?.closest<HTMLSpanElement>('.prompt-chip-wf-value') ?? null;
-    savedMentionRangeRef.current = null;
-    replacementChipRef.current = null;
-    setChipMenu(null);
-    setShowMention(false);
-    onChange(snapshot.prompt, previousPrompt);
-  }, [nodeMetaMap, onChange]);
-
-  useEffect(() => {
-    const el = editorRef.current;
-    if (!el) return;
-    const beforeInput = (event: InputEvent) => {
-      if (disabledRef.current) {
-        event.preventDefault();
-        return;
-      }
-      if (event.inputType === 'historyUndo' || event.inputType === 'historyRedo') {
-        if (composingRef.current || event.isComposing) return;
-        event.preventDefault();
-        event.stopPropagation();
-        applyHistory(event.inputType === 'historyUndo' ? 'undo' : 'redo');
-        return;
-      }
-      historyRef.current.updateSelection(captureMentionEditorSelection(el));
-    };
-    el.addEventListener('beforeinput', beforeInput);
-    return () => el.removeEventListener('beforeinput', beforeInput);
-  }, [applyHistory]);
+  const history = useMentionInputHistory(input, nodeMetaMap, onChange, setShowMention);
+  const { emitDOM } = history;
 
   const canvasMentionNodes = useMemo(
     () => (showMention ? resolveCanvasMentionNodes(nodeId, nodes, edges) : []),
@@ -613,7 +386,6 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     ? workflowMentionNodes.filter((n) => matchesMentionQuery(mentionQuery, [n.id, n._ioNodeId, n.label]))
     : workflowMentionNodes;
 
-  const currentNodeType = currentEditorData?.type;
   const isAudioNode = currentNodeType === 'ai-audio';
   const isVideoNode = currentNodeType === 'ai-video';
   const dramaMentionItems = useMemo(() => {
@@ -719,193 +491,18 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     return () => document.removeEventListener('mousedown', handler, true);
   }, [showMention]);
 
-  // ── Helpers ──
-  /** 选择完成后移除待替换胶囊，或删除光标前的 @ 查询；失效目标阻止后续插入。 */
-  const deleteAtChar = useCallback(() => {
-    if (disabledRef.current) return false;
-    const sel = window.getSelection();
-    if (!sel || !sel.rangeCount) return false;
-    const replacement = replacementChipRef.current;
-    if (replacement) {
-      replacementChipRef.current = null;
-      if (!isCurrentChipTarget(replacement)) {
-        setShowMention(false);
-        setShowAssetPicker(false);
-        return false;
-      }
-      const range = document.createRange();
-      range.selectNode(replacement.chip);
-      range.deleteContents();
-      range.collapse(true);
-      sel.removeAllRanges();
-      sel.addRange(range);
-      return true;
-    }
-    const range = sel.getRangeAt(0);
-    const container = range.startContainer;
-    if (!container || container.nodeType !== Node.TEXT_NODE) return true;
-    const cursor = range.startOffset;
-    const textBefore = (container.textContent || '').slice(0, cursor);
-    const atIdx = textBefore.lastIndexOf('@');
-    if (atIdx < 0) return true;
-    const r = document.createRange();
-    r.setStart(container, atIdx);
-    r.setEnd(container, cursor);
-    r.deleteContents();
-    r.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(r);
-    return true;
-  }, [isCurrentChipTarget]);
-
-  const closeRefmodSettings = useCallback(() => {
-    refmodSessionRef.current = undefined;
-    setRefmodSession(undefined);
-  }, []);
-
-  const openRefmodSettings = useCallback((asset: ComfyRefmodAsset, thumbnailUrl?: string, chip?: HTMLElement, manualIndex?: number) => {
-    const root = editorRef.current;
-    const state = useAppStore.getState();
-    if (!root || !nodeId || !localComfyWorkflow || !canMentionRefmod || state.currentProjectId !== currentProjectId) return;
-    try {
-      const node = state.nodes.find((item) => item.id === nodeId);
-      if (!node) throw new Error(translate('视频节点已不存在，请重新打开提示词'));
-      if (node.data.role === 'source' || node.data.status === 'loading') throw new Error(translate('源视频或正在生成的视频不能修改角色引用'));
-      const replacement = replacementChipRef.current;
-      if (!chip && replacement) {
-        if (!isCurrentChipTarget(replacement)) return;
-        chip = replacement.chip;
-      }
-      const currentPrompt = serializeDOM(root);
-      const token = chip?.getAttribute('data-refmod-raw') || undefined;
-      const initial = manualIndex === undefined ? (token ? parseComfyRefmodMentions(token).mentions[0]?.selection : undefined) : node.data.comfyRefmods?.[manualIndex];
-      if (manualIndex !== undefined && !initial) throw new Error(translate('手工绑定已变化，请重新打开列表'));
-      const parsed = parseComfyRefmodMentions(currentPrompt);
-      const otherMentions = [...parsed.mentions];
-      const editingIndex = token ? otherMentions.findIndex((item) => item.token === token) : -1;
-      if (editingIndex >= 0) otherMentions.splice(editingIndex, 1);
-      const existing = mergeComfyRefmodSelections((node.data.comfyRefmods ?? []).filter((_, index) => index !== manualIndex), otherMentions.map((item) => item.selection));
-      const selection = window.getSelection();
-      const saved = savedMentionRangeRef.current ?? (selection?.rangeCount ? selection.getRangeAt(0) : undefined);
-      const session: RefmodEditSession = {
-        asset, thumbnailUrl, initial, manualIndex, existing, token, chip, range: saved?.cloneRange(),
-        projectId: currentProjectId, nodeId, workflow: localComfyWorkflow, prompt: currentPrompt,
-        nodeSnapshot: JSON.stringify([node.data.workflowId, node.data.provider, node.data.comfyRefmods]),
-      };
-      refmodSessionRef.current = session;
-      replacementChipRef.current = null;
-      setRefmodSession(session); setRefmodUiError('');
-      setShowMention(false); setMentionQuery('');
-    } catch (cause) { setRefmodUiError(cause instanceof Error ? cause.message : translate('读取 ComfyUI 角色引用失败')); }
-  }, [nodeId, localComfyWorkflow, canMentionRefmod, currentProjectId, isCurrentChipTarget]);
-
-  const editRefmodChip = useCallback((chip: HTMLElement) => {
-    try {
-      const raw = chip.getAttribute('data-refmod-raw') || '';
-      const mention = parseComfyRefmodMentions(raw).mentions[0];
-      if (!mention) throw new Error(translate('角色引用已损坏，请删除后重新选择'));
-      const saved = useAppStore.getState().config.comfyRefmodAssets?.find((item) => comfyRefmodKey(item) === comfyRefmodKey(mention.selection));
-      const asset = saved ?? { ...mention.selection, id: comfyRefmodKey(mention.selection), name: mention.label, tags: [], updatedAt: 0 };
-      openRefmodSettings(asset, resolveComfyRefmodChipPresentation(raw)?.thumbnailUrl, chip);
-    } catch (cause) { setRefmodUiError(cause instanceof Error ? cause.message : translate('无法编辑角色引用')); }
-  }, [openRefmodSettings]);
-
-  const applyRefmodMention = useCallback(async (selection: ComfyRefmodSelection) => {
-    const session = refmodSessionRef.current;
-    const root = editorRef.current;
-    if (!session || !root) throw new Error(translate('角色设置已关闭，请重新选择'));
-    const assertCurrent = () => {
-      if (disabledRef.current) throw new Error(translate('编辑器已禁用，请停止当前操作后重试'));
-      const state = useAppStore.getState();
-      const node = state.nodes.find((item) => item.id === session.nodeId);
-      if (refmodSessionRef.current !== session || state.currentProjectId !== session.projectId
-        || editorOwnerRef.current.nodeId !== session.nodeId || selectedWorkflowRef.current !== session.workflow
-        || state.workflows.find((item) => item.id === session.workflow.id) !== session.workflow || !node
-        || node.data.role === 'source' || node.data.status === 'loading'
-        || session.nodeSnapshot !== JSON.stringify([node.data.workflowId, node.data.provider, node.data.comfyRefmods])
-        || serializeDOM(root) !== session.prompt) throw new Error(translate('项目、工作流或提示词已变化，请关闭设置后重新选择'));
-      return node;
-    };
-    const current = assertCurrent();
-    // 手工绑定不能被提示词悄悄覆盖；需要用户先在“已绑定”列表移除冲突项。
-    const retainedManual = (current.data.comfyRefmods ?? []).filter((_, index) => index !== session.manualIndex);
-    mergeComfyRefmodSelections(retainedManual, [selection]);
-    mergeComfyRefmodSelections(session.existing, [selection]);
-    const prepared = await prepareComfyRefmodSelections(session.workflow, [selection], session.existing);
-    assertCurrent();
-    const resolved = prepared.find((item) => item.loaderNodeId === selection.loaderNodeId && item.slot === selection.slot
-      && comfyRefmodKey(item) === comfyRefmodKey(selection));
-    if (!resolved) throw new Error(translate('无法确认目标槽位，请刷新目录后重试'));
-    if (session.manualIndex !== undefined) {
-      const latest = assertCurrent();
-      const next = [...(latest.data.comfyRefmods ?? [])];
-      next[session.manualIndex] = resolved;
-      useAppStore.getState().updateNodeData(session.nodeId, { comfyRefmods: next });
-      closeRefmodSettings();
-      return;
-    }
-    const raw = buildComfyRefmodMention(resolved, session.asset.name);
-    const chip = buildComfyRefmodChipEl(raw, session.thumbnailUrl);
-    root.focus({ preventScroll: true });
-    const caret = window.getSelection();
-    if (!caret) throw new Error(translate('无法恢复提示词光标，请重新打开设置'));
-    let range: Range;
-    if (session.chip) {
-      if (!root.contains(session.chip) || (session.chip.getAttribute('data-refmod-raw') || undefined) !== session.token) throw new Error(translate('角色胶囊已变化，请重新选择'));
-      session.chip.replaceWith(chip);
-      range = document.createRange();
-    } else {
-      if (!session.range || !root.contains(session.range.startContainer) || !root.contains(session.range.endContainer)) throw new Error(translate('插入位置已变化，请重新输入 @ 选择'));
-      caret.removeAllRanges(); caret.addRange(session.range);
-      if (!deleteAtChar()) throw new Error(translate('插入位置已变化，请重新输入 @ 选择'));
-      range = caret.rangeCount ? caret.getRangeAt(0) : session.range;
-      const element = range.startContainer.nodeType === Node.ELEMENT_NODE ? range.startContainer as Element : range.startContainer.parentElement;
-      const workflowChip = element?.closest('[data-wf-id]');
-      if (workflowChip && root.contains(workflowChip)) { range.setStartAfter(workflowChip); range.collapse(true); }
-      range.insertNode(chip);
-    }
-    ensureCaretSlotBeforeChip(chip);
-    range.setStartAfter(chip); range.collapse(true);
-    caret.removeAllRanges(); caret.addRange(range);
-    savedMentionRangeRef.current = null;
-    emitDOM(); closeRefmodSettings();
-  }, [deleteAtChar, emitDOM, closeRefmodSettings]);
-
-  const removeManualRefmod = useCallback((reference: ComfyRefmodSelection) => {
-    const state = useAppStore.getState();
-    const node = state.nodes.find((item) => item.id === nodeId);
-    if (state.currentProjectId !== currentProjectId || !node || !currentEditorData || node.data.status === 'loading' || node.data.role === 'source'
-      || selectedWorkflowRef.current !== selectedWorkflow
-      || JSON.stringify([node.data.workflowId, node.data.comfyRefmods]) !== JSON.stringify([currentEditorData.workflowId, manualRefmods])) {
-      setRefmodUiError(translate('项目或视频绑定已变化，请重新打开 ComfyUI 角色列表')); return;
-    }
-    state.updateNodeData(node.id, { comfyRefmods: manualRefmods.filter((item) => item !== reference) });
-    setRefmodUiError('');
-  }, [nodeId, currentProjectId, currentEditorData, selectedWorkflow, manualRefmods]);
-
-  // ── Insert a canvas node chip ──
-  const insertChipAtCursor = useCallback(
-    (refNodeId: string, refLabel: string) => {
-      const el = editorRef.current;
-      if (!el) return;
-      const sel = window.getSelection();
-      if (!sel || !sel.rangeCount) return;
-      const range = sel.getRangeAt(0);
-      if (!el.contains(range.startContainer)) {
-        range.selectNodeContents(el);
-        range.collapse(false);
-      }
-      const chip = buildChipEl(refNodeId, refLabel, nodeMetaMap);
-      range.insertNode(chip);
-      ensureCaretSlotBeforeChip(chip);
-      range.setStartAfter(chip);
-      range.collapse(true);
-      sel.removeAllRanges();
-      sel.addRange(range);
-      emitDOM();
-    },
-    [nodeMetaMap, emitDOM],
-  );
+  const {
+    insertChipAtCursor, deleteAtChar, closeRefmodSettings, openRefmodSettings, editRefmodChip, applyRefmodMention,
+    removeManualRefmod, handleSelectCanvasMention, handleSelectWorkflowMention,
+    insertDramaChipAtCursor, handleSelectDramaReference, handleSelectDramaMention,
+    handleSelectAsset, handleInput, handleKeyDown, handlePaste,
+  } = useMentionInputActions({
+    input, history, showMention, setShowMention, setMentionQuery, setRefmodSession,
+    refmodSessionRef, setRefmodUiError, currentEditorData, selectedWorkflow, currentProjectId,
+    editorOwnerRef, isCurrentEditorOwner, isCurrentChipTarget, setShowAssetPicker,
+    selectedWorkflowRef, nodeMetaMap, setDramaRefPickerId, localComfyWorkflow, canMentionRefmod,
+    manualRefmods, onSubmit, nodeId, canSubmit, submitOnShiftEnter, submitShortcut, onSlashTrigger,
+  });
 
   // 暴露命令式插入：在当前光标处插入引用芯片；若编辑器内无有效光标则落到末尾
   useImperativeHandle(ref, () => ({
@@ -988,646 +585,6 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       insertChipAtCursor(id, label);
     },
   }), [insertChipAtCursor, emitDOM, nodeMetaMap, textInputSelection, rememberTextInputSelection, showMention, chipMenu]);
-
-  // ── Insert a workflow IO chip ──
-  const insertWorkflowChipAtCursor = useCallback(
-    (ioNodeId: string, ioNodeTitle: string, ioNodeType: WorkflowIONodeType) => {
-      const el = editorRef.current;
-      if (!el) return;
-      const sel = window.getSelection();
-      if (!sel || !sel.rangeCount) return;
-      const range = sel.getRangeAt(0);
-      if (!el.contains(range.startContainer)) {
-        range.selectNodeContents(el);
-        range.collapse(false);
-      }
-      const chip = buildWorkflowChipEl(ioNodeId, ioNodeTitle, ioNodeType);
-      range.insertNode(chip);
-      ensureCaretSlotBeforeChip(chip);
-      const valueArea = chip.querySelector('.prompt-chip-wf-value');
-      if (valueArea) {
-        const textNode = valueArea.firstChild;
-        range.setStart(textNode || valueArea, 0);
-      } else {
-        range.setStartAfter(chip);
-      }
-      range.collapse(true);
-      sel.removeAllRanges();
-      sel.addRange(range);
-      emitDOM();
-    },
-    [emitDOM],
-  );
-
-  // ── Mention selection handlers ──
-  const handleSelectCanvasMention = useCallback(
-    (refNodeId: string, refLabel: string) => {
-      if (useAppStore.getState().currentProjectId !== currentProjectId) return;
-      // Focus the editor FIRST so the selection we restore below
-      // survives across the contentEditable boundary (workflow chip value area).
-      const el = editorRef.current;
-      if (el) el.focus();
-      const saved = savedMentionRangeRef.current;
-      savedMentionRangeRef.current = null;
-      if (saved) {
-        const sel = window.getSelection();
-        if (sel) {
-          sel.removeAllRanges();
-          sel.addRange(saved);
-        }
-      }
-      if (!deleteAtChar()) return;
-      insertChipAtCursor(refNodeId, refLabel);
-      setShowMention(false);
-      setMentionQuery('');
-    },
-    [currentProjectId, deleteAtChar, insertChipAtCursor],
-  );
-
-  const handleSelectWorkflowMention = useCallback(
-    (ioNodeId: string, ioNodeTitle: string, ioNodeType: WorkflowIONodeType) => {
-      if (useAppStore.getState().currentProjectId !== currentProjectId) return;
-      // Focus the editor FIRST so the selection we restore below
-      // survives across the contentEditable boundary (workflow chip value area).
-      const el = editorRef.current;
-      if (el) el.focus();
-      const saved = savedMentionRangeRef.current;
-      savedMentionRangeRef.current = null;
-      if (saved) {
-        const sel = window.getSelection();
-        if (sel) {
-          sel.removeAllRanges();
-          sel.addRange(saved);
-        }
-      }
-      if (!deleteAtChar()) return;
-      insertWorkflowChipAtCursor(ioNodeId, ioNodeTitle, ioNodeType);
-      setShowMention(false);
-      setMentionQuery('');
-    },
-    [currentProjectId, deleteAtChar, insertWorkflowChipAtCursor],
-  );
-
-  const insertDramaChipAtCursor = useCallback(
-    (dramaId: string, name: string, kind: string, thumbUrl?: string) => {
-      const el = editorRef.current;
-      if (!el) return;
-      const sel = window.getSelection();
-      if (!sel || !sel.rangeCount) return;
-      const range = sel.getRangeAt(0);
-      if (!el.contains(range.startContainer)) {
-        range.selectNodeContents(el);
-        range.collapse(false);
-      }
-      const chip = buildDramaChipEl(dramaId, name, kind, thumbUrl);
-      range.insertNode(chip);
-      ensureCaretSlotBeforeChip(chip);
-      range.setStartAfter(chip);
-      range.collapse(true);
-      sel.removeAllRanges();
-      sel.addRange(range);
-      emitDOM();
-    },
-    [emitDOM],
-  );
-
-  /** 把光标放回 @ 处，供插入芯片 */
-  const restoreMentionCursor = useCallback(() => {
-    const el = editorRef.current;
-    if (el) el.focus();
-    const saved = savedMentionRangeRef.current;
-    savedMentionRangeRef.current = null;
-    if (!saved) return;
-    const sel = window.getSelection();
-    if (sel) {
-      sel.removeAllRanges();
-      sel.addRange(saved);
-    }
-  }, []);
-
-  // 收起搜索时返回提示词光标，仍保留 @ 范围供下一次选择使用。
-  const focusMentionCursor = useCallback(() => {
-    const editor = editorRef.current;
-    const saved = savedMentionRangeRef.current;
-    editor?.focus({ preventScroll: true });
-    if (!editor || !saved || !editor.contains(saved.startContainer) || !editor.contains(saved.endContainer)) return;
-    const selection = window.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(saved.cloneRange());
-  }, []);
-
-  /** 二级菜单：引用角色的某一张参考图，或把全部参考图拼成一张 */
-  const handleSelectDramaReference = useCallback(
-    (
-      item: { id: string; name: string; kind: string },
-      pick: string,
-      thumb?: string,
-    ) => {
-      if (!isCurrentEditorOwner()) return;
-      restoreMentionCursor();
-      if (!deleteAtChar()) return;
-      insertDramaChipAtCursor(
-        buildDramaMentionId(item.id, pick),
-        item.name,
-        item.kind,
-        thumb,
-      );
-      setShowMention(false);
-      setMentionQuery('');
-      setDramaRefPickerId(null);
-    },
-    [isCurrentEditorOwner, restoreMentionCursor, deleteAtChar, insertDramaChipAtCursor],
-  );
-
-  const handleSelectDramaMention = useCallback(
-    (item: ReturnType<typeof resolveDramaMentionItems>[number]) => {
-      if (!isCurrentEditorOwner()) return;
-      // 资产库始终保留 @drama 身份，绑图节点只用于读取缩略图。
-      restoreMentionCursor();
-      if (!deleteAtChar()) return;
-      let thumb: string | undefined;
-      if (item.imageNodeId && !item.id.startsWith('global/')) {
-        const n = useAppStore.getState().nodes.find((x) => x.id === item.imageNodeId);
-        thumb = bestNodeThumb(n?.data ?? {}) || item.imageUrl;
-      } else {
-        thumb = item.imageUrl || item.referenceImages?.find((reference) => reference.imageUrl)?.imageUrl;
-      }
-      insertDramaChipAtCursor(item.id, item.name, item.kind, thumb);
-      setShowMention(false);
-      setMentionQuery('');
-    },
-    [isCurrentEditorOwner, restoreMentionCursor, deleteAtChar, insertDramaChipAtCursor],
-  );
-
-  // ── Insert an asset reference chip ──
-  const insertAssetChipAtCursor = useCallback(
-    (path: string, assetUrl?: string) => {
-      const el = editorRef.current;
-      if (!el) return;
-      const sel = window.getSelection();
-      if (!sel || !sel.rangeCount) return;
-      const range = sel.getRangeAt(0);
-      if (!el.contains(range.startContainer)) {
-        range.selectNodeContents(el);
-        range.collapse(false);
-      }
-      const chip = buildAssetChipEl(path, assetUrl);
-      range.insertNode(chip);
-      ensureCaretSlotBeforeChip(chip);
-      range.setStartAfter(chip);
-      range.collapse(true);
-      sel.removeAllRanges();
-      sel.addRange(range);
-      emitDOM();
-    },
-    [emitDOM],
-  );
-
-  // ── 打开资产弹窗（保持 @ 处的光标范围，关闭 @ 菜单）──
-  const openAssetPicker = useCallback(() => {
-    focusMentionCursor();
-    setShowMention(false);
-    setShowAssetPicker(true);
-    setAssetSearch('');
-    setAssetFolderSelection({ kind: 'all' });
-    setAssetCreativeKind(null);
-    setActiveAssetTag(null);
-    setAssetTagsExpanded(false);
-  }, [focusMentionCursor]);
-
-  const closeAssetPicker = useCallback(() => {
-    setShowAssetPicker(false);
-    focusMentionCursor();
-  }, [focusMentionCursor]);
-  useDialogFocus(showAssetPicker && !disabled, assetPickerDialogRef, closeAssetPicker, { zIndex: 10050 });
-
-  // 只在搜索/资产弹窗打开时读取目录；键入关键词只过滤本轮缓存。
-  const shouldLoadAssets = showAssetPicker || (showMention && resourceSearchExpanded);
-  useEffect(() => {
-    if (!shouldLoadAssets) return;
-    let alive = true;
-    const controller = new AbortController();
-    setAssetList([]);
-    setAssetFolderEntries([]);
-    setAssetGlobalRootPath(null);
-    setAssetTagMap({});
-    setAssetLoading(true);
-    setAssetLoadError(false);
-    setAssetScanTruncated(false);
-    void Promise.allSettled([listGlobalFolderContents({ signal: controller.signal }), listExternalFolderContents(assetFolders ?? [], { maxFilesPerFolder: 3000, signal: controller.signal }), getAllAssetMeta()])
-      .then(([globalResult, folderResult, metaResult]) => {
-        if (!alive || useAppStore.getState().currentProjectId !== currentProjectId) return;
-        const globalFiles = globalResult.status === 'fulfilled' ? globalResult.value.files : [];
-        const folderFiles = folderResult.status === 'fulfilled' ? folderResult.value.files : [];
-        const metas = metaResult.status === 'fulfilled' ? metaResult.value : [];
-        const seen = new Set<string>();
-        const merged: AssetFileEntry[] = [];
-        for (const f of [...globalFiles, ...folderFiles]) {
-          if (seen.has(f.path)) continue;
-          seen.add(f.path);
-          merged.push(f);
-        }
-        const tagMap: Record<string, string[]> = {};
-        for (const m of metas) if (m.tags?.length) tagMap[m.assetId] = m.tags;
-        setAssetList(merged);
-        const folders = [...(globalResult.status === 'fulfilled' ? globalResult.value.folders : []),
-          ...(folderResult.status === 'fulfilled' ? folderResult.value.folders : [])];
-        const uniqueFolders = Array.from(new Map(folders.map((folder) => [JSON.stringify([folder.rootPath, folder.relativePath]), folder])).values());
-        setAssetFolderEntries(uniqueFolders);
-        setAssetFolderSelection((selection) => selection.kind === 'folder'
-          && !uniqueFolders.some((folder) => folder.rootPath === selection.rootPath && folder.relativePath === selection.relativePath)
-          ? { kind: 'all' } : selection);
-        setAssetGlobalRootPath(globalResult.status === 'fulfilled' ? globalResult.value.rootPath : null);
-        setAssetTagMap(tagMap);
-        setAssetLoadError(globalResult.status === 'rejected' || folderResult.status === 'rejected'
-          || (globalResult.status === 'fulfilled' && globalResult.value.folders.some((folder) => folder.availability === 'offline'))
-          || (folderResult.status === 'fulfilled' && folderResult.value.folders.some((folder) => folder.availability === 'offline')));
-        setAssetScanTruncated((globalResult.status === 'fulfilled' && globalResult.value.truncated)
-          || (folderResult.status === 'fulfilled' && folderResult.value.truncated));
-      })
-      .catch(() => { if (alive && useAppStore.getState().currentProjectId === currentProjectId) setAssetLoadError(true); })
-      .finally(() => { if (alive && useAppStore.getState().currentProjectId === currentProjectId) setAssetLoading(false); });
-    return () => { alive = false; controller.abort(); };
-  }, [shouldLoadAssets, assetFolders, assetLoadRevision, currentProjectId, nodeId]);
-
-  const handleSelectAsset = useCallback(
-    (file: AssetFileEntry) => {
-      if (!isCurrentEditorOwner()) return;
-      const el = editorRef.current;
-      if (el) el.focus();
-      const saved = savedMentionRangeRef.current;
-      savedMentionRangeRef.current = null;
-      if (saved) {
-        const sel = window.getSelection();
-        if (sel) { sel.removeAllRanges(); sel.addRange(saved); }
-      }
-      if (!deleteAtChar()) return;
-      insertAssetChipAtCursor(file.path, file.assetUrl);
-      setShowAssetPicker(false);
-      setShowMention(false);
-      setMentionQuery('');
-    },
-    [isCurrentEditorOwner, deleteAtChar, insertAssetChipAtCursor],
-  );
-
-  // 标签合并 + 派生标签 chip
-  const taggedAssets = useMemo(
-    () => assetList.map((f) => {
-      const key = f.assetId ?? f.path;
-      return assetTagMap[key] ? { ...f, tags: assetTagMap[key] } : f;
-    }),
-    [assetList, assetTagMap],
-  );
-  const folderAssets = useMemo(() => selectAssetFolderFiles(taggedAssets, assetFolderSelection), [taggedAssets, assetFolderSelection]);
-  const globalPickerItems = useMemo(() => showAssetPicker ? resolveGlobalAssetPickerItems(globalAssets, null, '', currentNodeType) : [],
-    [showAssetPicker, globalAssets, currentNodeType]);
-  const creativePickerItems = useMemo(() => showAssetPicker && assetCreativeKind ? resolveGlobalAssetPickerItems(globalAssets, assetCreativeKind, assetSearch, currentNodeType) : [],
-    [showAssetPicker, globalAssets, assetCreativeKind, assetSearch, currentNodeType]);
-  const creativePickerCounts = useMemo(() => ({
-    character: globalPickerItems.filter((item) => item.category === 'character').length,
-    scene: globalPickerItems.filter((item) => item.category === 'scene').length,
-    prop: globalPickerItems.filter((item) => item.category === 'prop').length,
-    weapon: globalPickerItems.filter((item) => item.category === 'weapon').length,
-  }), [globalPickerItems]);
-  const assetTagList = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const f of folderAssets) for (const t of f.tags ?? []) counts.set(t, (counts.get(t) ?? 0) + 1);
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
-  }, [folderAssets]);
-
-  // 沿用资产库的完整单排标签与“更多”折叠方式，缩放动画中用布局宽度测量。
-  useEffect(() => {
-    if (!showAssetPicker || disabled || assetCreativeKind) return;
-    const row = assetTagRowRef.current;
-    const list = assetTagListRef.current;
-    if (!row || !list) return;
-    const measure = () => {
-      const rowStyle = window.getComputedStyle(row);
-      const availableWidth = row.clientWidth - (parseFloat(rowStyle.paddingLeft) || 0) - (parseFloat(rowStyle.paddingRight) || 0);
-      const rowGap = parseFloat(rowStyle.columnGap) || 0;
-      const listGap = parseFloat(window.getComputedStyle(list).columnGap) || 0;
-      const widths = Array.from(list.children, (item) => (item as HTMLElement).offsetWidth);
-      const contentWidth = widths.reduce((total, width) => total + width, 0) + Math.max(0, widths.length - 1) * listGap;
-      const overflow = contentWidth > availableWidth + 1;
-      setAssetTagsOverflow(overflow);
-      if (!overflow) {
-        setVisibleAssetTagCount(widths.length);
-        setAssetTagsExpanded(false);
-        return;
-      }
-      let usedWidth = 0;
-      let visibleCount = 0;
-      for (const width of widths) {
-        const nextWidth = usedWidth + (visibleCount > 0 ? listGap : 0) + width;
-        if (nextWidth > availableWidth - 28 - rowGap) break;
-        usedWidth = nextWidth;
-        visibleCount++;
-      }
-      setVisibleAssetTagCount(visibleCount);
-    };
-    const frame = window.requestAnimationFrame(measure);
-    const observer = new ResizeObserver(measure);
-    observer.observe(row);
-    return () => { window.cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [showAssetPicker, disabled, assetCreativeKind, assetTagList, assetTagsExpanded]);
-
-  const filteredAssets = useMemo(() => {
-    const q = assetSearch.trim().toLowerCase();
-    return folderAssets.filter((f) => {
-      if (activeAssetTag && !(f.tags ?? []).includes(activeAssetTag)) return false;
-      if (q) {
-        const inName = f.name.toLowerCase().includes(q);
-        const inTags = (f.tags ?? []).some((t) => t.toLowerCase().includes(q));
-        if (!inName && !inTags) return false;
-      }
-      return true;
-    });
-  }, [folderAssets, assetSearch, activeAssetTag]);
-
-  // 增量渲染：过滤变化时重置
-  useEffect(() => { setAssetVisible(40); }, [assetSearch, activeAssetTag, showAssetPicker, assetFolderSelection, assetCreativeKind]);
-  const visibleAssets = useMemo(() => filteredAssets.slice(0, assetVisible), [filteredAssets, assetVisible]);
-  const visibleCreativePickerItems = useMemo(() => creativePickerItems.slice(0, assetVisible), [creativePickerItems, assetVisible]);
-  const assetPickerResultCount = assetCreativeKind ? creativePickerItems.length : filteredAssets.length;
-  useEffect(() => {
-    // 搜索可先预读资产；弹窗真正显示列表后才有哨兵，开关和加载状态也需重新绑定。
-    if (!showAssetPicker || disabled || (assetCreativeKind ? globalDramaAssetsLoading : assetLoading)) return;
-    const el = assetSentinelRef.current;
-    if (!el) return;
-    const root = el.closest('.asset-picker-grid') as HTMLElement | null;
-    const io = new IntersectionObserver((entries) => {
-      if (entries[0]?.isIntersecting) {
-        setAssetVisible((c) => (c < assetPickerResultCount ? c + 40 : c));
-      }
-    }, { root, rootMargin: '200px' });
-    io.observe(el);
-    return () => io.disconnect();
-  }, [showAssetPicker, disabled, assetLoading, globalDramaAssetsLoading, assetCreativeKind, assetFolderSelection, assetPickerResultCount, assetVisible]);
-
-  // ── Input handler: detect @ and / ──
-  const handleInput = useCallback((event: React.FormEvent<HTMLDivElement>) => {
-    if (disabledRef.current) return;
-    replacementChipRef.current = null;
-    const el = editorRef.current;
-    if (!el) return;
-    normalizeChipSlots(el); // 删字后行首化的芯片补回光标落点
-    const sel = window.getSelection();
-    if (sel && sel.rangeCount) {
-      const range = sel.getRangeAt(0);
-      const node = range.startContainer;
-      if (node && node.nodeType === Node.TEXT_NODE) {
-        const text = node.textContent || '';
-        const cursorPos = range.startOffset;
-        const before = text.slice(0, cursorPos);
-        // 光标前最近的 @… 查询段（不含空格/换行）
-        const atIdx = before.lastIndexOf('@');
-        const afterAt = atIdx >= 0 ? before.slice(atIdx + 1) : '';
-        const inMention =
-          atIdx >= 0
-          && !afterAt.includes(' ')
-          && !afterAt.includes('\n')
-          && !afterAt.includes('{'); // 已完成的 @{...} 芯片序列化文本不走菜单
-        if (inMention) {
-          setMentionQuery(afterAt);
-          setShowMention(true);
-          const sel2 = window.getSelection();
-          if (sel2 && sel2.rangeCount) {
-            savedMentionRangeRef.current = sel2.getRangeAt(0).cloneRange();
-          }
-        } else {
-          if (showMention) setShowMention(false);
-          if (cursorPos > 0 && text[cursorPos - 1] === '/') {
-            onSlashTrigger?.();
-          }
-        }
-      } else if (showMention) {
-        // 光标移到了非文本节点（如 chip），关闭菜单
-        setShowMention(false);
-      }
-    }
-    const inputType = (event.nativeEvent as InputEvent).inputType;
-    const group = ['insertText', 'deleteContentBackward', 'deleteContentForward'].includes(inputType) ? inputType : null;
-    emitDOM(group);
-  }, [emitDOM, onSlashTrigger, showMention]);
-
-  // ── KeyDown: mention navigation / submit / chip deletion ──
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLDivElement>) => {
-      if (disabledRef.current) { e.preventDefault(); return; }
-      // 输入法组合中：回车/方向键属于候选框，不该触发提交或 @ 选中
-      if (composingRef.current || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
-      const refmodChip = (e.target as Element | null)?.closest?.<HTMLElement>('[data-refmod-raw]');
-      if (refmodChip && e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
-        e.preventDefault(); e.stopPropagation(); editRefmodChip(refmodChip); return;
-      }
-      if (refmodChip && (e.key === 'Backspace' || e.key === 'Delete')) {
-        e.preventDefault(); refmodChip.remove(); emitDOM(); return;
-      }
-      if (editorRef.current) historyRef.current.updateSelection(captureMentionEditorSelection(editorRef.current));
-      const key = e.key.toLowerCase();
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && (key === 'z' || (key === 'y' && !e.shiftKey))) {
-        e.preventDefault();
-        e.stopPropagation();
-        applyHistory(key === 'y' || e.shiftKey ? 'redo' : 'undo');
-        return;
-      }
-      const enterAction = resolvePromptEnterAction(e, submitShortcut ?? (submitOnShiftEnter ? 'shift-enter' : 'enter'), showMention);
-      // 方向键导航前先补好行首芯片的光标落点（ZWSP），否则光标跳不到芯片前
-      if (e.key.startsWith('Arrow') && editorRef.current) normalizeChipSlots(editorRef.current);
-      // @ mention: Enter → select first match
-      if (enterAction === 'mention') {
-        e.preventDefault();
-        selectFirstMentionRef.current?.();
-        return;
-      }
-      // @ mention: Escape → close
-      if (showMention && e.key === 'Escape') {
-        e.preventDefault();
-        setShowMention(false);
-        return;
-      }
-      // Submit with the shortcut chosen by the parent; mention selection keeps plain Enter.
-      if (enterAction === 'submit') {
-        e.preventDefault();
-        if (e.repeat) return;
-        const text = editorRef.current ? serializeDOM(editorRef.current) : '';
-        if (canSubmit && text.trim() && onSubmit) onSubmit();
-        return;
-      }
-      // 换行时手动插入单个 <br>，避免浏览器在芯片旁默认插入两个 <br>（换两行）
-      if (enterAction === 'newline') {
-        e.preventDefault();
-        const sel = window.getSelection();
-        if (!sel || !sel.rangeCount) return;
-        const range = sel.getRangeAt(0);
-        range.deleteContents();
-
-        // 特例：光标正贴在某芯片前面 —— 把 <br> 插到「芯片(及其单个 ZWSP 落点)」之前，
-        // 不分裂落点、不产生双停顿，光标停在芯片前。
-        const sc = range.startContainer;
-        const so = range.startOffset;
-        let chipAfter: HTMLElement | null = null;
-        if (sc.nodeType === Node.TEXT_NODE && so === (sc.textContent?.length ?? 0) && isChipEl(sc.nextSibling)) {
-          chipAfter = sc.nextSibling as HTMLElement;
-        } else if (sc.nodeType === Node.ELEMENT_NODE && isChipEl(sc.childNodes[so])) {
-          chipAfter = sc.childNodes[so] as HTMLElement;
-        }
-        if (chipAfter) {
-          const parent = chipAfter.parentNode!;
-          let slot = chipAfter.previousSibling as Text | null;
-          const zwspOnly = !!slot && slot.nodeType === Node.TEXT_NODE && (slot.textContent === '' || slot.textContent === ZWSP);
-          if (!zwspOnly) {
-            slot = document.createTextNode(ZWSP);
-            parent.insertBefore(slot, chipAfter);
-          } else if (!slot!.textContent) {
-            slot!.textContent = ZWSP;
-          }
-          parent.insertBefore(document.createElement('br'), slot!); // <br> 在落点之前
-          range.setStart(slot!, (slot!.textContent || '').length);   // 光标落到芯片前
-          range.collapse(true);
-          sel.removeAllRanges();
-          sel.addRange(range);
-          emitDOM();
-          return;
-        }
-
-        const br = document.createElement('br');
-        range.insertNode(br);
-        const next = br.nextSibling;
-        if (!next) {
-          // 位于末尾：补一个占位 <br>，让新空行可见，光标落在新行
-          const filler = document.createElement('br');
-          br.parentNode?.insertBefore(filler, null);
-          range.setStartBefore(filler);
-        } else {
-          range.setStartAfter(br);
-        }
-        range.collapse(true);
-        sel.removeAllRanges();
-        sel.addRange(range);
-        emitDOM();
-        return;
-      }
-      // Delete chip on Backspace
-      if (e.key === 'Backspace') {
-        const sel = window.getSelection();
-        if (!sel || !sel.rangeCount) return;
-        const range = sel.getRangeAt(0);
-        if (!range.collapsed) return;
-        const node = range.startContainer;
-        const offset = range.startOffset;
-        // 芯片前的零宽落点不是正文：行首合并换行，文档开头则保留落点。
-        let chipSlot: Node | null = null;
-        if (node.nodeType === Node.TEXT_NODE && isChipEl(node.nextSibling)
-          && !(node.textContent || '').slice(0, offset).replaceAll(ZWSP, '')) {
-          chipSlot = node;
-        } else if (node === editorRef.current) {
-          const after = node.childNodes[offset];
-          const before = node.childNodes[offset - 1];
-          if (after?.nodeType === Node.TEXT_NODE && after.textContent === ZWSP && isChipEl(after.nextSibling)) {
-            chipSlot = after;
-          } else if (isChipEl(after) && before?.nodeType === Node.TEXT_NODE && before.textContent === ZWSP) {
-            chipSlot = before;
-          }
-        }
-        if (chipSlot && (isBrEl(chipSlot.previousSibling)
-          || (!chipSlot.previousSibling && chipSlot.parentNode === editorRef.current))) {
-          e.preventDefault();
-          if (node !== chipSlot) {
-            range.setStart(chipSlot, (chipSlot.textContent || '').length);
-            range.collapse(true);
-          }
-          if (isBrEl(chipSlot.previousSibling)) {
-            (chipSlot.previousSibling as ChildNode).remove();
-            emitDOM();
-          }
-          return;
-        }
-        if (node && node.nodeType === Node.TEXT_NODE && offset === 0) {
-          const valueArea = node.parentElement;
-          if (valueArea?.classList.contains('prompt-chip-wf-value')) {
-            const chipEl = valueArea.closest('[data-wf-id]');
-            if (chipEl) {
-              e.preventDefault();
-              chipEl.remove();
-              emitDOM();
-              return;
-            }
-          }
-        }
-        // 光标在文本节点开头：删除其前一个兄弟若为芯片
-        if (node && node.nodeType === Node.TEXT_NODE && offset === 0 && isChipEl(node.previousSibling)) {
-          e.preventDefault();
-          (node.previousSibling as HTMLElement).remove();
-          emitDOM();
-          return;
-        }
-        // 光标在元素层级（编辑器根 / 行尾，container 为元素）：删除光标前一个子节点若为芯片。
-        // 末尾芯片时 container 是编辑器、offset=子节点数，前一个节点是 childNodes[offset-1]（而非 previousSibling）。
-        if (node && node.nodeType === Node.ELEMENT_NODE && offset > 0 && isChipEl(node.childNodes[offset - 1])) {
-          e.preventDefault();
-          (node.childNodes[offset - 1] as HTMLElement).remove();
-          emitDOM();
-          return;
-        }
-      }
-      // Delete chip on Delete
-      if (e.key === 'Delete') {
-        const sel = window.getSelection();
-        if (!sel || !sel.rangeCount) return;
-        const range = sel.getRangeAt(0);
-        if (!range.collapsed) return;
-        const node = range.startContainer;
-        if (node.nodeType === Node.ELEMENT_NODE && isChipEl(node.childNodes[range.startOffset])) {
-          e.preventDefault(); (node.childNodes[range.startOffset] as HTMLElement).remove(); emitDOM(); return;
-        }
-        if (node && node.nodeType === Node.TEXT_NODE) {
-          const textLen = (node.textContent || '').length;
-          if (range.startOffset === textLen) {
-            const next = node.nextSibling;
-            if (next && next.nodeType === Node.ELEMENT_NODE) {
-              const nextEl = next as HTMLElement;
-              if (isChipEl(nextEl)) {
-                e.preventDefault();
-                next.remove();
-                emitDOM();
-                return;
-              }
-            }
-          }
-        }
-      }
-    },
-    [
-      showMention,
-      canSubmit,
-      onSubmit,
-      submitOnShiftEnter,
-      submitShortcut,
-      emitDOM,
-      applyHistory,
-      editRefmodChip,
-    ],
-  );
-
-  // ── Paste: plain text only ──
-  const handlePaste = useCallback(
-    (e: React.ClipboardEvent<HTMLDivElement>) => {
-      e.preventDefault();
-      if (disabledRef.current) return;
-      const plain = e.clipboardData.getData('text/plain');
-      const sel = window.getSelection();
-      if (!sel || !sel.rangeCount) return;
-      const range = sel.getRangeAt(0);
-      range.deleteContents();
-      range.insertNode(document.createTextNode(plain));
-      range.collapse(false);
-      sel.removeAllRanges();
-      sel.addRange(range);
-      emitDOM();
-    },
-    [emitDOM],
-  );
 
   // ── 芯片 hover：读取对应内容的小卡片，保留原有引用高亮联动 ──
   const lastHoverKeyRef = useRef<string | null>(null);
@@ -2522,163 +1479,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         </div>
       )}
 
-      {/* 资产引用弹窗（Portal） */}
-      {createPortal(
-        <AnimatePresence>
-          {showAssetPicker && !disabled && (
-            <motion.div
-              data-tauri-drag-region
-              data-mention-picker-open=""
-              className="asset-picker-backdrop"
-              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-              transition={{ duration: 0.18 }}
-              onMouseDown={closeAssetPicker}
-            >
-              <motion.div
-                ref={assetPickerDialogRef}
-                className="asset-picker"
-                role="dialog"
-                aria-modal="true"
-                aria-label={t('选择全局资产')}
-                tabIndex={-1}
-                initial={{ opacity: 0, scale: 0.96, y: 12 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.96, y: 12, transition: fadeFast }}
-                transition={springSmooth}
-                onMouseDown={(e) => e.stopPropagation()}
-              >
-                <div className="asset-picker-header">
-                  <div className="asset-picker-search">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-                    </svg>
-                    <input
-                      type="text" placeholder={assetCreativeKind ? t('搜索名称、简介…') : t('搜索名称或标签…')} aria-label={t('搜索全局资产')}
-                      value={assetSearch} onChange={(e) => setAssetSearch(e.target.value)}
-                    />
-                  </div>
-                  <PopupCloseButton onClick={closeAssetPicker} />
-                </div>
-
-
-                <div className="asset-picker-body">
-                  <div className="asset-picker-sidebar">
-                    <Suspense fallback={<p role="status" className="p-3 text-xs text-canvas-text-muted">{t('正在打开分类…')}</p>}>
-                    <AssetFolderNavigation
-                      readOnly compact={false} folders={assetFolderEntries} selection={assetFolderSelection}
-                      totalCount={assetList.length} globalCount={selectAssetFolderFiles(assetList, { kind: 'global' }).length}
-                      globalRootPath={assetGlobalRootPath} loading={assetLoading}
-                      creativeKind={assetCreativeKind} creativeCounts={creativePickerCounts}
-                      onSelect={(selection) => {
-                        setAssetCreativeKind(null); setAssetFolderSelection(selection); setActiveAssetTag(null); setAssetTagsExpanded(false);
-                      }}
-                      onSelectCreative={(kind) => {
-                        setAssetCreativeKind(kind); setActiveAssetTag(null); setAssetTagsExpanded(false);
-                      }}
-                    />
-                    </Suspense>
-                  </div>
-                  <div className="asset-picker-content">
-                {!assetCreativeKind && (assetLoadError || assetScanTruncated) && <div role="status" className="flex flex-wrap items-center gap-2 p-2 text-xs text-canvas-text-secondary">
-                  <span>{assetLoadError ? t('部分目录读取失败') : t('目录文件较多，当前仅显示已扫描的文件')}</span>
-                  <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" disabled={assetLoading} onClick={() => setAssetLoadRevision((revision) => revision + 1)}>{t('重新读取')}</button>
-                </div>}
-                {/* 标签筛选 */}
-                {!assetCreativeKind && assetTagList.length > 0 && (
-                  <div ref={assetTagRowRef} className={`asset-picker-tags${assetTagsExpanded ? ' expanded' : ''}`}>
-                    <div ref={assetTagListRef} id={assetTagListId} className="assets-category-list">
-                      <button
-                        type="button"
-                        className={`asset-picker-tag ${activeAssetTag === null ? 'active' : ''} ${assetTagsExpanded || visibleAssetTagCount > 0 ? '' : 'assets-filter-item-hidden'}`}
-                        aria-pressed={activeAssetTag === null}
-                        onClick={() => setActiveAssetTag(null)}
-                      >{t('全部')}</button>
-                      {assetTagList.map(([tag, count], index) => (
-                        <button
-                          key={tag}
-                          type="button"
-                          className={`asset-picker-tag ${activeAssetTag === tag ? 'active' : ''} ${assetTagsExpanded || index + 1 < visibleAssetTagCount ? '' : 'assets-filter-item-hidden'}`}
-                          aria-pressed={activeAssetTag === tag}
-                          title={tag}
-                          onClick={() => setActiveAssetTag((t) => (t === tag ? null : tag))}
-                        ><span className="asset-picker-tag-label">#{tag}</span><span className="asset-picker-tag-count">{count}</span></button>
-                      ))}
-                    </div>
-                    {assetTagsOverflow && (
-                      <button type="button" className="assets-filter-more" aria-controls={assetTagListId}
-                        aria-expanded={assetTagsExpanded} aria-label={assetTagsExpanded ? t('收起标签') : t('展开更多标签')}
-                        title={assetTagsExpanded ? t('收起标签') : t('更多标签')} onClick={() => setAssetTagsExpanded((expanded) => !expanded)}>
-                        <Icon icon={assetTagsExpanded ? 'lucide:chevron-up' : 'lucide:ellipsis'} aria-hidden="true" />
-                      </button>
-                    )}
-                  </div>
-                )}
-
-                <div key={assetCreativeKind ?? JSON.stringify(assetFolderSelection)} className="asset-picker-grid">
-                  {assetCreativeKind ? (
-                    globalDramaAssetsLoading ? <div role="status" className="asset-picker-empty">{t('正在加载创作资产…')}</div>
-                      : globalDramaAssetsError ? <div role="alert" className="asset-picker-empty">
-                        <p>{t('创作资产加载失败，请重试')}</p>
-                        <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => {
-                          void useAppStore.getState().loadGlobalDramaAssets().catch(() => {});
-                        }}>{t('重试加载')}</button>
-                      </div>
-                        : creativePickerItems.length === 0 ? <div className="asset-picker-empty">{assetSearch ? t('没有匹配的创作资产') : t('暂无可引用的创作资产')}</div>
-                          : visibleCreativePickerItems.map((item) => {
-                            const candidate = buildDramaPickerItem(item);
-                            return <button key={candidate.key} type="button" className="asset-picker-card" disabled={candidate.disabled}
-                              data-tooltip={candidate.title ?? candidate.label} onClick={() => {
-                                if (!isCurrentEditorOwner()) return;
-                                setShowAssetPicker(false);
-                                setShowMention(true);
-                                candidate.onSelect();
-                              }}>
-                              {candidate.thumbnailUrl ? <ViewportImage src={candidate.thumbnailUrl} alt="" />
-                                : <span className="asset-picker-card-icon"><Icon icon={candidate.icon ?? 'lucide:image'} aria-hidden="true" /></span>}
-                              <span className="asset-picker-card-name">{candidate.label}{candidate.badge ? ` · ${candidate.badge}` : ''}</span>
-                            </button>;
-                          })
-                  ) : assetLoading ? (
-                    <div className="asset-picker-empty">{t('加载中…')}</div>
-                  ) : filteredAssets.length === 0 ? (
-                    <div className="asset-picker-empty">{assetSearch || activeAssetTag ? t('没有匹配的文件') : t('暂无文件')}</div>
-                  ) : (
-                    <>
-                      {visibleAssets.map((file) => (
-                        <button
-                          key={file.path}
-                          type="button"
-                          className="asset-picker-card"
-                          data-tooltip={file.name}
-                          onClick={() => handleSelectAsset(file)}
-                        >
-                          {file.category === 'video' ? (
-                            <VideoThumbnail src={file.assetUrl} filePath={file.path} name={file.name} alt={file.name}
-                              className="aspect-square w-full object-cover" />
-                          ) : file.assetUrl ? (
-                            <ViewportImage src={file.assetUrl} alt={file.name} />
-                          ) : (
-                            <span className="asset-picker-card-icon">
-                              {file.category === 'audio' ? '🎵' : file.category === 'text' ? '📄' : '📁'}
-                            </span>
-                          )}
-                          <span className="asset-picker-card-name">{file.name}</span>
-                        </button>
-                      ))}
-                    </>
-                  )}
-                  {assetVisible < assetPickerResultCount && (
-                    <div ref={assetSentinelRef} className="asset-picker-sentinel">{t('加载更多…')}</div>
-                  )}
-                </div>
-                  </div>
-                </div>
-              </motion.div>
-            </motion.div>
-          )}
-        </AnimatePresence>,
-        document.body,
-      )}
+      {renderAssetPicker(buildDramaPickerItem, handleSelectAsset)}
     </div>
   );
 });
