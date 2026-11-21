@@ -24,7 +24,7 @@ import { collectLegacyCharacterVisualPaths, isLegacyCharacterVisualCandidatePath
 import type { ProjectCatalogEntry } from '../projectModelRouter';
 import type { readNativeProjectCapture } from '../indexedDb/nativeProjectRepository';
 import type { NativeProjectViewItem } from '../../store/nativeProjectView';
-import { forgetUndoTrashEntry, isUndoTrashMoveActive, isUndoTrashPathProtected, readUndoTrashEntries, relativeUndoTrashPath, type UndoTrashEntry } from './undoTrashJournal';
+import { forgetUndoTrashEntry, isUndoTrashMoveActive, isUndoTrashPathProtected, readUndoTrashEntries, relativeUndoTrashPath, storageCleanupDirectory, type UndoTrashEntry } from './undoTrashJournal';
 import {
   readNativeStorageSnapshot, nativeStorageProjectRows, nativeStorageProjectProtected,
   collectNativeStorageReferences, type NativeStorageSnapshot,
@@ -223,7 +223,7 @@ function isReferenced(path: string, paths: Set<string>): boolean {
 }
 
 /** 新库回执、恢复材料及旧库历史都要参与核对；不调用会同步写入历史的归档捕获。 */
-async function collectNativeScopeReferences(scope: NativeStorageScope, snapshot: NativeStorageSnapshot, signal?: AbortSignal, staged?: UndoTrashEntry): Promise<Set<string>> {
+async function collectNativeScopeReferences(scope: NativeStorageScope, snapshot: NativeStorageSnapshot, signal?: AbortSignal): Promise<Set<string>> {
   const { project } = scope.capture.aggregate;
   const paths = new Set<string>();
   const chatImages = { rootRef: project.storageRootRef, paths: nativeChatImagePaths(project.storageRootRef, scope.capture.exchange) };
@@ -263,8 +263,7 @@ async function collectNativeScopeReferences(scope: NativeStorageScope, snapshot:
   // 没有文件发布租约的内容区和目录身份文件不纳入自动清理。
   for (const root of scope.roots.values()) {
     for (const name of ['media', 'imports']) paths.add(`${pathKey(joinPath(root, name))}/`);
-    // 正在清理的是刚从普通素材根移来的确切条目。已采集的实际引用继续保留，普通盘点仍保护整个 .trash。
-    if (!staged || !isUndoTrashMoveActive(staged) || pathKey(root) !== pathKey(staged.root)) paths.add(`${pathKey(joinPath(root, '.trash'))}/`);
+    paths.add(`${pathKey(joinPath(root, '.trash'))}/`);
     paths.add(pathKey(joinPath(root, '.ai-canvas-native-project.json')));
   }
   return paths;
@@ -327,10 +326,10 @@ export interface ProjectStorageInfo {
 export interface TrashInfo {
   projectId: string;
   projectName: string;
-  /** .trash 目录路径 */
   trashDir: string;
-  /** .trash 目录内文件总大小 */
   trashSize: number;
+  /** 未完成永久清理的暂存文件可定位，始终保留以供恢复。 */
+  retainedCleanup?: true;
   /** 文件数量 */
   fileCount: number;
   /** 全部已读取文件及其项目、历史、恢复点或实时状态引用标记。 */
@@ -595,7 +594,7 @@ type StorageIssueHandler = (area: StorageHealthIssue['area'], projectName: strin
 /** 引用核对与目录盘点分开，删除单个文件时不用重新列出所有素材。 */
 async function readStorageReferences(
   projects: CanvasProject[], nodeFilePaths: StorageReferenceSource,
-  signal: AbortSignal | undefined, onIssue: StorageIssueHandler, staged?: UndoTrashEntry,
+  signal: AbortSignal | undefined, onIssue: StorageIssueHandler,
 ) {
   // 项目列表只有摘要；必须读取所有完整项目，不能用当前画布推断其他项目无引用。
   // 任何读取失败或记录缺失都终止扫描，不能将未知引用视为空集合。
@@ -673,7 +672,7 @@ async function readStorageReferences(
       additionalRoots.set(project.id, [...scope.roots.values()].filter((root) => pathKey(root) !== pathKey(primary)));
       try {
         if (!nativeSnapshot || nativeStorageProjectProtected(nativeSnapshot, project.id)) throw new Error('原操作尚未结束');
-        for (const path of await collectNativeScopeReferences(scope, nativeSnapshot, signal, staged)) references.add(path);
+        for (const path of await collectNativeScopeReferences(scope, nativeSnapshot, signal)) references.add(path);
       } catch {
         checkAbort(signal);
         // 状态未知只保护所属目录，不让其他项目的完整引用核对失效。
@@ -826,12 +825,33 @@ export async function scanStorageHealth(
   for (const project of projects) {
     for (const root of projectRoots(project.id)) {
       checkAbort(signal);
+      const entries = rootEntries.get(pathKey(root).replace(/\/+$/, ''));
+      const cleanupDir = storageCleanupDirectory(root);
+      if (!scannedTrashes.has(pathKey(cleanupDir)) && entries?.some((entry) => entry.name === 'AppData' && entry.isDirectory)) {
+        scannedTrashes.add(pathKey(cleanupDir));
+        try {
+          const parent = await lstat(joinPath(root, 'AppData'));
+          if (!parent.isDirectory || parent.isSymlink) throw new Error('暂存目录路径已变化');
+          if (await exists(cleanupDir)) {
+            const { files } = await scanDirRecursive(cleanupDir,
+              (name, reason) => addIssue('trash', project.name, name, reason), [], false, signal);
+            const retained = files.filter((file) => !seenFiles.has(pathKey(file.path)));
+            if (retained.length) {
+              for (const file of retained) seenFiles.add(pathKey(file.path));
+              const trashSize = retained.reduce((sum, file) => sum + file.size, 0);
+              report.trashes.push({ projectId: project.id, projectName: project.name, trashDir: cleanupDir,
+                trashSize, fileCount: retained.length, retainedCleanup: true, reclaimableSize: 0, reclaimableCount: 0,
+                files: retained.map(({ path, size }) => ({ path, size, referenced: true })) });
+              report.trashSize += trashSize;
+            }
+          }
+        } catch (error) { checkAbort(signal); addIssue('trash', project.name, cleanupDir, issueReason(error)); }
+      }
       const trashDir = joinPath(root, '.trash');
       const key = pathKey(trashDir);
       if (scannedTrashes.has(key)) continue;
       scannedTrashes.add(key);
       // 根目录已经列出过；没有 .trash 就不访问它，避免把隐藏路径的 scope 拒绝当成扫描失败。
-      const entries = rootEntries.get(pathKey(root).replace(/\/+$/, ''));
       if (!entries?.some((entry) => entry.name === '.trash')) continue;
       const inventory = await scanDirRecursive(trashDir,
         (name, reason) => addIssue('trash', project.name, name, reason), [], false, signal);
@@ -926,7 +946,7 @@ export async function verifyStorageCleanupFile(
     const snapshot = await readStorageReferences(projects, nodeFilePaths, signal, (_area, _project, _name, reason) => {
       // 未知原生操作已把所属整根加入保护集合，其他项目仍可核对。
       if (reason !== 'native-protected') throw new StorageHealthScanError(reason);
-    }, staged);
+    });
     const roots = [...new Set(snapshot.projects.flatMap((project) => snapshot.projectRoots(project.id)))].sort((left, right) => right.length - left.length);
     const nativeRoots = new Set(snapshot.nativeScopes.flatMap((scope) => [...scope.roots.values()].map(pathKey)));
     const inspect = async (file: Pick<OrphanFileInfo, 'path' | 'size'>, trash?: string) => {
@@ -936,7 +956,9 @@ export async function verifyStorageCleanupFile(
       const parts = owner.relative.split('/');
       if (parts.some((part) => !part || part === '.' || part === '..')) throw new Error('文件路径已变化');
       if (trash) {
-        if (pathKey(trash) !== pathKey(joinPath(owner.root, '.trash')) || !relativeUndoTrashPath(file.path, trash)) {
+        const expectedDirectory = staged ? storageCleanupDirectory(owner.root) : joinPath(owner.root, '.trash');
+        const relative = relativeUndoTrashPath(file.path, trash);
+        if (pathKey(trash) !== pathKey(expectedDirectory) || !relative || staged && relative.includes('/')) {
           throw new Error('回收路径已变化');
         }
       } else {
@@ -962,9 +984,10 @@ export async function verifyStorageCleanupFile(
     const owner = roots.find((root) => getRelativeAssetPath(expected.path, root) !== undefined);
     if (expected.root && (!owner || pathKey(owner) !== pathKey(expected.root))) return false;
     if (expected.projectId && owner && !snapshot.projectRoots(expected.projectId).some((root) => pathKey(root) === pathKey(owner))) return false;
-    if (staged && (trashDir || pathKey(staged.originalPath) !== pathKey(expected.path) || !owner || pathKey(owner) !== pathKey(staged.root))) return false;
+    if (staged && (trashDir || !isUndoTrashMoveActive(staged) || pathKey(staged.originalPath) !== pathKey(expected.path)
+      || !owner || pathKey(owner) !== pathKey(staged.root))) return false;
     const target = staged ? { ...expected, path: staged.stagedPath } : expected;
-    const targetTrash = staged ? joinPath(staged.root, '.trash') : trashDir;
+    const targetTrash = staged ? storageCleanupDirectory(staged.root) : trashDir;
     await inspect(target, targetTrash);
     if (isReferenced(expected.path, snapshot.references)) return false;
     if (staged && isReferenced(staged.stagedPath, snapshot.references)) return false;
@@ -1129,8 +1152,8 @@ export async function deleteOrphanFile(file: ConfirmedStorageFile, verify?: Stor
   try {
     await assertStorageCleanupPath(file.path);
     checkAbort(signal);
-    const { stageProjectTrashPath } = await import('./trash');
-    return await stageProjectTrashPath(file.path, file.root, async (entry) => {
+    const { stageProjectCleanupPath } = await import('./trash');
+    return await stageProjectCleanupPath(file.path, file.root, async (entry) => {
       try {
         if (!await verify(file.path)) return false;
         await assertStorageCleanupPath(file.path);

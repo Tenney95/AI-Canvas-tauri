@@ -14,6 +14,7 @@ const driver = vi.hoisted(() => ({
     onFocusChanged: (listener: (event: { payload: boolean }) => unknown) => Promise<() => void>;
   },
   nativeShortcuts: new Map<string, (event: { state?: string }) => void>(),
+  rejectNativeResourceSearch: false,
 }));
 
 vi.mock('react', async () => ({
@@ -34,6 +35,7 @@ vi.mock('framer-motion', () => ({ motion: { div: 'div', button: 'motion-button' 
 vi.mock('../../src/store/useAppStore', () => ({
   useAppStore: Object.assign((selector: (state: AppState) => unknown) => selector(driver.state), {
     getState: () => driver.state,
+    setState: (patch: Partial<AppState>) => { Object.assign(driver.state, patch); },
   }),
 }));
 vi.mock('../../src/i18n', () => ({
@@ -56,15 +58,17 @@ vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => {
 } }));
 vi.mock('@tauri-apps/plugin-global-shortcut', () => ({
   register: vi.fn(async (key: string, callback: (event: { state?: string }) => void) => {
+    if (key === 'Ctrl+Shift+Space' && driver.rejectNativeResourceSearch) throw new Error('Shortcut unavailable');
     driver.nativeShortcuts.set(key, callback);
   }),
-  unregister: vi.fn(async () => {}),
-  unregisterAll: vi.fn(async () => {}),
+  unregister: vi.fn(async (key: string) => { driver.nativeShortcuts.delete(key); }),
+  unregisterAll: vi.fn(async () => { driver.nativeShortcuts.clear(); }),
 }));
 
 import ProjectLibraryModal from '../../src/components/ProjectLibraryModal';
 import Header from '../../src/components/Header';
 import { useKeyboardShortcuts } from '../../src/hooks/useKeyboardShortcuts';
+import { openAssetSearchWindow } from '../../src/utils/assetSearchWindow';
 
 const onClose = vi.fn();
 function render(page = true) {
@@ -103,6 +107,7 @@ beforeEach(() => {
   driver.effects = [];
   driver.nativeWindow = null;
   driver.nativeShortcuts.clear();
+  driver.rejectNativeResourceSearch = false;
   driver.state = {
     projects: [{ id: 'p1', name: '示例项目', createdAt: 1, updatedAt: 2 }],
     currentProjectId: null, projectLoadStatus: 'ready', isCreatingProject: false,
@@ -365,6 +370,86 @@ describe('startup page keyboard boundary', () => {
       expect(dispatchEvent).toHaveBeenCalledOnce();
     } finally {
       cleanup?.();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('原生资源搜索只响应主窗口内的按下事件，Alt+Space 仍可在失焦时使用', async () => {
+    let focused = true;
+    let blockingDialog = false;
+    let keydown: ((event: unknown) => Promise<void>) | undefined;
+    let focusChanged: ((event: { payload: boolean }) => unknown) | undefined;
+    const isFocused = vi.fn(async () => focused);
+    driver.nativeWindow = {
+      isFocused,
+      onFocusChanged: async (listener) => { focusChanged = listener; return () => {}; },
+    };
+    vi.stubGlobal('document', {
+      activeElement: { closest: () => null },
+      querySelector: () => (blockingDialog ? {} : null),
+      addEventListener: (_: string, listener: typeof keydown) => { keydown = listener; },
+      removeEventListener: vi.fn(),
+    });
+    useKeyboardShortcuts();
+    const cleanup = driver.effects[0]();
+    try {
+      await vi.waitFor(() => expect(driver.nativeShortcuts.has('Ctrl+Shift+Space')).toBe(true));
+      const onSearch = driver.nativeShortcuts.get('Ctrl+Shift+Space')!;
+      onSearch({ state: 'Pressed' });
+      await vi.waitFor(() => expect(openAssetSearchWindow).toHaveBeenCalledOnce());
+
+      onSearch({ state: 'Released' });
+      await keydown?.({
+        target: { tagName: 'DIV', closest: () => null }, key: ' ', code: 'Space', ctrlKey: true, shiftKey: true,
+        preventDefault: vi.fn(), stopPropagation: vi.fn(),
+      });
+      expect(openAssetSearchWindow).toHaveBeenCalledOnce();
+
+      blockingDialog = true;
+      onSearch({ state: 'Pressed' });
+      await Promise.resolve();
+      expect(openAssetSearchWindow).toHaveBeenCalledOnce();
+      blockingDialog = false;
+
+      // The native focus query may report blur before the listener runs.
+      focused = false;
+      onSearch({ state: 'Pressed' });
+      await Promise.resolve();
+      expect(openAssetSearchWindow).toHaveBeenCalledOnce();
+      await focusChanged?.({ payload: false });
+      expect(driver.nativeShortcuts.has('Ctrl+Shift+Space')).toBe(false);
+      onSearch({ state: 'Pressed' });
+      expect(openAssetSearchWindow).toHaveBeenCalledOnce();
+      driver.nativeShortcuts.get('Alt+Space')?.({ state: 'Pressed' });
+      expect(openAssetSearchWindow).toHaveBeenCalledTimes(2);
+    } finally {
+      cleanup?.();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('系统无法注册 Ctrl+Shift+Space 时保留 keydown 回退', async () => {
+    driver.rejectNativeResourceSearch = true;
+    driver.nativeWindow = { isFocused: async () => true, onFocusChanged: async () => () => {} };
+    let keydown: ((event: unknown) => Promise<void>) | undefined;
+    vi.stubGlobal('document', {
+      querySelector: () => null,
+      addEventListener: (_: string, listener: typeof keydown) => { keydown = listener; },
+      removeEventListener: vi.fn(),
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    useKeyboardShortcuts();
+    const cleanup = driver.effects[0]();
+    try {
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledWith('[shortcut] 注册失败: Ctrl+Shift+Space', expect.any(Error)));
+      await keydown?.({
+        target: { tagName: 'DIV', closest: () => null }, key: ' ', code: 'Space', ctrlKey: true, shiftKey: true,
+        preventDefault: vi.fn(), stopPropagation: vi.fn(),
+      });
+      expect(openAssetSearchWindow).toHaveBeenCalledOnce();
+    } finally {
+      cleanup?.();
+      warn.mockRestore();
       vi.unstubAllGlobals();
     }
   });

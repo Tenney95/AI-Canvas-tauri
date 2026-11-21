@@ -381,6 +381,18 @@ fn excluded_asset_directory(name: &str, project_root: bool) -> bool {
     EXCLUDED_DIR_NAMES.iter().any(|expected| matches(expected)) || project_root && matches(".thumbnail")
 }
 
+fn storage_cleanup_staging_path(relative: &Path) -> bool {
+    let mut parts = relative.components();
+    let (Some(Component::Normal(app_data)), Some(Component::Normal(cleanup))) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    let case_aliases = cfg!(windows) || cfg!(target_os = "macos");
+    let matches = |name: &OsStr, expected: &str| {
+        name.to_str().is_some_and(|name| name == expected || case_aliases && name.eq_ignore_ascii_case(expected))
+    };
+    matches(app_data, "AppData") && matches(cleanup, "StorageCleanup")
+}
+
 fn is_agent_workspace_name(name: &OsStr) -> bool {
     name.to_str().is_some_and(|name| name.eq_ignore_ascii_case(AGENT_WORKSPACE_DIRECTORY))
 }
@@ -448,7 +460,15 @@ fn packable_asset_file(root: &Path, relative: &Path) -> Result<Option<PathBuf>, 
     require_packable_asset_path(root)?;
     require_packable_asset_path(relative)?;
     let file = selected_asset_file(root, relative)?;
-    if let Some(path) = &file { require_packable_asset_path(path)?; }
+    if let Some(path) = &file {
+        require_packable_asset_path(path)?;
+        // 同时核对真实路径，避免 Windows 短文件名将暂存文件带入归档。
+        let canonical_root = simplify_verbatim(root.to_path_buf());
+        let resolved_relative = path.strip_prefix(canonical_root).map_err(|_| "项目素材超出项目目录")?;
+        if storage_cleanup_staging_path(relative) || storage_cleanup_staging_path(resolved_relative) {
+            return Err("项目素材位于存储清理暂存目录，不能归档".into());
+        }
+    }
     Ok(file)
 }
 
@@ -503,6 +523,7 @@ impl AssetScan {
             if relative.as_os_str().is_empty() && exclude_imports && imports_directory { continue; }
             let child = relative.join(&name);
             let Some(metadata) = plain_asset_metadata(&entry.path())? else { return Err("项目素材在扫描时发生变化".into()); };
+            if storage_cleanup_staging_path(&child) { continue; }
             if metadata.is_dir() {
                 if excluded_asset_directory(&name.to_string_lossy(), relative.as_os_str().is_empty()) { continue; }
                 self.walk(&child, exclude_imports, exclude_shared_sync)?;
@@ -920,6 +941,8 @@ fn append_assets_dir<W: Write>(
             .file_type()
             .map_err(|error| format!("读取项目素材类型失败: {error}"))?;
         let archive_path = archive_dir.join(&name);
+        let relative = archive_path.strip_prefix(ASSETS_PREFIX).map_err(|_| "素材路径无效")?;
+        if storage_cleanup_staging_path(relative) { continue; }
 
         if file_type.is_dir() {
             if EXCLUDED_DIR_NAMES.contains(&name.to_string_lossy().as_ref()) {
@@ -935,7 +958,6 @@ fn append_assets_dir<W: Write>(
         if !file_type.is_file() {
             continue;
         }
-        let relative = archive_path.strip_prefix(ASSETS_PREFIX).map_err(|_| "素材路径无效")?;
         if selected.is_some_and(|paths| !paths.contains(&to_archive_text(relative))) { continue; }
 
         append_asset_file(builder, &entry.path(), &archive_path, stats)?;

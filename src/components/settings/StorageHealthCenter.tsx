@@ -396,7 +396,7 @@ export default function StorageHealthCenter() {
           count: cleanupResult.deletedCount, size: formatBytes(cleanupResult.reclaimedSize), failed: cleanupResult.failedCount,
         })}</p>
         {cleanupResult.retained.map((file) => <p key={file.path}>
-          {t('已保留在项目 .trash：{name}', { name: file.name })}{' '}
+          {t('已保留在项目暂存目录：{name}', { name: file.name })}{' '}
           <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => {
             void revealFileInFolder(file.path).catch(() => showToast(t('打开文件所在位置失败，请确认文件仍存在且可访问'), 'error'));
           }}>{t('打开所在位置')}</button>
@@ -470,8 +470,10 @@ export default function StorageHealthCenter() {
                 <p className="ui-hint mt-1">{t('{count} 个文件 · {size}', { count: trash.fileCount, size: formatBytes(trash.trashSize) })}</p>
                 <p className="ui-hint mt-1">{t('可清理 {count} 个 · {size}；被引用、空文件或无法核对的文件会保留', { count: trash.reclaimableCount, size: formatBytes(trash.reclaimableSize) })}</p>
               </div>
-              <button type="button" className="ui-btn ui-btn--danger ui-btn--sm shrink-0" disabled={!canClean || trash.reclaimableCount === 0}
-                onClick={() => void requestCleanup({ kind: 'trash', entries: [trash] })}>{t('清理未引用文件')}</button>
+              {trash.retainedCleanup ? <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm shrink-0" onClick={() => {
+                void revealFileInFolder(trash.files[0].path).catch(() => showToast(t('打开文件所在位置失败，请确认文件仍存在且可访问'), 'error'));
+              }}>{t('打开所在位置')}</button> : <button type="button" className="ui-btn ui-btn--danger ui-btn--sm shrink-0" disabled={!canClean || trash.reclaimableCount === 0}
+                onClick={() => void requestCleanup({ kind: 'trash', entries: [trash] })}>{t('清理未引用文件')}</button>}
             </div>
           </div>)}
         </section>}

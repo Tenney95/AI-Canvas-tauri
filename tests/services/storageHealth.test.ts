@@ -82,7 +82,7 @@ vi.mock('../../src/services/indexedDb/schema', () => ({ openDB: mocks.openDB, ST
 vi.mock('../../src/services/indexedDb/legacyProjectWriteGuard', () => ({ assertLegacyProjectWritesAllowed: mocks.assertLegacyProjectWritesAllowed }));
 
 import { clearTrashDir, collectNodeFilePaths, collectStorageLiveFilePaths, deleteOrphanFile, prepareTrashCleanup, scanStorageHealth, verifyStorageCleanupFile, type StorageCleanupVerifier } from '../../src/services/fs/storageHealth';
-import { readUndoTrashEntries, stageUndoTrashMove } from '../../src/services/fs/undoTrashJournal';
+import { readUndoTrashEntries, stageUndoTrashMove, storageCleanupDirectory } from '../../src/services/fs/undoTrashJournal';
 
 function confirmedFile(path: string) {
   return { path, root: '/' + path.split('/')[1], size: mocks.sizes.get(path) ?? 0, digest: mocks.digests.get(path) ?? 'f'.repeat(64) };
@@ -141,7 +141,13 @@ describe('storage health accounting and cleanup', () => {
       return { isDirectory: directory, isFile: !directory, isSymlink: false,
         size: mocks.sizes.get(path) ?? 0, mtime: new Date(0) };
     };
-    mocks.mkdir.mockImplementation(async (path: string) => { if (!mocks.directories.has(path)) mocks.directories.set(path, []); });
+    mocks.mkdir.mockImplementation(async (path: string, options?: { recursive?: boolean }) => {
+      if (mocks.directories.has(path)) return;
+      const parent = path.slice(0, path.lastIndexOf('/'));
+      if (options?.recursive && parent && !mocks.directories.has(parent)) await mocks.mkdir(parent, options);
+      mocks.directories.set(path, []);
+      mocks.directories.get(parent)?.push(path.slice(parent.length + 1));
+    });
     mocks.rename.mockImplementation(async (source: string, target: string) => {
       const size = mocks.sizes.get(source);
       if (size === undefined || mocks.sizes.has(target)) throw new Error('unexpected rename');
@@ -222,8 +228,8 @@ describe('storage health accounting and cleanup', () => {
       await rename(source, target);
     });
     await expect(deleteOrphanFile(file, (_path, staged) => verifyStorageCleanupFile(projects, refs, file, { staged })))
-      .rejects.toMatchObject({ stagedPath: expect.stringContaining('/p/.trash/') });
-    const [entry] = await readUndoTrashEntries('/p/.trash');
+      .rejects.toMatchObject({ stagedPath: expect.stringContaining(`${storageCleanupDirectory('/p')}/`) });
+    const [entry] = await readUndoTrashEntries(storageCleanupDirectory('/p'));
     expect(entry.originalPath).toBe(file.path);
     expect(mocks.digests.get(entry.stagedPath)).toBe('b'.repeat(64));
     expect(mocks.remove).not.toHaveBeenCalled();
@@ -241,7 +247,7 @@ describe('storage health accounting and cleanup', () => {
     expect(mocks.digests.get(file.path)).toBe('c'.repeat(64));
     expect(mocks.sizes.get(file.path)).toBe(10);
     expect(mocks.remove.mock.calls).toEqual([[mocks.rename.mock.calls[0][1]]]);
-    expect(await readUndoTrashEntries('/p/.trash')).toEqual([]);
+    expect(await readUndoTrashEntries(storageCleanupDirectory('/p'))).toEqual([]);
   });
 
   it('旧项目在其他盘符时使用扫描到的根，确认后改根则保留原文件', async () => {
@@ -258,7 +264,7 @@ describe('storage health accounting and cleanup', () => {
     expect(mocks.rename).not.toHaveBeenCalled();
     mocks.roots.set('p', root);
     expect(await deleteOrphanFile(file, verify)).toBe(true);
-    expect(mocks.rename).toHaveBeenCalledWith(file.path, expect.stringContaining(root + '/.trash/'));
+    expect(mocks.rename).toHaveBeenCalledWith(file.path, expect.stringContaining(`${storageCleanupDirectory(root)}/`));
   });
 
   it('新项目子根的本次暂存可清理，既有 .trash 文件仍受保护', async () => {
@@ -272,7 +278,7 @@ describe('storage health accounting and cleanup', () => {
     expect(trashes[0].files[0].referenced).toBe(true);
     expect(file.root).toBe(root);
     expect(await deleteOrphanFile(file, (_path, staged) => verifyStorageCleanupFile(projects, refs, file, { staged }))).toBe(true);
-    expect(mocks.rename).toHaveBeenCalledWith(file.path, expect.stringContaining(root + '/.trash/'));
+    expect(mocks.rename).toHaveBeenCalledWith(file.path, expect.stringContaining(`${storageCleanupDirectory(root)}/`));
     expect(mocks.sizes.has(root + '/.trash/older.png')).toBe(true);
   });
 

@@ -64,9 +64,15 @@ function createNodeFromNumberShortcut(shortcutIndex: number, isSource: boolean) 
   return true;
 }
 
+// The main window can remount before the previous native registration has settled.
+let nativeShortcutLifecycle = Promise.resolve();
+
 export function useKeyboardShortcuts() {
   useEffect(() => {
     let active = true; // guard against callbacks firing after unmount / HMR reload
+    const assetSearchKey = 'Ctrl+Shift+Space';
+    let nativeOwnsAssetSearchKey = false;
+    let mainWindowFocused = false;
     const isNavigating = (state: ReturnType<typeof useAppStore.getState>) => state.switchingProjectName != null
       || state.isCreatingProject || state.isReturningToStartPage || state.projectLoadStatus === 'loading';
     const saveActiveWorkspace = () => {
@@ -78,6 +84,9 @@ export function useKeyboardShortcuts() {
       }
       return state.saveCurrentProject();
     };
+
+    const isKeyBlockedByEditor = (target: Element | null): boolean =>
+      !!document.querySelector?.('[aria-modal="true"], dialog[open]') || !!target?.closest?.('.animation-editor');
 
     // ── Web fallback: JS keyboard events ──
     async function handleKeyDown(e: KeyboardEvent) {
@@ -143,17 +152,16 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      // 弹窗负责自己的 Escape/Tab 和编辑快捷键，捕获阶段不能先关闭父面板或操作底层画布。
-      if (document.querySelector?.('[aria-modal="true"], dialog[open]')) return;
+      // 弹窗和动画编辑器保留各自的原生按键。
+      if (isKeyBlockedByEditor(target)) return;
 
-      // 编辑器内的空格、数字、撤销和删除交给控件，避免捕获阶段误操作背后的画布。
-      if (target.closest?.('.animation-editor')) return;
-
-      // Ctrl+Shift+Space: 打开资源搜索窗口（Win+Space 被系统占用时的可靠备选；不与输入法冲突）
+      // Native owns this exact combination when its registration succeeds.
       if (e.ctrlKey && e.shiftKey && e.code === 'Space') {
         e.preventDefault();
         e.stopPropagation();
-        openAssetSearchWindow();
+        if (!e.repeat && (!nativeOwnsAssetSearchKey || e.altKey || e.metaKey)) {
+          void openAssetSearchWindow();
+        }
         return;
       }
 
@@ -350,106 +358,112 @@ export function useKeyboardShortcuts() {
     document.addEventListener('keydown', handleKeyDown, true);
 
     // ── Tauri native: global-shortcut plugin ──
-    // Register on focus, unregister on blur — so shortcuts only work in this app.
-    const GLB_SHORTCUTS = [
-      { key: 'CommandOrControl+S', action: saveActiveWorkspace },
-      { key: 'Alt+S', action: saveActiveWorkspace },
-      // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y are handled by the JS keydown handler above;
-      // registering them as native shortcuts would double-fire undo/redo.
-    ];
-
-    // Alt+Space：打开资源搜索窗口 — 真全局监听，不随窗口失焦而注销（Win+Space 被系统保留无法抢注）。
-
     let unlistenFocus: (() => void) | undefined;
-    let unlistenBlur: (() => void) | undefined;
-    let shortcutModule: typeof import('@tauri-apps/plugin-global-shortcut') | null = null;
+    let focusShortcuts = Promise.resolve();
+    let focusRevision = 0;
+    let shortcutModule: typeof import('@tauri-apps/plugin-global-shortcut') | undefined;
 
-    (async () => {
+    nativeShortcutLifecycle = nativeShortcutLifecycle.then(async () => {
+      if (!active) return;
       try {
-        shortcutModule = await import('@tauri-apps/plugin-global-shortcut');
+        const native = await import('@tauri-apps/plugin-global-shortcut');
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
         const win = getCurrentWindow();
+        if (!active) return;
+        shortcutModule = native;
 
-        // Clean up leftover registrations from HMR
-        try { await shortcutModule.unregisterAll(); } catch { /* ignore */ }
+        const openFocusedAssetSearch = async () => {
+          if (!active || !mainWindowFocused) return;
+          const revision = focusRevision;
+          if (!await win.isFocused()) return;
+          const state = useAppStore.getState();
+          if (!active || revision !== focusRevision || isNavigating(state)
+            || state.projectLoadStatus === 'readonly' || state.projectWorkspaceView === 'script'
+            || isKeyBlockedByEditor(document.activeElement)) return;
+          void openAssetSearchWindow();
+        };
+        const shortcuts = [
+          { key: 'CommandOrControl+S', action: saveActiveWorkspace },
+          { key: 'Alt+S', action: saveActiveWorkspace },
+          { key: assetSearchKey, action: () => { void openFocusedAssetSearch().catch(() => {}); } },
+          // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y stay in the keydown handler to avoid double-firing.
+        ];
 
-        // Alt+Space：注册一次，常驻到组件卸载，不受聚焦状态影响
+        // Clean up leftover registrations from HMR.
+        try { await native.unregisterAll(); } catch { /* ignore */ }
+        if (!active) return;
+
+        // Alt+Space remains available even when this window loses focus.
         try {
-          await shortcutModule.register('Alt+Space', (event) => {
-            if (event?.state && event.state !== 'Pressed') return;
+          await native.register('Alt+Space', (event) => {
+            if (!active || (event?.state && event.state !== 'Pressed')) return;
             openAssetSearchWindow();
           });
         } catch (err) {
           console.warn('[shortcut] 注册失败: Alt+Space', err);
         }
+        if (!active) return;
 
-        // Register all shortcuts
-        const registerAll = async () => {
-          if (!active || !shortcutModule) return;
-          // 先清理旧注册，避免重复注册（HMR / 窗口重新聚焦时可能残留）
-          // 只清 GLB_SHORTCUTS 自己的 key，不用 unregisterAll —— 那会连 Alt+Space 常驻注册一起清掉
-          for (const s of GLB_SHORTCUTS) {
-            try { await shortcutModule.unregister(s.key); } catch { /* ignore */ }
-          }
-          for (const s of GLB_SHORTCUTS) {
-            try {
-              // 仅在按下时触发（插件会同时回调 Pressed / Released，避免重复执行）
-              await shortcutModule.register(s.key, (event) => {
-                if (event?.state && event.state !== 'Pressed') return;
-                s.action();
-              });
-            } catch (err) {
-              // 重复注册会抛错；Win+Space 等被系统保留的组合也可能注册失败
-              console.warn(`[shortcut] 注册失败: ${s.key}`, err);
+        const updateFocusShortcuts = (focused: boolean) => {
+          if (mainWindowFocused !== focused) focusRevision++;
+          mainWindowFocused = focused;
+          focusShortcuts = focusShortcuts.then(async () => {
+            for (const shortcut of shortcuts) {
+              try { await native.unregister(shortcut.key); } catch { /* ignore */ }
+              if (shortcut.key === assetSearchKey) nativeOwnsAssetSearchKey = false;
             }
-          }
+            for (const shortcut of shortcuts) {
+              if (!active || !mainWindowFocused) break;
+              const isAssetSearch = shortcut.key === assetSearchKey;
+              if (isAssetSearch) nativeOwnsAssetSearchKey = true;
+              try {
+                await native.register(shortcut.key, (event) => {
+                  if (!active || !mainWindowFocused || (event?.state && event.state !== 'Pressed')) return;
+                  shortcut.action();
+                });
+              } catch (err) {
+                if (isAssetSearch) nativeOwnsAssetSearchKey = false;
+                console.warn(`[shortcut] 注册失败: ${shortcut.key}`, err);
+              }
+            }
+          });
+          return focusShortcuts;
         };
 
-        // Unregister the focus-scoped shortcuts (Alt+Space stays armed)
-        const unregisterAll = async () => {
-          if (!shortcutModule) return;
-          for (const s of GLB_SHORTCUTS) {
-            try { await shortcutModule.unregister(s.key); } catch { /* ignore */ }
-          }
-        };
-
-        // Register on initial focus state
-        const focused = await win.isFocused();
-        if (focused) await registerAll();
-
-        // Listen for focus/blur to toggle registration
-        unlistenFocus = await win.onFocusChanged(async (ev) => {
+        let observedFocus = false;
+        const stopFocus = await win.onFocusChanged((event) => {
           if (!active) return;
-          if (ev.payload) {
-            await registerAll();
-          } else {
-            await unregisterAll();
-            // Clear stale internal clipboard — when the user switches away,
-            // they may have copied external content. If we don't clear, the
-            // next Ctrl+V will still paste the old in-app copied nodes.
+          observedFocus = true;
+          const updated = updateFocusShortcuts(event.payload);
+          if (!event.payload) {
+            // 外部复制过内容后，不再粘贴离开前保存的节点。
             useAppStore.setState({ clipboard: { nodes: [], groups: [], projectId: null } });
           }
+          return updated;
         });
-
-        // Store blob cleanup
-        unlistenBlur = unlistenFocus; // onFocusChanged returns single unlisten for both
+        if (!active) {
+          stopFocus();
+          return;
+        }
+        unlistenFocus = stopFocus;
+        const focused = await win.isFocused();
+        if (active && !observedFocus && focused) await updateFocusShortcuts(true);
       } catch {
         // Not in Tauri env — fall back to JS keyboard events only
       }
-    })();
+    });
 
     return () => {
       active = false;
+      mainWindowFocused = false;
       document.removeEventListener('keydown', handleKeyDown, true);
-
-      // Unlisten focus events
       unlistenFocus?.();
-      unlistenBlur?.();
 
-      // Unregister all shortcuts
-      import('@tauri-apps/plugin-global-shortcut')
-        .then(({ unregisterAll }) => unregisterAll())
-        .catch(() => {});
+      // Let an in-flight focus registration finish before removing all shortcuts.
+      nativeShortcutLifecycle = nativeShortcutLifecycle.then(async () => {
+        await focusShortcuts;
+        await shortcutModule?.unregisterAll();
+      }).catch(() => {});
     };
   }, []);
 }

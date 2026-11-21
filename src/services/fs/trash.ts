@@ -13,7 +13,7 @@ import {
 import { isTauriEnv, joinPath, notifyProjectDiskChanged, getProjectDataDir, getNativeProjectOwner, isSharedProjectDataDir, sanitizeFolderName } from './core';
 import {
   forgetUndoTrashEntry, isPathInsideDir, isUndoTrashMoveActive, readUndoTrashEntries,
-  relativeUndoTrashPath, stageUndoTrashMove, trashPathKey, usesTrashPath, type UndoTrashEntry,
+  relativeUndoTrashPath, stageUndoTrashMove, storageCleanupDirectory, trashPathKey, usesTrashPath, type UndoTrashEntry,
 } from './undoTrashJournal';
 
 export { isPathInsideDir } from './undoTrashJournal';
@@ -239,30 +239,39 @@ export async function moveToUndoTrash(
 }
 
 /** 原路径先入日志；后续操作只接收本次实际移动的条目，期间一直保留恢复锁。 */
-export async function stageProjectTrashPath(filePath: string, root: string, canMove?: (entry: UndoTrashEntry) => Promise<boolean>,
+export async function stageProjectTrashPath(filePath: string, root: string, canMove?: (entry: UndoTrashEntry) => Promise<boolean>): Promise<boolean> {
+  return stageProjectFile(filePath, root, joinPath(root, '.trash'), canMove);
+}
+
+/** 永久清理使用现有权限可访问的普通目录，移动仍与原文件在同一项目根内。 */
+export async function stageProjectCleanupPath(filePath: string, root: string, canMove: (entry: UndoTrashEntry) => Promise<boolean>,
+  afterMove: (entry: UndoTrashEntry) => Promise<void>): Promise<boolean> {
+  return stageProjectFile(filePath, root, storageCleanupDirectory(root), canMove, afterMove);
+}
+
+async function stageProjectFile(filePath: string, root: string, trashDir: string, canMove?: (entry: UndoTrashEntry) => Promise<boolean>,
   afterMove?: (entry: UndoTrashEntry) => Promise<void>): Promise<boolean> {
   if (!root || !isPathInsideDir(filePath, root)) return false;
   await assertTrashParentsSafe(filePath, root);
-  const existsFile = await exists(filePath);
-  if (!existsFile) return false;
-  const trashDir = joinPath(root, '.trash');
-  if (isPathInsideDir(filePath, trashDir)) return false;
+  if (isPathInsideDir(filePath, trashDir) || !await exists(filePath)) return false;
   if ((await lstat(filePath)).isSymlink) throw new Error('不能回收符号链接');
+  await assertTrashParentsSafe(trashDir, root);
   if (await exists(trashDir) && (await lstat(trashDir)).isSymlink) throw new Error('回收目录无效');
   await mkdir(trashDir, { recursive: true });
   const fileName = filePath.split(/[/\\]/).pop() || 'file';
   const id = `${Date.now()}-${crypto.randomUUID()}`;
   const readableName = `${id}-${fileName}`;
   // 原名始终保存在日志中。长文件名使用短暂存名，兼容按字节限制文件名的平台。
-  const stagedName = new TextEncoder().encode(readableName).length <= 255 ? readableName : id;
+  const stagedName = !afterMove && new TextEncoder().encode(readableName).length <= 255 ? readableName : id;
   const trashPath = joinPath(trashDir, stagedName);
   if (await exists(trashPath)) throw new Error('回收目标已存在');
   const relativePath = relativeUndoTrashPath(filePath, root);
   if (!relativePath) return false;
   return stageUndoTrashMove(trashDir, relativePath, stagedName, async (entry) => {
+    if (canMove && !await canMove(entry)) return false;
     await assertTrashParentsSafe(filePath, root);
     await assertTrashParentsSafe(trashPath, root);
-    if (canMove && !await canMove(entry)) return false;
+    if (await exists(trashPath)) throw new Error('回收目标已存在');
     await rename(filePath, trashPath);
     await afterMove?.(entry);
     return true;
@@ -324,7 +333,7 @@ export async function restoreUndoTrashForHistory(filePath: string, projectId?: s
   try {
     const root = await projectUndoTrashRoot(projectId, filePath);
     if (!root || !isPathInsideDir(filePath, root)) return 'untracked';
-    const entries = await readUndoTrashEntries(joinPath(root, '.trash'));
+    const entries = await readProjectTrashEntries(root);
     for (const entry of entries.filter((item) => trashPathKey(item.originalPath) === key).sort(newestStagedFirst)) {
       const result = await restoreUndoTrashEntry(entry);
       if (result !== 'untracked') return result;
@@ -337,13 +346,17 @@ function newestStagedFirst(left: UndoTrashEntry, right: UndoTrashEntry): number 
   return right.stagedAt - left.stagedAt || right.id.localeCompare(left.id);
 }
 
+async function readProjectTrashEntries(root: string): Promise<UndoTrashEntry[]> {
+  const entries = await Promise.all([readUndoTrashEntries(joinPath(root, '.trash')), readUndoTrashEntries(storageCleanupDirectory(root))]);
+  return entries.flat();
+}
+
 /** 加载持久化画布时先恢复仍被其引用的原件，再解析素材索引和预览。 */
 export async function recoverUndoTrashReferences(root: string, references: ReadonlySet<string>, groupNames: readonly string[],
   assertCurrent?: () => void): Promise<void> {
   if (!isTauriEnv()) return;
   await waitForPendingNodeFileDeletions();
-  const trashDir = joinPath(root, '.trash');
-  const entries = await readUndoTrashEntries(trashDir);
+  const entries = await readProjectTrashEntries(root);
   if (!entries.length) return;
   const paths = new Set(references);
   const folders = new Set<string>();

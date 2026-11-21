@@ -39,6 +39,8 @@ export interface UndoTrashEntry {
 }
 
 const prefix = (directory: string) => `undo-trash-v1:${encodeURIComponent(trashPathKey(directory))}:`;
+const storageCleanupRelativeDirectory = 'AppData/StorageCleanup';
+export const storageCleanupDirectory = (root: string): string => joinPath(root, storageCleanupRelativeDirectory);
 const activeMoves = new Set<string>();
 const shortUndoTrashName = /^\d+-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 export const isUndoTrashName = (name: string): boolean => shortUndoTrashName.test(name) || /^\d+-[a-f0-9-]{36}-[^/\\\0]+$/i.test(name);
@@ -46,9 +48,12 @@ export const isUndoTrashName = (name: string): boolean => shortUndoTrashName.tes
 export const isUndoTrashMoveActive = (entry: UndoTrashEntry): boolean => activeMoves.has(entry.id);
 
 function toEntry(directory: string, row: JournalRow): UndoTrashEntry {
-  const root = directory.replace(/\\/g, '/').slice(0, -'/.trash'.length);
+  const normalized = directory.replace(/\\/g, '/').replace(/\/+$/, '');
+  const suffix = normalized.endsWith(`/${storageCleanupRelativeDirectory}`) ? `/${storageCleanupRelativeDirectory}` : '/.trash';
+  const root = normalized.endsWith(suffix) ? normalized.slice(0, -suffix.length) : '';
   const { originalRelativePath, stagedName } = row;
-  if (typeof originalRelativePath !== 'string' || !originalRelativePath || originalRelativePath.split('/').some((part) => !part || part === '..' || part === '.' || part.toLowerCase() === '.trash')
+  if (!root || typeof originalRelativePath !== 'string' || !originalRelativePath || originalRelativePath.split('/').some((part) => !part || part === '..' || part === '.' || part.toLowerCase() === '.trash')
+    || isPathInsideDir(joinPath(root, originalRelativePath), storageCleanupDirectory(root))
     || typeof stagedName !== 'string' || !shortUndoTrashName.test(stagedName) && !stagedName.endsWith(`-${originalRelativePath.split('/').at(-1)}`)
     || /[\\:\0]/.test(originalRelativePath) || !isUndoTrashName(stagedName)
     || row.id !== `${prefix(directory)}${stagedName}`) throw new Error('节点暂存记录无效');
