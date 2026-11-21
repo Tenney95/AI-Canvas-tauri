@@ -2,6 +2,8 @@
 
 宿主通过本目录使用 Tauri 2.12.7 和项目的 WebView 隔离、IPC、原生窗口补丁。升级从 2.11.2 的原始发布包、项目旧补丁和 2.12.7 的原始发布包三方合并。后续维护在此目录完成。
 
+本地补丁使用 Rust 1.95 起稳定的原子条件更新方法 `try_update`。本目录的 Cargo 清单声明 Rust 1.95 为最低版本。
+
 ## 来源与许可
 
 - crates.io 的 `tauri-2.12.7.crate` 包含 143 个文件，SHA-256 为 `30fbfbb9dc9a2697b0e96d909ddc295fb18d2d82a58ed542ab8d9eba2edbe6da`。[官方发布](https://github.com/tauri-apps/tauri/releases/tag/tauri-v2.12.7)

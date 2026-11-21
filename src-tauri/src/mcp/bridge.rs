@@ -595,8 +595,8 @@ fn try_acquire_request_slot(
 
 fn try_acquire_counter(counter: &AtomicUsize, limit: usize) -> bool {
     counter
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-            (current < limit).then_some(current + 1)
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            (current < limit).then(|| current + 1)
         })
         .is_ok()
 }
