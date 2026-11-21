@@ -295,6 +295,7 @@ export interface BaseNodeData {
   imageHeight?: number;       // 生成图片实际高度
   videoWidth?: number;        // 视频原始宽度（用于节点等比布局）
   videoHeight?: number;       // 视频原始高度（用于节点等比布局）
+  videoDuration?: number;     // 视频时长（秒）
   nodeWidth?: number;         // 画布节点当前宽度
   nodeHeight?: number;        // 画布节点当前高度
   imageSize?: string;         // 分辨率选择：'1K' | '2K' | '4K'

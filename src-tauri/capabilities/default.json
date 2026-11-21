@@ -37,7 +37,9 @@
     "process:allow-restart",
     "fs:allow-watch",
     "fs:allow-unwatch",
-    "fs:default",
+    "fs:allow-mkdir",
+    "fs:allow-read-dir",
+    "fs:deny-default",
     "shell:default",
     {
       "identifier": "shell:allow-open",

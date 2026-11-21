@@ -62,9 +62,9 @@ use serialize_to_javascript::DefaultTemplate;
 use std::{borrow::Cow, collections::HashMap, fmt::Debug};
 
 use crate::{
+  App, Assets, Builder, Context, Pattern, Runtime, Webview,
   ipc::{InvokeError, InvokeResponse, InvokeResponseBody},
   webview::InvokeRequest,
-  App, Assets, Builder, Context, Pattern, Runtime, Webview,
 };
 use tauri_utils::{
   acl::resolved::Resolved,
@@ -124,6 +124,7 @@ pub fn mock_context<R: Runtime, A: Assets<R>>(assets: A) -> crate::Context<R> {
         tray_icon: None,
         macos_private_api: false,
         enable_gtk_app_id: false,
+        app_directories_override: None,
       },
       bundle: Default::default(),
       build: Default::default(),

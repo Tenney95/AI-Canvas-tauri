@@ -10,10 +10,10 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2021"
-rust-version = "1.77.2"
+edition = "2024"
+rust-version = "1.90"
 name = "tauri"
-version = "2.11.2"
+version = "2.12.7"
 authors = ["Tauri Programme within The Commons Conservancy"]
 build = "build.rs"
 links = "Tauri"
@@ -62,14 +62,9 @@ targets = [
     "x86_64-apple-ios",
 ]
 
-[package.metadata.cargo-udeps.ignore]
-normal = ["reqwest"]
-build = ["tauri-build"]
-development = ["quickcheck_macros"]
-
 [features]
 common-controls-v6 = [
-    "tray-icon?/common-controls-v6",
+    "tray-icon?/muda-common-controls-v6",
     "muda/common-controls-v6",
     "tauri-runtime-wry?/common-controls-v6",
 ]
@@ -102,7 +97,7 @@ isolation = [
     "uuid",
 ]
 linux-libxdo = [
-    "tray-icon/libxdo",
+    "tray-icon/muda-libxdo",
     "muda/libxdo",
 ]
 macos-private-api = [
@@ -143,6 +138,10 @@ x11 = ["tauri-runtime-wry?/x11"]
 name = "tauri"
 path = "src/lib.rs"
 
+[[test]]
+name = "restart"
+path = "tests/restart.rs"
+
 [dependencies.anyhow]
 version = "1"
 
@@ -154,7 +153,7 @@ version = "0.3"
 optional = true
 
 [dependencies.dirs]
-version = "6"
+version = "7"
 
 [dependencies.dunce]
 version = "1"
@@ -164,9 +163,6 @@ version = "0.3"
 
 [dependencies.glob]
 version = "0.3"
-
-[dependencies.heck]
-version = "0.5"
 
 [dependencies.http]
 version = "1"
@@ -220,18 +216,18 @@ optional = true
 default-features = false
 
 [dependencies.tauri-macros]
-version = "2.6.2"
+version = "~2.7.6"
 
 [dependencies.tauri-runtime]
-version = "2.11.2"
+version = "~2.12.4"
 
 [dependencies.tauri-runtime-wry]
-version = "2.11.2"
+version = "~2.12.5"
 optional = true
 default-features = false
 
 [dependencies.tauri-utils]
-version = "2.9.2"
+version = "~2.10.4"
 features = ["resources"]
 
 [dependencies.thiserror]
@@ -260,7 +256,7 @@ features = ["v4"]
 optional = true
 
 [dev-dependencies.cargo_toml]
-version = "0.22"
+version = "1.0"
 
 [dev-dependencies.http-range]
 version = "0.1.5"
@@ -291,19 +287,15 @@ version = "0.3"
 [build-dependencies.heck]
 version = "0.5"
 
-[build-dependencies.tauri-build]
-version = "2.6.2"
-default-features = false
-
 [build-dependencies.tauri-utils]
-version = "2.9.2"
+version = "~2.10.4"
 features = ["build-2"]
 
 [target.'cfg(all(target_vendor = "apple", not(target_os = "macos")))'.dependencies.libc]
 version = "0.2"
 
 [target.'cfg(all(target_vendor = "apple", not(target_os = "macos")))'.dependencies.objc2-ui-kit]
-version = "0.3.0"
+version = "0.3.2"
 features = [
     "UIApplication",
     "UIResponder",
@@ -312,11 +304,14 @@ features = [
 default-features = false
 
 [target.'cfg(all(target_vendor = "apple", not(target_os = "macos")))'.dependencies.swift-rs]
-version = "1"
+version = "1.0.9"
 
 [target.'cfg(any(target_os = "android", all(target_vendor = "apple", not(target_os = "macos"))))'.dependencies.bytes]
 version = "1"
 features = ["serde"]
+
+[target.'cfg(any(target_os = "android", all(target_vendor = "apple", not(target_os = "macos"))))'.dependencies.heck]
+version = "0.5"
 
 [target.'cfg(any(target_os = "android", all(target_vendor = "apple", not(target_os = "macos"))))'.dependencies.reqwest]
 version = "0.13"
@@ -342,17 +337,24 @@ features = ["v2_40"]
 optional = true
 
 [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "windows", target_os = "macos"))'.dependencies.muda]
-version = "0.19"
+version = "0.20"
 features = [
     "serde",
-    "gtk",
+    "gtk3",
 ]
 default-features = false
 
 [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "windows", target_os = "macos"))'.dependencies.tray-icon]
-version = "0.23"
-features = ["serde"]
+version = "0.25"
+features = [
+    "serde",
+    "libappindicator",
+]
 optional = true
+default-features = false
+
+[target."cfg(false)".build-dependencies.tauri-build]
+version = "2.7.6"
 default-features = false
 
 [target.'cfg(target_os = "android")'.dependencies.jni]
@@ -362,7 +364,7 @@ version = "0.21"
 version = "1.2"
 
 [target.'cfg(target_os = "macos")'.dependencies.objc2-app-kit]
-version = "0.3"
+version = "0.3.2"
 features = [
     "std",
     "NSApplication",
@@ -375,16 +377,17 @@ features = [
 default-features = false
 
 [target.'cfg(target_os = "macos")'.dependencies.objc2-foundation]
-version = "0.3"
+version = "0.3.2"
 features = [
     "std",
     "NSData",
+    "NSEnumerator",
     "NSThread",
 ]
 default-features = false
 
 [target.'cfg(target_os = "macos")'.dependencies.objc2-web-kit]
-version = "0.3"
+version = "0.3.2"
 features = [
     "objc2-app-kit",
     "WKWebView",
@@ -397,22 +400,33 @@ default-features = false
 version = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies.window-vibrancy]
-version = "0.6"
+version = "0.8.1"
 
 [target.'cfg(target_vendor = "apple")'.dependencies.objc2]
 version = "0.6"
 
 [target."cfg(windows)".dependencies.webview2-com]
-version = "0.38"
+version = "0.39"
 optional = true
 
 [target."cfg(windows)".dependencies.window-vibrancy]
-version = "0.6"
+version = "0.8.1"
 
 [target."cfg(windows)".dependencies.windows]
-version = "0.61"
+version = "0.62"
 features = [
     "Win32_Foundation",
     "Win32_UI",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_System_LibraryLoader",
+    "Win32_Graphics_Gdi",
 ]
+
+[lints.cargo]
+unused_dependencies = "deny"
+
+[lints.clippy]
+assigning_clones = "warn"
+collapsible_if = "allow"
+or_fun_call = "warn"
+redundant_clone = "warn"

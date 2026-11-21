@@ -30,8 +30,8 @@ required-features = ["tauri-channel-tests"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "=2.11.2", features = ["macos-private-api", "protocol-asset", "devtools", "unstable"] }
-tauri-plugin-fs = { version = "2", features = ["watch"] }
+tauri = { version = "=2.12.7", features = ["macos-private-api", "protocol-asset", "devtools", "unstable"] }
+tauri-plugin-fs = { version = "=2.7.1", features = ["watch"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-shell = "2"
@@ -95,8 +95,8 @@ gtk = "=0.18.2"
 
 # Windows: DXGI 适配器枚举（GPU 探测用）+ 剪贴板 CF_HDROP 文件写入
 [target.'cfg(windows)'.dependencies]
-webview2-com = "=0.38.2"
-windows-core = "=0.61.2"
+webview2-com = "=0.39.1"
+windows-core = "=0.62.2"
 windows = { version = "0.58", features = [
   "Win32_Graphics_Dxgi",
   "Win32_Graphics_Dwm",
