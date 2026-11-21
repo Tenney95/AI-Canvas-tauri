@@ -1,7 +1,6 @@
 /** 真实 React 生命周期回归：共享资产逐项操作、确认边界与过期预览。 */
-import { act, createContext } from 'react';
-import Reconciler from 'react-reconciler';
-import { ConcurrentRoot, DefaultEventPriority, DiscreteEventPriority } from 'react-reconciler/constants';
+import { act } from 'react';
+import { createHostRenderer, node, nodes, text, type HostNode } from './reactHostRenderer';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { AppState } from '../../src/store/useAppStore';
 import type { SharedAssetSyncStatus } from '../../src/types/assetSync';
@@ -25,44 +24,9 @@ vi.mock('../../src/services/confirmDialog', () => ({ confirmAction: driver.confi
 
 import SharedProjectSyncPanel from '../../src/components/assets/SharedProjectSyncPanel';
 
-type Props = Record<string, unknown>;
-interface HostNode { type: string; props: Props; children: HostNode[]; text?: string }
-type HostConfig = Reconciler.HostConfig<string, Props, HostNode, HostNode, HostNode, never, never, never,
-  HostNode, object, never, ReturnType<typeof setTimeout>, -1, null>;
-const context = {};
-let priority = DefaultEventPriority;
-const node = (type: string, props: Props = {}): HostNode => ({ type, props, children: [] });
-function place(parent: HostNode, child: HostNode, before?: HostNode) {
-  const old = parent.children.indexOf(child);
-  if (old >= 0) parent.children.splice(old, 1);
-  parent.children.splice(before ? parent.children.indexOf(before) : parent.children.length, 0, child);
-}
-const remove = (parent: HostNode, child: HostNode) => { parent.children.splice(parent.children.indexOf(child), 1); };
-// 宿主只保存节点和事件，组件与 Store 订阅仍使用真实 React hooks/Fiber。
-const renderer = Reconciler({
-  supportsMutation: true, supportsPersistence: false, supportsHydration: false, isPrimaryRenderer: true,
-  getRootHostContext: () => context, getChildHostContext: () => context, getPublicInstance: (value: HostNode) => value,
-  createInstance: node, createTextInstance: (text: string) => ({ ...node('#text'), text }),
-  appendInitialChild: place, appendChild: place, appendChildToContainer: place,
-  insertBefore: place, insertInContainerBefore: place, removeChild: remove, removeChildFromContainer: remove,
-  finalizeInitialChildren: () => false, shouldSetTextContent: () => false, prepareForCommit: () => null,
-  resetAfterCommit() {}, preparePortalMount() {}, detachDeletedInstance() {},
-  commitUpdate: (value: HostNode, _type: string, _old: Props, props: Props) => { value.props = props; },
-  commitTextUpdate: (value: HostNode, _old: string, text: string) => { value.text = text; },
-  clearContainer: (value: HostNode) => { value.children = []; },
-  scheduleTimeout: setTimeout, cancelTimeout: clearTimeout, noTimeout: -1, supportsMicrotasks: true, scheduleMicrotask: queueMicrotask,
-  setCurrentUpdatePriority: (value: typeof priority) => { priority = value; }, getCurrentUpdatePriority: () => priority,
-  resolveUpdatePriority: () => DiscreteEventPriority, NotPendingTransition: null,
-  HostTransitionContext: createContext(null) as unknown as HostConfig['HostTransitionContext'],
-  getInstanceFromNode: () => null, getInstanceFromScope: () => null, beforeActiveInstanceBlur() {}, afterActiveInstanceBlur() {},
-  prepareScopeUpdate() {}, resetFormInstance() {}, requestPostPaintCallback() {}, shouldAttemptEagerTransition: () => false,
-  trackSchedulerEvent() {}, resolveEventType: () => null, resolveEventTimeStamp: () => 0,
-  maySuspendCommit: () => false, preloadInstance: () => true, startSuspendingCommit() {}, suspendInstance() {}, waitForCommitToBeReady: () => null,
-} satisfies HostConfig);
+const renderer = createHostRenderer();
 let container: HostNode;
-let root: ReturnType<typeof renderer.createContainer> | undefined;
-const text = (value: HostNode): string => value.text ?? value.children.map(text).join('');
-const nodes = (value: HostNode): HostNode[] => [value, ...value.children.flatMap(nodes)];
+let root: ReturnType<typeof renderer.createRoot> | undefined;
 function status(stage: SharedAssetSyncStatus['stage'] = 'preview'): SharedAssetSyncStatus {
   return { ownerId: 'owner', stage, completed: 0, total: 2, items: [
     { id: 'upload', name: '待上传角色', kind: 'character', direction: 'upload' },
@@ -79,8 +43,7 @@ function setStatus(next: SharedAssetSyncStatus) {
 async function mount(ownerId = 'owner', enabled = true) {
   if (!root) {
     container = node('root');
-    const report = (error: Error) => { throw error; };
-    root = renderer.createContainer(container, ConcurrentRoot, null, false, null, '', report, report, report, () => {});
+    root = renderer.createRoot(container);
   }
   await act(async () => { renderer.updateContainer(<SharedProjectSyncPanel ownerId={ownerId} enabled={enabled} />, root!, null); });
 }

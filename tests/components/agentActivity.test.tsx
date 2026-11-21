@@ -1,10 +1,9 @@
 /**
  * agentActivity — 回归测试：Agent visible activity and recovery。
  */
-import { act, createContext, type ReactNode } from 'react';
+import { act, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import Reconciler from 'react-reconciler';
-import { ConcurrentRoot, DefaultEventPriority, DiscreteEventPriority } from 'react-reconciler/constants';
+import { createHostRenderer, node, nodes, text, type HostNode } from './reactHostRenderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AgentTaskTimeline from '../../src/components/chat/AgentTaskTimeline';
 import AgentStepCard from '../../src/components/chat/AgentStepCard';
@@ -23,50 +22,14 @@ const controls = {
   onPause: vi.fn(), onResume: vi.fn(), onStop: vi.fn(), onSkip: vi.fn(), onReplan: vi.fn(), onRewind: vi.fn(),
 };
 
-type Props = Record<string, unknown>;
-interface HostNode { type: string; props: Props; children: HostNode[]; text?: string }
-type HostConfig = Reconciler.HostConfig<string, Props, HostNode, HostNode, HostNode, never, never, never,
-  HostNode, object, never, ReturnType<typeof setTimeout>, -1, null>;
-const context = {};
-let priority = DefaultEventPriority;
-const node = (type: string, props: Props = {}): HostNode => ({ type, props, children: [] });
-function place(parent: HostNode, child: HostNode, before?: HostNode) {
-  const old = parent.children.indexOf(child);
-  if (old >= 0) parent.children.splice(old, 1);
-  parent.children.splice(before ? parent.children.indexOf(before) : parent.children.length, 0, child);
-}
-const remove = (parent: HostNode, child: HostNode) => { parent.children.splice(parent.children.indexOf(child), 1); };
-// 真实 Fiber/hooks 保持同一组件实例，覆盖“首次展开、完成后仍未收起”的生命周期回归。
-const renderer = Reconciler({
-  supportsMutation: true, supportsPersistence: false, supportsHydration: false, isPrimaryRenderer: true,
-  getRootHostContext: () => context, getChildHostContext: () => context, getPublicInstance: (value: HostNode) => value,
-  createInstance: node, createTextInstance: (text: string) => ({ ...node('#text'), text }),
-  appendInitialChild: place, appendChild: place, appendChildToContainer: place,
-  insertBefore: place, insertInContainerBefore: place, removeChild: remove, removeChildFromContainer: remove,
-  finalizeInitialChildren: () => false, shouldSetTextContent: () => false, prepareForCommit: () => null,
-  resetAfterCommit() {}, preparePortalMount() {}, detachDeletedInstance() {},
-  commitUpdate: (value: HostNode, _type: string, _old: Props, props: Props) => { value.props = props; },
-  commitTextUpdate: (value: HostNode, _old: string, text: string) => { value.text = text; },
-  clearContainer: (value: HostNode) => { value.children = []; },
-  scheduleTimeout: setTimeout, cancelTimeout: clearTimeout, noTimeout: -1, supportsMicrotasks: true, scheduleMicrotask: queueMicrotask,
-  setCurrentUpdatePriority: (value: typeof priority) => { priority = value; }, getCurrentUpdatePriority: () => priority,
-  resolveUpdatePriority: () => DiscreteEventPriority, NotPendingTransition: null,
-  HostTransitionContext: createContext(null) as unknown as HostConfig['HostTransitionContext'],
-  getInstanceFromNode: () => null, getInstanceFromScope: () => null, beforeActiveInstanceBlur() {}, afterActiveInstanceBlur() {},
-  prepareScopeUpdate() {}, resetFormInstance() {}, requestPostPaintCallback() {}, shouldAttemptEagerTransition: () => false,
-  trackSchedulerEvent() {}, resolveEventType: () => null, resolveEventTimeStamp: () => 0,
-  maySuspendCommit: () => false, preloadInstance: () => true, startSuspendingCommit() {}, suspendInstance() {}, waitForCommitToBeReady: () => null,
-} satisfies HostConfig);
+const renderer = createHostRenderer();
 let container: HostNode;
-let root: ReturnType<typeof renderer.createContainer> | undefined;
-const text = (value: HostNode): string => value.text ?? value.children.map(text).join('');
-const nodes = (value: HostNode): HostNode[] => [value, ...value.children.flatMap(nodes)];
+let root: ReturnType<typeof renderer.createRoot> | undefined;
 const disclosures = () => nodes(container).filter((value) => value.type === 'button' && 'aria-expanded' in value.props);
 async function render(element: ReactNode) {
   if (!root) {
     container = node('root');
-    const report = (error: Error) => { throw error; };
-    root = renderer.createContainer(container, ConcurrentRoot, null, false, null, '', report, report, report, () => {});
+    root = renderer.createRoot(container);
   }
   await act(async () => { renderer.updateContainer(element, root!, null); });
 }

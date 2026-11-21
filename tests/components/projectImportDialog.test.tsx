@@ -1,7 +1,6 @@
 /** 真实 React 生命周期回归：清理失败保留所有暂存句柄，业务提交成功不被清理错误覆盖。 */
-import { act, createContext, type ReactNode } from 'react';
-import Reconciler from 'react-reconciler';
-import { ConcurrentRoot, DefaultEventPriority, DiscreteEventPriority } from 'react-reconciler/constants';
+import { act, type ReactNode } from 'react';
+import { createHostRenderer, node, nodes, text, type HostNode } from './reactHostRenderer';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { PreparedProjectImport, ProjectImportOptions } from '../../src/services/projectImportService';
 import { NativeProjectImportPausedError, type NativeProjectImportProgress } from '../../src/services/nativeProjectImportTransfer';
@@ -26,45 +25,9 @@ vi.mock('../../src/components/shared/Select', () => ({ default: ({ children }: {
 
 import ProjectImportDialog from '../../src/components/projectImport/ProjectImportDialog';
 
-type Props = Record<string, unknown>;
-interface HostNode { type: string; props: Props; children: HostNode[]; text?: string }
-type HostConfig = Reconciler.HostConfig<string, Props, HostNode, HostNode, HostNode, never, never, never,
-  HostNode, object, never, ReturnType<typeof setTimeout>, -1, null>;
-const context = {};
-let priority = DefaultEventPriority;
-const node = (type: string, props: Props = {}): HostNode => ({ type, props, children: [] });
-function place(parent: HostNode, child: HostNode, before?: HostNode) {
-  const old = parent.children.indexOf(child);
-  if (old >= 0) parent.children.splice(old, 1);
-  parent.children.splice(before ? parent.children.indexOf(before) : parent.children.length, 0, child);
-}
-const remove = (parent: HostNode, child: HostNode) => { parent.children.splice(parent.children.indexOf(child), 1); };
-// 使用现有 reconciler 的真实 Fiber/hooks；宿主只保存节点和事件，不模拟组件状态或浏览器布局。
-const renderer = Reconciler({
-  supportsMutation: true, supportsPersistence: false, supportsHydration: false, isPrimaryRenderer: true,
-  getRootHostContext: () => context, getChildHostContext: () => context, getPublicInstance: (value: HostNode) => value,
-  createInstance: node, createTextInstance: (text: string) => ({ ...node('#text'), text }),
-  appendInitialChild: place, appendChild: place, appendChildToContainer: place,
-  insertBefore: place, insertInContainerBefore: place, removeChild: remove, removeChildFromContainer: remove,
-  finalizeInitialChildren: () => false, shouldSetTextContent: () => false, prepareForCommit: () => null,
-  resetAfterCommit() {}, preparePortalMount() {}, detachDeletedInstance() {},
-  commitUpdate: (value: HostNode, _type: string, _old: Props, props: Props) => { value.props = props; },
-  commitTextUpdate: (value: HostNode, _old: string, text: string) => { value.text = text; },
-  clearContainer: (value: HostNode) => { value.children = []; },
-  scheduleTimeout: setTimeout, cancelTimeout: clearTimeout, noTimeout: -1, supportsMicrotasks: true, scheduleMicrotask: queueMicrotask,
-  setCurrentUpdatePriority: (value: typeof priority) => { priority = value; }, getCurrentUpdatePriority: () => priority,
-  resolveUpdatePriority: () => DiscreteEventPriority, NotPendingTransition: null,
-  // createContext 的运行时包含 reconciler 使用的私有字段，React 公共 Context 声明不暴露它们。
-  HostTransitionContext: createContext(null) as unknown as HostConfig['HostTransitionContext'],
-  getInstanceFromNode: () => null, getInstanceFromScope: () => null, beforeActiveInstanceBlur() {}, afterActiveInstanceBlur() {},
-  prepareScopeUpdate() {}, resetFormInstance() {}, requestPostPaintCallback() {}, shouldAttemptEagerTransition: () => false,
-  trackSchedulerEvent() {}, resolveEventType: () => null, resolveEventTimeStamp: () => 0,
-  maySuspendCommit: () => false, preloadInstance: () => true, startSuspendingCommit() {}, suspendInstance() {}, waitForCommitToBeReady: () => null,
-} satisfies HostConfig);
+const renderer = createHostRenderer();
 let container: HostNode;
-let root: ReturnType<typeof renderer.createContainer> | undefined;
-const text = (value: HostNode): string => value.text ?? value.children.map(text).join('');
-const nodes = (value: HostNode): HostNode[] => [value, ...value.children.flatMap(nodes)];
+let root: ReturnType<typeof renderer.createRoot> | undefined;
 function session(id: string): PreparedProjectImport {
   return { id, stagingProjectId: `stage-${id}`, stagingFolder: id, archivePath: `${id}.aicanvas`, directory: id,
     manifest: { formatVersion: 2, exportedAt: 0, projectId: id, projectName: id },
@@ -73,8 +36,7 @@ function session(id: string): PreparedProjectImport {
 }
 async function mount() {
   container = node('root');
-  const report = (error: Error) => { throw error; };
-  root = renderer.createContainer(container, ConcurrentRoot, null, false, null, '', report, report, report, () => {});
+  root = renderer.createRoot(container);
   await act(async () => { renderer.updateContainer(<ProjectImportDialog onClose={driver.onClose} onImported={driver.onImported} />, root!, null); });
 }
 async function click(label: string) {
