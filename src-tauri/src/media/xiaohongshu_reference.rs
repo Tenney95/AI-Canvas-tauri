@@ -144,6 +144,17 @@ fn html_text(value: &str) -> String {
         .replace('"', "&quot;").replace('\'', "&#39;")
 }
 
+fn toolbar_stylesheet(path: &str) -> Option<&'static str> {
+    match path {
+        "/toolbar.css" => Some(TOOLBAR_STYLE),
+        "/base.css" => Some(BASE_STYLE),
+        "/ui-kit.css" => Some(UI_KIT_STYLE),
+        "/ui-kit-controls.css" => Some(include_str!("../../../src/styles/ui-kit-controls.css")),
+        "/ui-kit-selection.css" => Some(include_str!("../../../src/styles/ui-kit-selection.css")),
+        _ => None,
+    }
+}
+
 pub fn toolbar_protocol<R: Runtime>(context: UriSchemeContext<'_, R>, request: Request<Vec<u8>>) -> HttpResponse<Vec<u8>> {
     let origin_allowed = match (request.uri().scheme_str(), request.uri().authority().map(|authority| authority.as_str())) {
         (Some(TOOLBAR_SCHEME), Some(TOOLBAR_HOST)) => true,
@@ -163,10 +174,7 @@ pub fn toolbar_protocol<R: Runtime>(context: UriSchemeContext<'_, R>, request: R
                 .replace("__THEME__", session.toolbar_theme.css_name())
                 .replace("__IMPORT_LABEL__", &html_text(&session.import_label)).into_bytes())),
             "/toolbar.js" => Some(("text/javascript; charset=utf-8", TOOLBAR_SCRIPT.as_bytes().to_vec())),
-            "/toolbar.css" => Some(("text/css; charset=utf-8", TOOLBAR_STYLE.as_bytes().to_vec())),
-            "/base.css" => Some(("text/css; charset=utf-8", BASE_STYLE.as_bytes().to_vec())),
-            "/ui-kit.css" => Some(("text/css; charset=utf-8", UI_KIT_STYLE.as_bytes().to_vec())),
-            _ => None,
+            path => toolbar_stylesheet(path).map(|css| ("text/css; charset=utf-8", css.as_bytes().to_vec())),
         })
     } else { None };
     let (status, content_type, body) = match page {
@@ -785,4 +793,23 @@ pub async fn xiaohongshu_reference_import(
         return Err("小红书参考窗口已切换，请重新导入".into());
     }
     Ok(Response::new(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toolbar_serves_the_ui_kit_imports_and_only_registered_stylesheets() {
+        let ui_kit = toolbar_stylesheet("/ui-kit.css").unwrap();
+        for (path, expected_css) in [
+            ("/ui-kit-controls.css", include_str!("../../../src/styles/ui-kit-controls.css")),
+            ("/ui-kit-selection.css", include_str!("../../../src/styles/ui-kit-selection.css")),
+        ] {
+            assert!(ui_kit.contains(&format!("@import '.{path}';")));
+            assert!(toolbar_stylesheet(path) == Some(expected_css), "incorrect stylesheet for {path}");
+        }
+        assert!(toolbar_stylesheet("/ui-kit-unknown.css").is_none());
+        assert!(toolbar_stylesheet("/nested/ui-kit-controls.css").is_none());
+    }
 }

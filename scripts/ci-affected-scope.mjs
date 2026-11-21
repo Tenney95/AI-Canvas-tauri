@@ -22,6 +22,12 @@ const sharedFrontendPaths = [
 const lintable = /\.(?:js|mjs|cjs|ts|tsx)$/;
 const typescript = /\.tsx?$/;
 const sourceCode = /^src\/(?:components|constants|data|hooks|services|store|utils)\//;
+const nativeToolbarStyles = new Set([
+  'src/styles/base.css',
+  'src/styles/ui-kit.css',
+  'src/styles/ui-kit-controls.css',
+  'src/styles/ui-kit-selection.css',
+]);
 const testCode = /^tests\/(?:components|hooks|i18n|scripts|services|store|types|utils)\//;
 const documentation = /^(?:doc\/.+\.md|README(?:\.(?:en|ja|ko))?\.md|AGENTS\.md|\.release-notes\.md|\.github\/release-title\.txt)$/;
 const translations = /^src\/i18n\/locales\/(?:en-US|ja-JP|ko-KR)\/(?!index\.ts$)[^/]+\.ts$/;
@@ -174,8 +180,8 @@ export function classifyAffectedChanges(changes) {
     } else if ((sourceCode.test(path) && lintable.test(path)) || /^src\/styles\/.+\.css$/.test(path)) {
       relatedFiles.add(path);
       typecheck ||= typescript.test(path);
-      // Tauri 的原生工具栏直接嵌入这两份 CSS。
-      rust ||= path === 'src/styles/base.css' || path === 'src/styles/ui-kit.css';
+      // 小红书参考工具栏的样式在 Rust 编译时嵌入。
+      rust ||= nativeToolbarStyles.has(path);
       readers = readerTests(path, sourceReaderTests);
     } else if (testCode.test(path) && lintable.test(path)) {
       relatedFiles.add(path);

@@ -221,14 +221,20 @@ describe('CI 影响范围', () => {
     expect(native.explicitTests).toContain('tests/scripts/nativeAppCommandAcl.test.ts');
   });
 
-  it('改动原生工具栏嵌入的 CSS 和公开插件脚本时保留两者的验证范围', () => {
-    const css = 'src/styles/ui-kit.css';
-    const bootstrap = 'public/plugin-ui-bootstrap.js';
+  it.each([
+    'src/styles/base.css',
+    'src/styles/ui-kit.css',
+    'src/styles/ui-kit-controls.css',
+    'src/styles/ui-kit-selection.css',
+  ])('改动原生工具栏嵌入的 %s 时保留 Rust 验证范围', (css) => {
     const plan = modify(css);
 
     expect(plan).toMatchObject({ mode: 'affected', lintFiles: [], rust: true });
     expect(plan.relatedFiles).toContain(css);
-    expect(modify(bootstrap)).toMatchObject({ mode: 'full', rust: true });
+  });
+
+  it('公开插件脚本保留完整原生验证', () => {
+    expect(modify('public/plugin-ui-bootstrap.js')).toMatchObject({ mode: 'full', rust: true });
   });
 
   it.each([
