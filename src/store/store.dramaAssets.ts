@@ -2,9 +2,6 @@
  * store.dramaAssets — 管理项目与全局短剧资产及其画布关联。
  */
 import { t } from '../i18n';
-/**
- * 项目级短剧资产库（人物 / 场景 / 道具）
- */
 import type { StateCreator } from 'zustand';
 import type { Node } from '@xyflow/react';
 import type { AppState } from './useAppStore';
@@ -26,7 +23,14 @@ import type {
   DramaProp,
   DramaScene,
 } from '../types/dramaAssets';
-import { assertDramaAssetWriteCurrent, emptyDramaAssetLibrary, normalizeDramaCharacter, normalizeDramaVisualAsset, syncDramaVisualAssetPrimary, MAX_CHARACTER_REFERENCE_IMAGES, MAX_DRAMA_REFERENCE_IMAGES, MAX_CHARACTER_WEAPONS, normalizeCharacterWeaponIds } from '../types/dramaAssets';
+import {
+  assertDramaAssetWriteCurrent,
+  emptyDramaAssetLibrary,
+  normalizeDramaCharacter,
+  normalizeDramaVisualAsset,
+  syncDramaVisualAssetPrimary,
+  MAX_DRAMA_REFERENCE_IMAGES,
+} from '../types/dramaAssets';
 import type { DramaExtractParseResult } from '../services/dramaAssetExtract';
 import { mergeDramaExtractIntoLibrary, normalizeAssetKey } from '../services/dramaAssetExtract';
 import {
@@ -38,7 +42,7 @@ import {
 } from '../services/dramaAssetPrompt';
 import { generateId, seriesOwnerId } from './store.utils';
 import { nodeHeightForAspectRatio } from '../utils/nodeBounds';
-import type { BaseNodeData, CharacterLibraryNodeLink } from '../types';
+import type { BaseNodeData } from '../types';
 import {
   registerCanvasDerivation,
   isCanvasDerivationFresh,
@@ -61,7 +65,34 @@ import {
 import { reorderCharacterSubset, sortCharactersForLibrary } from '../services/characterOrder';
 import { putGlobalCharacterWeapons } from '../services/indexedDbService';
 import { configValuesEqual } from '../services/configPatch';
-import { assertSafeProjectRelativePath } from '../services/fs/projectFiles';
+import {
+  findScopedCharacter,
+  isEligibleCharacterReferenceNode,
+  isEligibleCharacterVoiceNode,
+  patchList,
+  mapKindList,
+  silentSave,
+  checkedCharacterWeapons,
+  removesBoundWeapon,
+  withoutCharacterWeapons,
+  mergeLoadedGlobalAssets,
+  sameCharacterContent,
+  syncCharacterPrimaryImage,
+  projectWsagentAsset,
+  sameImageIdentity,
+  upsertCharacterReference,
+  cloneCharacter,
+  pickSpawnPosition,
+} from './dramaAssets/assetMutations';
+import { createCharacterMediaActions } from './dramaAssets/characterMediaActions';
+
+
+export {
+  isEligibleCharacterReferenceNode,
+  isEligibleCharacterVoiceNode,
+  countUnreadDramaAssets,
+  readWsagentCreativeAsset,
+} from './dramaAssets/assetMutations';
 
 const characterOrderSaves = new Set<string>();
 const dramaAssetImports = new Set<string>();
@@ -81,44 +112,10 @@ export interface WsagentCreativeAssetFields {
   } | null;
 }
 
-function findScopedCharacter(
-  state: Pick<AppState, 'dramaAssets' | 'globalCharacters'>,
-  scope: CharacterLibraryScope,
-  characterId: string,
-): DramaCharacter | undefined {
-  return (scope === 'project' ? state.dramaAssets.characters : state.globalCharacters)
-    .find((character) => character.id === characterId);
-}
-
 /** 从画布收纳一份动作素材；关联仅保存在来源项目的节点上。 */
 export interface CharacterActionNodeCapture {
   nodeId: string;
   hideNode: boolean;
-}
-
-const CHARACTER_REFERENCE_NODE_TYPES = new Set([
-  'ai-image',
-  'source-image',
-  'ai-panorama',
-  'ai-storyboard',
-  'ai-animation',
-]);
-
-const CHARACTER_VOICE_NODE_TYPES = new Set(['ai-audio', 'source-audio']);
-
-export function isEligibleCharacterReferenceNode(
-  node: Pick<Node<BaseNodeData>, 'type' | 'data'> | undefined,
-): boolean {
-  if (!node?.type || !CHARACTER_REFERENCE_NODE_TYPES.has(node.type)) return false;
-  return Boolean(node.data.imageUrl || node.data.thumbnailUrl);
-}
-
-/** 可绑定为角色声音的画布节点：生成音频与上传音频，且已有音频产物 */
-export function isEligibleCharacterVoiceNode(
-  node: Pick<Node<BaseNodeData>, 'type' | 'data'> | undefined,
-): boolean {
-  if (!node?.type || !CHARACTER_VOICE_NODE_TYPES.has(node.type)) return false;
-  return Boolean(node.data.audioUrl);
 }
 
 export interface CaptureImageNodeToCharacterInput {
@@ -307,338 +304,6 @@ export interface DramaAssetsSlice {
     characterId: string,
     clipId: string,
   ) => string | null;
-}
-
-export function countUnreadDramaAssets(library: DramaAssetLibrary): number {
-  if (library.lastViewedAt === undefined) return 0;
-  const { lastViewedAt } = library;
-  return [...library.characters, ...library.scenes, ...library.props]
-    .filter((asset) => asset.createdAt > lastViewedAt).length;
-}
-
-function patchList<T extends { id: string; updatedAt: number }>(
-  list: T[],
-  id: string,
-  patch: Partial<T>,
-): T[] {
-  return list.map((item) =>
-    item.id === id ? { ...item, ...patch, updatedAt: Date.now() } : item,
-  );
-}
-
-function mapKindList(
-  lib: DramaAssetLibrary,
-  kind: DramaAssetKind,
-  mapper: (list: DramaAsset[]) => DramaAsset[],
-): DramaAssetLibrary {
-  if (kind === 'character') {
-    return { ...lib, characters: mapper(lib.characters) as DramaAssetLibrary['characters'] };
-  }
-  if (kind === 'scene') {
-    return { ...lib, scenes: mapper(lib.scenes) as DramaAssetLibrary['scenes'] };
-  }
-  return { ...lib, props: mapper(lib.props) as DramaAssetLibrary['props'] };
-}
-
-function silentSave(get: () => AppState) {
-  void get().saveCurrentProjectSilent?.();
-}
-
-function checkedCharacterWeapons(character: DramaCharacter, props: readonly DramaProp[], previous?: DramaCharacter): string[] | undefined {
-  const raw = character.weaponIds ?? previous?.weaponIds;
-  if (raw === undefined) return;
-  const ids = normalizeCharacterWeaponIds(raw);
-  if (!Array.isArray(raw) || raw.length > MAX_CHARACTER_WEAPONS
-    || raw.some((id) => typeof id !== 'string' || !ids.includes(id))
-    || ids.some((id) => !props.some((prop) => prop.id === id && prop.propType === 'weapon'))) {
-    throw new Error(t('武器绑定无效，请重新选择'));
-  }
-  return ids;
-}
-
-function removesBoundWeapon(previous: DramaAsset | undefined, next: DramaAsset, characters: readonly DramaCharacter[]): boolean {
-  return previous?.kind === 'prop' && previous.propType === 'weapon'
-    && next.kind === 'prop' && next.propType !== 'weapon'
-    && characters.some((character) => character.weaponIds?.includes(previous.id));
-}
-
-function withoutCharacterWeapons(characters: DramaCharacter[], ids: ReadonlySet<string>): DramaCharacter[] {
-  return characters.map((character) => character.weaponIds?.some((id) => ids.has(id))
-    ? { ...character, weaponIds: character.weaponIds.filter((id) => !ids.has(id)), updatedAt: Date.now() }
-    : character);
-}
-
-/** 读取期间发生的增删改优先于旧快照，避免并发加载覆盖已经保存的编辑。 */
-function mergeLoadedGlobalAssets<T extends { id: string }>(before: T[], current: T[], loaded: T[]): T[] {
-  const original = new Map(before.map((asset) => [asset.id, asset]));
-  const latest = new Map(current.map((asset) => [asset.id, asset]));
-  const merged = loaded.filter((asset) => !original.has(asset.id) || latest.has(asset.id))
-    .map((asset) => {
-      const edited = latest.get(asset.id);
-      return edited && edited !== original.get(asset.id) ? edited : asset;
-    });
-  const loadedIds = new Set(merged.map((asset) => asset.id));
-  return [...merged, ...current.filter((asset) => !loadedIds.has(asset.id) && asset !== original.get(asset.id))];
-}
-
-/** 排序只改 libraryOrder，不能让在途正文保存覆盖另一份角色编辑。 */
-function sameCharacterContent(left: DramaCharacter | undefined, right: DramaCharacter | undefined): boolean {
-  if (left === right) return true;
-  if (!left || !right) return false;
-  const previous = left as unknown as Record<string, unknown>;
-  const current = right as unknown as Record<string, unknown>;
-  return Object.keys({ ...previous, ...current })
-    .every((key) => key === 'libraryOrder' || previous[key] === current[key]);
-}
-
-async function saveCharacterActionWithNode(
-  set: Parameters<StateCreator<AppState>>[0],
-  get: () => AppState,
-  scope: CharacterLibraryScope,
-  character: DramaCharacter,
-  actionId: string,
-  media: CharacterActionMedia[],
-  capture?: CharacterActionNodeCapture,
-): Promise<boolean> {
-  if (!capture) return get().saveCharacterCard(scope, character);
-  if (media.length !== 1) return false;
-  const guard = registerCanvasDerivation(get(), capture.nodeId);
-  if (!guard) return false;
-  const previousCharacter = get().dramaAssets.characters.find((item) => item.id === character.id);
-  try {
-    if (scope === 'project') {
-      if (!previousCharacter) return false;
-      set((state) => ({
-        dramaAssets: {
-          ...state.dramaAssets,
-          characters: state.dramaAssets.characters.map((item) => item.id === character.id ? character : item),
-        },
-      }));
-      const savedProjectId = await get().saveCurrentProjectSilent();
-      if (savedProjectId !== guard.projectId) throw new Error('动作素材保存失败');
-    } else if (!await get().saveCharacterCard(scope, character)) {
-      return false;
-    }
-    if (isCanvasDerivationFresh(guard, get())) {
-      const linked = get().linkNodeToCharacter(capture.nodeId, {
-        scope,
-        characterId: character.id,
-        actionId,
-        mediaId: media[0].id,
-      }, capture.hideNode);
-      if (linked) silentSave(get);
-    }
-    return true;
-  } catch {
-    // 保存失败仅回退本次角色对象，不覆盖期间的其他角色编辑或已切换项目。
-    if (scope === 'project' && get().currentProjectId === guard.projectId && previousCharacter) {
-      set((state) => ({
-        dramaAssets: {
-          ...state.dramaAssets,
-          characters: state.dramaAssets.characters.map((item) => item === character ? previousCharacter : item),
-        },
-      }));
-    }
-    get().showToast?.('动作素材保存失败，画布节点保持不变', 'error');
-    return false;
-  } finally {
-    completeCanvasDerivation(guard);
-  }
-}
-
-function syncCharacterPrimaryImage(character: DramaCharacter): DramaCharacter {
-  const primary = character.referenceImages?.find((reference) => reference.id === character.primaryReferenceImageId)
-    ?? character.referenceImages?.[0];
-  const synced = {
-    ...character,
-    assetId: primary?.assetId,
-    relativePath: primary?.relativePath,
-    filePath: primary?.filePath,
-    imageNodeId: primary?.sourceNodeId,
-    imageUrl: primary?.imageUrl,
-    imageAssetId: undefined,
-    imageRelativePath: undefined,
-  };
-  return synced;
-}
-
-const WSAGENT_REFERENCE_PREFIX = 'wsagent-image-';
-const WSAGENT_VISUAL_HEADING = '### 视觉说明';
-
-function wsagentAssetText(value: string | null | undefined): string {
-  return typeof value === 'string' ? value.replace(/\r\n?/g, '\n').trim() : '';
-}
-
-/** 只投影互通文本与主参考图来源，实际文件读取仍由配对服务验证。 */
-export function readWsagentCreativeAsset(asset: DramaAsset, nodes: readonly Node<BaseNodeData>[]) {
-  const summary = wsagentAssetText(asset.summary);
-  const visualNotes = wsagentAssetText(asset.visualNotes);
-  const description = [summary, visualNotes && `${WSAGENT_VISUAL_HEADING}\n\n${visualNotes}`].filter(Boolean).join('\n\n');
-  const reference = asset.referenceImages?.find((image) => image.id === asset.primaryReferenceImageId)
-    ?? asset.referenceImages?.[0];
-  const isGlobal = !!asset.imageAssetId || (reference && 'assetSource' in reference && reference.assetSource === 'global');
-  const sourceNodeId = isGlobal ? undefined : reference?.sourceNodeId ?? asset.imageNodeId;
-  const node = nodes.find((item) => item.id === sourceNodeId);
-  const linked = isEligibleCharacterReferenceNode(node) ? node?.data : undefined;
-  // 节点有新产物时，不混用库卡旧文件的路径。
-  const imageUrl = linked ? linked.imageUrl ?? linked.thumbnailUrl : reference?.imageUrl ?? asset.imageUrl;
-  const filePath = linked ? linked.filePath : reference?.filePath ?? (asset as DramaAsset & { filePath?: string }).filePath;
-  const assetId = linked ? linked.assetId : reference?.assetId ?? asset.imageAssetId ?? asset.assetId;
-  const relativePath = linked ? linked.relativePath : reference?.relativePath ?? asset.imageRelativePath ?? asset.relativePath;
-  const image = imageUrl || filePath || assetId || relativePath ? {
-    referenceId: reference?.id ?? null,
-    assetSource: isGlobal ? 'global' as const : undefined,
-    sourceNodeId, assetId, relativePath, filePath, imageUrl,
-  } : undefined;
-  return { name: wsagentAssetText(asset.name), description, image };
-}
-
-/** 同一张远端原图维持稳定引用 ID，设置新主图时保留旧引用。 */
-function wsagentPrimaryReference<T extends CharacterReferenceImage | DramaAssetReferenceImage>(
-  references: T[], currentId: string | undefined, image: NonNullable<WsagentCreativeAssetFields['image']> | null,
-  maxReferences: number, create: (id: string) => T,
-) {
-  if (!image) {
-    if (!currentId?.startsWith(WSAGENT_REFERENCE_PREFIX)) return null;
-    const remaining = references.filter((item) => item.id !== currentId);
-    return { referenceImages: remaining, primaryReferenceImageId: remaining[0]?.id };
-  }
-  const referenceId = `${WSAGENT_REFERENCE_PREFIX}${encodeURIComponent(image.sourceId)}`;
-  const existing = references.find((item) => item.id === referenceId
-    || (item.relativePath === image.relativePath && !('assetSource' in item && item.assetSource === 'global')));
-  if (existing) return existing.id === currentId ? null : { referenceImages: references, primaryReferenceImageId: existing.id };
-  if (references.length >= maxReferences) throw new Error('参考图已达上限，请留出一项后再同步');
-  return { referenceImages: [...references, create(referenceId)], primaryReferenceImageId: referenceId };
-}
-
-function projectWsagentAsset(
-  asset: DramaAsset, input: WsagentCreativeAssetFields, updatedAt: number,
-): DramaAsset {
-  const name = wsagentAssetText(input.name);
-  const description = wsagentAssetText(input.description);
-  const heading = /^### 视觉说明[ \t]*$/m.exec(description);
-  const summary = heading ? description.slice(0, heading.index).trim() : description;
-  const visualNotes = heading ? description.slice(heading.index + heading[0].length).trim() : '';
-  if (!name || name.includes('\n')) throw new Error('共享创作资产名称无效');
-  const textFields = { name, key: name !== asset.name ? normalizeAssetKey(name) : asset.key, summary, visualNotes, updatedAt };
-  const textChanged = name !== asset.name || summary !== asset.summary || visualNotes !== asset.visualNotes;
-  const image = input.image;
-  if (image === undefined) return textChanged ? { ...asset, ...textFields } : asset;
-  if (image) {
-    if (!image.sourceId || image.sourceId.length > 180 || !image.filePath || !image.imageUrl) throw new Error('共享参考图无效');
-    assertSafeProjectRelativePath(image.relativePath);
-  }
-  const mediaFields = { relativePath: image?.relativePath, filePath: image?.filePath, imageUrl: image?.imageUrl,
-    prompt: '', createdAt: updatedAt, updatedAt };
-  if (asset.kind === 'character') {
-    const current = normalizeDramaCharacter(asset);
-    const change = wsagentPrimaryReference(current.referenceImages ?? [], current.primaryReferenceImageId,
-      image, MAX_CHARACTER_REFERENCE_IMAGES, (id) => ({ ...mediaFields, id, kind: 'primary' }));
-    return change ? syncCharacterPrimaryImage(normalizeDramaCharacter({ ...current, ...textFields,
-      ...change, imageNodeId: undefined, imageUrl: undefined })) : textChanged ? { ...asset, ...textFields } : asset;
-  }
-  const current = normalizeDramaVisualAsset(asset);
-  const change = wsagentPrimaryReference(current.referenceImages ?? [], current.primaryReferenceImageId,
-    image, MAX_DRAMA_REFERENCE_IMAGES, (id) => ({ ...mediaFields, id, label: image?.fileName ?? '' }));
-  return change ? syncDramaVisualAssetPrimary({ ...current, ...textFields, ...change })
-    : textChanged ? { ...asset, ...textFields } : asset;
-}
-
-function sameImageIdentity(
-  first: { assetId?: string; relativePath?: string; filePath?: string },
-  second: { assetId?: string; relativePath?: string; filePath?: string },
-): boolean {
-  return first.assetId === second.assetId && first.relativePath === second.relativePath && first.filePath === second.filePath;
-}
-
-function upsertCharacterReference(
-  character: DramaCharacter,
-  reference: CharacterReferenceImage,
-  makePrimary: boolean,
-): DramaCharacter {
-  const references = [...(character.referenceImages ?? [])];
-  const existingIndex = references.findIndex((item) =>
-    item.id === reference.id
-    || Boolean(reference.sourceNodeId && item.sourceNodeId === reference.sourceNodeId),
-  );
-  const persistedReference = existingIndex >= 0
-    ? { ...references[existingIndex], ...reference, id: references[existingIndex].id }
-    : reference;
-  if (existingIndex >= 0) references[existingIndex] = persistedReference;
-  else references.push(persistedReference);
-  return syncCharacterPrimaryImage(normalizeDramaCharacter({
-    ...character,
-    referenceImages: references,
-    primaryReferenceImageId: makePrimary || !character.primaryReferenceImageId
-      ? persistedReference.id
-      : character.primaryReferenceImageId,
-    updatedAt: Date.now(),
-  }));
-}
-
-function upsertCharacterVoiceClip(
-  character: DramaCharacter,
-  clip: CharacterVoiceClip,
-  makePrimary: boolean,
-): DramaCharacter {
-  const clips = [...(character.voiceClips ?? [])];
-  const existingIndex = clips.findIndex((item) =>
-    item.id === clip.id
-    || Boolean(clip.sourceNodeId && item.sourceNodeId === clip.sourceNodeId),
-  );
-  const persistedClip = existingIndex >= 0
-    ? { ...clips[existingIndex], ...clip, id: clips[existingIndex].id }
-    : clip;
-  if (existingIndex >= 0) clips[existingIndex] = persistedClip;
-  else clips.push(persistedClip);
-  return normalizeDramaCharacter({
-    ...character,
-    voiceClips: clips,
-    primaryVoiceClipId: makePrimary || !character.primaryVoiceClipId
-      ? persistedClip.id
-      : character.primaryVoiceClipId,
-    updatedAt: Date.now(),
-  });
-}
-
-function cloneCharacter(character: DramaCharacter): DramaCharacter {
-  const now = Date.now();
-  return normalizeDramaCharacter({
-    ...character,
-    id: `character-${generateId()}`,
-    libraryOrder: undefined,
-    createdAt: now,
-    updatedAt: now,
-    source: 'manual',
-    referenceImages: (character.referenceImages ?? []).map((reference) => ({
-      ...reference,
-      sourceNodeId: undefined,
-      createdAt: now,
-      updatedAt: now,
-    })),
-    voiceClips: (character.voiceClips ?? []).map((clip) => ({
-      ...clip,
-      sourceNodeId: undefined,
-      createdAt: now,
-      updatedAt: now,
-    })),
-    imageNodeId: undefined,
-  });
-}
-
-function pickSpawnPosition(nodes: Node<BaseNodeData>[]): { x: number; y: number } {
-  if (nodes.length === 0) return { x: 120, y: 120 };
-  let maxX = 0;
-  let yAtMax = 120;
-  for (const n of nodes) {
-    const w = (n.data?.nodeWidth as number) || 280;
-    const right = n.position.x + w;
-    if (right > maxX) {
-      maxX = right;
-      yAtMax = n.position.y;
-    }
-  }
-  return { x: maxX + 80, y: yAtMax };
 }
 
 export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsSlice> = (set, get, api) => {
@@ -1655,442 +1320,6 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
     }
   },
 
-  captureImageNodeToCharacter: async (input) => {
-    const initialState = get();
-    const sourceNode = initialState.nodes.find((node) => node.id === input.nodeId);
-    if (!sourceNode || !isEligibleCharacterReferenceNode(sourceNode)) {
-      initialState.showToast?.('该节点没有可用的角色图片', 'error');
-      return null;
-    }
-    const projectId = initialState.currentProjectId;
-    if (!projectId) return null;
-
-    const characters = input.scope === 'project'
-      ? initialState.dramaAssets.characters
-      : initialState.globalCharacters;
-    const baseCharacter = input.characterId
-      ? characters.find((character) => character.id === input.characterId)
-      : input.newCharacter;
-    if (!baseCharacter) {
-      initialState.showToast?.('请选择角色', 'error');
-      return null;
-    }
-
-    const previousLink = sourceNode.data.characterLibraryLinks?.find((link) => (
-      link.scope === input.scope && link.characterId === baseCharacter.id && link.referenceImageId !== undefined
-    ));
-    const previousReference = baseCharacter.referenceImages?.find((reference) => (
-      reference.id === previousLink?.referenceImageId
-      || (input.scope === 'project' && reference.sourceNodeId === sourceNode.id)
-    ));
-    const now = Date.now();
-    const reference: CharacterReferenceImage = {
-      id: previousReference?.id ?? `reference-${generateId()}`,
-      kind: input.kind,
-      assetId: sourceNode.data.assetId,
-      relativePath: sourceNode.data.relativePath,
-      // 与节点共用同一份本地文件，不复制副本
-      filePath: sourceNode.data.filePath,
-      imageUrl: sourceNode.data.imageUrl ?? sourceNode.data.thumbnailUrl,
-      sourceNodeId: sourceNode.id,
-      prompt: input.prompt,
-      createdAt: previousReference?.createdAt ?? now,
-      updatedAt: now,
-    };
-    const nextCharacter = upsertCharacterReference(
-      baseCharacter,
-      reference,
-      !baseCharacter.primaryReferenceImageId || input.kind === 'primary',
-    );
-
-    if (input.scope === 'project') {
-      const previousLibrary = initialState.dramaAssets;
-      const exists = previousLibrary.characters.some((item) => item.id === nextCharacter.id);
-      set({
-        dramaAssets: {
-          ...previousLibrary,
-          characters: exists
-            ? previousLibrary.characters.map((item) => item.id === nextCharacter.id ? nextCharacter : item)
-            : [...previousLibrary.characters, nextCharacter],
-        },
-      });
-      const persistedProjectId = await get().saveCurrentProjectSilent();
-      if (!persistedProjectId) {
-        if (get().currentProjectId === projectId) set({ dramaAssets: previousLibrary });
-        get().showToast?.('角色保存失败，画布节点保持显示', 'error');
-        return null;
-      }
-    } else {
-      try {
-        const persisted = await saveGlobalCharacterCard(nextCharacter);
-        set((state) => ({
-          globalCharacters: state.globalCharacters.some((item) => item.id === persisted.id)
-            ? state.globalCharacters.map((item) => item.id === persisted.id
-              ? { ...persisted, libraryOrder: item.libraryOrder } : item)
-            : [persisted, ...state.globalCharacters],
-        }));
-      } catch {
-        get().showToast?.('全局角色保存失败，画布节点保持显示', 'error');
-        return null;
-      }
-    }
-
-    if (get().currentProjectId === projectId && get().nodes.some((node) => node.id === sourceNode.id)) {
-      const link: CharacterLibraryNodeLink = {
-        scope: input.scope,
-        characterId: nextCharacter.id,
-        referenceImageId: reference.id,
-      };
-      const linked = get().linkNodeToCharacter(sourceNode.id, link, input.hideNode);
-      if (linked) void get().saveCurrentProjectSilent();
-    }
-    return { characterId: nextCharacter.id, referenceImageId: reference.id };
-  },
-
-  createImageNodeFromCharacterReference: (scope, characterId, referenceImageId) => {
-    const state = get();
-    const character = findScopedCharacter(state, scope, characterId);
-    const reference = character?.referenceImages?.find((item) => item.id === referenceImageId);
-    if (!character || !reference?.imageUrl) {
-      state.showToast?.('参考图不可用', 'error');
-      return null;
-    }
-    const linkedNode = state.nodes.find((node) => (
-      node.id === reference.sourceNodeId
-      || node.data.characterLibraryLinks?.some((link) => (
-        link.scope === scope
-        && link.characterId === characterId
-        && link.referenceImageId === referenceImageId
-      ))
-    ));
-    if (linkedNode) return linkedNode.id;
-
-    const nodeId = `node-${generateId()}`;
-    const link: CharacterLibraryNodeLink = { scope, characterId, referenceImageId };
-    state.addNode({
-      id: nodeId,
-      type: 'source-image',
-      position: pickSpawnPosition(state.nodes as Node<BaseNodeData>[]),
-      data: {
-        label: `${character.name} · 参考图`,
-        type: 'source-image',
-        role: 'source',
-        status: 'success',
-        prompt: reference.prompt,
-        imageUrl: reference.imageUrl,
-        thumbnailUrl: reference.imageUrl,
-        assetId: reference.assetId,
-        relativePath: reference.relativePath,
-        filePath: reference.filePath,
-        nodeWidth: 280,
-        nodeHeight: 280,
-        characterLibraryLinks: [link],
-      },
-    });
-    if (scope === 'project') {
-      void state.addCharacterReferenceImage('project', characterId, {
-        ...reference,
-        sourceNodeId: nodeId,
-        updatedAt: Date.now(),
-      });
-    }
-    return nodeId;
-  },
-
-  addCharacterVoiceClip: async (scope, characterId, clip, options) => {
-    const character = findScopedCharacter(get(), scope, characterId);
-    if (!character) return false;
-    return get().saveCharacterCard(
-      scope,
-      upsertCharacterVoiceClip(character, clip, options?.makePrimary === true),
-      options,
-    );
-  },
-
-  updateCharacterVoiceClip: async (scope, characterId, clipId, patch, options) => {
-    const character = findScopedCharacter(get(), scope, characterId);
-    if (!character?.voiceClips?.some((clip) => clip.id === clipId)) return false;
-    return get().saveCharacterCard(scope, normalizeDramaCharacter({
-      ...character,
-      voiceClips: character.voiceClips.map((clip) =>
-        clip.id === clipId ? { ...clip, ...patch, updatedAt: Date.now() } : clip,
-      ),
-      updatedAt: Date.now(),
-    }), options);
-  },
-
-  removeCharacterVoiceClip: async (scope, characterId, clipId, options) => {
-    const state = get();
-    const character = findScopedCharacter(state, scope, characterId);
-    const clip = character?.voiceClips?.find((item) => item.id === clipId);
-    if (!character || !clip) return false;
-    const rest = (character.voiceClips ?? []).filter((item) => item.id !== clipId);
-    const sourceNodeId = scope === 'project' ? clip.sourceNodeId : undefined;
-    const guard = sourceNodeId ? registerCanvasDerivation(state, sourceNodeId) : null;
-    try {
-      const saved = await get().saveCharacterCard(scope, normalizeDramaCharacter({
-        ...character,
-        voiceClips: rest,
-        primaryVoiceClipId: character.primaryVoiceClipId === clipId
-          ? rest[0]?.id
-          : character.primaryVoiceClipId,
-        updatedAt: Date.now(),
-      }), options);
-      // 声音条目与来源节点共用素材，解除关联只恢复显隐，不删除节点、连线或文件。
-      if (saved && sourceNodeId && guard && isCanvasDerivationFresh(guard, get())) {
-        if (get().setCharacterLibraryNodeHidden(sourceNodeId, false)) silentSave(get);
-      }
-      return saved;
-    } finally {
-      if (guard) completeCanvasDerivation(guard);
-    }
-  },
-
-  setCharacterPrimaryVoice: async (scope, characterId, clipId, options) => {
-    const character = findScopedCharacter(get(), scope, characterId);
-    if (!character?.voiceClips?.some((clip) => clip.id === clipId)) return false;
-    return get().saveCharacterCard(scope, normalizeDramaCharacter({
-      ...character,
-      primaryVoiceClipId: clipId,
-      updatedAt: Date.now(),
-    }), options);
-  },
-
-  addCharacterAction: async (scope, characterId, action, capture) => {
-    const character = findScopedCharacter(get(), scope, characterId);
-    const name = action.name.trim();
-    const prompt = action.prompt.trim();
-    if (!character || !name) return null;
-    const now = Date.now();
-    const actionId = `action-${generateId()}`;
-    const saved = await saveCharacterActionWithNode(set, get, scope, normalizeDramaCharacter({
-      ...character,
-      actions: [
-        ...(character.actions ?? []),
-        {
-          id: actionId,
-          category: action.category,
-          customCategory: action.category === 'custom'
-            ? action.customCategory?.trim() || undefined
-            : undefined,
-          name,
-          prompt,
-          media: action.media ?? [],
-          createdAt: now,
-          updatedAt: now,
-        },
-      ],
-      updatedAt: now,
-    }), actionId, action.media ?? [], capture);
-    return saved ? actionId : null;
-  },
-
-  addCharacterActionMedia: async (scope, characterId, actionId, media, capture) => {
-    if (media.length === 0) return false;
-    const character = findScopedCharacter(get(), scope, characterId);
-    if (!character?.actions?.some((action) => action.id === actionId)) return false;
-    const now = Date.now();
-    return saveCharacterActionWithNode(set, get, scope, normalizeDramaCharacter({
-      ...character,
-      actions: character.actions.map((action) => action.id === actionId
-        ? {
-            ...action,
-            media: [...(action.media ?? []), ...media],
-            updatedAt: now,
-          }
-        : action),
-      updatedAt: now,
-    }), actionId, media, capture);
-  },
-
-  removeCharacterActionMedia: async (scope, characterId, actionId, mediaId) => {
-    const projectId = get().currentProjectId;
-    const character = findScopedCharacter(get(), scope, characterId);
-    const action = character?.actions?.find((item) => item.id === actionId);
-    if (!character || !action?.media?.some((item) => item.id === mediaId)) return false;
-    const now = Date.now();
-    const saved = await get().saveCharacterCard(scope, normalizeDramaCharacter({
-      ...character,
-      actions: character.actions?.map((item) => item.id === actionId
-        ? {
-            ...item,
-            media: item.media?.filter((mediaItem) => mediaItem.id !== mediaId),
-            updatedAt: now,
-          }
-        : item),
-      updatedAt: now,
-    }));
-    if (saved && get().currentProjectId === projectId) {
-      get().releaseCharacterLibraryNodes(scope, characterId, actionId, mediaId);
-      silentSave(get);
-    }
-    return saved;
-  },
-
-  removeCharacterAction: async (scope, characterId, actionId) => {
-    const projectId = get().currentProjectId;
-    const character = findScopedCharacter(get(), scope, characterId);
-    if (!character?.actions?.some((action) => action.id === actionId)) return false;
-    const saved = await get().saveCharacterCard(scope, normalizeDramaCharacter({
-      ...character,
-      actions: character.actions.filter((action) => action.id !== actionId),
-      updatedAt: Date.now(),
-    }));
-    if (saved && get().currentProjectId === projectId) {
-      get().releaseCharacterLibraryNodes(scope, characterId, actionId);
-      silentSave(get);
-    }
-    return saved;
-  },
-
-  bindAudioNodeToCharacterVoice: async (input) => {
-    const state = get();
-    const sourceNode = state.nodes.find((node) => node.id === input.nodeId);
-    if (!sourceNode || !isEligibleCharacterVoiceNode(sourceNode)) {
-      state.showToast?.('该节点没有可用的音频', 'error');
-      return null;
-    }
-    const character = findScopedCharacter(state, input.scope, input.characterId);
-    if (!character) {
-      state.showToast?.('请选择角色', 'error');
-      return null;
-    }
-
-    const existing = character.voiceClips?.find((clip) => (
-      (input.scope === 'project' && clip.sourceNodeId === sourceNode.id)
-      || Boolean(sourceNode.data.assetId && clip.assetId === sourceNode.data.assetId)
-    ));
-    const now = Date.now();
-    const clip: CharacterVoiceClip = {
-      id: existing?.id ?? `voice-${generateId()}`,
-      kind: input.kind ?? existing?.kind ?? 'timbre',
-      label: input.label?.trim() || existing?.label || sourceNode.data.label || undefined,
-      assetId: sourceNode.data.assetId,
-      relativePath: sourceNode.data.relativePath,
-      // 与节点共用同一份本地文件，不复制副本
-      filePath: sourceNode.data.filePath,
-      audioUrl: sourceNode.data.audioUrl,
-      // 全局角色不保存项目节点 ID
-      sourceNodeId: input.scope === 'project' ? sourceNode.id : undefined,
-      transcript: input.transcript
-        ?? existing?.transcript
-        ?? (typeof sourceNode.data.prompt === 'string' ? sourceNode.data.prompt : ''),
-      durationSec: input.durationSec ?? existing?.durationSec,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-    };
-    const guard = input.hideNode ? registerCanvasDerivation(state, sourceNode.id) : null;
-    try {
-      const saved = await get().addCharacterVoiceClip(input.scope, character.id, clip, {
-        makePrimary: input.makePrimary === true,
-      });
-      if (saved && guard && isCanvasDerivationFresh(guard, get())) {
-        if (get().setCharacterLibraryNodeHidden(sourceNode.id, true)) silentSave(get);
-      }
-      return saved ? clip.id : null;
-    } finally {
-      if (guard) completeCanvasDerivation(guard);
-    }
-  },
-
-  createAudioNodeFromCharacterVoice: (scope, characterId, clipId) => {
-    const state = get();
-    const character = findScopedCharacter(state, scope, characterId);
-    const clip = character?.voiceClips?.find((item) => item.id === clipId);
-    if (!character || !clip?.audioUrl) {
-      state.showToast?.('角色声音不可用', 'error');
-      return null;
-    }
-    const linkedNode = clip.sourceNodeId
-      ? state.nodes.find((node) => node.id === clip.sourceNodeId)
-      : undefined;
-    if (linkedNode) return linkedNode.id;
-
-    const nodeId = `node-${generateId()}`;
-    state.addNode({
-      id: nodeId,
-      type: 'source-audio',
-      position: pickSpawnPosition(state.nodes as Node<BaseNodeData>[]),
-      data: {
-        label: `${character.name} · ${clip.label?.trim() || '角色声音'}`,
-        type: 'source-audio',
-        role: 'source',
-        status: 'success',
-        prompt: clip.transcript,
-        audioUrl: clip.audioUrl,
-        assetId: clip.assetId,
-        relativePath: clip.relativePath,
-        filePath: clip.filePath,
-        nodeWidth: 260,
-        nodeHeight: 160,
-      },
-    });
-    if (scope === 'project' && clip.sourceNodeId) {
-      void state.addCharacterVoiceClip('project', characterId, {
-        ...clip,
-        sourceNodeId: nodeId,
-        updatedAt: Date.now(),
-      });
-    }
-    return nodeId;
-  },
-
-  createVoiceOverNodeFromCharacterVoice: (scope, characterId, clipId) => {
-    const voiceNodeId = get().createAudioNodeFromCharacterVoice(scope, characterId, clipId);
-    if (!voiceNodeId) return null;
-
-    const state = get();
-    const character = findScopedCharacter(state, scope, characterId);
-    if (!character) return null;
-    const clip = character.voiceClips?.find((item) => item.id === clipId);
-    const voiceNode = state.nodes.find((node) => node.id === voiceNodeId);
-
-    const nodeId = `node-${generateId()}`;
-    const position = voiceNode
-      ? { x: voiceNode.position.x + 340, y: voiceNode.position.y }
-      : pickSpawnPosition(state.nodes as Node<BaseNodeData>[]);
-    const newNode: Node<BaseNodeData> = {
-      id: nodeId,
-      type: 'ai-audio',
-      position,
-      data: {
-        label: `${character.name} · 配音`,
-        type: 'ai-audio',
-        role: 'generator',
-        status: 'idle',
-        prompt: clip?.transcript ?? '',
-        audioPurpose: 'speech',
-        nodeWidth: 260,
-        nodeHeight: 160,
-      },
-    };
-
-    // 回填本地偏好模型（与侧栏添加音频节点一致）
-    try {
-      const raw = localStorage.getItem('canvas-model-prefs');
-      if (raw) {
-        const prefs: Record<string, string> = JSON.parse(raw);
-        const modelValue = prefs['ai-audio'];
-        if (modelValue && modelValue.includes('::')) {
-          const [provider, model] = modelValue.split('::');
-          if (provider && model) {
-            newNode.data.provider = provider;
-            newNode.data.model = model;
-          }
-        }
-      }
-    } catch { /* ignore */ }
-
-    state.addNode(newNode);
-    // 连线即引用：生成音频时这条线上的声音会作为音色参考
-    // 句柄留空时 React Flow 会挑到两端各自的第一个（左）句柄，画出「左连左」的错线
-    state.onConnect({
-      source: voiceNodeId,
-      target: nodeId,
-      sourceHandle: 'right',
-      targetHandle: 'left',
-    });
-    return nodeId;
-  },
+  ...createCharacterMediaActions(set, get),
   });
 };

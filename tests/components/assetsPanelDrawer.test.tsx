@@ -8,9 +8,21 @@ import type { AssetFileEntry, AssetFolderEntry } from '../../src/services/fileSe
 import type { AssetScanOptions } from '../../src/services/fs/assetLibrary';
 import { createUISlice } from '../../src/store/store.ui';
 import type { NodeType } from '../../src/types';
-import type { DramaAsset, DramaAssetWriteOptions, DramaCharacter, DramaProp } from '../../src/types/dramaAssets';
+import type { DramaCharacter, DramaProp } from '../../src/types/dramaAssets';
+import AssetsPanel from '../../src/components/AssetsPanel';
+import CharacterLibraryPanel from '../../src/components/CharacterLibraryPanel';
+import { DramaAssetCard } from '../../src/components/DramaAssetsPanel';
+import DramaAssetListControls from '../../src/components/assets/DramaAssetListControls';
+import { setLocale } from '../../src/i18n';
+import Tabs, { type TabsProps } from '../../src/components/shared/Tabs';
+import AssetFolderNavigation, { type AssetFolderNavigationProps } from '../../src/components/assets/AssetFolderNavigation';
+import AssetFileContextMenu, { type AssetFileContextMenuProps } from '../../src/components/assets/AssetFileContextMenu';
+import { useKeyboardShortcuts } from '../../src/hooks/useKeyboardShortcuts';
+import { isExternalDropCaptured, setExternalDropCaptured } from '../../src/utils/dropCapture';
+import { registerProjectAssetToolbarTests, registerGlobalAssetToolbarTests } from './assetsPanelDrawer/creativeAssetTools';
+import { registerCardTooltipTests, registerFileMenuTests, registerFileOrderingTests } from './assetsPanelDrawer/assetFileInteractions';
 
-interface Element { type: unknown; props: Record<string, unknown> & { children?: unknown } }
+export interface Element { type: unknown; props: Record<string, unknown> & { children?: unknown } }
 const driver = vi.hoisted(() => ({
   store: null as StoreApi<AppState> | null,
   states: [] as unknown[], setters: [] as Array<(next: unknown) => void>, refs: [] as Array<{ current: unknown }>,
@@ -186,17 +198,17 @@ vi.mock('../../src/components/shared/AssetThumb', () => ({ default: 'asset-thumb
 vi.mock('../../src/components/shared/Select', () => ({ default: 'asset-select' }));
 vi.mock('../../src/components/assets/AssetImagePreview', () => ({ default: 'asset-image-preview' }));
 
-import AssetsPanel from '../../src/components/AssetsPanel';
-import CharacterLibraryPanel from '../../src/components/CharacterLibraryPanel';
-import DramaAssetsPanel, { DramaAssetCard } from '../../src/components/DramaAssetsPanel';
-import DramaAssetListControls from '../../src/components/assets/DramaAssetListControls';
-import GlobalCreativeAssetsPanel from '../../src/components/assets/GlobalCreativeAssetsPanel';
-import { setLocale } from '../../src/i18n';
-import Tabs, { type TabsProps } from '../../src/components/shared/Tabs';
-import AssetFolderNavigation, { type AssetFolderNavigationProps } from '../../src/components/assets/AssetFolderNavigation';
-import AssetFileContextMenu, { type AssetFileContextMenuProps } from '../../src/components/assets/AssetFileContextMenu';
-import { useKeyboardShortcuts } from '../../src/hooks/useKeyboardShortcuts';
-import { isExternalDropCaptured, setExternalDropCaptured } from '../../src/utils/dropCapture';
+
+
+
+
+
+
+
+
+
+
+
 
 class Target {
   tagName = 'DIV'; isContentEditable = false; canvas = true; control = false; drawer = false;
@@ -359,417 +371,33 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+const assetDrawerFixture = {
+  driver,
+  get tree() { return tree; },
+  set tree(value: unknown) { tree = value; },
+  all,
+  visibleText,
+  find,
+  button,
+  click,
+  renderDramaCards,
+  key,
+  canvasNode,
+  render,
+  settle,
+  file,
+  cards,
+  fileMenu,
+  openFileMenu,
+};
+export type AssetDrawerFixture = typeof assetDrawerFixture;
+
 describe('项目创作资产工具条', () => {
-  function renderDrama() {
-    const compact = driver.store!.getState().assetsPanelMode === 'drawer';
-    for (let pass = 0; pass < 5; pass++) {
-      driver.stateIndex = 0; driver.refIndex = 0; driver.effectIndex = 1; driver.memoIndex = 0; driver.dirty = false;
-      tree = renderDramaCards(DramaAssetsPanel({ compact }));
-      if (!driver.dirty) break;
-    }
-    const pending = driver.pending; driver.pending = [];
-    pending.forEach((effect) => effect());
-  }
-  async function settleDrama() { await new Promise<void>((resolve) => setImmediate(resolve)); renderDrama(); }
-  function open(mode: 'page' | 'drawer' = 'page') {
-    const base = { key: 'asset', summary: '', visualNotes: '', importance: 'main', confirmed: true,
-      createdAt: 1, updatedAt: 1, source: 'manual' } as const;
-    driver.store!.setState({
-      dramaAssets: { version: 2, characters: [{ ...base, id: 'hero', name: '人物甲', kind: 'character', identity: '' }],
-        scenes: [{ ...base, id: 'room', name: '场景甲', kind: 'scene' }], props: [{ ...base, id: 'key', name: '道具甲', kind: 'prop' }] },
-      showToast: vi.fn(), importDramaAssets: vi.fn().mockResolvedValue(1), saveCurrentProjectSilent: vi.fn().mockResolvedValue('project-1'),
-    });
-    driver.store!.getState().setAssetsPanelOpen(true, mode);
-    driver.store!.getState().setDramaAssetsPanelOpen(true);
-    renderDrama();
-  }
-
-  it('Tab 抽屉只显示浏览控件，并按角色库顺序展示图片、旧记录和缺失状态', () => {
-    open('drawer');
-    const { dramaAssets } = driver.store!.getState();
-    const [character] = dramaAssets.characters;
-    const node = canvasNode('source', 'source-image');
-    const imageUrl = 'https://example.test/source.png';
-    driver.store!.setState({
-      nodes: [{ ...node, data: { ...node.data, imageUrl } }],
-      dramaAssets: { ...dramaAssets, characters: [
-        { ...character, referenceImages: [
-          { id: 'avatar', kind: 'avatar', imageUrl: 'https://example.test/avatar.png', prompt: '', createdAt: 1, updatedAt: 1 },
-          { id: 'body', kind: 'full_body', sourceNodeId: node.id, prompt: '', createdAt: 1, updatedAt: 1 },
-          { id: 'expression', kind: 'expression', imageUrl: 'https://example.test/expression.png', prompt: '', createdAt: 1, updatedAt: 1 },
-          { id: 'missing', kind: 'outfit', prompt: '', createdAt: 1, updatedAt: 1 },
-        ] },
-        { ...character, id: 'legacy', name: '旧人物', imageUrl: 'https://example.test/legacy.png' },
-      ] },
-    });
-    renderDrama();
-    const card = find((element) => element.props['data-asset-id'] === 'hero');
-    const gallery = all(card, (element) => element.props['aria-label'] === '角色参考图')[0];
-    const images = all(gallery, (element) => typeof element.props.src === 'string');
-    expect(images.map((element) => element.props.src)).toEqual([
-      'https://example.test/avatar.png', imageUrl, 'https://example.test/expression.png',
-    ]);
-    expect(images.every((element) => element.props.draggable && typeof element.props.onDragStart === 'function')).toBe(true);
-    expect(all(gallery, (element) => element.props['aria-label'] === '参考图不可用')).toHaveLength(1);
-    expect(all(tree, (element) => element.props.src === 'https://example.test/legacy.png')).toHaveLength(1);
-    expect(button('创作资产排序方式')).toBeDefined();
-    click(find((element) => element.type === 'button' && visibleText(element.props.children) === '人物 2'));
-    renderDrama();
-    expect(all(tree, (element) => String(element.props.className).includes('drama-asset-actions'))).toHaveLength(0);
-    expect(all(tree, (element) => ['上传资产类型', '导入创作资产', '导出创作资产'].includes(String(element.props['aria-label'])))).toHaveLength(0);
-    expect(visibleText(tree)).not.toMatch(/打开角色库|新增人物|多选|清空本类/);
-    click(button('打开人物：人物甲'));
-    expect(driver.store!.getState().characterLibraryRequest).toMatchObject({ scope: 'project', characterId: 'hero' });
-  });
-
-  it('Tab 抽屉的道具卡优先展示可拖动的大图，整页仍使用原缩略图', () => {
-    open('drawer');
-    const { dramaAssets } = driver.store!.getState();
-    const imageUrl = 'https://example.test/prop.png';
-    driver.store!.setState({ dramaAssets: { ...dramaAssets, props: [{ ...dramaAssets.props[0], imageUrl }] } });
-    renderDrama();
-    const gallery = button('参考图');
-    expect(all(gallery, (element) => element.props.src === imageUrl)[0].props.draggable).toBe(true);
-    expect(all(gallery, (element) => String(element.props.className).includes('col-span-2'))).toHaveLength(1);
-
-    driver.store!.getState().setAssetsPanelOpen(true, 'page');
-    renderDrama();
-    expect(find((element) => element.props.src === imageUrl).props.draggable).toBe(false);
-  });
-
-  it('使用小尺寸控件，先保存新项目，导出完整创作资产而不受分类和搜索影响', async () => {
-    open();
-    const upload = find((element) => element.type === 'button' && String(element.props.className).includes('ui-btn--primary'));
-    expect(upload.props.className).toContain('ui-btn--sm');
-    expect(button('上传资产类型').props.size).toBe('sm');
-    const search = find((element) => element.props.placeholder === '搜索名称、简介、别名…');
-    expect(search.props.className).toContain('ui-input--sm');
-    click(find((element) => element.type === 'button' && Array.isArray(element.props.children) && element.props.children[0] === '人物')); renderDrama();
-    (find((element) => element.props.placeholder === '搜索名称、简介、别名…').props.onChange as (event: unknown) => void)({ target: { value: '无匹配' } }); renderDrama();
-    driver.store!.setState({ currentProjectId: null });
-    vi.mocked(driver.store!.getState().saveCurrentProjectSilent).mockImplementation(async () => {
-      driver.store!.setState({ currentProjectId: 'project-1' }); return 'project-1';
-    });
-    driver.exportDrama.mockResolvedValue({ assetCount: 3, mediaCount: 4 });
-    click(button('导出创作资产')); await settleDrama();
-    expect(driver.store!.getState().saveCurrentProjectSilent).toHaveBeenCalledOnce();
-    expect(driver.exportDrama).toHaveBeenCalledOnce();
-    expect(driver.exportDrama.mock.calls[0][0]).toMatchObject({ projectId: 'project-1', ownerId: 'project-1', projectName: '项目一',
-      assets: [expect.objectContaining({ id: 'hero' }), expect.objectContaining({ id: 'room' }), expect.objectContaining({ id: 'key' })],
-    });
-    expect(driver.exportDrama.mock.calls[0][0]).not.toHaveProperty('assetName');
-    expect(driver.store!.getState().showToast).toHaveBeenCalledWith('已导出 3 项创作资产，包含 4 份媒体', 'success');
-  });
-
-  it('单卡按类别和 ID 导出最新记录及绑定媒体，沿用分集资产归属与忙碌保护', async () => {
-    open();
-    const current = driver.store!.getState();
-    const scene = { ...current.dramaAssets.scenes[0], id: 'hero' };
-    const nodes = [canvasNode('scene-image', 'source-image', '场景参考图')];
-    driver.store!.setState({ currentProjectId: 'episode-1',
-      projects: [{ ...current.projects[0], id: 'series-1', name: '整部剧' },
-        { ...current.projects[0], id: 'episode-1', name: '第一集', parentId: 'series-1' }],
-      dramaAssets: { ...current.dramaAssets, scenes: [scene] }, nodes,
-    });
-    renderDrama();
-    const exportSingle = button('导出资产「场景甲」');
-    const exportAll = button('导出创作资产');
-    expect(exportSingle.props.className).toContain('ui-btn--sm');
-    expect(exportSingle.props.title).toBe('导出当前资产及其绑定媒体');
-    const latestScene = { ...scene, name: '场景乙', summary: '最新场景简介', imageNodeId: 'scene-image' };
-    driver.store!.setState({ dramaAssets: { ...current.dramaAssets, scenes: [latestScene] } });
-    let finishExport!: () => void;
-    driver.exportDrama.mockImplementation(() => new Promise((resolve) => { finishExport = () => resolve({ assetCount: 1, mediaCount: 1 }); }));
-    click(exportSingle); renderDrama();
-    expect(driver.exportDrama).toHaveBeenCalledOnce();
-    const input = driver.exportDrama.mock.calls[0][0];
-    expect(input).toMatchObject({ projectId: 'episode-1', ownerId: 'series-1', projectName: '整部剧', assetName: '场景乙' });
-    expect(input.assets).toEqual([latestScene]);
-    expect(input.assets[0]).toBe(latestScene);
-    expect(input.nodes).toBe(nodes);
-    expect(driver.store!.getState().saveCurrentProjectSilent).not.toHaveBeenCalled();
-    expect(driver.store!.getState().characterLibraryOpen).toBe(false);
-    expect(button('导出资产「场景乙」').props.disabled).toBe(true);
-    expect(button('导出创作资产').props.disabled).toBe(true);
-    click(exportSingle); click(exportAll);
-    expect(driver.exportDrama).toHaveBeenCalledOnce();
-    finishExport(); await settleDrama();
-    expect(driver.store!.getState().showToast).toHaveBeenCalledWith('已导出 1 项创作资产，包含 1 份媒体', 'success');
-    expect(button('导出资产「场景乙」').props.disabled).toBe(false);
-    expect(driver.store!.getState().characterLibraryOpen).toBe(false);
-  });
-
-  it.each(['before-click', 'while-saving'] as const)('%s 删除卡片后，旧导出入口不会导出其他类别的同 ID 资产', async (change) => {
-    open();
-    const exportSingle = button('导出资产「人物甲」');
-    let finishSave!: () => void;
-    if (change === 'while-saving') {
-      driver.store!.setState({ currentProjectId: null });
-      vi.mocked(driver.store!.getState().saveCurrentProjectSilent).mockImplementation(() => new Promise<string>((resolve) => {
-        finishSave = () => { driver.store!.setState({ currentProjectId: 'project-1' }); resolve('project-1'); };
-      }));
-      click(exportSingle);
-      expect(driver.store!.getState().saveCurrentProjectSilent).toHaveBeenCalledOnce();
-    }
-    const library = driver.store!.getState().dramaAssets;
-    driver.store!.setState({ dramaAssets: { ...library, characters: [], scenes: [{ ...library.scenes[0], id: 'hero' }] } });
-    if (change === 'before-click') click(exportSingle);
-    else finishSave();
-    await settleDrama();
-    expect(driver.exportDrama).not.toHaveBeenCalled();
-    expect(driver.store!.getState().showToast).toHaveBeenCalledWith('资产已删除，请重新选择', 'error');
-    expect(driver.store!.getState().characterLibraryOpen).toBe(false);
-    expect(all(tree, (element) => element.props['aria-label'] === '导出资产「人物甲」')).toEqual([]);
-  });
-
-  it.each(['project', 'owner'] as const)('%s 改变后撤销单卡导出范围，迟到结果不显示成功', async (change) => {
-    open();
-    let finishExport!: () => void;
-    driver.exportDrama.mockImplementation(() => new Promise((resolve) => { finishExport = () => resolve({ assetCount: 1, mediaCount: 0 }); }));
-    click(button('导出资产「人物甲」')); renderDrama();
-    const options = driver.exportDrama.mock.calls[0][1] as DramaAssetWriteOptions;
-    expect(options.signal?.aborted).toBe(false);
-    if (change === 'project') driver.store!.setState({ currentProjectId: 'project-2' });
-    else driver.store!.setState({ projects: driver.store!.getState().projects.map((project) => ({ ...project, parentId: 'series-2' })) });
-    expect(options.signal?.aborted).toBe(true);
-    expect(() => options.assertCurrent?.()).toThrow('资产操作已取消');
-    finishExport(); await settleDrama();
-    expect(driver.exportDrama).toHaveBeenCalledOnce();
-    expect(driver.store!.getState().showToast).not.toHaveBeenCalled();
-    expect(driver.store!.getState().characterLibraryOpen).toBe(false);
-  });
-
-  it.each([
-    ['en-US', 'Export asset “人物甲”', 'Export this asset and its bound media'],
-    ['ja-JP', 'アセット「人物甲」を書き出す', 'このアセットと紐付いたメディアを書き出す'],
-    ['ko-KR', '에셋 "人物甲" 내보내기', '이 에셋과 연결된 미디어 내보내기'],
-  ] as const)('%s 使用翻译后的单卡导出名称和媒体说明', (locale, label, title) => {
-    open();
-    setLocale(locale); renderDrama();
-    expect(button(label).props.title).toBe(title);
-    expect(all(tree, (element) => element.props['aria-label'] === '导出资产「人物甲」')).toEqual([]);
-    setLocale('zh-CN'); renderDrama();
-    expect(button('导出资产「人物甲」').props.title).toBe('导出当前资产及其绑定媒体');
-  });
-
-  it('上传和传输共用忙碌保护，导入等待 Store 保存且保存阶段不可取消', async () => {
-    open();
-    const upload = find((element) => element.type === 'button' && String(element.props.className).includes('ui-btn--primary'));
-    const exportButton = button('导出创作资产');
-    let finishSave!: () => void;
-    vi.mocked(driver.store!.getState().importDramaAssets).mockImplementation(() => new Promise<number>((resolve) => { finishSave = () => resolve(1); }));
-    driver.importDrama.mockImplementation(async (input: { commit: (assets: DramaAsset[]) => Promise<void> }, options: DramaAssetWriteOptions & { onProgress: (text: string) => void }) => {
-      options.onProgress('正在保存资产');
-      const assets = [{ ...driver.store!.getState().dramaAssets.characters[0], id: 'imported' }];
-      await input.commit(assets);
-      return { assetCount: 1, mediaCount: 2, assets: assets.map(({ kind, id }) => ({ kind, id })) };
-    });
-    click(button('导入创作资产')); renderDrama();
-    click(exportButton); click(upload);
-    expect(driver.exportDrama).not.toHaveBeenCalled(); expect(driver.uploadDrama).not.toHaveBeenCalled();
-    expect(button('导入创作资产').props.disabled).toBe(true);
-    expect(button('导出创作资产').props.disabled).toBe(true);
-    expect(button('取消资产操作').props.disabled).toBe(true);
-    expect(find((element) => String(element.props.className).includes('drama-assets-grid')).props.inert).toBe(true);
-    click(button('取消资产操作'));
-    expect(driver.importDrama.mock.calls[0][1].signal.aborted).toBe(false);
-    expect(driver.store!.getState().showToast).not.toHaveBeenCalled();
-    finishSave(); await settleDrama();
-    expect(driver.store!.getState().importDramaAssets).toHaveBeenCalledWith([expect.objectContaining({ id: 'imported' })], expect.objectContaining({ signal: expect.any(AbortSignal) }));
-    expect(driver.store!.getState().showToast).toHaveBeenCalledWith('已导入 1 项创作资产，包含 2 份媒体', 'success');
-    expect(button('导入创作资产').props.disabled).toBe(false);
-  });
-
-  it.each(['project', 'close', 'unmount'] as const)('%s 后中止导入，迟到提交不能写入其他项目或显示成功', async (change) => {
-    open();
-    let finishRead!: () => void;
-    driver.importDrama.mockImplementation(async (input: { commit: (assets: DramaAsset[]) => Promise<void> }) => {
-      await new Promise<void>((resolve) => { finishRead = resolve; });
-      await input.commit([]);
-      return { assetCount: 1, mediaCount: 0 };
-    });
-    click(button('导入创作资产')); renderDrama();
-    const options = driver.importDrama.mock.calls[0][1] as DramaAssetWriteOptions;
-    if (change === 'project') driver.store!.setState({ currentProjectId: 'project-2' });
-    else if (change === 'close') driver.store!.getState().setAssetsPanelOpen(false);
-    else driver.effects.slice(1).forEach((effect) => effect?.cleanup?.());
-    expect(options.signal?.aborted).toBe(true);
-    finishRead(); await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(driver.store!.getState().importDramaAssets).not.toHaveBeenCalled();
-    expect(driver.store!.getState().showToast).not.toHaveBeenCalled();
-  });
+  registerProjectAssetToolbarTests(assetDrawerFixture);
 });
 
 describe('全局创作资产工具条', () => {
-  function renderGlobal(kind: DramaAsset['kind'] = 'character') {
-    const compact = driver.store!.getState().assetsPanelMode === 'drawer';
-    for (let pass = 0; pass < 5; pass++) {
-      driver.stateIndex = 0; driver.refIndex = 0; driver.effectIndex = 1; driver.memoIndex = 0; driver.dirty = false;
-      tree = renderDramaCards(GlobalCreativeAssetsPanel({ kind, compact }));
-      if (!driver.dirty) break;
-    }
-    const pending = driver.pending; driver.pending = [];
-    pending.forEach((effect) => effect());
-  }
-  async function settleGlobal(kind: DramaAsset['kind'] = 'character') { await new Promise<void>((resolve) => setImmediate(resolve)); renderGlobal(kind); }
-  function open(kind: DramaAsset['kind'] = 'character', mode: 'page' | 'drawer' = 'page') {
-    const base = { key: 'global', summary: '', visualNotes: '', importance: 'main', confirmed: true,
-      createdAt: 1, updatedAt: 1, source: 'manual' } as const;
-    driver.store!.setState({ currentProjectId: null,
-      globalCharacters: [{ ...base, id: 'character-1', name: '人物甲', kind: 'character', identity: '' },
-        { ...base, id: 'character-2', name: '人物乙', kind: 'character', identity: '' }],
-      globalScenes: [{ ...base, id: 'scene-1', name: '场景甲', kind: 'scene' }, { ...base, id: 'scene-2', name: '场景乙', kind: 'scene' }],
-      globalProps: [{ ...base, id: 'prop-1', name: '道具甲', kind: 'prop' }, { ...base, id: 'prop-2', name: '道具乙', kind: 'prop' }],
-      globalDramaAssetsLoading: false, globalDramaAssetsError: null,
-      showToast: vi.fn(), saveCurrentProjectSilent: vi.fn(), importGlobalDramaAssets: vi.fn().mockResolvedValue(3),
-      saveGlobalDramaAsset: vi.fn().mockResolvedValue(true), deleteGlobalDramaAsset: vi.fn().mockResolvedValue(true),
-      bindGlobalDramaAssetImage: vi.fn().mockResolvedValue(true),
-    });
-    driver.store!.getState().setAssetsPanelOpen(true, mode, { tab: 'permanent' });
-    renderGlobal(kind);
-  }
-  function mixedAssets(): DramaAsset[] {
-    const state = driver.store!.getState();
-    return [state.globalCharacters[0], state.globalScenes[0], state.globalProps[0]].map((asset) => ({ ...asset, id: `imported-${asset.kind}` }));
-  }
-
-  it('Tab 抽屉中的全局角色卡展示参考图，隐藏卡片与批量管理入口', () => {
-    open('character', 'drawer');
-    const [character] = driver.store!.getState().globalCharacters;
-    driver.store!.setState({ globalCharacters: [{ ...character, referenceImages: [
-      { id: 'front', kind: 'primary', imageUrl: 'https://example.test/front.png', prompt: '', createdAt: 1, updatedAt: 1 },
-      { id: 'side', kind: 'turnaround', imageUrl: 'https://example.test/side.png', prompt: '', createdAt: 1, updatedAt: 1 },
-    ] }] });
-    renderGlobal();
-    expect(all(button('角色参考图'), (element) => typeof element.props.src === 'string').map((element) => element.props.src)).toEqual([
-      'https://example.test/front.png', 'https://example.test/side.png',
-    ]);
-    expect(visibleText(tree)).not.toMatch(/上传图片|新增人物|导入|导出|多选|复制简介/);
-    expect(button('搜索全局创作资产')).toBeDefined();
-  });
-
-  it.each([
-    ['character', '人物'], ['scene', '场景'], ['prop', '道具'],
-  ] as const)('没有当前项目也可导出全部全局%s，不受搜索或项目切换影响', async (kind, label) => {
-    open(kind);
-    const search = button('搜索全局创作资产');
-    expect(search.props.className).toContain('ui-input--sm');
-    const controls = find((element) => String(element.props.className).includes('ml-auto') && all(element, (child) => child === search).length === 1);
-    expect(controls.props.className).toContain('min-w-0');
-    expect(controls.props.className).toContain('flex-wrap');
-    expect(all(controls, (element) => String(element.props.className).includes('ui-input-group'))[0].props.className).toContain('max-w-full');
-    (search.props.onChange as (event: unknown) => void)({ target: { value: '甲' } }); renderGlobal(kind);
-    expect(all(tree, (element) => element.props['data-asset-kind'] === kind)).toHaveLength(1);
-    let finishExport!: () => void;
-    driver.exportGlobalDrama.mockImplementation(() => new Promise((resolve) => { finishExport = () => resolve({ assetCount: 2, mediaCount: 3 }); }));
-    click(button(`导出全部全局${label}`)); renderGlobal(kind);
-    const [input, options] = driver.exportGlobalDrama.mock.calls[0];
-    expect(input).toMatchObject({ libraryName: `全局${label}`, assets: [expect.objectContaining({ kind, name: `${label}甲` }), expect.objectContaining({ kind, name: `${label}乙` })] });
-    expect(input).not.toHaveProperty('assetName'); expect(input).not.toHaveProperty('projectId'); expect(input).not.toHaveProperty('ownerId');
-    expect(driver.store!.getState().saveCurrentProjectSilent).not.toHaveBeenCalled();
-    driver.store!.setState({ currentProjectId: 'project-2' });
-    expect(options.signal.aborted).toBe(false);
-    expect(() => options.assertCurrent()).not.toThrow();
-    finishExport(); await settleGlobal(kind);
-    expect(driver.store!.getState().showToast).toHaveBeenCalledWith('已导出 2 项全局创作资产，包含 3 份媒体', 'success');
-  });
-
-  it('单卡只导出同类别同 ID 的最新全局记录，并与顶部操作互斥', async () => {
-    open('scene');
-    const exportSingle = button('导出资产「场景甲」');
-    const exportAll = button('导出全部全局场景');
-    const state = driver.store!.getState();
-    const latest = { ...state.globalScenes[0], name: '最新场景', summary: '修改后的简介' };
-    driver.store!.setState({ globalScenes: [latest, state.globalScenes[1]],
-      globalCharacters: [{ ...state.globalCharacters[0], id: latest.id }] });
-    let finishExport!: () => void;
-    driver.exportGlobalDrama.mockImplementation(() => new Promise((resolve) => { finishExport = () => resolve({ assetCount: 1, mediaCount: 0 }); }));
-    click(exportSingle); renderGlobal('scene');
-    expect(driver.exportGlobalDrama).toHaveBeenCalledOnce();
-    expect(driver.exportGlobalDrama.mock.calls[0][0]).toEqual({
-      libraryName: '全局场景', assetName: '最新场景', assets: [latest],
-      allAssets: [{ ...state.globalCharacters[0], id: latest.id }, latest, state.globalScenes[1], ...state.globalProps],
-    });
-    expect(button('导出资产「最新场景」').props.disabled).toBe(true);
-    expect(button('导入全局创作资产').props.disabled).toBe(true);
-    click(exportAll); click(exportSingle);
-    expect(driver.exportGlobalDrama).toHaveBeenCalledOnce();
-    expect(driver.store!.getState().characterLibraryOpen).toBe(false);
-    finishExport(); await settleGlobal('scene');
-    driver.exportGlobalDrama.mockClear();
-    const staleButton = button('导出资产「最新场景」');
-    driver.store!.setState({ globalScenes: [] });
-    click(staleButton); await settleGlobal('scene');
-    expect(driver.exportGlobalDrama).not.toHaveBeenCalled();
-    expect(driver.store!.getState().showToast).toHaveBeenCalledWith('资产已删除，请重新选择', 'error');
-  });
-
-  it('混合包按自身类别提交全局 Store，导入等待保存且保存阶段不可取消', async () => {
-    open('prop');
-    const incoming = mixedAssets();
-    const exportAll = button('导出全部全局道具');
-    let finishSave!: () => void;
-    vi.mocked(driver.store!.getState().importGlobalDramaAssets).mockImplementation(() => new Promise<number>((resolve) => { finishSave = () => resolve(3); }));
-    driver.importGlobalDrama.mockImplementation(async (input: { commit: (assets: DramaAsset[]) => Promise<void> }, options: DramaAssetWriteOptions & { onProgress: (text: string) => void }) => {
-      options.onProgress('正在保存资产');
-      await input.commit(incoming);
-      return { assetCount: 3, mediaCount: 4, assets: incoming.map(({ kind, id }) => ({ kind, id })) };
-    });
-    click(button('导入全局创作资产')); renderGlobal('prop');
-    expect(driver.store!.getState().importGlobalDramaAssets).toHaveBeenCalledWith(incoming, expect.objectContaining({ signal: expect.any(AbortSignal) }));
-    expect(incoming.map((asset) => asset.kind)).toEqual(['character', 'scene', 'prop']);
-    expect(find((element) => String(element.props.className).includes('drama-assets-grid')).props.inert).toBe(true);
-    expect(button('取消资产操作').props.disabled).toBe(true);
-    click(button('取消资产操作')); click(exportAll);
-    expect(driver.exportGlobalDrama).not.toHaveBeenCalled();
-    const options = driver.importGlobalDrama.mock.calls[0][1] as DramaAssetWriteOptions;
-    driver.store!.setState({ currentProjectId: 'project-2' });
-    expect(options.signal?.aborted).toBe(false);
-    expect(driver.store!.getState().showToast).not.toHaveBeenCalled();
-    finishSave(); await settleGlobal('prop');
-    expect(driver.store!.getState().showToast).toHaveBeenCalledWith('已导入 3 项全局创作资产，包含 4 份媒体', 'success');
-    expect(find((element) => String(element.props.className).includes('drama-assets-grid')).props.inert).toBeUndefined();
-    expect(button('导入全局创作资产').props.disabled).toBe(false);
-  });
-
-  it.each(['close', 'kind', 'unmount'] as const)('%s 后中止全局导入，迟到读取不能提交', async (change) => {
-    open();
-    const incoming = mixedAssets();
-    let finishRead!: () => void;
-    driver.importGlobalDrama.mockImplementation(async (input: { commit: (assets: DramaAsset[]) => Promise<void> }) => {
-      await new Promise<void>((resolve) => { finishRead = resolve; });
-      await input.commit(incoming);
-      return { assetCount: 3, mediaCount: 0 };
-    });
-    click(button('导入全局创作资产')); renderGlobal();
-    const options = driver.importGlobalDrama.mock.calls[0][1] as DramaAssetWriteOptions;
-    if (change === 'close') driver.store!.getState().setAssetsPanelOpen(false);
-    else if (change === 'kind') renderGlobal('scene');
-    else driver.effects.slice(1).forEach((effect) => effect?.cleanup?.());
-    expect(options.signal?.aborted).toBe(true);
-    finishRead(); await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(driver.store!.getState().importGlobalDramaAssets).not.toHaveBeenCalled();
-    expect(driver.store!.getState().showToast).not.toHaveBeenCalled();
-  });
-
-  it('保存已开始后关闭页面仍等待全局保存，不显示迟到成功提示', async () => {
-    open();
-    let finishSave!: () => void;
-    vi.mocked(driver.store!.getState().importGlobalDramaAssets).mockImplementation(() => new Promise<number>((resolve) => { finishSave = () => resolve(1); }));
-    const committed = vi.fn();
-    driver.importGlobalDrama.mockImplementation(async (input: { commit: (assets: DramaAsset[]) => Promise<void> }, options: DramaAssetWriteOptions & { onProgress: (text: string) => void }) => {
-      options.onProgress('正在保存资产');
-      await input.commit([mixedAssets()[0]]);
-      committed(); return { assetCount: 1, mediaCount: 0 };
-    });
-    click(button('导入全局创作资产')); renderGlobal();
-    expect(button('取消资产操作').props.disabled).toBe(true);
-    driver.store!.getState().setAssetsPanelOpen(false);
-    finishSave(); await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(committed).toHaveBeenCalledOnce();
-    expect(driver.store!.getState().importGlobalDramaAssets).toHaveBeenCalledOnce();
-    expect(driver.store!.getState().showToast).not.toHaveBeenCalled();
-  });
+  registerGlobalAssetToolbarTests(assetDrawerFixture);
 });
 
 describe('资产文件夹原生拖放', () => {
@@ -1001,123 +629,7 @@ describe('启动页资产入口与最近使用', () => {
 });
 
 describe('资产卡片悬浮提示', () => {
-  async function open(mode: 'drawer' | 'modal' | 'page' = 'drawer') {
-    driver.store!.getState().setAssetsPanelOpen(true, mode);
-    render(); await settle(); vi.useFakeTimers();
-  }
-  function hover(index = 0) { (cards()[index].props.onHover as () => void)(); render(); }
-  function leave(index = 0) { (cards()[index].props.onHoverEnd as () => void)(); render(); }
-  function cardElement(index = 0) {
-    const card = cards()[index];
-    return (card.type as (props: Record<string, unknown>) => Element)(card.props);
-  }
-  async function readPrompt() { await vi.advanceTimersByTimeAsync(400); render(); }
-
-  it('停留后读取编辑提示词并展示拖拽说明，悬浮不产生最近使用记录', async () => {
-    driver.imageDetails.mockResolvedValue({ record: { prompt: '编辑后的\n提示词' }, history: { prompt: '旧提示词' } });
-    await open();
-    const index = cards().findIndex((element) => (element.props.file as AssetFileEntry).name === '森林');
-    hover(index);
-    expect(driver.imageDetails).not.toHaveBeenCalled();
-    expect(cardElement(index).props['data-tooltip']).toContain('正在读取');
-    await readPrompt();
-    expect(driver.imageDetails).toHaveBeenCalledWith(cards()[index].props.file, 'project-1', expect.any(AbortSignal));
-    expect(cardElement(index).props['data-tooltip']).toBe('拖拽到画布可添加节点；\n提示词：编辑后的 提示词\n标签：\n夜景');
-    expect(driver.markUsed).not.toHaveBeenCalled();
-    expect(all(cardElement(index), (element) => element.type === 'asset-thumb')[0].props.showNativeTooltip).toBe(false);
-  });
-
-  it('快速扫过不读取；移开后忽略迟到结果，重新悬浮可读取最新内容', async () => {
-    await open(); hover(); leave(); await readPrompt();
-    expect(driver.imageDetails).not.toHaveBeenCalled();
-    let finish!: (value: unknown) => void;
-    driver.imageDetails.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
-    hover(); await readPrompt();
-    const signal = driver.imageDetails.mock.calls[0][2] as AbortSignal;
-    leave(); expect(signal.aborted).toBe(true);
-    finish({ record: { prompt: '已过期' } }); await readPrompt();
-    expect(cardElement().props['data-tooltip']).not.toContain('已过期');
-    hover(); await readPrompt();
-    expect(cardElement().props['data-tooltip']).toContain('历史提示词');
-  });
-
-  it('主动清空不回退历史，缺少记录与读取失败分别反馈', async () => {
-    driver.imageDetails.mockResolvedValueOnce({ record: { prompt: '' }, history: { prompt: '旧提示词' } })
-      .mockResolvedValueOnce({ record: null, history: null }).mockRejectedValueOnce(new Error('read failed'));
-    await open(); hover(); await readPrompt();
-    expect(cardElement().props['data-tooltip']).toContain('暂无提示词');
-    expect(cardElement().props['data-tooltip']).not.toContain('旧提示词');
-    leave(); hover(); await readPrompt();
-    expect(cardElement().props['data-tooltip']).toContain('暂无提示词');
-    leave(); hover(); await readPrompt();
-    expect(cardElement().props['data-tooltip']).toContain('读取失败，请重试');
-  });
-
-  it('视频按所查看项目查询；弹窗和整页使用相应的拖拽说明', async () => {
-    driver.listProject.mockResolvedValue([{ name: '视频', path: '/video.mp4', category: 'video', size: 12 }]);
-    await open('modal'); hover(); await readPrompt();
-    expect(driver.videoHistory).toHaveBeenCalledWith('/video.mp4', undefined, 'project-1', expect.any(AbortSignal));
-    expect(cardElement().props['data-tooltip']).toBe('拖出弹窗到画布可添加节点；\n提示词：视频提示词\n标签：\n暂无标签');
-    driver.store!.setState({ currentProjectId: null });
-    driver.store!.getState().setAssetsPanelOpen(true, 'page', { tab: 'permanent', folder: { kind: 'all' } });
-    render(); await vi.advanceTimersByTimeAsync(0); render(); hover(); await readPrompt();
-    expect(driver.imageDetails).toHaveBeenCalledWith(expect.objectContaining({ name: '全局参考' }), undefined, expect.any(AbortSignal));
-    expect(cardElement().props['data-tooltip']).toContain('可拖拽到其他窗口或应用');
-  });
-
-  it('文本、虚拟和离线素材不查询图像历史，提示拖拽可用性', async () => {
-    driver.listProject.mockResolvedValue([
-      { ...file('文本'), category: 'text' }, { ...file('虚拟'), path: 'virtual://image' },
-      { ...file('离线'), availability: 'offline' },
-    ]);
-    await open();
-    for (let index = 0; index < cards().length; index++) {
-      hover(index); await readPrompt();
-      expect(cardElement(index).props['data-tooltip']).toContain('暂无提示词');
-      if ((cards()[index].props.file as AssetFileEntry).category !== 'text') {
-        expect(cardElement(index).props['data-tooltip']).toContain('暂不支持拖拽');
-      }
-    }
-    expect(driver.imageDetails).not.toHaveBeenCalled(); expect(driver.videoHistory).not.toHaveBeenCalled();
-  });
-
-  it('搜索、项目切换和关闭面板取消读取，旧上下文内容不展示', async () => {
-    driver.imageDetails.mockImplementation(() => new Promise(() => {}));
-    await open(); hover(); await readPrompt();
-    const first = driver.imageDetails.mock.calls[0][2] as AbortSignal;
-    (find((element) => element.props.placeholder === '搜索名称或标签…').props.onChange as (event: unknown) => void)({ target: { value: '森林' } });
-    render(); expect(first.aborted).toBe(true);
-    hover(); await readPrompt();
-    const second = driver.imageDetails.mock.calls[1][2] as AbortSignal;
-    driver.store!.setState({ currentProjectId: 'project-2' }); render(); expect(second.aborted).toBe(true);
-    await vi.advanceTimersByTimeAsync(0); render(); hover(); await readPrompt();
-    const third = driver.imageDetails.mock.calls[2][2] as AbortSignal;
-    driver.store!.getState().setAssetsPanelOpen(false); render(); expect(third.aborted).toBe(true);
-  });
-
-  it('长提示词截取摘要，拖拽与右键时隐藏提示，键盘焦点仍可读取', async () => {
-    driver.imageDetails.mockResolvedValue({ record: { prompt: '长'.repeat(1000) } });
-    await open('modal');
-    (cardElement().props.onFocus as (event: unknown) => void)({ currentTarget: { contains: () => false }, relatedTarget: null });
-    render(); await readPrompt();
-    expect(String(cardElement().props['data-tooltip'])).toContain('点击查看完整提示词');
-    expect(String(cardElement().props['data-tooltip']).length).toBeLessThan(300);
-    openFileMenu(); expect(cardElement().props['data-tooltip']).toBeUndefined();
-    fileMenu().onClose(); render(); leave(); hover(); await readPrompt();
-    (cards()[0].props.onDragStart as (event: unknown) => void)({ preventDefault: vi.fn(), currentTarget: { closest: () => null } });
-    render(); expect(cardElement().props['data-tooltip']).toBeUndefined();
-  });
-
-  it('鼠标和键盘焦点交接时保留已读取提示，均离开后取消', async () => {
-    await open(); hover(); await readPrompt();
-    const signal = driver.imageDetails.mock.calls[0][2] as AbortSignal;
-    (cardElement().props.onMouseLeave as (event: unknown) => void)({ currentTarget: { contains: () => true } });
-    expect(signal.aborted).toBe(false);
-    (cardElement().props.onBlur as (event: unknown) => void)({ currentTarget: { contains: () => false, matches: () => true }, relatedTarget: null });
-    expect(signal.aborted).toBe(false);
-    (cardElement().props.onBlur as (event: unknown) => void)({ currentTarget: { contains: () => false, matches: () => false }, relatedTarget: null });
-    expect(signal.aborted).toBe(true);
-  });
+  registerCardTooltipTests(assetDrawerFixture);
 });
 
 describe('资源管理弹窗拖出后收起', () => {
@@ -1173,194 +685,11 @@ describe('资源管理弹窗拖出后收起', () => {
 });
 
 describe('资产文件右键操作', () => {
-  it('抽屉与弹窗都提供文件复制和打开目录，完整路径不被改写', async () => {
-    key(); render(); await settle();
-    let menu = openFileMenu(cards().findIndex((element) => (element.props.file as AssetFileEntry).name === '森林'));
-    expect(menu).toMatchObject({ name: '森林', canFileActions: true, canCopyPrompt: true, x: 120, y: 180 });
-    await menu.onCopy(); expect(driver.copyClipboard).toHaveBeenCalledWith('assets/森林.png');
-    await menu.onReveal(); expect(driver.revealFile).toHaveBeenCalledWith('assets/森林.png');
-    driver.store!.getState().setAssetsPanelOpen(true); render(); await settle();
-    click(all(tree, (el) => el.props.role === 'tab')[1]); render(); await settle();
-    menu = openFileMenu(); await menu.onCopy(); await menu.onReveal();
-    expect(driver.copyClipboard).toHaveBeenLastCalledWith('assets/全局参考.png');
-    expect(driver.revealFile).toHaveBeenLastCalledWith('assets/全局参考.png');
-  });
-  it('图片优先复制用户保存的提示词，清空后的编辑内容不回退到生成历史', async () => {
-    key(); render(); await settle();
-    driver.imageDetails.mockResolvedValue({ record: { prompt: '用户编辑\n完整提示词' }, history: { prompt: '原始' } });
-    const index = cards().findIndex((element) => (element.props.file as AssetFileEntry).name === '森林');
-    await openFileMenu(index).onCopyPrompt();
-    expect(driver.copyText).toHaveBeenLastCalledWith('用户编辑\n完整提示词');
-    expect(driver.imageDetails).toHaveBeenCalledWith(expect.objectContaining({ path: 'assets/森林.png' }), 'project-1', expect.any(AbortSignal));
-    driver.copyText.mockClear(); driver.imageDetails.mockResolvedValue({ record: { prompt: '' }, history: { prompt: '原始' } });
-    await openFileMenu(index).onCopyPrompt(); render();
-    expect(driver.copyText).not.toHaveBeenCalled(); expect(find((el) => el.props.children === '此资产暂无提示词')).toBeDefined();
-  });
-  it('视频按项目与完整媒体地址读取，全局资产不限定项目', async () => {
-    const video: AssetFileEntry = { name: '视频', path: '/assets/video.mp4', category: 'video', size: 10, assetUrl: 'asset://video' };
-    driver.listProject.mockResolvedValue([video]); driver.listGlobal.mockResolvedValue([video]);
-    key(); render(); await settle(); await openFileMenu().onCopyPrompt();
-    expect(driver.videoHistory).toHaveBeenCalledWith(video.path, video.assetUrl, 'project-1', expect.any(AbortSignal));
-    expect(driver.copyText).toHaveBeenLastCalledWith('视频提示词');
-    click(all(tree, (el) => el.props.role === 'tab')[1]); render(); await settle(); await openFileMenu().onCopyPrompt();
-    expect(driver.videoHistory).toHaveBeenLastCalledWith(video.path, video.assetUrl, undefined, expect.any(AbortSignal));
-  });
-  it('读取失败和剪贴板失败有反馈，不伪造成功', async () => {
-    key(); render(); await settle(); driver.copyClipboard.mockResolvedValue(false);
-    await openFileMenu().onCopy(); render(); expect(find((el) => el.props.children === '复制失败，请检查文件和系统剪贴板')).toBeDefined();
-    driver.imageDetails.mockRejectedValue(new Error('db')); await openFileMenu().onCopyPrompt(); render();
-    expect(driver.copyText).not.toHaveBeenCalled(); expect(find((el) => el.props.children === '提示词读取或复制失败，请重试')).toBeDefined();
-    driver.revealFile.mockRejectedValue(new Error('offline')); await openFileMenu().onReveal(); render();
-    expect(find((el) => el.props.children === '打开目录失败，请检查文件位置和权限')).toBeDefined();
-  });
-  it.each(['project', 'tab', 'close', 'dismiss'])('提示词读取期间 %s 会取消查询且不复制迟到结果', async (change) => {
-    key(); render(); await settle();
-    let finish!: (value: unknown) => void;
-    driver.imageDetails.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
-    const menu = openFileMenu(); const pending = menu.onCopyPrompt();
-    const signal = driver.imageDetails.mock.calls[0][2] as AbortSignal;
-    if (change === 'project') driver.store!.setState({ currentProjectId: 'project-2' });
-    else if (change === 'tab') click(all(tree, (el) => el.props.role === 'tab')[1]);
-    else if (change === 'close') driver.store!.getState().setAssetsPanelOpen(false);
-    else menu.onClose();
-    render(); finish({ record: { prompt: '迟到提示词' }, history: null }); await pending;
-    expect(signal.aborted).toBe(true); expect(driver.copyText).not.toHaveBeenCalled();
-  });
-  it('虚拟资源、离线文件与 Web 环境禁用磁盘操作，文本不提供提示词复制', async () => {
-    driver.listProject.mockResolvedValue([
-      { ...file('虚拟'), path: 'node://image' }, { ...file('离线'), availability: 'offline' },
-      { ...file('文本'), category: 'text' }, { ...file('远程'), path: 'https://example.test/image.png' },
-    ]); key(); render(); await settle();
-    const named = (name: string) => openFileMenu(cards().findIndex((el) => (el.props.file as AssetFileEntry).name === name));
-    expect(named('虚拟').canFileActions).toBe(false); expect(named('离线').canFileActions).toBe(false);
-    expect(named('文本').canCopyPrompt).toBe(false); expect(named('远程').canFileActions).toBe(false);
-    driver.native = false; expect(named('文本').canFileActions).toBe(false);
-    await fileMenu().onDelete().catch(() => {}); expect(driver.deleteFile).not.toHaveBeenCalled();
-  });
-  it('删除失败保留卡片，成功刷新列表且不重新加入残留节点引用', async () => {
-    key(); render(); await settle();
-    const menu = openFileMenu(cards().findIndex((element) => (element.props.file as AssetFileEntry).name === '森林'));
-    expect(driver.deleteFile).not.toHaveBeenCalled(); driver.deleteFile.mockRejectedValueOnce(new Error('locked'));
-    await expect(menu.onDelete()).rejects.toThrow('删除失败'); render(); expect(cards()).toHaveLength(2);
-    driver.listProject.mockResolvedValue([file('人物')]);
-    driver.nodeFile = file('森林'); driver.store!.setState({ nodes: [canvasNode('source', 'source-image')] });
-    await menu.onDelete(); render(); expect(cards().map((el) => (el.props.file as AssetFileEntry).name)).toEqual(['人物']);
-    expect(driver.deleteFile).toHaveBeenCalledWith('assets/森林.png');
-    expect(driver.store!.getState().nodes).toHaveLength(1);
-  });
-  it('全局资产原有删除按钮也先确认；确认期间切换项目不会删除旧文件', async () => {
-    key(); render(); await settle(); click(all(tree, (el) => el.props.role === 'tab')[1]); render(); await settle();
-    (cards()[0].props.onDelete as () => void)(); render();
-    const menu = fileMenu(); expect(menu.confirmDelete).toBe(true); expect(driver.deleteFile).not.toHaveBeenCalled();
-    driver.store!.setState({ currentProjectId: 'project-2' }); render(); await menu.onDelete();
-    expect(driver.deleteFile).not.toHaveBeenCalled();
-  });
-  it('键盘 ContextMenu/Shift+F10 定位菜单；标签输入保留原生菜单', async () => {
-    key(); render(); await settle();
-    const event = { key: 'F10', shiftKey: true, target: { closest: () => null }, currentTarget: { focus: vi.fn(), getBoundingClientRect: () => ({ left: 20, top: 40 }) }, preventDefault: vi.fn(), stopPropagation: vi.fn() };
-    (cards()[0].props.onMenuKeyDown as (event: unknown) => void)(event); render();
-    expect(fileMenu()).toMatchObject({ x: 32, y: 52 }); fileMenu().onClose(); render();
-    const preventDefault = vi.fn();
-    (cards()[0].props.onContextMenu as (event: unknown) => void)({ target: { closest: () => ({}) }, preventDefault });
-    expect(preventDefault).not.toHaveBeenCalled(); expect(all(tree, (el) => el.type === AssetFileContextMenu)).toHaveLength(0);
-  });
+  registerFileMenuTests(assetDrawerFixture);
 });
 
 describe('资产文件排序', () => {
-  async function open(files: AssetFileEntry[]) {
-    vi.mocked(driver.store!.getState().updateConfig).mockImplementation((patch) => {
-      driver.store!.setState((state) => ({ config: { ...state.config, ...patch } }));
-    });
-    vi.mocked(driver.store!.getState().saveConfig).mockResolvedValue(undefined);
-    driver.listGlobal.mockResolvedValue(files);
-    driver.store!.getState().setAssetsPanelOpen(true, 'page', { tab: 'permanent', folder: { kind: 'all' } });
-    render(); await settle(); await settle();
-  }
-  function choose(value: string) {
-    (button('排序方式').props.onChange as (value: string) => void)(value); render();
-  }
-  function names() { return cards().map((element) => (element.props.file as AssetFileEntry).name); }
-
-  it('默认名称自然升序，大小和真实时间排序保存字段与方向，未知创建时间始终置后', async () => {
-    const files: AssetFileEntry[] = [
-      { ...file('clip10'), size: 10, createdAt: 30, modifiedAt: 100 },
-      { ...file('clip2'), size: 20, createdAt: 10, modifiedAt: 300 },
-      { ...file('clip1'), size: 30, modifiedAt: 200 },
-    ];
-    await open(files);
-    expect(button('排序方式').props.value).toBe('name');
-    expect(button('切换为降序').props.children).toContain('升序');
-    expect(names()).toEqual(['clip1', 'clip2', 'clip10']);
-    choose('size');
-    expect(names()).toEqual(['clip10', 'clip2', 'clip1']);
-    expect(driver.store!.getState().updateConfig).toHaveBeenLastCalledWith({ assetSortBy: 'size', assetSortOrder: 'asc' });
-    choose('createdAt');
-    expect(names()).toEqual(['clip2', 'clip10', 'clip1']);
-    click(button('切换为降序')); render();
-    expect(names()).toEqual(['clip10', 'clip2', 'clip1']);
-    expect(driver.store!.getState().updateConfig).toHaveBeenLastCalledWith({ assetSortBy: 'createdAt', assetSortOrder: 'desc' });
-    expect(button('切换为升序').props.children).toContain('降序');
-    choose('modifiedAt');
-    expect(names()).toEqual(['clip2', 'clip1', 'clip10']);
-    expect(driver.store!.getState().config).toMatchObject({ assetSortBy: 'modifiedAt', assetSortOrder: 'desc' });
-    expect(driver.store!.getState().saveConfig).toHaveBeenCalledTimes(4);
-    expect(driver.store!.getState().saveConfig).toHaveBeenLastCalledWith({ silent: true });
-    expect(files.map((entry) => entry.name)).toEqual(['clip10', 'clip2', 'clip1']);
-  });
-
-  it('先排序完整筛选结果再取第一页，切换排序保留搜索分类标签并关闭图片预览', async () => {
-    await open([
-      ...Array.from({ length: 60 }, (_, index) => ({ ...file(`clip${60 - index}`, ['精选']), size: 60 - index })),
-      { ...file('clip999', ['其他']), size: 999 },
-      { ...file('clip-video', ['精选']), category: 'video', size: 9999 },
-      { ...file('noise', ['精选']), size: 99999 },
-    ]);
-    const search = find((element) => element.props.placeholder === '搜索名称或标签…');
-    (search.props.onChange as (event: unknown) => void)({ target: { value: 'clip' } }); render();
-    click(find((element) => element.type === 'button' && Array.isArray(element.props.children) && element.props.children.includes('图像'))); render();
-    click(find((element) => String(element.props.className).includes('assets-tag-chip')
-      && Array.isArray(element.props.children) && element.props.children.includes('精选'))); render();
-    expect(cards()).toHaveLength(48);
-    // 瀑布流按列存放 DOM；校验第一页成员，避免把列内顺序误认为排序结果。
-    expect(new Set(names())).toEqual(new Set(Array.from({ length: 48 }, (_, index) => `clip${index + 1}`)));
-    (cards()[0].props.onImagePreview as () => void)(); render();
-    expect(find((element) => element.type === 'asset-image-preview')).toBeDefined();
-    choose('size');
-    click(button('切换为降序')); render();
-    expect(cards()).toHaveLength(48);
-    expect(new Set(names())).toEqual(new Set(Array.from({ length: 48 }, (_, index) => `clip${60 - index}`)));
-    expect(find((element) => element.props.placeholder === '搜索名称或标签…').props.value).toBe('clip');
-    expect(find((element) => element.type === 'button' && Array.isArray(element.props.children)
-      && element.props.children.includes('图像')).props.className).toContain('active');
-    expect(find((element) => String(element.props.className).includes('assets-tag-chip')
-      && Array.isArray(element.props.children) && element.props.children.includes('精选')).props.className).toContain('active');
-    expect(all(tree, (element) => element.type === 'asset-image-preview')).toHaveLength(0);
-  });
-
-  it('最近使用默认降序且按稳定资产身份读取记录，使用记录变更会刷新当前排序', async () => {
-    driver.lastUsedTimes.mockResolvedValue(new Map([['ten', 10], ['two', 20]]));
-    await open([
-      { ...file('clip10'), assetId: 'ten' }, { ...file('clip2'), assetId: 'two' }, { ...file('clip1'), assetId: 'one', createdAt: 999 },
-    ]);
-    choose('usedAt'); await settle();
-    expect(names()).toEqual(['clip2', 'clip10', 'clip1']);
-    expect(driver.store!.getState().updateConfig).toHaveBeenLastCalledWith({ assetSortBy: 'usedAt', assetSortOrder: 'desc' });
-    expect(driver.store!.getState().saveConfig).toHaveBeenLastCalledWith({ silent: true });
-    expect(driver.lastUsedTimes).toHaveBeenCalledWith(expect.arrayContaining(['ten', 'two', 'one']));
-    const reads = driver.lastUsedTimes.mock.calls.length;
-    (cards()[0].props.onImagePreview as () => void)(); render();
-    driver.lastUsedTimes.mockResolvedValue(new Map([['one', 30], ['two', 20], ['ten', 10]]));
-    driver.store!.setState((state) => ({ recentAssetsRevision: state.recentAssetsRevision + 1 }));
-    render(); await settle();
-    expect(names()).toEqual(['clip2', 'clip10', 'clip1']);
-    expect(driver.lastUsedTimes.mock.calls.length).toBe(reads);
-    (find((element) => element.type === 'asset-image-preview').props.onClose as () => void)();
-    render(); await settle();
-    expect(driver.lastUsedTimes.mock.calls.length).toBeGreaterThan(reads);
-    expect(names()).toEqual(['clip1', 'clip2', 'clip10']);
-    expect(button('排序方式').props.value).toBe('usedAt');
-    expect(button('切换为升序').props.children).toContain('降序');
-  });
+  registerFileOrderingTests(assetDrawerFixture);
 });
 
 describe('资产库 Tab 抽屉', () => {
