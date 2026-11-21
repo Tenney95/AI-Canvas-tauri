@@ -178,6 +178,8 @@ describe('global asset folder browsing', () => {
     { selection: { kind: 'folder' as const, rootPath: '/global/file', relativePath: '人设' }, roots: [], destination: '/global/file/人设/角色.png' },
     { selection: { kind: 'folder' as const, rootPath: '/library', relativePath: '人物' }, roots: ['/library'], destination: '/library/人物/角色.png' },
   ])('adds picked files to the selected directory: $destination', async ({ selection, roots, destination }) => {
+    directory('/global/file', ['人设/']);
+    directory('/global/file/人设', []);
     await expect(addAssetFilesToGlobal(selection, roots)).resolves.toBe(1);
     expect(mocks.copyStream).toHaveBeenCalledExactlyOnceWith('/source/角色.png', destination);
     expect(mocks.readFile).not.toHaveBeenCalled();

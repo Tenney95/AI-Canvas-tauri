@@ -447,7 +447,7 @@ describe('storage health accounting and cleanup', () => {
       expect(await deleteOrphanFile(confirmedFile(path), async () => true)).toBe(false);
     }
     expect(await deleteOrphanFile(confirmedFile('/native/unused.png'), async () => true)).toBe(true);
-    expect(mocks.rename).toHaveBeenCalledWith('/native/unused.png', expect.stringContaining('/native/.trash/'));
+    expect(mocks.rename).toHaveBeenCalledWith('/native/unused.png', expect.stringContaining(`${storageCleanupDirectory('/native')}/`));
     expect(mocks.remove).toHaveBeenCalledWith(mocks.rename.mock.calls[0][1]);
   });
 
@@ -489,7 +489,7 @@ describe('storage health accounting and cleanup', () => {
     expect(report.orphans.map((file) => file.path)).toEqual(['/legacy/unused.png']);
     expect(await deleteOrphanFile(confirmedFile('/native/pending.png'), async () => true)).toBe(false);
     expect(await deleteOrphanFile(confirmedFile('/legacy/unused.png'), async () => true)).toBe(true);
-    expect(mocks.rename).toHaveBeenCalledWith('/legacy/unused.png', expect.stringContaining('/legacy/.trash/'));
+    expect(mocks.rename).toHaveBeenCalledWith('/legacy/unused.png', expect.stringContaining(`${storageCleanupDirectory('/legacy')}/`));
     expect(mocks.remove).toHaveBeenCalledWith(mocks.rename.mock.calls[0][1]);
   });
 
@@ -506,7 +506,7 @@ describe('storage health accounting and cleanup', () => {
     expect(report.orphans.map((file) => file.path)).toEqual(['/native/same.png']);
     expect(await deleteOrphanFile(confirmedFile(`${native.secondaryPath}/same.png`), async () => true)).toBe(false);
     expect(await deleteOrphanFile(confirmedFile('/native/same.png'), async () => true)).toBe(true);
-    expect(mocks.rename).toHaveBeenCalledWith('/native/same.png', expect.stringContaining('/native/.trash/'));
+    expect(mocks.rename).toHaveBeenCalledWith('/native/same.png', expect.stringContaining(`${storageCleanupDirectory('/native')}/`));
     expect(mocks.remove).toHaveBeenCalledWith(mocks.rename.mock.calls[0][1]);
   });
 
