@@ -31,7 +31,7 @@
 - MCP 可用 `director_get_previs_schema` 读取合同和完整示例，由外部大模型生成白名单场景 JSON；通过已有 `canvas_create_nodes` 创建 `ai-director`（或查询已有节点），`director_set_runtime` 选择 `ai-threejs`，再以 `director_set_previs_scene` 写入完整 `sceneJson` 字符串。`director_get_previs_scene` 返回已保存场景，未保存时为 `null`；修改前可读回场景。场景响应走 MCP 瞬时完整内容，避开模型结果截断，不把原始 JSON 放进消息或任务摘要。用户双击节点即可播放、调整和输出。
 - 这三项预演工具只在当前项目的 MCP 控制会话开放；两项读取为 `read`，写入为 `canvas_write`，复用 Registry/Policy 与预演写回守卫。MCP 自主执行，无需逐次审批；不额外调用应用内模型，不执行外部 JS，不自动重试写入。场景写入后的截图由节点自动同步，不额外发起付费媒体生成。
 - 网页模式可查看、播放和调整示例，场景与输出的项目文件保存需要 Tauri 桌面端；真实模型/原生存储/编码验收与前端浏览器验证分开记录。
-- Blender 固定包 1.5.0 声明 Windows x86_64、macOS x86_64/aarch64 目标，版本策略接受 4.5.x、5.0.x、5.1.x、5.2.x 稳定系列，不锁补丁号；预发行版和未纳入的系列不自动放行。安装还须与应用架构匹配；版本策略不代表 Blender 官方为每个架构提供所有版本。跨平台/版本的真实桌面验收状态见专项计划。
+- Blender 固定包 1.5.1 声明 Windows x86_64、macOS x86_64/aarch64 目标，版本策略接受 4.5.x、5.0.x、5.1.x、5.2.x 稳定系列，不锁补丁号；预发行版和未纳入的系列不自动放行。安装还须与应用架构匹配；版本策略不代表 Blender 官方为每个架构提供所有版本。跨平台/版本的真实桌面验收状态见专项计划。
 - 唯一安装自动使用；多个安装或未发现时由系统选择器手选。Windows 选择 `blender.exe`，macOS 选择 `.app`，原生仅解析其固定 `Contents/MacOS/Blender`。手选结果只保存在本机原生私有目录；旧安装失效不阻断其他安装发现。macOS 有界扫描系统/用户 Applications、固定 Steam 路径和 PATH，不扫描整盘。
 - Windows 使用 Job Object，macOS 使用专属进程组管理正常关闭、取消和超时；均复用固定参数、成果收集与结果校验。macOS 原生窗口、权限与打包验收尚未在真机执行，不能以 Windows 上的应用包/Mach-O 模拟测试替代。
 - EEVEE 标识、材质/世界节点初始化和图像/视频设置按 API 差异适配；保存工程保留时间线和 Cycles 选择。前端只映射已绑定 Job 的固定失败码，区分版本、渲染能力、启动、崩溃、超时和成果错误，不展示原生诊断正文。

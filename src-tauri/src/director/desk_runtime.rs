@@ -801,7 +801,13 @@ mod tests {
     #[test]
     fn validates_the_pinned_release_manifest() {
         let manifest = release_manifest().unwrap();
-        assert_eq!(manifest.version, "0.3.1");
+        assert_eq!(manifest.version, "0.3.2");
+        let tag = format!("v{}", manifest.version);
+        assert_eq!(manifest.artifact, format!("director-desk-{tag}.tar.gz"));
+        assert_eq!(
+            manifest.url,
+            format!("https://github.com/Tenney95/3d-director-desk/releases/download/{tag}/{}", manifest.artifact)
+        );
         assert_eq!(manifest.protocol, "tauri-event-v1");
         assert!(manifest.download_bytes < MAX_ARCHIVE_BYTES);
     }

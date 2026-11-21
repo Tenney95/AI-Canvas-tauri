@@ -680,7 +680,8 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .expect("system clock should be available")
                 .as_nanos();
-            let path = std::env::temp_dir().join(format!(
+            let temporary_root = std::env::temp_dir().canonicalize().expect("temp root should resolve");
+            let path = temporary_root.join(format!(
                 "ai-canvas-blender-resources-{}-{nonce}",
                 std::process::id()
             ));
@@ -766,7 +767,9 @@ mod tests {
             .expect("second resource install should be idempotent");
 
         assert_eq!(first, second);
-        assert!(first.runtime_root.ends_with("blender-runtime/1.5.0"));
+        assert!(first
+            .runtime_root
+            .ends_with(Path::new("blender-runtime").join(PACKAGE_VERSION)));
         assert_eq!(
             fs::read(previous_resource).expect("previous runtime should remain readable"),
             previous_bytes

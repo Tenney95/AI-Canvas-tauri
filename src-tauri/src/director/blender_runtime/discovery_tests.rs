@@ -69,6 +69,30 @@
         }
     }
 
+    fn assert_public_candidate(
+        candidate: &BlenderInstallationCandidate,
+        display_name: &str,
+        source: &str,
+        version_hint: &str,
+    ) {
+        let digest = candidate
+            .installation_id
+            .strip_prefix("blender-installation-v1-")
+            .expect("安装标识应包含版本前缀");
+        assert_eq!(digest.len(), 64);
+        assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_eq!(
+            serde_json::to_value(candidate).expect("候选应可序列化"),
+            serde_json::json!({
+                "installationId": candidate.installation_id,
+                "displayName": display_name,
+                "source": source,
+                "versionHint": version_hint,
+                "versionHintIsVerified": false,
+            })
+        );
+    }
+
     #[test]
     fn discovers_only_fixed_standard_level_without_exposing_paths() {
         let root = TestDirectory::new("fixed-level");
@@ -79,15 +103,12 @@
         ]);
 
         assert_eq!(installations.len(), 1);
-        let candidate = &installations[0].candidate;
-        assert_eq!(candidate.display_name, "Blender 4.5");
-        assert_eq!(candidate.version_hint.as_deref(), Some("4.5"));
-        assert!(!candidate.version_hint_is_verified);
-
-        let serialized = serde_json::to_string(candidate).expect("候选应可序列化");
-        assert!(!serialized.contains(&root.path.to_string_lossy().to_string()));
-        assert!(!serialized.contains(BLENDER_EXECUTABLE_NAME));
-        assert!(serialized.contains("\"source\":\"program-files-64\""));
+        assert_public_candidate(
+            &installations[0].candidate,
+            "Blender 4.5",
+            "program-files-64",
+            "4.5",
+        );
     }
 
     #[test]
@@ -338,16 +359,12 @@
 
         let snapshot = merge_direct_hints(DiscoverySnapshot::default(), direct);
         assert_eq!(snapshot.installations.len(), 1);
-        let candidate = &snapshot.installations[0].candidate;
-        assert_eq!(
-            candidate.source,
-            BlenderInstallationSource::WindowsUninstall
+        assert_public_candidate(
+            &snapshot.installations[0].candidate,
+            "Blender 5.2",
+            "windows-uninstall",
+            "5.2.1",
         );
-        assert_eq!(candidate.display_name, "Blender 5.2");
-        assert_eq!(candidate.version_hint.as_deref(), Some("5.2.1"));
-        let serialized = serde_json::to_string(candidate).expect("候选应可序列化");
-        assert!(!serialized.contains(&root.path.to_string_lossy().to_string()));
-        assert!(!serialized.contains(BLENDER_EXECUTABLE_NAME));
     }
 
     #[cfg(windows)]
