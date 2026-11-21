@@ -202,6 +202,7 @@ function GroupNode({ id, data, selected }: NodeProps) {
               <span>{t('{count} 节点', { count: childCount })}</span>
               <AnimatedButton
                 data-tooltip={t('展开分组')}
+                aria-label={t('展开分组')}
                 onClick={() => toggleGroupCollapsed(id)}
                 className="canvas-group-folder-btn nodrag"
               >
@@ -284,6 +285,7 @@ function GroupNode({ id, data, selected }: NodeProps) {
           </span>
           <AnimatedButton
             data-tooltip={t('折叠为文件夹')}
+            aria-label={t('折叠为文件夹')}
             onClick={() => toggleGroupCollapsed(id)}
             className="canvas-group-collapse-btn nodrag"
           >

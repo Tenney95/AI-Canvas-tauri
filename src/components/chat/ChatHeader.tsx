@@ -79,7 +79,8 @@ export default function ChatHeader({
             onClick={onBack}
             aria-label={t('返回会话列表')}
           >
-            <Icon icon="mdi:arrow-left" width="18" height="18" />
+            {/* 编辑器失焦时图标可能重渲染，让按钮本身接收整个点击。 */}
+            <Icon icon="mdi:arrow-left" width="18" height="18" className="pointer-events-none" aria-hidden="true" />
           </button>
         )}
         <MascotAvatar size={26} className="shrink-0" />

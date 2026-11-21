@@ -180,6 +180,7 @@ export default function ConversationList({
                      hover:bg-canvas-hover hover:text-canvas-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
           onClick={onNew}
           data-tooltip={t('新对话')}
+          aria-label={t('新对话')}
         >
           <Icon icon="mdi:plus" width="16" height="16" />
         </AnimatedButton>
