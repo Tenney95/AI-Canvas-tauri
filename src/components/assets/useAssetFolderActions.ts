@@ -29,7 +29,7 @@ export function useAssetFolderActions({
   assetsPanelOpen, assetsPanelMode, setAssetsPanelOpen, currentProjectId, updateConfig, saveConfig,
   activeTab, globalCreativeKind, visibleTab, isDrawer, isPage, externalFolders, globalRootPath,
   folderSelection, folderOperationRef, dismissHover, setBusy, setAddMenuOpen, folders, toast, loadFiles,
-  loadTags, handleClose, handleSelectFolder,
+  loadTags, handleSelectFolder,
 }: Pick<AppState, 'assetsPanelOpen' | 'assetsPanelMode' | 'setAssetsPanelOpen' | 'currentProjectId' | 'updateConfig' | 'saveConfig'> & {
   activeTab: FileTabKey;
   visibleTab: TabKey;
@@ -47,7 +47,6 @@ export function useAssetFolderActions({
   toast: (message: string) => void;
   loadFiles: () => Promise<void>;
   loadTags: () => Promise<void>;
-  handleClose: () => void;
   handleSelectFolder: (selection: AssetFolderSelection) => void;
 }) {
   const [folderProgress, setFolderProgress] = useState<string | null>(null);

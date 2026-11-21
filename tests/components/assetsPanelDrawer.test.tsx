@@ -270,6 +270,10 @@ function render() {
   pending.forEach((effect) => effect());
 }
 async function settle() { await new Promise<void>((resolve) => setImmediate(resolve)); render(); }
+// 同目录刷新要等移动账本的 IndexedDB 事务；手工渲染器在事务完成后才呈现最终目录。
+async function waitForRendered(assertion: () => void) {
+  await vi.waitFor(() => { render(); assertion(); });
+}
 function key(keyName = 'Tab', target = doc.body, options: Record<string, unknown> = {}) {
   const event = new Event('keydown', { cancelable: true });
   Object.defineProperty(event, 'target', { value: target });
@@ -439,8 +443,8 @@ describe('资产文件夹原生拖放', () => {
     expect(row().props.className).toContain('outline-dashed');
     expect(row().props.className).toContain('motion-safe:scale-[1.02]');
     expect(driver.cursor).not.toHaveBeenCalled(); expect(driver.drag).not.toHaveBeenCalled();
-    pointer('pointerup'); pointer('pointerup'); await settle();
-    expect(row().props.className).not.toContain('outline-dashed');
+    pointer('pointerup'); pointer('pointerup');
+    await waitForRendered(() => expect(row().props.className).not.toContain('outline-dashed'));
     expect(driver.moveFile).toHaveBeenCalledTimes(1); expect(driver.importFiles).not.toHaveBeenCalled();
     const clickEvent = { preventDefault: vi.fn(), stopPropagation: vi.fn() };
     (cards()[0].props.onClickCapture as (event: unknown) => void)(clickEvent);
@@ -497,7 +501,8 @@ describe('资产文件夹原生拖放', () => {
   it('外部多文件复制到目标目录，刷新列表，原生结束不关闭页面', async () => {
     await open(); emit('enter', ['E:/a.png', 'E:/b.mp4']); emit('drop', ['E:/a.png', 'E:/b.mp4']); await settle();
     expect(driver.importFiles).toHaveBeenCalledWith(['E:/a.png', 'E:/b.mp4'], target, ['/library'], expect.objectContaining({ signal: expect.any(AbortSignal) }));
-    expect(driver.moveFile).not.toHaveBeenCalled(); expect(driver.listGlobal.mock.calls.length).toBeGreaterThan(1);
+    expect(driver.moveFile).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(driver.listGlobal.mock.calls.length).toBeGreaterThan(1));
     expect(driver.store!.getState().assetsPanelOpen).toBe(true);
   });
   it('整页没有弹窗类且未收到悬停事件时，仍通过系统光标定位并高亮目录', async () => {
@@ -955,8 +960,7 @@ describe('资产库 Tab 抽屉', () => {
     expect(button('子文件夹名称').props.value).toBe('参考图');
     expect(find((el) => el.props.role === 'alert').props.children).toBe('同名文件夹或文件已存在');
     (find((el) => el.props['aria-label'] === '新建子文件夹').props.onSubmit as (event: unknown) => void)({ preventDefault: vi.fn() });
-    render(); await settle(); await settle();
-    expect(all(tree, (el) => el.props['aria-label'] === '新建子文件夹')).toHaveLength(0);
+    await waitForRendered(() => expect(all(tree, (el) => el.props['aria-label'] === '新建子文件夹')).toHaveLength(0));
     expect(driver.listGlobal.mock.calls.length).toBeGreaterThan(1);
   });
 
@@ -985,8 +989,8 @@ describe('资产库 Tab 抽屉', () => {
     (button('导入文件').props.onContextMenu as (event: unknown) => void)({ preventDefault: vi.fn(), stopPropagation: vi.fn(), currentTarget: {}, clientX: 100, clientY: 120 }); render();
     click(find((el) => el.props.role === 'menuitem' && (el.props.children as unknown[]).includes('粘贴'))); render(); await settle();
     const before = driver.listGlobal.mock.calls.length;
-    click(find((el) => el.props.children === '取消操作')); render(); await settle(); await settle();
-    expect(driver.listGlobal.mock.calls.length).toBeGreaterThan(before);
+    click(find((el) => el.props.children === '取消操作'));
+    await waitForRendered(() => expect(driver.listGlobal.mock.calls.length).toBeGreaterThan(before));
     expect(all(tree, (el) => el.props.children === '复制已取消；已复制内容保留在目标目录')).toHaveLength(1);
     expect(button('导入文件').props.disabled).toBe(false);
   });

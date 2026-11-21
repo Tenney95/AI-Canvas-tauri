@@ -68,7 +68,6 @@ import { configValuesEqual } from '../services/configPatch';
 import {
   findScopedCharacter,
   isEligibleCharacterReferenceNode,
-  isEligibleCharacterVoiceNode,
   patchList,
   mapKindList,
   silentSave,

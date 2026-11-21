@@ -215,7 +215,7 @@ export default function AssetsPanel() {
     setProjectFileOwners, projectIdForFile, projectFiles, setProjectFiles, permanentFiles,
     setPermanentFiles, externalFolders, globalRootPath, folderSelection, setFolderSelection,
     deletedFilePathsRef, folderScanTruncated, tagMap, setTagMap, loading, loadError, loadControllerRef,
-    loadRequestRef, loadTags, loadFiles, addTag, removeTag,
+    cancelFileScan, loadTags, loadFiles, addTag, removeTag,
   } = useAssetFileInventory({
     activeTab, currentProjectId, selectedProjectId, baseDataDir, viewProjectIds, nativeFileOwner,
     folders,
@@ -346,15 +346,11 @@ export default function AssetsPanel() {
   useEffect(() => {
     if (assetsPanelOpen && isFileTab) {
       // 异步读取外部文件和 IndexedDB 标签；setState 发生在 Promise 完成后。
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       void loadFiles().then(loadTags);
       void prepareDragIcon();
     }
-    return () => {
-      loadRequestRef.current += 1;
-      loadControllerRef.current?.abort();
-    };
-  }, [assetsPanelOpen, isFileTab, loadFiles, loadTags, loadControllerRef, loadRequestRef]);
+    return cancelFileScan;
+  }, [assetsPanelOpen, isFileTab, loadFiles, loadTags, cancelFileScan]);
 
   useEffect(() => () => { folderOperationRef.current?.abort(); }, [assetsPanelOpen, activeTab, currentProjectId]);
 
@@ -416,7 +412,7 @@ export default function AssetsPanel() {
     assetsPanelOpen, assetsPanelMode, setAssetsPanelOpen, currentProjectId, updateConfig, saveConfig,
     activeTab, globalCreativeKind, visibleTab, isDrawer, isPage, externalFolders, globalRootPath,
     folderSelection, folderOperationRef, dismissHover, setBusy, setAddMenuOpen, folders, toast,
-    loadFiles, loadTags, handleClose, handleSelectFolder,
+    loadFiles, loadTags, handleSelectFolder,
   });
 
   // Esc 关闭
@@ -436,7 +432,7 @@ export default function AssetsPanel() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [assetsPanelOpen, handleClose, isDrawer, isPage, batchReverse]);
+  }, [assetsPanelOpen, handleClose, isDrawer, isPage, batchReverse, pointerDragStopRef]);
 
   // 点击外部关闭「添加」菜单
   const addWrapRef = useRef<HTMLDivElement | null>(null);

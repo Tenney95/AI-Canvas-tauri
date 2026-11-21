@@ -6,7 +6,7 @@ import { setLocale } from '../../../src/i18n';
 import type { AssetDrawerFixture } from '../assetsPanelDrawer.test';
 
 export function registerProjectAssetToolbarTests(panel: AssetDrawerFixture) {
-  const { driver, all, visibleText, find, button, click, renderDramaCards, key, canvasNode } = panel;
+  const { driver, all, visibleText, find, button, click, renderDramaCards, canvasNode } = panel;
   function renderDrama() {
     const compact = driver.store!.getState().assetsPanelMode === 'drawer';
     for (let pass = 0; pass < 5; pass++) {
@@ -248,7 +248,7 @@ export function registerProjectAssetToolbarTests(panel: AssetDrawerFixture) {
 }
 
 export function registerGlobalAssetToolbarTests(panel: AssetDrawerFixture) {
-  const { driver, all, visibleText, find, button, click, renderDramaCards, key } = panel;
+  const { driver, all, visibleText, find, button, click, renderDramaCards } = panel;
   function renderGlobal(kind: DramaAsset['kind'] = 'character') {
     const compact = driver.store!.getState().assetsPanelMode === 'drawer';
     for (let pass = 0; pass < 5; pass++) {

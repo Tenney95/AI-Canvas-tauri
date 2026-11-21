@@ -60,6 +60,10 @@ export function useAssetFileInventory({
   const [loadError, setLoadError] = useState<FileLoadError | null>(null);
   const loadRequestRef = useRef(0);
   const loadControllerRef = useRef<AbortController | null>(null);
+  const cancelFileScan = useCallback(() => {
+    loadRequestRef.current += 1;
+    loadControllerRef.current?.abort();
+  }, []);
   const projectFilesScopeRef = useRef<string | null>(null);
   const permanentFilesScopeRef = useRef<string | null>(null);
 
@@ -328,7 +332,7 @@ export function useAssetFileInventory({
     setProjectFileOwners, projectIdForFile, projectFiles, setProjectFiles, permanentFiles,
     setPermanentFiles, externalFolders, globalRootPath, folderSelection, setFolderSelection,
     deletedFilePathsRef, folderScanTruncated, tagMap, setTagMap, loading, loadError, loadControllerRef,
-    loadRequestRef, loadTags, loadFiles, addTag, removeTag,
+    cancelFileScan, loadTags, loadFiles, addTag, removeTag,
   };
 }
 
