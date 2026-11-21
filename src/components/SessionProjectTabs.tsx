@@ -61,18 +61,19 @@ export default function SessionProjectTabs() {
     ? { duration: 0 }
     : { type: 'spring' as const, bounce: 0, duration: 0.35 };
 
+  // 从启动页打开项目会重新挂载标签栏，首次显示的项目也要记进会话。
+  useEffect(() => {
+    saveSessionProjectIds(openedProjectIds);
+  }, [openedProjectIds]);
+
   useEffect(() => useAppStore.subscribe((state, previousState) => {
     const nextProjectId = state.currentProjectId;
     if (!nextProjectId || nextProjectId === previousState.currentProjectId) return;
     const nextTabId = seriesOwnerId(state.projects, nextProjectId);
-    setOpenedProjectIds((ids) => {
-      const nextIds = [
-        nextTabId,
-        ...ids.filter((id) => id !== nextTabId),
-      ].slice(0, MAX_SESSION_PROJECTS);
-      saveSessionProjectIds(nextIds);
-      return nextIds;
-    });
+    setOpenedProjectIds((ids) => [
+      nextTabId,
+      ...ids.filter((id) => id !== nextTabId),
+    ].slice(0, MAX_SESSION_PROJECTS));
   }), []);
 
   const openedProjects = useMemo(() => {

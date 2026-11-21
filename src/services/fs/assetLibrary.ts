@@ -24,7 +24,7 @@ import { mediaFileAllocationKey, pendingAssetMoveTargets, retiredMediaPaths } fr
 import { decodeDataUrlBytesAsync } from '../mediaDataUrl';
 import { isProjectAgentInternalFile, isProjectAgentWorkspaceDirectory } from '../../utils/agentProjectWorkspace';
 import { isNativeMediaPendingFile } from '../../utils/nativeMediaPendingFile';
-import { isNativeProjectBindingFile, NATIVE_PROJECT_BINDING_FILE } from '../../utils/nativeProjectBindingFile';
+import { isNativeProjectBindingFile } from '../../utils/nativeProjectBindingFile';
 
 /** 仅用于目录浏览的运行时条目，不写入资产索引或持久化配置。 */
 export interface AssetFolderEntry {
@@ -72,12 +72,17 @@ function comparablePath(path: string): string {
   return /^[a-z]:\//i.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
 }
 
+async function directoryHasNativeProjectBinding(directory: string): Promise<boolean> {
+  // 只检查目录条目名称，项目归属标记的内容由原生仓储管理。
+  return (await readDir(directory)).some((entry) => isNativeProjectBindingFile(entry.name));
+}
+
 /** 直接登记项目子目录时仍检查其所在作品的归属边界。 */
 export async function hasNativeAssetRootAncestor(path: string): Promise<boolean> {
   const base = await getBaseDir();
   const relative = base && getRelativeAssetPath(path, base);
   if (!base || !relative || relative.split('/').some((part) => !part || part === '.' || part === '..')) return false;
-  return exists(joinPath(base, relative.split('/')[0], NATIVE_PROJECT_BINDING_FILE));
+  return directoryHasNativeProjectBinding(joinPath(base, relative.split('/')[0]));
 }
 
 /** 按实际父目录筛选，兼容 Windows 分隔符和重复登记的父/子目录。 */
@@ -143,7 +148,7 @@ export async function resolveAssetFolderDirectory(selection: AssetFolderSelectio
     throw new Error('文件夹相对路径无效');
   }
   const directory = selection.relativePath ? joinPath(selection.rootPath, selection.relativePath) : selection.rootPath;
-  if (await hasNativeAssetRootAncestor(directory) || await exists(joinPath(directory, NATIVE_PROJECT_BINDING_FILE))) {
+  if (await hasNativeAssetRootAncestor(directory) || await directoryHasNativeProjectBinding(directory)) {
     throw new Error('请在项目资源库中管理此文件夹');
   }
   return directory;
@@ -542,7 +547,7 @@ export async function pickAssetFolder(): Promise<string | null> {
   if (!isTauriEnv()) return null;
   const selected = await open({ directory: true, title: '添加本地文件夹' });
   if (typeof selected !== 'string') return null;
-  if (await hasNativeAssetRootAncestor(selected) || await exists(joinPath(selected, NATIVE_PROJECT_BINDING_FILE))) {
+  if (await hasNativeAssetRootAncestor(selected) || await directoryHasNativeProjectBinding(selected)) {
     throw new Error('请在项目资源库中管理此文件夹');
   }
   return selected;
