@@ -593,6 +593,7 @@ function LogoMenu() {
         type="button"
         className={`sidebar-btn-v3 sidebar-canvas-btn ${projectLibraryOpen ? 'active' : ''}`}
         data-tooltip={t('画布 / 项目')}
+        aria-label={t('画布 / 项目')}
         aria-haspopup="dialog"
         aria-expanded={projectLibraryOpen}
         onClick={() => setProjectLibraryOpen(true)}
@@ -644,6 +645,9 @@ export default function Sidebar() {
         unreadDramaAssetCount: countUnreadDramaAssets(s.dramaAssets),
       })),
     );
+  const assetButtonLabel = unreadDramaAssetCount > 0
+    ? t('资产 · 新增短剧资产 ({count})', { count: unreadDramaAssetCount })
+    : t('资产');
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleAddEnter = () => {
@@ -693,7 +697,8 @@ export default function Sidebar() {
       <button
         type="button"
         className="sidebar-btn-v3"
-        data-tooltip={unreadDramaAssetCount > 0 ? t('资产 · 新增短剧资产 ({count})', { count: unreadDramaAssetCount }) : t('资产')}
+        data-tooltip={assetButtonLabel}
+        aria-label={assetButtonLabel}
         onClick={() => setAssetsPanelOpen(true)}
       >
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><g fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"><path strokeDasharray="64" strokeDashoffset="64" d="M12 7h8c0.55 0 1 0.45 1 1v10c0 0.55 -0.45 1 -1 1h-16c-0.55 0 -1 -0.45 -1 -1v-11Z"><animate fill="freeze" attributeName="stroke-dashoffset" dur="0.6s" values="64;0"/></path><path d="M12 7h-9v0c0 0 0.45 0 1 0h6z" opacity="0"><animate fill="freeze" attributeName="d" begin="0.6s" dur="0.2s" values="M12 7h-9v0c0 0 0.45 0 1 0h6z;M12 7h-9v-1c0 -0.55 0.45 -1 1 -1h6z"/><set fill="freeze" attributeName="opacity" begin="0.6s" to="1"/></path></g></svg>
@@ -716,7 +721,13 @@ export default function Sidebar() {
       </button>
 
       {/* History */}
-      <button type="button" className="sidebar-btn-v3" data-tooltip={t('输出历史')} onClick={() => setHistoryPanelOpen(true)}>
+      <button
+        type="button"
+        className="sidebar-btn-v3"
+        data-tooltip={t('输出历史')}
+        aria-label={t('输出历史')}
+        onClick={() => setHistoryPanelOpen(true)}
+      >
         <svg width="20" height="20" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5"><path d="M11.007 21H9.605c-3.585 0-5.377 0-6.491-1.135S2 16.903 2 13.25s0-5.48 1.114-6.615S6.02 5.5 9.605 5.5h3.803c3.585 0 5.378 0 6.492 1.135c.857.873 1.054 2.156 1.1 4.365"/><path d="m18.85 18.85l-1.35-.9V15.7M13 17.5a4.5 4.5 0 1 0 9 0a4.5 4.5 0 0 0-9 0m3-12l-.1-.31c-.494-1.54-.742-2.31-1.331-2.75C13.979 2 13.197 2 11.632 2h-.264c-1.565 0-2.348 0-2.937.44c-.59.44-.837 1.21-1.332 2.75L7 5.5"/></g></svg>
       </button>
 
@@ -775,6 +786,7 @@ export default function Sidebar() {
           className="user-gear-plain"
           onClick={toggleAvatarMenu}
           data-tooltip={t('设置')}
+          aria-label={t('设置')}
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="12" cy="12" r="3" />

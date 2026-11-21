@@ -671,11 +671,11 @@ describe('composite packet-copy output lifecycle', () => {
   });
 });
 
-function losslessInput(options: Parameters<typeof audioInput>[0] & { videoKeyTime?: number } = {}): Input {
+function losslessInput(options: Parameters<typeof audioInput>[0] & { videoKeyTime?: number; videoPacketTimes?: number[] } = {}): Input {
   const video = {
     displayWidth: 640, displayHeight: 360, rotation: 0,
     keyTime: options.videoKeyTime ?? 0,
-    packetTimes: [options.videoKeyTime ?? 0],
+    packetTimes: options.videoPacketTimes ?? [options.videoKeyTime ?? 0],
     getCodec: async () => 'avc',
     getDecoderConfig: async () => ({ codec: 'avc1.42001e', codedWidth: 640, codedHeight: 360 }),
   };
@@ -764,6 +764,35 @@ describe('lossless audio preservation', () => {
       onProgress: () => controller.abort(),
     })).rejects.toThrow('已取消');
     expect(audioMocks.videoPacketAdd).toHaveBeenCalledOnce();
+    expect(audioMocks.packetAdd).not.toHaveBeenCalled();
+  });
+});
+
+describe('lossless trim boundaries', () => {
+  it('copies an uninterrupted source range just once after splitting between keyframes', async () => {
+    const input = losslessInput({ packetTimes: [0, 0.25, 0.5, 0.75], videoPacketTimes: [0, 0.25, 0.5, 0.75] });
+    const segments = [
+      { input, start: 0, end: 0.5, label: 'before split' },
+      { input, start: 0.5, end: 0.75, label: 'after split' },
+    ];
+    const result = await exportLosslessConcat({ segments });
+
+    expect(result.actualStart).toBe(0);
+    expect(segments[0].end).toBe(0.5);
+    expect(audioMocks.videoPacketAdd.mock.calls.map(([packet]) => packet.timestamp)).toEqual([0, 0.25, 0.5]);
+    expect(audioMocks.packetAdd.mock.calls.map(([packet]) => packet.timestamp)).toEqual([0, 0.25, 0.5]);
+  });
+
+  it.each([false, true])('rejects a non-keyframe in-point before writing packets (multiple pieces: %s)', async (multiple) => {
+    const input = losslessInput();
+    const nonKeyframeSegment = { input, start: 0.5, end: 1, label: 'non-keyframe entry' };
+    const segments = multiple
+      ? [{ input, start: 0, end: 0.25, label: 'earlier piece' }, nonKeyframeSegment]
+      : [nonKeyframeSegment];
+
+    await expect(exportLosslessConcat({ segments })).rejects.toThrow('入点未对齐关键帧');
+    expect(audioMocks.events).not.toContain('output.start');
+    expect(audioMocks.videoPacketAdd).not.toHaveBeenCalled();
     expect(audioMocks.packetAdd).not.toHaveBeenCalled();
   });
 });

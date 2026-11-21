@@ -48,7 +48,30 @@
     }).catch(function () { return false; });
   }
 
+  function resolveDemoImages(nodes, fixtureNodes, previous) {
+    if (!Array.isArray(nodes)) return nodes;
+    var base = new URL(APP_URL, document.baseURI);
+    var sources = new Map();
+    fixtureNodes.forEach(function (node) {
+      var path = node?.data?.imageUrl;
+      if (typeof path !== 'string' || !/^\.\.\/demo\/[\w-]+\.(?:png|jpe?g|webp)$/i.test(path)) return;
+      sources.set(node.id, {
+        from: previous ? path.replace(/\.[a-z]+$/i, '.svg') : path,
+        to: new URL(path, base).href,
+      });
+    });
+    var changed = false;
+    var resolved = nodes.map(function (node) {
+      var source = sources.get(node?.id);
+      if (!source || node?.data?.imageUrl !== source.from) return node;
+      changed = true;
+      return { ...node, data: { ...node.data, imageUrl: source.to } };
+    });
+    return changed ? resolved : nodes;
+  }
+
   function writeDemo(payload) {
+    var fixtureNodes = Array.isArray(payload.nodes) ? payload.nodes : [];
     return openCurrent().then(function (db) {
       var tx;
       try {
@@ -71,10 +94,14 @@
               createdAt: now,
               updatedAt: now,
               dataFolder: 'web-demo',
-              nodes: payload.nodes || [],
+              nodes: resolveDemoImages(fixtureNodes, fixtureNodes, false),
               edges: payload.edges || [],
             };
             projects.add(project);
+          } else {
+            // 只迁移仍使用原始占位图的演示节点，保留用户替换的图片与其它编辑。
+            var nodes = resolveDemoImages(project.nodes, fixtureNodes, true);
+            if (nodes !== project.nodes) projects.put({ ...project, nodes: nodes });
           }
           var summaryRequest = summaries.get(PROJECT_ID);
           summaryRequest.onsuccess = function () {

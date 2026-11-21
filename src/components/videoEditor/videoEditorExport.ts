@@ -60,15 +60,9 @@ export async function encodeLosslessSegments({
   }));
   const notes: string[] = [];
 
-  const drift = segments[0].start - result.actualStart;
   notes.push(t('已无损导出 {count} 个片段，共 {time}s', {
     count: segments.length, time: timelineDuration.toFixed(2),
   }));
-  if (drift > 0.05) {
-    notes.push(t('首段按关键帧对齐，实际入点 {actual}s（比设定早 {drift}s）', {
-      actual: result.actualStart.toFixed(2), drift: drift.toFixed(2),
-    }));
-  }
   notes.push(result.audioKept
     ? t('音轨已按原始分组直通保留')
     : t('未输出音轨：{reason}', { reason: result.audioDropReason ?? t('未知原因') }));

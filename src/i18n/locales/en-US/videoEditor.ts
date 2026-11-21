@@ -50,7 +50,6 @@ const videoEditor = {
   '素材分辨率或编码不一致，已归一到同一画布': 'Source clips have mismatched resolution or codec; unified onto one canvas',
   '画面经过一次重编码': 'Video was re-encoded once',
   '已无损导出 {count} 个片段，共 {time}s': 'Losslessly exported {count} clip(s), total {time}s',
-  '首段按关键帧对齐，实际入点 {actual}s（比设定早 {drift}s）': 'First segment aligned to keyframe, actual in-point {actual}s ({drift}s earlier than set)',
   '音轨已按原始分组直通保留': 'Audio passed through in original groups',
   '无损直通不可用，已改用合成导出 · {width}×{height} · {fps}fps': 'Lossless passthrough unavailable; fell back to composite export · {width}×{height} · {fps}fps',
   '无可用音频': 'no audio available',

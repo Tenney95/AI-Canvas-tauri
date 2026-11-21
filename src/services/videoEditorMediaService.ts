@@ -414,16 +414,29 @@ export class VideoExportCanceledError extends Error {
   }
 }
 
-/** 无损直通导出的结果；入点被吸附到关键帧，实际起点可能早于请求值 */
+/** 无损直通导出的结果 */
 export type LosslessTrimResult = {
   bytes: Uint8Array;
-  /** 实际生效的入点（最近的前置关键帧位置） */
+  /** 与请求入点对齐的源关键帧时间 */
   actualStart: number;
   /** 是否保留源音轨；有声但无法直通时会抛错，交给合成处理 */
   audioKept: boolean;
   /** 源素材没有音轨时的说明，供调用方展示 */
   audioDropReason?: string;
 };
+
+const KEYFRAME_TIME_EPSILON = 1e-6; // 仅容许媒体时标与浮点秒数之间的换算误差。
+
+async function readLosslessStart(sink: EncodedPacketSink, start: number, signal?: AbortSignal) {
+  if (signal?.aborted) throw new VideoExportCanceledError();
+  const packet = await sink.getKeyPacket(start + KEYFRAME_TIME_EPSILON) ?? await sink.getFirstKeyPacket();
+  if (signal?.aborted) throw new VideoExportCanceledError();
+  if (!packet) throw new Error('视频轨没有可用的关键帧');
+  if (Math.abs(packet.timestamp - start) > KEYFRAME_TIME_EPSILON) {
+    throw new Error('片段入点未对齐关键帧，需要合成导出以保留裁切位置');
+  }
+  return packet;
+}
 
 function audioDecoderSignature(config: AudioDecoderConfig | null): string | null {
   if (!config) return null;
@@ -438,14 +451,7 @@ function audioDecoderSignature(config: AudioDecoderConfig | null): string | null
 
 /**
  * 关键帧对齐的无损裁剪导出。
- *
- * mediabunny 的 `Conversion` 只要入点不等于轨道起点就强制重编码
- * （`firstTimestamp < startTimestamp`），而 WKWebView 上 4K 的
- * `VideoEncoder.isConfigSupported` 会直接抛 TypeError，导致导出不可用。
- *
- * 这里绕开 Conversion，直接搬运已编码分组：从入点前最近的关键帧开始，
- * 把分组原样写进新容器并把时间戳平移到零点。全程不碰编解码器，
- * 因此又快又不掉画质，代价是入点精度受关键帧间隔限制。
+ * 直接搬运已编码分组并将入点平移到零点。需要解码参考帧的切点交给合成路径。
  */
 export async function exportLosslessTrim(options: {
   input: Input;
@@ -481,6 +487,9 @@ export async function exportLosslessTrim(options: {
   const audioSource = keepAudio ? new EncodedAudioPacketSource(audioCodec) : null;
   if (audioSource) output.addAudioTrack(audioSource);
 
+  const videoSink = new EncodedPacketSink(videoTrack);
+  const startPacket = await readLosslessStart(videoSink, start, signal);
+  const actualStart = startPacket.timestamp;
   await output.start();
 
   const throwIfAborted = () => {
@@ -488,11 +497,6 @@ export async function exportLosslessTrim(options: {
   };
 
   try {
-    const videoSink = new EncodedPacketSink(videoTrack);
-    // 入点吸附到前一个关键帧，否则解码器拿不到参考帧，画面会花
-    const startPacket = (await videoSink.getKeyPacket(start)) ?? (await videoSink.getFirstKeyPacket());
-    if (!startPacket) throw new Error('视频轨没有可用的关键帧');
-    const actualStart = startPacket.timestamp;
     const span = Math.max(end - actualStart, Number.EPSILON);
 
     const videoDecoderConfig = await videoTrack.getDecoderConfig();
@@ -832,7 +836,15 @@ export async function exportLosslessConcat(options: {
   onProgress?: (progress: number) => void;
   signal?: AbortSignal;
 }): Promise<LosslessTrimResult> {
-  const { segments, onProgress, signal } = options;
+  const { onProgress, signal } = options;
+  const segments: ConcatSegment[] = [];
+  for (const segment of options.segments) {
+    if (!(segment.end > segment.start)) throw new Error('导出区间无效：出点必须大于入点');
+    const previous = segments.at(-1);
+    // 仅在同一素材的切点前后完全连续时合并读取区间。时间轴上的片段保持独立。
+    if (previous?.input === segment.input && previous.end === segment.start) previous.end = segment.end;
+    else segments.push({ ...segment });
+  }
   if (segments.length === 0) throw new Error('没有可导出的片段');
   if (segments.length === 1) {
     return exportLosslessTrim({ ...segments[0], onProgress, signal });
@@ -842,7 +854,9 @@ export async function exportLosslessConcat(options: {
   const tracks = await Promise.all(segments.map(async (segment) => {
     const track = await segment.input.getPrimaryVideoTrack();
     if (!track) throw new Error(`片段「${segment.label}」没有视频轨`);
-    return { segment, track, codec: await track.getCodec() };
+    const sink = new EncodedPacketSink(track);
+    const startPacket = await readLosslessStart(sink, segment.start, signal);
+    return { segment, track, sink, startPacket, codec: await track.getCodec() };
   }));
 
   const [first, ...rest] = tracks;
@@ -904,21 +918,13 @@ export async function exportLosslessConcat(options: {
     let timelineCursor = 0;
     let firstPacket = true;
     let firstAudioPacket = true;
-    let actualStart = 0;
-
     for (const [index, entry] of tracks.entries()) {
       if (signal?.aborted) throw new VideoExportCanceledError();
 
-      const sink = new EncodedPacketSink(entry.track);
-      const startPacket = (await sink.getKeyPacket(entry.segment.start))
-        ?? (await sink.getFirstKeyPacket());
-      if (!startPacket) throw new Error(`片段「${entry.segment.label}」没有可用的关键帧`);
-      if (index === 0) actualStart = startPacket.timestamp;
-
       const decoderConfig = await entry.track.getDecoderConfig();
-      const segmentBase = startPacket.timestamp;
+      const segmentBase = entry.startPacket.timestamp;
 
-      for await (const packet of sink.packets(startPacket)) {
+      for await (const packet of entry.sink.packets(entry.startPacket)) {
         if (signal?.aborted) throw new VideoExportCanceledError();
         if (packet.timestamp >= entry.segment.end) break;
         await videoSource.add(
@@ -968,7 +974,7 @@ export async function exportLosslessConcat(options: {
     if (!buffer) throw new Error('导出未产生有效数据');
     return {
       bytes: new Uint8Array(buffer),
-      actualStart,
+      actualStart: first.startPacket.timestamp,
       audioKept: !!audioSource,
       audioDropReason: audioSource ? undefined : '素材没有音轨',
     };
