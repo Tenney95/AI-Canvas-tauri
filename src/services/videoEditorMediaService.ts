@@ -32,6 +32,7 @@ import { renderFrameAt, type ClipSourceResolver } from './videoCompositor';
 import { MIX_CHANNELS, MIX_SAMPLE_RATE, mixTimelineAudio, toAudioBuffers, type ClipAudioResolver } from './videoAudioMixer';
 import { shouldLoadNativeComfyImage } from './comfyImageSource';
 import { corsSafeFetch } from './ai/httpTransport';
+import { isTauriEnv } from './fs/core';
 
 /** 单次 Range 请求的上限，超出由 mediabunny 自行分片 */
 const MAX_RANGE_BYTES = 8 * 1024 * 1024;
@@ -556,7 +557,7 @@ export async function exportLosslessTrim(options: {
 export type CompositeAudioMode = 'encode' | 'copy' | 'pcm' | 'none';
 
 /**
- * 无 AudioEncoder 时用于混流输出的编码。
+ * 直接按混流样本数写入时使用的编码。
  *
  * mediabunny 对 PCM 走自带的软件编码器（`initPcmEncoder`），完全不碰
  * WebCodecs 的 `AudioEncoder`；MP4 也能容纳 pcm-s16（ISO/IEC 23003-5）。
@@ -621,7 +622,14 @@ export async function resolveCompositeAudioMode(
     if (canCopy) return { mode: 'copy' };
     throw new Error('当前设备无法解码素材音频，无法保留混音音轨');
   }
-  if (canEncodeAac) return { mode: 'encode' };
+  if (canEncodeAac) {
+    // macOS WebView 的 AAC 编码会增加首尾样本。PCM 按混音样本数写入，保持时间轴长度。
+    const isMacDesktop = isTauriEnv() && typeof navigator !== 'undefined'
+      && /Macintosh|Mac OS X/.test(navigator.userAgent);
+    return isMacDesktop
+      ? { mode: 'pcm', reason: '保持混音与视频时间轴对齐' }
+      : { mode: 'encode' };
+  }
 
   // 直通不满足条件也不必放弃音频：PCM 编码走 mediabunny 自带的软件实现，
   // 不需要 AudioEncoder，混流与音量包络照常生效

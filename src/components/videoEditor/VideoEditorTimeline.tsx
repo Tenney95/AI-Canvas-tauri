@@ -813,6 +813,7 @@ function VideoEditorTimeline({
           {displayTracks.map((track) => {
             const trackIndex = tracks.findIndex((candidate) => candidate.id === track.id);
             const compactText = isCompactTextTrack(track);
+            const muteLabel = t(track.muted ? '取消静音' : '静音');
             return (
             <div
               key={track.id}
@@ -838,7 +839,8 @@ function VideoEditorTimeline({
                 type="button"
                 className={`video-editor-track-flag is-mute ${track.muted ? 'active' : ''}`}
                 onClick={() => toggleTrackFlag(track.id, 'muted')}
-                data-tooltip={track.muted ? t('取消静音') : t('静音')}
+                data-tooltip={muteLabel}
+                aria-label={muteLabel}
               >M</button>
               <button
                 type="button"

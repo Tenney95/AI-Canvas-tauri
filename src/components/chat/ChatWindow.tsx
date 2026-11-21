@@ -268,6 +268,7 @@ export default function ChatWindow() {
         className="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md
                    text-canvas-text-muted hover:text-canvas-text hover:bg-canvas-hover transition-colors"
         data-tooltip={t('收回内嵌')}
+        aria-label={t('收回内嵌')}
         onClick={dockWindow}
         disabled={closing}
       >
