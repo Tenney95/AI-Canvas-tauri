@@ -15,7 +15,7 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use super::{
     unix_now_millis, LEGACY_PRIVATE_DIR_NAME, MAX_PACKAGE_RESOURCES, MAX_PACKAGE_RESOURCE_BYTES,
     MAX_PLUGIN_REGISTRATIONS, MIGRATION_DIR_NAME, PREPARED_MIGRATION_DIR_NAME, PRIVATE_DIR_NAME,
-    REGISTRY_BACKUP_FILE_NAME, REGISTRY_FILE_NAME, REGISTRY_TEMP_FILE_NAME, REVISIONS_DIR_NAME,
+    REGISTRY_BACKUP_FILE_NAME, REGISTRY_FILE_NAME, REVISIONS_DIR_NAME,
     STORAGE_PERMISSION_ERROR, UI_REVISIONS_DIR_NAME,
 };
 
@@ -223,7 +223,7 @@ pub(super) fn probe_plugin_storage_writable(directory: &Path, plugin_id: &str, r
         cleanup_directory.map_err(|error| storage_io_error("无法删除插件目录写入探针", &error))?;
     }
     #[cfg(windows)]
-    for name in [REGISTRY_FILE_NAME, REGISTRY_BACKUP_FILE_NAME, REGISTRY_TEMP_FILE_NAME] {
+    for name in [REGISTRY_FILE_NAME, REGISTRY_BACKUP_FILE_NAME, super::REGISTRY_TEMP_FILE_NAME] {
         use std::os::windows::fs::OpenOptionsExt;
         use windows::Win32::Storage::FileSystem::{DELETE, FILE_FLAG_OPEN_REPARSE_POINT};
         let path = directory.join(name);

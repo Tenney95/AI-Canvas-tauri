@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { getLocale, setLocale, t } from '../../../../src/i18n';
 import { handleMcpBridgeRequest, initMcpControlService, listMcpTools } from '../../../../src/services/mcp/mcpControlService';
 import { buildAssistantFunctionTools } from '../../../../src/services/chat/toolRegistry';
