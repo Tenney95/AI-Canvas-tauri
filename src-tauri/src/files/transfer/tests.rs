@@ -57,6 +57,7 @@ fn serve_media_responses(listener: std::net::TcpListener, responses: Vec<String>
                     Err(error) => panic!("test HTTP accept failed: {error}"),
                 }
             };
+            stream.set_nonblocking(false).unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
             let mut request = Vec::new();
             while !request.ends_with(b"\r\n\r\n") {
@@ -85,6 +86,7 @@ fn serve_media_connection(serve: impl FnOnce(std::net::TcpStream) + Send + 'stat
                 Err(error) => panic!("test media accept failed: {error}"),
             }
         };
+        stream.set_nonblocking(false).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         stream.set_nodelay(true).unwrap();
         let mut request = Vec::new();
