@@ -323,8 +323,10 @@ export default function VideoEditorWindow() {
   const firstSized = clips
     .map((clip) => getSource(clip)?.probe)
     .find((probe) => probe && probe.width > 0 && probe.height > 0);
-  const canvasWidth = firstSized?.width || 1920;
-  const canvasHeight = firstSized?.height || 1080;
+  const sourceWidth = firstSized?.width ?? 0;
+  const sourceHeight = firstSized?.height ?? 0;
+  const canvasWidth = sourceWidth || 1920;
+  const canvasHeight = sourceHeight || 1080;
   const canvasSize: VideoEditorCanvasSize = useMemo(
     () => (outputScale === 1
       ? { width: canvasWidth, height: canvasHeight }
@@ -1014,7 +1016,7 @@ export default function VideoEditorWindow() {
 
       const notice = await deliverExportedVideo({
         destination, bytes, record, instanceId: session.instanceId, timelineDuration, notes, t,
-        size: compositing ? canvasSize : { width: firstSized?.width ?? 0, height: firstSized?.height ?? 0 },
+        size: compositing ? canvasSize : { width: sourceWidth, height: sourceHeight },
       });
       setNotice(notice);
     } catch (reason) {
@@ -1030,7 +1032,7 @@ export default function VideoEditorWindow() {
       setExportStage(null);
     }
   }, [
-    canvasSize, clips, compositing, exportFrameRate, firstSized?.height, firstSized?.width,
+    canvasSize, clips, compositing, exportFrameRate, sourceHeight, sourceWidth,
     mixedSources, record, session, t, timelineDuration, tracks,
   ]);
 
