@@ -36,7 +36,6 @@ import {
   updatePendingTask,
   removePendingTask,
   getPendingTasksForProject,
-  getBatchTaskNodeIds,
   bindPollManagerRuntime,
 } from './ai/polling/pendingTaskLedger';
 import {
@@ -308,15 +307,33 @@ export function getPendingTaskCoveredNodeIds(
   nodes: ReadonlyArray<{ id: string; data: BaseNodeData }>,
   tasks: PendingTask[],
 ): Set<string> {
-  const coveredNodeIds = new Set(tasks.map((task) => task.nodeId));
+  const coveredNodeIds = new Set<string>();
+  const batchSources = new Set<string>();
   for (const task of tasks) {
-    if (
-      task.nodeType !== 'ai-image'
-      || (task.batchCount ?? 1) <= 1
-      || !RESUME_MAP[task.taskType]
-    ) continue;
+    coveredNodeIds.add(task.nodeId);
+    if (task.nodeType !== 'ai-image' || (task.batchCount ?? 1) <= 1 || !RESUME_MAP[task.taskType]) continue;
+    batchSources.add(task.nodeId);
+  }
+  if (!batchSources.size) return coveredNodeIds;
 
-    for (const nodeId of getBatchTaskNodeIds(task, nodes)) coveredNodeIds.add(nodeId);
+  const groupBySource = new Map<string, string | undefined>();
+  for (const { id, data } of nodes) {
+    if (batchSources.has(id) && !groupBySource.has(id)) groupBySource.set(id, data.batchGroupId);
+    if (groupBySource.size === batchSources.size) break;
+  }
+
+  // 组按任务顺序，组内按画布顺序，多个任务共用的组只收集一次。
+  const membersByGroup = new Map<string, string[]>();
+  for (const id of batchSources) {
+    const group = groupBySource.get(id);
+    if (group && !membersByGroup.has(group)) membersByGroup.set(group, []);
+  }
+  if (!membersByGroup.size) return coveredNodeIds;
+  for (const { id, data } of nodes) {
+    if (data.batchGroupId) membersByGroup.get(data.batchGroupId)?.push(id);
+  }
+  for (const members of membersByGroup.values()) {
+    for (const id of members) coveredNodeIds.add(id);
   }
   return coveredNodeIds;
 }

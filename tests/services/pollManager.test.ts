@@ -827,6 +827,24 @@ describe('pending generation task recovery', () => {
       .toEqual(['batch-source', 'batch-placeholder']);
   });
 
+  it('在多组批次中按任务顺序补入占位节点，缺失源和单张任务只覆盖自身', () => {
+    const node = (id: string, batchGroupId: string) => ({ id, data: { label: id, type: 'ai-image', batchGroupId } as const });
+    const nodes = [
+      node('a-out', 'a'), node('b-out-2', 'b'), node('single-out', 'single'), node('b-out-1', 'b'),
+      node('a-source', 'a'), node('single-source', 'single'), node('b-source', 'b'), node('other-b-source', 'b'),
+    ];
+    const task = (nodeId: string, batchCount = 2) => ({
+      projectId: 'project-1', nodeId, nodeType: 'ai-image', provider: 'apimart',
+      taskType: 'apimart', taskId: nodeId, submitted: true, batchCount,
+    } as const);
+    const covered = getPendingTaskCoveredNodeIds(nodes, [
+      task('b-source'), task('missing'), task('single-source', 1), task('a-source'), task('other-b-source'),
+    ]);
+    expect([...covered]).toEqual([
+      'b-source', 'missing', 'single-source', 'a-source', 'other-b-source', 'b-out-2', 'b-out-1', 'a-out',
+    ]);
+  });
+
   it('marks loading nodes without a pending task as recoverable errors', async () => {
     useAppStore.setState({
       nodes: [{
