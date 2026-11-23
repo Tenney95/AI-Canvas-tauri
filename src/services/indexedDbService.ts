@@ -768,12 +768,16 @@ async function legacy_getAssetIndexesByPaths(paths: readonly string[]): Promise<
 export async function putAssetIndexes(
   records: readonly AssetIndexRecord[],
   options: { skipUnchanged?: boolean; migrateLegacyTags?: boolean; requireExistingPath?: boolean;
-    preserveProjectOwnership?: boolean; expectedFolderProjection?: AssetIndexRecord } = {},
+    preserveProjectOwnership?: boolean; expectedFolderProjection?: AssetIndexRecord; repairMissingProjectLocation?: boolean } = {},
 ): Promise<AssetIndexRecord[]> {
   if (!records.length) return [];
   if (records.length > 128) throw new Error('资产索引保存批次过大');
   if (options.expectedFolderProjection && (records.length !== 1 || records[0].source !== 'project' || !records[0].projectId
     || records[0].assetId.startsWith('na2-') || records[0].assetId !== options.expectedFolderProjection.assetId)) {
+    throw new Error('资产归属修复范围无效');
+  }
+  if (options.repairMissingProjectLocation && (records.length !== 1 || records[0].source !== 'project' || !records[0].projectId
+    || !records[0].rootPath || !records[0].relativePath || records[0].assetId.startsWith('na2-'))) {
     throw new Error('资产归属修复范围无效');
   }
   if (records.some((record) => record.assetId.startsWith('na2-'))) {
@@ -820,6 +824,24 @@ export async function putAssetIndexes(
                 tx.abort();
                 return;
               }
+              if (options.repairMissingProjectLocation) {
+                if (current?.source !== 'project' || current.projectId !== record.projectId || current.path !== record.path
+                  || next.path !== record.path || next.rootPath !== record.rootPath || next.relativePath !== record.relativePath) {
+                  identityChanged = true;
+                  tx.abort();
+                } else if (current.rootPath === record.rootPath && current.relativePath === record.relativePath) {
+                  saved[position] = current;
+                } else if (current.rootPath === undefined && current.relativePath === undefined) {
+                  // 扫描期间，摘要或使用记录可能已经更新，只补缺失的定位字段。
+                  const repaired = { ...current, rootPath: record.rootPath, relativePath: record.relativePath };
+                  store.put(repaired);
+                  saved[position] = repaired;
+                } else {
+                  identityChanged = true;
+                  tx.abort();
+                }
+                return;
+              }
               if (options.preserveProjectOwnership && current?.source === 'project' && next.source !== 'project') {
                 if (current.path !== next.path) {
                   identityChanged = true;
@@ -829,6 +851,13 @@ export async function putAssetIndexes(
               }
               const lastUsedAt = latestAssetUsageTime(next.lastUsedAt, current?.lastUsedAt);
               const merged = { ...next };
+              if (options.preserveProjectOwnership && current?.source === 'project' && next.source === 'project'
+                && current.path === next.path && next.rootPath === undefined && next.relativePath === undefined) {
+                // 图片详情和自动标签有时只传文件路径，沿用已有的项目归属。
+                merged.projectId = current.projectId ?? next.projectId;
+                merged.rootPath = current.rootPath;
+                merged.relativePath = current.relativePath;
+              }
               if (!merged.contentDigest && current?.size === next.size && current.mtimeMs === next.mtimeMs) {
                 merged.contentDigest = current.contentDigest;
               }

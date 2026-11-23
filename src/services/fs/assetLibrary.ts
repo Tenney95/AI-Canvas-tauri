@@ -384,6 +384,19 @@ export async function scanDirectoryFiles(
           }
           assetId = indexed?.assetId ?? crypto.randomUUID();
           if (indexed && opts.preserveProjectIdentity) {
+            if (nativeOwner && opts.projectIdentityScope.includes(nativeOwner) && indexed.path === r.filePath
+              && !indexed.assetId.startsWith('na2-') && indexed.rootPath === undefined && indexed.relativePath === undefined) {
+              confirmedOwnerRoot ??= getProjectDataDir(nativeOwner).then((directory) => !!directory
+                && comparablePath(directory) === comparablePath(rootDir)).catch(() => false);
+              if (await confirmedOwnerRoot) {
+                throwIfScanAborted(opts.signal);
+                // 文件与归属已核实，补齐旧索引缺少的定位字段。
+                [indexed] = await putAssetIndexes([{ ...indexed,
+                  rootPath: stripVerbatimPrefix(rootDir).replace(/\\/g, '/'), relativePath,
+                }], { repairMissingProjectLocation: true });
+                throwIfScanAborted(opts.signal);
+              }
+            }
             if (!indexed.rootPath || !getRelativeAssetPath(r.filePath, indexed.rootPath)
               || comparablePath(indexed.rootPath) !== comparablePath(rootDir) && !getRelativeAssetPath(indexed.rootPath, rootDir)) {
               throw new Error('项目文件的素材根与当前项目不一致，请先修复身份');

@@ -66,6 +66,76 @@ describe('project asset scans with committed group relocations', () => {
       .toEqual([existing]);
   });
 
+  it('没有提供素材根的项目刷新保留同一路径已登记的素材根和分集', async () => {
+    const db = await import('../../src/services/indexedDbService');
+    const { identifyAsset } = await import('../../src/services/fs/assetIndex');
+    const nestedRoot = `${root}/nested`;
+    const existing = { ...record('project-media', `${nestedRoot}/current.png`),
+      projectId: 'canvas', rootPath: nestedRoot, relativePath: 'current.png' };
+    await db.putAssetIndex(existing);
+
+    expect(await identifyAsset(existing.path, { source: 'project', projectId: 'canvas' })).toEqual(existing);
+    expect(await db.putAssetIndexes([{ ...existing, projectId: undefined, rootPath: undefined, relativePath: undefined }],
+      { preserveProjectOwnership: true, skipUnchanged: true })).toEqual([existing]);
+  });
+
+  it('严格扫描补齐当前作品的缺失素材根，后续文件仍可读取且重复扫描保留身份', async () => {
+    const projectId = 'p2-11111111-1111-4111-8111-111111111111';
+    const core = await import('../../src/services/fs/core');
+    vi.spyOn(core, 'getNativeProjectOwner').mockReturnValue(projectId);
+    vi.spyOn(core, 'getProjectDataDir').mockResolvedValue(root);
+    const db = await import('../../src/services/indexedDbService');
+    const missingRoot: AssetIndexRecord = { ...record('project-media'), projectId, rootPath: undefined, relativePath: undefined,
+      size: 1234, fingerprint: '1234:1', contentDigest: 'a'.repeat(64), lastUsedAt: 123, status: 'offline' };
+    await db.putAssetIndex(missingRoot);
+    files(['script.md', 'current.png', 'another.png']);
+    fs.stat.mockImplementation(async (path: string) => ({ size: path === currentPath ? 1234 : 1, mtime: new Date(1) }));
+    const { scanDirectoryFiles } = await import('../../src/services/fs/assetLibrary');
+    const options = { source: 'project' as const, projectId, projectIdentityScope: [projectId], preserveProjectIdentity: true };
+
+    const result = await scanDirectoryFiles(root, options);
+
+    expect(result.complete).toBe(true);
+    expect(result.files.map((file) => file.name)).toEqual(['script.md', 'current.png', 'another.png']);
+    expect(result.files[1]).toMatchObject({ assetId: missingRoot.assetId, ownerProjectId: projectId,
+      relativePath: 'current.png', size: 1234 });
+    expect(await db.getAssetIndexById(missingRoot.assetId)).toMatchObject({ ...missingRoot, rootPath: root,
+      relativePath: 'current.png', status: 'online', updatedAt: expect.any(Number) });
+    expect((await scanDirectoryFiles(root, options)).files).toEqual(result.files);
+  });
+
+  it('补齐素材根的旧扫描结果不能覆盖同一文件后来登记的嵌套根', async () => {
+    const db = await import('../../src/services/indexedDbService');
+    const nestedRoot = `${root}/nested`;
+    const stale = record('project-media', `${nestedRoot}/current.png`);
+    const current = { ...stale, rootPath: nestedRoot, relativePath: 'current.png', lastUsedAt: 456 };
+    await db.putAssetIndex(current);
+
+    await expect(db.putAssetIndexes([stale], { repairMissingProjectLocation: true })).rejects.toThrow('资产身份已变化');
+    expect(await db.getAssetIndexById(current.assetId)).toEqual(current);
+  });
+
+  it.each([
+    { projectId: 'p2-11111111-1111-4111-8111-111111111111', rootPath: 'D:/another', relativePath: 'current.png',
+      reason: '项目文件的素材根与当前项目不一致' },
+    { projectId: 'p2-22222222-2222-4222-8222-222222222222', rootPath: undefined, relativePath: undefined,
+      reason: '项目文件包含其他来源的资产身份' },
+  ])('严格扫描拒绝改写有冲突的素材归属（$reason）', async ({ reason, ...location }) => {
+    const projectId = 'p2-11111111-1111-4111-8111-111111111111';
+    const core = await import('../../src/services/fs/core');
+    vi.spyOn(core, 'getNativeProjectOwner').mockReturnValue(projectId);
+    vi.spyOn(core, 'getProjectDataDir').mockResolvedValue(root);
+    const db = await import('../../src/services/indexedDbService');
+    const existing = { ...record('project-media'), ...location };
+    await db.putAssetIndex(existing);
+    files(['current.png']);
+    const { scanDirectoryFiles } = await import('../../src/services/fs/assetLibrary');
+
+    await expect(scanDirectoryFiles(root, { source: 'project', projectId,
+      projectIdentityScope: [projectId], preserveProjectIdentity: true })).rejects.toThrow(reason);
+    expect(await db.getAssetIndexById(existing.assetId)).toEqual(existing);
+  });
+
   it('按原生绑定精确修复路径已被外部扫描重新登记的记录', async () => {
     const projectId = 'p2-11111111-1111-4111-8111-111111111111';
     const core = await import('../../src/services/fs/core');
