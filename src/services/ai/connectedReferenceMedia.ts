@@ -3,6 +3,7 @@
  * 视频与音频生成共用：连线即引用，图片包含 3D 导演台截图。
  */
 import { isLocalMediaUrl, isRemoteMediaUrl } from '../../utils/mediaUrl';
+import { getCanvasNodeById } from '../../utils/canvasRenderProjection';
 import { useAppStore } from '../../store/useAppStore';
 import { collectDirectorImageUrls } from '../directorDeskService';
 import type { BaseNodeData } from '../../types';
@@ -115,7 +116,7 @@ export function collectConnectedReferenceMedia(nodeId: string | undefined): Conn
   };
 
   for (const sid of sourceIds) {
-    const node = nodes.find((n) => n.id === sid);
+    const node = getCanvasNodeById(nodes, sid);
     if (!node) continue;
     const data = node.data as BaseNodeData;
     const type = (data.type as string) || node.type || '';
