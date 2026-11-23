@@ -7,6 +7,8 @@ import type { HistorySnapshotLike } from '../../src/utils/historyOperationLabels
 
 const driver = vi.hoisted(() => ({
   values: [true, false], index: 0,
+  memos: [] as Array<{ value: unknown; deps: readonly unknown[] }>, memoIndex: 0,
+  translate: (text: string) => text,
   describeChange: vi.fn(),
   selectors: [] as Array<(state: unknown) => unknown>,
   state: {
@@ -25,7 +27,14 @@ vi.mock('react', async (importOriginal) => ({
     }];
   },
   useRef: () => ({ current: null }), useEffect: () => {},
-  useMemo: (compute: () => unknown) => compute(),
+  useMemo: (compute: () => unknown, deps: readonly unknown[]) => {
+    const index = driver.memoIndex++;
+    const previous = driver.memos[index];
+    if (!previous || deps.length !== previous.deps.length || deps.some((dep, i) => !Object.is(dep, previous.deps[i]))) {
+      driver.memos[index] = { value: compute(), deps };
+    }
+    return driver.memos[index].value;
+  },
 }));
 vi.mock('zustand/react/shallow', () => ({ useShallow: (selector: unknown) => selector }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: (selector: (state: unknown) => unknown) => {
@@ -33,18 +42,21 @@ vi.mock('../../src/store/useAppStore', () => ({ useAppStore: (selector: (state: 
   return selector(driver.state);
 } }));
 vi.mock('../../src/utils/historyOperationLabels', () => ({ describeCanvasChange: driver.describeChange }));
-vi.mock('../../src/i18n', () => ({ useT: () => (text: string) => text }));
+vi.mock('../../src/i18n', () => ({ useT: () => driver.translate }));
 vi.mock('../../src/components/shared/AnimatedButton', () => ({ default: 'button' }));
 import HistoryTimelinePanel from '../../src/components/canvas/HistoryTimelinePanel';
 
-function render() {
+function render(nodesDragging = false) {
   driver.index = 0;
+  driver.memoIndex = 0;
   driver.selectors = [];
-  return HistoryTimelinePanel() as ReactElement<{ onPointerEnter: () => void; 'data-open': string }>;
+  return HistoryTimelinePanel({ nodesDragging }) as ReactElement<{ onPointerEnter: () => void; 'data-open': string }>;
 }
 
 beforeEach(() => {
   driver.values = [true, false];
+  driver.memos = [];
+  driver.translate = (text) => text;
   driver.state.history = [
     { nodes: [], edges: [], groups: [] },
     { nodes: [{ id: 'one', position: { x: 0, y: 0 }, data: { type: 'ai-text', label: 'One' } }], edges: [], groups: [] },
@@ -89,5 +101,49 @@ describe('history panel subscriptions', () => {
     render();
     expect(driver.describeChange).toHaveBeenCalledOnce();
     expect(driver.selectors.at(-1)?.(driver.state)).toBeNull();
+  });
+
+  it('skips intermediate drag positions and reads the final graph on release', () => {
+    driver.state.config.canvasHistoryPinned = true;
+    render();
+    driver.describeChange.mockClear();
+    for (const x of [30, 60, 90]) {
+      driver.state.nodes = [{ ...driver.state.nodes[0], position: { x, y: 10 } }];
+      render(true);
+      expect(driver.selectors.at(-1)?.(driver.state)).toBeNull();
+    }
+    expect(driver.describeChange).not.toHaveBeenCalled();
+    render(false);
+    expect(driver.describeChange).toHaveBeenCalledOnce();
+    expect(driver.describeChange.mock.calls[0][1].nodes[0].position.x).toBe(90);
+  });
+
+  it('reuses unchanged pairs after append and eviction, and refreshes branches and translations', () => {
+    driver.state.config.canvasHistoryPinned = true;
+    driver.state.historyIndex = 0;
+    render();
+    const [first, second] = driver.state.history;
+    const third = { nodes: driver.state.nodes, edges: [], groups: [] };
+    driver.describeChange.mockClear();
+    driver.state.history = [first, second, third];
+    render();
+    expect(driver.describeChange).toHaveBeenCalledOnce();
+    expect(driver.describeChange).toHaveBeenCalledWith(second, third, driver.translate);
+
+    driver.describeChange.mockClear();
+    driver.state.history = [second, third];
+    render();
+    expect(driver.describeChange).not.toHaveBeenCalled();
+
+    const branch = { ...third };
+    driver.state.history = [second, branch];
+    render();
+    expect(driver.describeChange).toHaveBeenCalledOnce();
+    expect(driver.describeChange).toHaveBeenCalledWith(second, branch, driver.translate);
+    driver.describeChange.mockClear();
+    driver.translate = (text) => 'en:' + text;
+    render();
+    expect(driver.describeChange).toHaveBeenCalledOnce();
+    expect(driver.describeChange).toHaveBeenCalledWith(second, branch, driver.translate);
   });
 });

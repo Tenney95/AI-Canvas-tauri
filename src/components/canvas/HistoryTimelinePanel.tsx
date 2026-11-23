@@ -27,7 +27,7 @@ interface TimelineRow extends HistoryOperationLabel {
   index: number;
 }
 
-export default function HistoryTimelinePanel() {
+export default function HistoryTimelinePanel({ nodesDragging }: { nodesDragging: boolean }) {
   const t = useT();
   const [expanded, setExpanded] = useState(true);
   const [hoverOpen, setHoverOpen] = useState(false);
@@ -55,8 +55,8 @@ export default function HistoryTimelinePanel() {
     void saveConfig({ silent: true });
   };
   // 最新一条操作的效果只存在于实时状态里（commitToHistory 记录的是改动前快照），
-  // 只在列表可见且停在最新历史时订阅实时图，收起后不再逐帧扫描全部节点。
-  const trackLive = showRows && history.length > 0 && historyIndex === history.length - 1;
+  // 拖动期间只显示已完成的记录，松手后再用最终位置计算最新一行。
+  const trackLive = showRows && !nodesDragging && history.length > 0 && historyIndex === history.length - 1;
   const live = useAppStore(useShallow((state) => trackLive ? {
     nodes: state.nodes, edges: state.edges, groups: state.groups,
   } : null));
@@ -64,21 +64,25 @@ export default function HistoryTimelinePanel() {
   const canUndo = historyIndex >= 0 && history.length > 0;
   const canRedo = historyIndex < history.length - 1;
 
+  // 快照不可变。同一对快照只比一次，换语言时重新生成标题。
+  const describeCommitted = useMemo(() => {
+    const labels = new WeakMap<HistorySnapshotLike, { next: HistorySnapshotLike; label: HistoryOperationLabel }>();
+    return (previous: HistorySnapshotLike, next: HistorySnapshotLike) => {
+      const cached = labels.get(previous);
+      if (cached?.next === next) return cached.label;
+      const label = describeCanvasChange(previous, next, t);
+      labels.set(previous, { next, label });
+      return label;
+    };
+  }, [t]);
   const committedRows = useMemo<TimelineRow[]>(() => {
     if (!showRows) return [];
     const rows: TimelineRow[] = [];
     for (let index = 1; index < history.length; index += 1) {
-      rows.push({
-        ...describeCanvasChange(
-          history[index - 1] as HistorySnapshotLike,
-          history[index] as HistorySnapshotLike,
-          t,
-        ),
-        index: index - 1,
-      });
+      rows.push({ ...describeCommitted(history[index - 1], history[index]), index: index - 1 });
     }
     return rows;
-  }, [showRows, history, t]);
+  }, [showRows, history, describeCommitted]);
 
   const latestRow = useMemo<TimelineRow | null>(() => {
     if (!trackLive || !live) return null;

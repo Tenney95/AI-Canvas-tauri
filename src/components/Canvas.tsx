@@ -814,11 +814,15 @@ function CanvasInner({ onReady }: CanvasProps) {
   );
 
   const duplicateDrag = useRef<ReturnType<typeof createNodeDuplicateDrag> | null>(null);
+  const [nodesDragging, setNodesDragging] = useState(false);
+  const markDragStart = useCallback(() => setNodesDragging(true), []);
+  const markDragEnd = useCallback(() => setNodesDragging(false), []);
 
   // Alt 拖出副本，兼容已有 Ctrl/⌘ 手势；原节点及其引用留在原位。
   const handleNodeDragStart = useCallback(
     (evt: React.MouseEvent, node: RFNode<BaseNodeData>) => {
       const liveNode = hydrateCanvasNodeData(node, useAppStore.getState().nodes);
+      markDragStart();
       beginCanvasInteraction('node');
       if (liveNode.type === 'canvas-note') commitToHistory();
       onNodeDragStart(evt, liveNode);
@@ -826,7 +830,7 @@ function CanvasInner({ onReady }: CanvasProps) {
         ? createNodeDuplicateDrag(useAppStore.getState, liveNode.id)
         : null;
     },
-    [beginCanvasInteraction, commitToHistory, onNodeDragStart],
+    [beginCanvasInteraction, commitToHistory, markDragStart, onNodeDragStart],
   );
 
   // 仅在线型切换时重建，避免每帧新对象触发 React Flow 内部更新
@@ -1056,17 +1060,24 @@ function CanvasInner({ onReady }: CanvasProps) {
   useEffect(() => {
     const reset = () => {
       dragPreview.cancel();
+      markDragEnd();
       clearSbDropTarget(); clearShotlistDropTarget(); clearFolderDropTarget(); clearGhostNodeHidden();
       setDropGhost(null);
     };
     window.addEventListener('blur', reset);
-    return () => { window.removeEventListener('blur', reset); reset(); };
-  }, [currentProjectId, dragPreview, clearSbDropTarget, clearShotlistDropTarget, clearFolderDropTarget, clearGhostNodeHidden]);
+    window.addEventListener('pointercancel', markDragEnd);
+    return () => {
+      window.removeEventListener('blur', reset);
+      window.removeEventListener('pointercancel', markDragEnd);
+      reset();
+    };
+  }, [currentProjectId, dragPreview, markDragEnd, clearSbDropTarget, clearShotlistDropTarget, clearFolderDropTarget, clearGhostNodeHidden]);
 
   // ── Auto group/ungroup on drag stop ──
   const handleNodeDragStop = useCallback(
     (event: React.MouseEvent, node: RFNode, draggedNodes: RFNode[]) => {
       dragPreview.cancel();
+      markDragEnd();
       endCanvasInteraction('node');
       const stack = document.elementsFromPoint(event.clientX, event.clientY);
       const cell = findStoryboardDropHit(node, stack)?.emptyCell ?? null;
@@ -1126,7 +1137,7 @@ function CanvasInner({ onReady }: CanvasProps) {
       )));
       onNodeDragStop();
     },
-    [dragPreview, onNodeDragStop, settleNodeGroupingOnDragStop, findStoryboardDropHit, clearSbDropTarget, clearGhostNodeHidden, endCanvasInteraction, findShotlistDropHit, clearShotlistDropTarget, clearFolderDropTarget],
+    [dragPreview, markDragEnd, onNodeDragStop, settleNodeGroupingOnDragStop, findStoryboardDropHit, clearSbDropTarget, clearGhostNodeHidden, endCanvasInteraction, findShotlistDropHit, clearShotlistDropTarget, clearFolderDropTarget],
   );
 
   return (
@@ -1152,6 +1163,8 @@ function CanvasInner({ onReady }: CanvasProps) {
         onDoubleClick={onDoubleClick}
         onSelectionChange={onSelectionChange}
         onSelectionEnd={onSelectionEnd}
+        onSelectionDragStart={markDragStart}
+        onSelectionDragStop={markDragEnd}
         onNodeDragStart={handleNodeDragStart}
         onNodeDrag={handleNodeDrag}
         onNodeDragStop={handleNodeDragStop}
@@ -1205,7 +1218,7 @@ function CanvasInner({ onReady }: CanvasProps) {
 
         {/* 操作记录 — 撤销 / 还原 + 可回溯的操作列表 */}
         <Panel position="top-right" className="canvas-history-slot">
-          <HistoryTimelinePanel />
+          <HistoryTimelinePanel nodesDragging={nodesDragging} />
         </Panel>
 
         {canvasNoteToolbarVisible && (
