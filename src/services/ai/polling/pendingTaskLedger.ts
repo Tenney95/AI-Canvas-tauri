@@ -227,7 +227,7 @@ export function cancelNodePolling(nodeId: string, preservePending = false): void
 export function cleanupNodePolling(nodeId: string, expectedSignal?: AbortSignal, notifyNativeDelivery = true): boolean {
   if (expectedSignal && !isNodePollingCurrent(nodeId, expectedSignal)) return false;
   const projectId = runtime.pollingProjects.get(nodeId);
-  abortControllers.delete(nodeId);
+  runtime.abortControllers.delete(nodeId);
   runtime.pollingProjects.delete(nodeId);
   if (projectId && notifyNativeDelivery) void resumeNativeMediaLocalDelivery(projectId, nodeId).catch(() => undefined);
   return true;
@@ -519,7 +519,7 @@ export async function resumeNativeMediaLocalDelivery(canvasId: string, nodeId?: 
 
 function isNativeMediaDeliveryBusy(canvasId: string, nodeId: string): boolean {
   return isMediaOperationActive(canvasId, nodeId) || isNativeMediaNodeBusy(canvasId, nodeId)
-    || runtime.pollingProjects.get(nodeId) === canvasId && abortControllers.has(nodeId);
+    || runtime.pollingProjects.get(nodeId) === canvasId && runtime.abortControllers.has(nodeId);
 }
 
 async function queryNativeProtocolReceipt(record: NativeMediaTaskRecord, context: CanvasContext, parentSignal: AbortSignal): Promise<boolean> {
