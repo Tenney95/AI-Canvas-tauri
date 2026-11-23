@@ -158,21 +158,23 @@ function MultiSelectToolbar() {
     ? distributionMode.axis
     : null;
 
-  // ── Compute toolbar screen position (centered above selection bounds) ──
-  const toolbarScreenPos = useMemo(() => {
+  const toolbar = useMemo(() => {
     if (selectedCount < 2) return null;
-    const sel = nodes.filter((n) => selectedNodeIds.includes(n.id));
-    if (sel.length < 2) return null;
-
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const node of sel) {
-      const b = getNodeBounds(node, nodes);
+    const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+    let count = 0, isGrouped = false;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity;
+    for (const id of new Set(selectedNodeIds)) {
+      const node = nodeMap.get(id);
+      if (!node) continue;
+      count++;
+      if (node.parentId != null || node.type === 'group') isGrouped = true;
+      const b = getNodeBounds(node, nodeMap);
       if (b.x < minX) minX = b.x;
       if (b.y < minY) minY = b.y;
       if (b.right > maxX) maxX = b.right;
-      if (b.bottom > maxY) maxY = b.bottom;
     }
-    return flowToScreenPosition({ x: (minX + maxX) / 2, y: minY });
+    if (count < 2) return null;
+    return { position: flowToScreenPosition({ x: (minX + maxX) / 2, y: minY }), isGrouped };
   }, [selectedNodeIds, nodes, flowToScreenPosition, selectedCount]);
 
   // ── Alignment ──
@@ -224,7 +226,8 @@ function MultiSelectToolbar() {
       const currentIds = useAppStore.getState().selectedNodeIds;
       if (currentIds.length < 3) return;
 
-      const sel = currentNodes.filter((n) => currentIds.includes(n.id) && n.type !== 'group');
+      const selectedIds = new Set(currentIds);
+      const sel = currentNodes.filter((node) => selectedIds.has(node.id) && node.type !== 'group');
       if (sel.length < 3) return;
 
       useAppStore.getState().commitToHistory();
@@ -274,12 +277,6 @@ function MultiSelectToolbar() {
     toast(t('批量生成完成：{result}', { result: parts.join('，') }), fail > 0 ? 'error' : undefined);
   }, [t]);
 
-  // ── Group / ungroup（选中里有分组成员或分组节点时，store 自己转成解散）──
-  const isGrouped = useMemo(
-    () => nodes.some((node) => selectedNodeIds.includes(node.id) && (node.parentId != null || node.type === 'group')),
-    [nodes, selectedNodeIds],
-  );
-
   const handleGroupNodes = useCallback(() => {
     useAppStore.getState().groupSelectedNodes();
   }, []);
@@ -291,7 +288,8 @@ function MultiSelectToolbar() {
     }
   }, [copySelectedNodes, t]);
 
-  if (selectedCount < 2 || !toolbarScreenPos) return null;
+  if (!toolbar) return null;
+  const { position, isGrouped } = toolbar;
 
   return (
     <>
@@ -299,8 +297,8 @@ function MultiSelectToolbar() {
       <div
       className="glass-bevel glass-bevel--card fixed z-[9999] pointer-events-auto flex items-center gap-0.5 bg-canvas-card/95 border border-canvas-border backdrop-blur-xl rounded-[10px] px-1.5 py-1 shadow-xl"
       style={{
-        left: toolbarScreenPos.x,
-        top: toolbarScreenPos.y - 52,
+        left: position.x,
+        top: position.y - 52,
         transform: 'translate(-50%, -100%)',
       }}
     >

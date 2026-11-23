@@ -248,6 +248,24 @@ describe('distribution gesture frames', () => {
 });
 
 describe('batch alignment entry', () => {
+  it('indexes nested selections and ignores duplicate or missing IDs when placing the toolbar', () => {
+    const group = { ...node('group', 100, 200), type: 'group' };
+    const nested = { ...node('nested', 20, 30), type: 'group', parentId: 'group' };
+    const child = { ...node('child', 10, 10), parentId: 'nested' };
+    driver.state.nodes = [group, nested, child];
+    driver.state.selectedNodeIds = ['child', 'missing', 'group', 'child'];
+    const findNode = vi.spyOn(driver.state.nodes, 'find');
+    const includesId = vi.spyOn(driver.state.selectedNodeIds, 'includes');
+    const tree = elements(render(() => MultiSelectToolbar({})));
+    expect(tree.find((element) => element.props.style)?.props.style).toMatchObject({ left: 165, top: 148 });
+    expect(tree.some((element) => element.props['data-tooltip'] === '取消分组')).toBe(true);
+    expect(findNode).not.toHaveBeenCalled();
+    expect(includesId).not.toHaveBeenCalled();
+
+    driver.state.selectedNodeIds = ['child', 'missing', 'child'];
+    expect(render(() => MultiSelectToolbar({}))).toBeNull();
+  });
+
   it.each([
     ['左对齐', 'x', [0, 0]], ['水平居中', 'x', [175, 125]], ['右对齐', 'x', [400, 300]],
     ['顶对齐', 'y', [0, 0]], ['垂直居中', 'y', [62.5, 37.5]], ['底对齐', 'y', [150, 100]],
