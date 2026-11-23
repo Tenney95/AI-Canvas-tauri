@@ -72,6 +72,8 @@ import { IMAGE_GENERATION_DATA_URL_BUDGET, resolveImageDataUrlArray, resolveImag
 import { mapSequentially, resolveImageUrlsSequentially } from './referenceMediaPreparation';
 import { resolveMediaReferenceUrl } from '../uploadService';
 import { getRelayonVideoFileKinds, relayonVideoVariables, usesRelayonModelProtocol } from './providers/relayonModelManifest';
+import { prepareRelayonVideoUpload } from './providers/relayonVideoUpload';
+import { isRelayonOfficialBaseUrl } from './relayonProviderGroups';
 import { usesSora2uModelProtocol } from './providers/sora2uModelManifest';
 import {
   createMediaDataUrlBudget,
@@ -903,6 +905,7 @@ export async function generateVideo(
     const isToapis = catalogId === 'toapis';
     const isLibapi = catalogId === 'libapi';
     const usesRelayonProtocol = catalogId === 'relayonapi' && usesRelayonModelProtocol(gm.modelId, gm.executionProfile);
+    const usesRelayonUpload = usesRelayonProtocol && isRelayonOfficialBaseUrl(connection.baseUrl);
     const usesSora2uProtocol = catalogId === 'sora2u' && usesSora2uModelProtocol(gm.modelId, gm.executionProfile);
     const usesAigcsiProtocol = catalogId === 'aigc-si' && usesAigcsiModelProtocol(gm.modelId, gm.executionProfile);
     const policy = getProviderPolicy(catalogId);
@@ -939,7 +942,11 @@ export async function generateVideo(
       relayonVideoVariables(gm.modelId, buildCanonicalVideoProtocolVariables(preflight));
       const fileKinds = getRelayonVideoFileKinds(gm.modelId, gm.executionProfile);
       for (const reference of originalReferences) {
-        if (!isRemoteMediaUrl(getMediaReferenceUrl(reference)) && !fileKinds.includes(reference.kind)) {
+        const url = getMediaReferenceUrl(reference);
+        if (usesRelayonUpload && isRemoteMediaUrl(url) && !/^https:\/\//i.test(url)) {
+          throw new Error('万象视频远程参考素材需要可公开访问的 HTTPS 地址');
+        }
+        if (!isRemoteMediaUrl(url) && !fileKinds.includes(reference.kind)) {
           const label = reference.kind === 'image' ? '图片' : reference.kind === 'video' ? '视频' : '音频';
           throw new Error(`万象模型“${gm.modelId}”尚未公开${label}文件直传合同，请使用可公开访问的 HTTPS 素材地址；不会回退到图床`);
         }
@@ -961,74 +968,85 @@ export async function generateVideo(
     }
     const protocol = resolveModelExecutionProfile(gm.executionProfile);
     if (protocol) {
-      const dataUrlBudget = createMediaDataUrlBudget('本次视频模型参考媒体');
-      let remoteReferences: MediaReference[];
-      let multipartVariables: ModelProtocolVariables | undefined;
-      let fileValidationUrls: Pick<VideoGenerationReferenceInput, 'imageUrls' | 'videoUrls' | 'audioUrls'> | undefined;
-      if (customFiles) {
-        const prepared = await prepareCustomVideoFiles(protocol, preflight, connection.providerConfigId, dataUrlBudget, signal);
-        remoteReferences = prepared.references;
-        multipartVariables = prepared.variables;
-        fileValidationUrls = prepared.validation;
-      } else {
-        const remoteImageUrls = usesRelayonProtocol || usesSora2uProtocol
-          ? referenceInput.imageUrls.some((url) => !isRemoteMediaUrl(url))
-            ? await resolveImageDataUrlArray(referenceInput.imageUrls, signal, IMAGE_GENERATION_DATA_URL_BUDGET)
-            : referenceInput.imageUrls
-          : await resolveImageUrlsSequentially(referenceInput.imageUrls, connection.providerConfigId, signal);
-        const videoUrls = await resolveGeneralProtocolMediaUrls(
-          originalReferences, 'video', dataUrlBudget, signal, publicUrlProvider, usesRelayonProtocol ? connection.providerConfigId : undefined,
-        );
-        const audioUrls = await resolveGeneralProtocolMediaUrls(
-          originalReferences, 'audio', dataUrlBudget, signal, publicUrlProvider, usesRelayonProtocol ? connection.providerConfigId : undefined,
-        );
-        remoteReferences = replaceReferenceUrls(originalReferences, {
-          image: remoteImageUrls,
-          video: videoUrls,
-          audio: audioUrls,
+      const relayonUpload = usesRelayonUpload
+        ? await prepareRelayonVideoUpload(originalReferences, signal) : undefined;
+      try {
+        const dataUrlBudget = createMediaDataUrlBudget('本次视频模型参考媒体');
+        let remoteReferences: MediaReference[];
+        let multipartVariables: ModelProtocolVariables | undefined;
+        let fileValidationUrls: Pick<VideoGenerationReferenceInput, 'imageUrls' | 'videoUrls' | 'audioUrls'> | undefined;
+        if (relayonUpload) {
+          remoteReferences = relayonUpload.references;
+          // 时长、宽高等模型要求仍由原素材校验，文件标记只用于提交。
+          fileValidationUrls = referenceInput;
+        } else if (customFiles) {
+          const prepared = await prepareCustomVideoFiles(protocol, preflight, connection.providerConfigId, dataUrlBudget, signal);
+          remoteReferences = prepared.references;
+          multipartVariables = prepared.variables;
+          fileValidationUrls = prepared.validation;
+        } else {
+          const remoteImageUrls = usesRelayonProtocol || usesSora2uProtocol
+            ? referenceInput.imageUrls.some((url) => !isRemoteMediaUrl(url))
+              ? await resolveImageDataUrlArray(referenceInput.imageUrls, signal, IMAGE_GENERATION_DATA_URL_BUDGET)
+              : referenceInput.imageUrls
+            : await resolveImageUrlsSequentially(referenceInput.imageUrls, connection.providerConfigId, signal);
+          const videoUrls = await resolveGeneralProtocolMediaUrls(
+            originalReferences, 'video', dataUrlBudget, signal, publicUrlProvider, usesRelayonProtocol ? connection.providerConfigId : undefined,
+          );
+          const audioUrls = await resolveGeneralProtocolMediaUrls(
+            originalReferences, 'audio', dataUrlBudget, signal, publicUrlProvider, usesRelayonProtocol ? connection.providerConfigId : undefined,
+          );
+          remoteReferences = replaceReferenceUrls(originalReferences, {
+            image: remoteImageUrls,
+            video: videoUrls,
+            audio: audioUrls,
+          });
+        }
+        if (!relayonUpload && usesRelayonProtocol && remoteReferences.some((reference) => !/^https:\/\//i.test(reference.url)
+          && !reference.url.toLowerCase().startsWith(`data:${reference.kind}/`))) {
+          throw new Error('万象视频参考素材必须是可访问的 HTTPS 地址或对应类型的本地文件；不会回退到图床');
+        }
+        const canonicalRequest = resolveCanonicalVideoRequest(canonicalParams, {
+          references: remoteReferences,
+          capability: videoCapability,
         });
+        const compatibility = toResolvedVideoCompatibilityValues(canonicalRequest);
+        const resolvedReferenceInput = {
+          prompt: canonicalRequest.prompt,
+          operation: canonicalRequest.operation,
+          references: remoteReferences,
+          imageUrls: compatibility.imageUrls,
+          videoUrls: compatibility.videoUrls,
+          audioUrls: compatibility.audioUrls,
+        };
+        if (policy.upload !== 'minimax') {
+          const validationInput = fileValidationUrls ? { ...resolvedReferenceInput, ...fileValidationUrls } : resolvedReferenceInput;
+          await assertVideoInputConstraints(validationInput, videoCapability, gm.name, { signal });
+        }
+        if (signal?.aborted) throw signal.reason ?? new DOMException('请求已取消', 'AbortError');
+        if (beforeSubmit) await beforeSubmit();
+        if (signal?.aborted) throw signal.reason ?? new DOMException('请求已取消', 'AbortError');
+        const urls = await runConfiguredModelProtocol({
+          model: gm,
+          category: 'video',
+          nodeId: params.nodeId,
+          signal,
+          beforeSubmit,
+          relayonUpload,
+          variables: isToapis ? toapisVideoVariables(canonicalRequest, buildCanonicalVideoProtocolVariables(canonicalRequest))
+            : usesLibapiProtocol ? libapiVideoVariables(canonicalRequest, buildCanonicalVideoProtocolVariables(canonicalRequest))
+              : usesRelayonProtocol ? relayonVideoVariables(gm.modelId, buildCanonicalVideoProtocolVariables(canonicalRequest))
+                : usesAigcsiProtocol ? aigcsiVideoVariables(buildCanonicalVideoProtocolVariables(canonicalRequest))
+                  : usesMinimaxProtocol ? minimaxVideoVariables(canonicalRequest, buildCanonicalVideoProtocolVariables(canonicalRequest))
+                  : { ...buildCanonicalVideoProtocolVariables(canonicalRequest), ...multipartVariables },
+        });
+        const url = urls[0];
+        if (!url) throw new Error('视频生成完成但未返回结果');
+        return { url, ...(urls.taskReceipt ? { taskReceipt: urls.taskReceipt } : {}),
+          ...(urls.mediaDownloadAccess ? { mediaDownloadAccess: urls.mediaDownloadAccess } : {}) };
+      } finally {
+        await relayonUpload?.release();
       }
-      if (usesRelayonProtocol && remoteReferences.some((reference) => !/^https:\/\//i.test(reference.url)
-        && !reference.url.toLowerCase().startsWith(`data:${reference.kind}/`))) {
-        throw new Error('万象视频参考素材必须是可访问的 HTTPS 地址或对应类型的本地文件；不会回退到图床');
-      }
-      const canonicalRequest = resolveCanonicalVideoRequest(canonicalParams, {
-        references: remoteReferences,
-        capability: videoCapability,
-      });
-      const compatibility = toResolvedVideoCompatibilityValues(canonicalRequest);
-      const resolvedReferenceInput = {
-        prompt: canonicalRequest.prompt,
-        operation: canonicalRequest.operation,
-        references: remoteReferences,
-        imageUrls: compatibility.imageUrls,
-        videoUrls: compatibility.videoUrls,
-        audioUrls: compatibility.audioUrls,
-      };
-      if (policy.upload !== 'minimax') {
-        const validationInput = fileValidationUrls ? { ...resolvedReferenceInput, ...fileValidationUrls } : resolvedReferenceInput;
-        await assertVideoInputConstraints(validationInput, videoCapability, gm.name, { signal });
-      }
-      if (signal?.aborted) throw signal.reason ?? new DOMException('请求已取消', 'AbortError');
-      if (beforeSubmit) await beforeSubmit();
-      if (signal?.aborted) throw signal.reason ?? new DOMException('请求已取消', 'AbortError');
-      const urls = await runConfiguredModelProtocol({
-        model: gm,
-        category: 'video',
-        nodeId: params.nodeId,
-        signal,
-        beforeSubmit,
-        variables: isToapis ? toapisVideoVariables(canonicalRequest, buildCanonicalVideoProtocolVariables(canonicalRequest))
-          : usesLibapiProtocol ? libapiVideoVariables(canonicalRequest, buildCanonicalVideoProtocolVariables(canonicalRequest))
-            : usesRelayonProtocol ? relayonVideoVariables(gm.modelId, buildCanonicalVideoProtocolVariables(canonicalRequest))
-              : usesAigcsiProtocol ? aigcsiVideoVariables(buildCanonicalVideoProtocolVariables(canonicalRequest))
-                : usesMinimaxProtocol ? minimaxVideoVariables(canonicalRequest, buildCanonicalVideoProtocolVariables(canonicalRequest))
-                : { ...buildCanonicalVideoProtocolVariables(canonicalRequest), ...multipartVariables },
-      });
-      const url = urls[0];
-      if (!url) throw new Error('视频生成完成但未返回结果');
-      return { url, ...(urls.taskReceipt ? { taskReceipt: urls.taskReceipt } : {}),
-        ...(urls.mediaDownloadAccess ? { mediaDownloadAccess: urls.mediaDownloadAccess } : {}) };
     }
     const connectionName = connection.provider.name.trim() || connection.providerConfigId;
     const preset = gm.executionProfile?.preset;

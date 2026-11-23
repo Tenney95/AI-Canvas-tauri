@@ -1,0 +1,7 @@
+[[permission]]
+identifier = "allow-relayon-video-upload"
+description = "Prepares reference files and submits them to the built-in RelayOn video endpoint."
+commands.allow = [
+  "prepare_relayon_video_upload", "append_relayon_video_upload", "seal_relayon_video_upload",
+  "submit_relayon_video_upload", "cancel_relayon_video_upload"
+]

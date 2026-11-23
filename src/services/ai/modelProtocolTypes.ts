@@ -10,6 +10,7 @@ import type {
   ProtocolJsonValue,
   ResolvedModelProtocolPoll,
 } from '../../types/aiTypes';
+import type { PreparedRelayonVideoUpload } from './providers/relayonVideoUpload';
 
 export type ModelProtocolVariables = Record<string, ProtocolJsonValue | undefined>;
 
@@ -18,6 +19,8 @@ export interface SubmitModelProtocolOptions {
   baseUrl: string;
   protocol: ModelExecutionProtocol;
   variables: ModelProtocolVariables;
+  /** 本次万象视频已准备的文件，只在提交期间持有。 */
+  relayonUpload?: PreparedRelayonVideoUpload;
   /** 仅由厂商运行时提供的单次提交身份，不是可编辑协议变量。 */
   idempotencyKey?: string;
   /** 适配器可校验平台业务码，不改变传输和同源边界。 */

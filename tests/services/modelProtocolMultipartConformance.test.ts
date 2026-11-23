@@ -7,13 +7,17 @@ import * as fileService from '../../src/services/fileService';
 import { pcmS16LeToWav } from '../../src/services/ai/modelProtocolHttp';
 import { prepareProtocolMediaFileRequest } from '../../src/services/ai/modelProtocolMediaFiles';
 import { buildModelProtocolRequest, previewModelProtocolRequest, renderRequestBody } from '../../src/services/ai/modelProtocolRequest';
+import { prepareRelayonVideoSubmission } from '../../src/services/ai/modelProtocol';
+import { prepareRelayonVideoUpload } from '../../src/services/ai/providers/relayonVideoUpload';
 import { PREPARED_MULTIPART_FILES } from '../../src/services/ai/modelProtocolTemplate';
 import type { ModelExecutionProtocol } from '../../src/types/aiTypes';
 import {
   RELAYON_IMAGE_BASE_URL,
   RELAYON_MODEL_MANIFEST,
+  RELAYON_VIDEO_BASE_URL,
   relayonImageVariables,
   resolveRelayonImageExecutionProfile,
+  resolveRelayonVideoExecutionProfile,
 } from '../../src/services/ai/providers/relayonModelManifest';
 
 const FIXTURE_KEY = 'fixture-only-not-a-real-key';
@@ -206,6 +210,39 @@ describe('自定义 multipart 文件字段', () => {
 });
 
 describe('RelayOn multipart 本地协议对照', () => {
+  it('视频预检仅渲染表单字段，提交时按原顺序发送文件并解析原任务 ID', async () => {
+    const model = RELAYON_MODEL_MANIFEST.find((entry) => entry.id === 'sd-2.0-c1')!;
+    const upload = await prepareRelayonVideoUpload(PNG_FIXTURES.map((file) => ({
+      kind: 'image', role: 'reference', origin: 'connection', url: `data:image/png;base64,${file.encoded}`,
+    })));
+    if (!upload) throw new Error('未准备参考图');
+    const variables = { model: model.id, prompt: '参考图1和图2', referenceImageUrls: upload.references.map((ref) => ref.url) };
+    const profile = resolveRelayonVideoExecutionProfile(model.id, model.executionProfile, variables, true);
+    if (!profile?.protocol) throw new Error('未找到万象视频协议');
+    try {
+      const options = { apiKey: FIXTURE_KEY, baseUrl: RELAYON_VIDEO_BASE_URL, protocol: profile.protocol,
+        variables, relayonUpload: upload, idempotencyKey: 'fixture-video-upload' };
+      const built = prepareRelayonVideoSubmission(options);
+      expect(built.renderedBody).toMatchObject({ images: variables.referenceImageUrls.map(($file, i) => ({
+        $file, filename: `reference-image-${i + 1}.png`,
+      })) });
+      const post = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+        expect(String(url)).toBe(`${RELAYON_VIDEO_BASE_URL}/videos`);
+        expect(new Headers(init?.headers).get('idempotency-key')).toBe('fixture-video-upload');
+        const form = init?.body as FormData;
+        const files = form.getAll('images') as File[];
+        expect(await Promise.all(files.map(async (file) => Array.from(new Uint8Array(await file.arrayBuffer())))))
+          .toEqual(PNG_FIXTURES.map((file) => [...file.bytes]));
+        return Response.json({ id: 'fixture-video-result' });
+      });
+      try {
+        const submitted = await built.submit();
+        expect(submitted.taskId).toBe('fixture-video-result');
+        expect(post).toHaveBeenCalledOnce();
+      } finally { post.mockRestore(); }
+    } finally { await upload.release(); }
+  });
+
   it.each(['image-2.6-01', 'image-2.6-flare-01', 'image-2.6-sunburst-01'])(
     '%s 的真实适配请求与官方 Node FormData 保留相同字段及参考图原件', async (modelId) => {
       const model = RELAYON_MODEL_MANIFEST.find((entry) => entry.id === modelId);

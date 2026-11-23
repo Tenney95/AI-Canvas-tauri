@@ -12,6 +12,7 @@ import type { ProviderModelSelection } from '../../../types';
 import type { ImageModelCapability, ImageOutputParameters, MediaReferenceKind, ModelExecutionProfile, NormalizedModelExecutionProtocol, ProtocolJsonValue, VideoModelCapability } from '../../../types/aiTypes';
 import type { ModelProtocolVariables } from '../modelProtocolTypes';
 import { isRemoteMediaUrl } from '../../../utils/mediaUrl';
+import { CATEGORY_EXTENSIONS, getMimeType } from '../../fs/core';
 import { comparableProtocol } from '../modelProtocol';
 import { getImageSizePresets } from '../modelSizeProfiles';
 import { getImageCapabilityTemplate, getVideoCapabilityTemplate } from '../modelCapabilityTemplates';
@@ -401,10 +402,19 @@ export function getRelayonVideoFileKinds(modelId: string, profile: ModelExecutio
   return usesRelayonModelProtocol(modelId, profile) ? VIDEO_FILE_KINDS[modelId] ?? [] : [];
 }
 
+function preparedFileExtension(kind: MediaReferenceKind, mime: string): string {
+  const known = CATEGORY_EXTENSIONS[kind].find((extension) => getMimeType(extension.slice(1)) === mime);
+  return known?.slice(1) ?? ({
+    'image/tiff': 'tiff', 'image/heic': 'heic', 'image/heif': 'heif', 'image/x-icon': 'ico',
+    'image/vnd.microsoft.icon': 'ico', 'video/ogg': 'ogv', 'video/mpeg': 'mpeg',
+    'audio/mp3': 'mp3', 'audio/x-wav': 'wav', 'audio/wave': 'wav', 'audio/x-flac': 'flac', 'audio/x-m4a': 'm4a',
+  } as Record<string, string>)[mime] ?? 'bin';
+}
+
 /** 仅为新提交投影完整新旧内置协议，不修改配置或已提交任务的恢复合同。 */
 export function resolveRelayonVideoExecutionProfile(
   modelId: string, profile: ModelExecutionProfile | undefined,
-  variables?: ModelProtocolVariables,
+  variables?: ModelProtocolVariables, preparedFiles = false,
 ): ModelExecutionProfile | undefined {
   const known = MODEL_BY_ID.get(modelId);
   if (known?.category !== 'video' || !usesRelayonModelProtocol(modelId, profile)) return profile;
@@ -432,15 +442,18 @@ export function resolveRelayonVideoExecutionProfile(
         remoteReferences.push({ ...sourceValue, url: `{{${variable}.${index}}}` });
         return;
       }
-      const mime = /^data:([^;,]+);base64,/i.exec(url)?.[1].toLowerCase();
+      const mime = (preparedFiles
+        ? /^relayon-file:(?:0|[1-9]\d*):([a-z]+\/[a-z0-9.+-]+)$/i
+        : /^data:([^;,]+);base64,/i).exec(url)?.[1].toLowerCase();
       const label = kind === 'image' ? '图片' : kind === 'video' ? '视频' : '音频';
       if (!supportedFiles.includes(kind)) {
         throw new Error(`万象模型“${modelId}”尚未公开${label}文件直传合同，请使用可公开访问的 HTTPS 素材地址；不会回退到图床`);
       }
       if (!mime?.startsWith(`${kind}/`)) throw new Error(`万象参考${label}文件类型无效，请重新导入该类型的文件，或使用可公开访问的 HTTPS 地址`);
-      const extension = ({ 'video/mp4': 'mp4', 'video/quicktime': 'mov', 'audio/mpeg': 'mp3',
-        'audio/mp3': 'mp3', 'audio/wav': 'wav', 'audio/x-wav': 'wav',
-      } as Record<string, string>)[mime] ?? (kind === 'image' ? 'png' : 'bin');
+      const extension = preparedFiles ? preparedFileExtension(kind, mime)
+        : ({ 'video/mp4': 'mp4', 'video/quicktime': 'mov', 'audio/mpeg': 'mp3',
+          'audio/mp3': 'mp3', 'audio/wav': 'wav', 'audio/x-wav': 'wav',
+        } as Record<string, string>)[mime] ?? (kind === 'image' ? 'png' : 'bin');
       files.push({ $file: `{{${variable}.${index}}}`, filename: `reference-${kind}-${index + 1}.${extension}` });
     });
     if (files.length) {

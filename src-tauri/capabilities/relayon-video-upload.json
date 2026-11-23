@@ -1,0 +1,6 @@
+{
+  "identifier": "relayon-video-upload",
+  "description": "Only the main application window can prepare and submit RelayOn video uploads.",
+  "windows": ["main"],
+  "permissions": ["allow-relayon-video-upload"]
+}

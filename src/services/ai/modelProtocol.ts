@@ -10,7 +10,7 @@ import type {
   ModelExecutionProfile,
   NormalizedModelExecutionProtocol,
 } from '../../types/aiTypes';
-import { corsSafeFetch, logAiResponse, type AiResponseLogContext } from './httpTransport';
+import { corsSafeFetch, logAiRequest, logAiResponse, type AiResponseLogContext } from './httpTransport';
 import { redactModelProtocolMultipartPreview } from './modelProtocolBody';
 import { readModelProtocolFirstScalar, readModelProtocolUrls } from './modelProtocolResponse';
 import {
@@ -26,7 +26,10 @@ import {
   getModelProtocolPreset,
 } from './modelProtocolPresets';
 import { pollResolvedModelProtocol, resolvePoll } from './modelProtocolPoll';
-import { buildModelProtocolRequest } from './modelProtocolRequest';
+import {
+  applyQueryAuthentication, assertModelProtocolApiKey, buildModelProtocolRequest, buildRequestInit,
+  buildSameOriginUrl, renderRequestBody,
+} from './modelProtocolRequest';
 import {
   FOR_EACH_KEY,
   FOR_EACH_VARIABLE_ROOTS,
@@ -37,6 +40,7 @@ import {
 import { parseModelExecutionProtocol } from './modelProtocolValidation';
 import { isSafeNativeProtocolTaskId } from '../nativeProtocolContext';
 import type {
+  BuiltModelProtocolRequest,
   ExecuteModelProtocolOptions,
   ExecuteModelProtocolResult,
   SubmitModelProtocolOptions,
@@ -140,10 +144,27 @@ export function comparableProtocol(profile: ModelExecutionProfile | undefined): 
   }
 }
 
-export async function submitModelProtocol(
-  options: SubmitModelProtocolOptions,
-): Promise<SubmittedModelProtocol> {
-  const built = buildModelProtocolRequest(options);
+/** 文件已经准备好时，只渲染表单字段；上传时再把对应的文件流放进去。 */
+export function prepareRelayonVideoSubmission(options: SubmitModelProtocolOptions) {
+  if (!options.relayonUpload) throw new Error('万象视频上传缺少已准备的文件');
+  const protocol = parseModelExecutionProtocol(options.protocol);
+  const { submit, auth } = protocol;
+  if (submit.method !== 'POST' || submit.bodyEncoding !== 'multipart') throw new Error('万象视频上传需要文件表单');
+  assertModelProtocolApiKey(auth, options.apiKey);
+  const renderedBody = renderRequestBody(submit, options.variables);
+  if (!isRecord(renderedBody)) throw new Error('万象视频上传缺少表单字段');
+  const url = buildSameOriginUrl(options.baseUrl, submit, options.variables);
+  const init = buildRequestInit({ ...submit, body: undefined }, auth, options.apiKey, options.variables, options.signal, options.idempotencyKey);
+  const built = { protocol, url: applyQueryAuthentication(url, auth, options.apiKey), init, renderedBody };
+  return { renderedBody, submit: () => submitBuiltModelProtocol(options, built) };
+}
+
+export async function submitModelProtocol(options: SubmitModelProtocolOptions): Promise<SubmittedModelProtocol> {
+  if (options.relayonUpload) return prepareRelayonVideoSubmission(options).submit();
+  return submitBuiltModelProtocol(options, buildModelProtocolRequest(options));
+}
+
+async function submitBuiltModelProtocol(options: SubmitModelProtocolOptions, built: BuiltModelProtocolRequest): Promise<SubmittedModelProtocol> {
   const protocol = built.protocol;
   const context: Record<string, unknown> = { ...options.variables };
   if (options.beforeSubmit) {
@@ -157,12 +178,17 @@ export async function submitModelProtocol(
   // 只在真实提交点展示渲染后的值，不在预览/预检时冒充已发出的请求。
   const requestDebug = traceId ? { traceId, stage: 'submit' as const, apiKey: options.apiKey,
     bodyEncoding: protocol.submit.bodyEncoding ?? 'json',
-    body: protocol.submit.bodyEncoding === 'multipart' && built.renderedBody !== undefined
+    body: !options.relayonUpload && protocol.submit.bodyEncoding === 'multipart' && built.renderedBody !== undefined
       ? redactModelProtocolMultipartPreview(built.renderedBody) : built.renderedBody } : undefined;
-  const response = await (options.sensitive
-    ? corsSafeFetch(built.url, built.init, { sensitive: true })
-    : requestDebug ? corsSafeFetch(built.url, built.init, { debug: requestDebug })
-      : corsSafeFetch(built.url, built.init));
+  let response: Response;
+  if (options.relayonUpload && built.renderedBody !== undefined) {
+    if (requestDebug) logAiRequest(built.url, built.init, 'Model Protocol', requestDebug);
+    response = await options.relayonUpload.submit(built.url, built.init, built.renderedBody, options.signal);
+  } else {
+    response = await (options.sensitive ? corsSafeFetch(built.url, built.init, { sensitive: true })
+      : requestDebug ? corsSafeFetch(built.url, built.init, { debug: requestDebug })
+        : corsSafeFetch(built.url, built.init));
+  }
   const responseConfig = protocol.response;
 
   if (protocol.mode === 'sync') {

@@ -17,6 +17,7 @@ import {
 import {
   collectModelProtocolForEachVariables,
   buildModelProtocolRequest,
+  prepareRelayonVideoSubmission,
   collectModelProtocolTemplatePaths,
   MODEL_PROTOCOL_MAX_FOR_EACH_ITEMS,
   pollResolvedModelProtocol,
@@ -35,7 +36,8 @@ import { getProviderPolicy, resolveProviderCatalogId } from './providerPolicies'
 import { getProviderDefinition } from './providerCatalogService';
 import { RELAYON_VIDEO_RESULT_URL_PATHS, usesRelayonModelProtocol, resolveRelayonVideoExecutionProfile } from './providers/relayonModelManifest';
 import { normalizeRelayonVideoSubmitResponse } from './providers/relayonTaskIdentity';
-import { resolveRelayonImageBaseUrl } from './relayonProviderGroups';
+import type { PreparedRelayonVideoUpload } from './providers/relayonVideoUpload';
+import { isRelayonOfficialBaseUrl, resolveRelayonImageBaseUrl } from './relayonProviderGroups';
 import { createMediaDownloadAccess, sanitizeMediaResultUrls } from './mediaDownloadAccess';
 import { assertMinimaxQueryResponse, assertMinimaxResponse, getMinimaxErrorCodeMessage, getMinimaxMediaAccessHint,
   resolveMinimaxBaseUrl, usesMinimaxImageModelProtocol, usesMinimaxModelProtocol } from './providers/minimaxModelManifest';
@@ -57,6 +59,7 @@ interface RunConfiguredModelProtocolOptions {
   variables: ModelProtocolVariables;
   /** 仅由图片入口完整匹配内置万象协议后启用，新提交不沿旧网页代理。 */
   useRelayonImageApi?: boolean;
+  relayonUpload?: PreparedRelayonVideoUpload;
   nodeId?: string;
   category: Exclude<GeneralModelCategory, 'text'>;
   signal?: AbortSignal;
@@ -408,8 +411,9 @@ export async function runConfiguredModelProtocol(
   const usesVolcengineTos = getProviderPolicy(catalogId).upload === 'volcengine-tos';
   const usesRelayonProtocol = catalogId === 'relayonapi' && options.category === 'video'
     && usesRelayonModelProtocol(options.model.modelId, options.model.executionProfile);
+  if (options.relayonUpload && !usesRelayonProtocol) throw new Error('万象视频参考文件与当前模型协议不匹配');
   const profile = usesRelayonProtocol
-    ? resolveRelayonVideoExecutionProfile(options.model.modelId, options.model.executionProfile, options.variables) : options.model.executionProfile;
+    ? resolveRelayonVideoExecutionProfile(options.model.modelId, options.model.executionProfile, options.variables, !!options.relayonUpload) : options.model.executionProfile;
   const protocol = resolveModelExecutionProfile(profile);
   if (!protocol) throw new Error(`模型“${options.model.name}”未配置调用协议`);
   const expansionConflicts = findModelProtocolForEachCapabilityConflicts(
@@ -426,6 +430,7 @@ export async function runConfiguredModelProtocol(
     : catalogId === 'relayonapi' && options.category === 'image' && options.useRelayonImageApi
       ? resolveRelayonImageBaseUrl(configuredBaseUrl) : configuredBaseUrl;
   if (!baseUrl) throw new Error(`模型“${options.model.name}”未配置接口地址`);
+  if (options.relayonUpload && !isRelayonOfficialBaseUrl(baseUrl)) throw new Error('万象文件上传地址与内置视频接口不匹配');
   const assertPrivatePoll = (value: unknown) => {
     const serialized = JSON.stringify(value);
     if (serialized && redactVolcengineErrorText(serialized) !== serialized) {
@@ -482,13 +487,15 @@ export async function runConfiguredModelProtocol(
     signal?.throwIfAborted();
     if (options.nodeId) releaseOperation = registerMediaNodeOperation(options.nodeId);
     const submitOptions = { apiKey: provider.apiKey || '', baseUrl, protocol, variables: options.variables, signal, validateResponse,
+      ...(options.relayonUpload ? { relayonUpload: options.relayonUpload } : {}),
       ...(usesVolcengineTos ? { sensitive: true } : {}),
       ...(usesRelayonProtocol ? { normalizeSubmitResponse: normalizeRelayonVideoSubmitResponse } : {}),
       ...(nativeOperation && protocol.mode === 'async' ? { captureRecoveryContext: (payload: unknown) => captureNativeProtocolContext(protocol, payload, options.variables, [provider.apiKey || '']) } : {}),
       ...(getProviderPolicy(catalogId).submitIdempotency ? { idempotencyKey: crypto.randomUUID() } : {}),
     };
     // 在记录“提交中”之前完成本地构建校验，避免将输入错误误称为提交状态未知。
-    buildModelProtocolRequest(submitOptions);
+    const uploadRequest = options.relayonUpload ? prepareRelayonVideoSubmission(submitOptions) : undefined;
+    if (!uploadRequest) buildModelProtocolRequest(submitOptions);
     if (nativeOperation) {
       if (protocol.mode === 'async') nativeProtocolQueryPaths(protocol);
       const scheme = 'media-input-v3' as const;
@@ -504,7 +511,9 @@ export async function runConfiguredModelProtocol(
         protocolDigest: await nativeProtocolTaskDigest(options.model.modelId, protocol), category: options.category,
         fingerprintScheme: scheme,
         submissionKind: protocol.mode === 'sync' ? 'sync' : 'async',
-        requestFingerprint: await sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(options.variables))),
+        requestFingerprint: options.relayonUpload && uploadRequest
+          ? await options.relayonUpload.fingerprint(uploadRequest.renderedBody)
+          : await sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(options.variables))),
         inputFingerprint: baseline.inputFingerprint, sourceCanvasRevision: baseline.canvasRevision });
       await assertNativeMediaPrepared(nativeTask, { preparation: nativePreparation });
       await options.beforeSubmit?.();
@@ -524,7 +533,7 @@ export async function runConfiguredModelProtocol(
         mediaDownloadAccess,
         batchCount: expectedOutputCount, ...fixedImageOutputs });
     }
-    const submitted = await submitModelProtocol(submitOptions);
+    const submitted = await (uploadRequest ? uploadRequest.submit() : submitModelProtocol(submitOptions));
     if (nativeTask) {
       if (nativeTask.submissionKind === 'sync') {
         assertModelProtocolResult(options.category, submitted);

@@ -1051,6 +1051,30 @@ describe('RelayOnAPI 视频参考文件直传', () => {
     audio: ['data:audio/mpeg;base64,ZQ==', 'data:audio/mpeg;base64,Zg=='],
   };
 
+  it('只在已准备的上传中接受文件标记，表单保留每张图的实际格式和序号', () => {
+    const id = 'sd-2.0-A', profile = model(id).executionProfile!;
+    const variables = { referenceImageUrls: ['relayon-file:0:image/jpeg', 'relayon-file:1:image/webp'] };
+    expect(() => resolveRelayonVideoExecutionProfile(id, profile, variables)).toThrow('文件类型无效');
+    expect(resolveRelayonVideoExecutionProfile(id, profile, variables, true)?.protocol?.submit.body)
+      .toMatchObject({ images: [
+        { $file: '{{referenceImageUrls.0}}', filename: 'reference-image-1.jpg' },
+        { $file: '{{referenceImageUrls.1}}', filename: 'reference-image-2.webp' },
+      ] });
+    expect(() => resolveRelayonVideoExecutionProfile(id, profile, { referenceVideoUrls: variables.referenceImageUrls }, true))
+      .toThrow('文件类型无效');
+  });
+
+  it.each([
+    ['image', 'image/svg+xml', 'svg'], ['image', 'image/bmp', 'bmp'], ['image', 'image/tiff', 'tiff'],
+    ['image', 'image/heic', 'heic'], ['video', 'video/quicktime', 'mov'], ['video', 'video/x-matroska', 'mkv'],
+    ['audio', 'audio/mp4', 'm4a'], ['audio', 'audio/webm', 'weba'],
+  ] as const)('已核实的 %s 文件 %s 采用 .%s 后缀', (kind, mime, ext) => {
+    const variable = { image: 'referenceImageUrls', video: 'referenceVideoUrls', audio: 'referenceAudioUrls' }[kind];
+    const profile = resolveRelayonVideoExecutionProfile('sd-2.0-A', model('sd-2.0-A').executionProfile,
+      { [variable]: [`relayon-file:0:${mime}`] }, true);
+    expect(profile?.protocol?.submit.body).toMatchObject({ [kind]: { filename: `reference-${kind}-1.${ext}` } });
+  });
+
   it.each([
     ['sd-2.0-A', ['image', 'video', 'audio']], ['sd-2.5-A', ['image', 'video', 'audio']],
     ['sd-2.0-c1', ['image', 'video', 'audio']], ['minimax-h3', ['image', 'video', 'audio']],

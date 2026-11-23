@@ -74,6 +74,8 @@ mod reference_image_upload;
 mod uguu_system_proxy;
 #[path = "media/volcengine_tos.rs"]
 mod volcengine_tos;
+#[path = "media/relayon_video_upload.rs"]
+mod relayon_video_upload;
 #[path = "mcp/bridge.rs"]
 mod mcp_bridge;
 #[path = "mcp/client.rs"]
@@ -982,6 +984,11 @@ pub fn run() {
             reference_image_upload::optimize_reference_jpeg,
             volcengine_tos::upload_volcengine_tos_reference,
             volcengine_tos::cancel_volcengine_tos_upload,
+            relayon_video_upload::prepare_relayon_video_upload,
+            relayon_video_upload::append_relayon_video_upload,
+            relayon_video_upload::seal_relayon_video_upload,
+            relayon_video_upload::submit_relayon_video_upload,
+            relayon_video_upload::cancel_relayon_video_upload,
             billing::billing_upsert,
             billing::billing_query,
             billing::billing_get_by_task,
