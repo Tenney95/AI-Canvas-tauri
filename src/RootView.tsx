@@ -4,7 +4,6 @@
 import { lazy, Suspense } from 'react';
 import LazyLoadBoundary, { LazyLoadFallback } from './components/shared/LazyLoadBoundary';
 import OverlayScrollbarLayer from './components/shared/OverlayScrollbarLayer';
-import ReferencePreviewHost from './components/shared/ReferencePreviewHost';
 
 const App = lazy(() => import('./App'));
 const AssetSearchWindow = lazy(() => import('./components/AssetSearchWindow'));
@@ -15,6 +14,7 @@ const VideoEditorWindow = lazy(() => import('./components/videoEditor/VideoEdito
 // 懒加载：样式预览只在开发者/设计手动唤起时用到，不进主窗口首屏
 const StyleGuideWindow = lazy(() => import('./components/styleGuide/StyleGuideWindow'));
 const ComfyManagementWindow = lazy(() => import('./components/comfyui/ComfyManagementWindow'));
+const ReferencePreviewHost = lazy(() => import('./components/shared/ReferencePreviewHost'));
 
 interface RootViewProps {
   view: string | null;
@@ -49,12 +49,12 @@ export default function RootView({ view }: RootViewProps) {
                   : view === 'comfyui-settings'
                     ? <ComfyManagementWindow />
                     : <App />}
+          {view !== 'script-workbench' && <LazyLoadBoundary label="引用内容预览">
+            <ReferencePreviewHost detached={view === 'chat'} />
+          </LazyLoadBoundary>}
         </Suspense>
       </LazyLoadBoundary>
       <OverlayScrollbarLayer />
-      {view !== 'script-workbench' && <LazyLoadBoundary label="引用内容预览">
-        <ReferencePreviewHost detached={view === 'chat'} />
-      </LazyLoadBoundary>}
     </>
   );
 }
