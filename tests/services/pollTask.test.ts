@@ -5,6 +5,32 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { isPollTimeoutError, pollTask, PollTaskFailedError, PollTimeoutError, withPollRequestDeadline } from '../../src/services/pollTask';
 
 describe('pollTask resource cleanup', () => {
+  it('允许调用方在单次查询超时后有限重查，而总预算仍然终止等待', async () => {
+    const firstSignals: AbortSignal[] = [];
+    const fetchState = vi.fn((signal: AbortSignal) => {
+      firstSignals.push(signal);
+      return firstSignals.length === 1 ? new Promise<string>(() => undefined) : Promise.resolve('done');
+    });
+    const onFetchError = vi.fn((error: unknown) => error instanceof PollTimeoutError ? 'continue' as const : 'throw' as const);
+    const result = pollTask({ fetchState, isComplete: (value) => value, interval: 10,
+      requestTimeoutMs: 100, maxDuration: 1000, onFetchError });
+    await vi.advanceTimersByTimeAsync(110);
+    await expect(result).resolves.toBe('done');
+    expect(firstSignals[0].aborted).toBe(true);
+    expect(fetchState).toHaveBeenCalledTimes(2);
+    expect(onFetchError).toHaveBeenCalledOnce();
+  });
+
+  it('等待间隔不会越过总预算，也不会重查或重试总超时', async () => {
+    const fetchState = vi.fn(async () => null);
+    const onFetchError = vi.fn(() => 'continue' as const);
+    const result = pollTask({ fetchState, isComplete: () => null, interval: 10_000, maxDuration: 100, onFetchError });
+    const rejected = expect(result).rejects.toBeInstanceOf(PollTimeoutError);
+    await vi.advanceTimersByTimeAsync(100);
+    await rejected;
+    expect(fetchState).toHaveBeenCalledOnce();
+    expect(onFetchError).not.toHaveBeenCalled();
+  });
   it('distinguishes local timeout from a remote failure whose message contains timeout', async () => {
     await expect(pollTask({ fetchState: async () => null, isComplete: () => null, maxAttempts: 0 }))
       .rejects.toBeInstanceOf(PollTimeoutError);
@@ -22,6 +48,17 @@ describe('pollTask resource cleanup', () => {
     await vi.advanceTimersByTimeAsync(1000);
     await rejected;
     expect(fetchState).toHaveBeenCalledOnce();
+  });
+
+  it.each([-86_400_000, 86_400_000])('keeps query and total deadlines when system time shifts by %s ms', async (shift) => {
+    const fetchState = vi.fn().mockResolvedValueOnce('pending').mockResolvedValueOnce('done');
+    const result = pollTask({ fetchState, isComplete: (state) => state === 'done' ? state : null,
+      interval: 50, requestTimeoutMs: 100, maxDuration: 150 });
+    await vi.advanceTimersByTimeAsync(0);
+    vi.setSystemTime(Date.now() + shift);
+    await vi.advanceTimersByTimeAsync(50);
+    await expect(result).resolves.toBe('done');
+    expect(fetchState).toHaveBeenCalledTimes(2);
   });
 
   it('does not publish a response that arrives after query cancellation', async () => {
