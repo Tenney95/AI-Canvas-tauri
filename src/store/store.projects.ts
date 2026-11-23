@@ -243,13 +243,13 @@ async function saveNativeCurrentProject(get: ProjectSliceGet, state: AppState, r
       if (!fresh || fresh.id !== record.id) throw new Error('媒体交付后的保存上下文已变化');
       state = latest; record = fresh;
     }
-    const serialized = await serializeProjectRecord({ ...record, dramaAssets: state.dramaAssets });
+    const updateLibrary = runtime.library !== state.dramaAssets;
+    const serialized = await serializeProjectRecord({ ...record, dramaAssets: state.dramaAssets }, { includeDramaAssets: updateLibrary });
     guard?.();
     if (nativeRuntime.get(get) !== runtime || get().currentProjectId !== record.id) throw new Error('项目已切换，取消保存');
     const { selection, content } = runtime.loaded;
     const canvas = selection.canvas;
     if (!Array.isArray(serialized.nodes) || !Array.isArray(serialized.edges) || !Array.isArray(serialized.groups)) throw new Error('画布内容无效');
-    const updateLibrary = runtime.library !== state.dramaAssets;
     if (!canvas) {
       if (serialized.nodes.length || serialized.edges.length || serialized.groups.length) throw new Error('当前剧集没有画布，请先创建分集');
       if (updateLibrary) {

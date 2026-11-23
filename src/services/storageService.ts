@@ -1051,7 +1051,10 @@ async function serializeProjectDramaAssets(
   return { ...library, characters, scenes, props };
 }
 
-export async function serializeProjectRecord(data: ProjectSaveData): Promise<ProjectSaveData> {
+export async function serializeProjectRecord(
+  data: ProjectSaveData,
+  { includeDramaAssets = true }: { includeDramaAssets?: boolean } = {},
+): Promise<ProjectSaveData> {
   if (data.episodeScriptFile !== undefined) data = { ...data, episodeScriptFile: normalizeProjectTextFileReference(data.episodeScriptFile) };
   if (data.series !== undefined) {
     const series = normalizeProjectSeriesInfo(data.series);
@@ -1066,7 +1069,7 @@ export async function serializeProjectRecord(data: ProjectSaveData): Promise<Pro
     if (projectRecordContainsInlineMedia(data)) {
       throw new Error('当前环境没有项目目录，无法将内嵌媒体写入 IndexedDB');
     }
-    return data;
+    return includeDramaAssets ? data : { ...data, dramaAssets: undefined };
   }
   const context: MediaSerializationContext = {
     projectId: data.id,
@@ -1077,7 +1080,8 @@ export async function serializeProjectRecord(data: ProjectSaveData): Promise<Pro
   const referencedNodes = await recoverVideoReferenceIdentities(data.nodes, data.dramaAssets, data.parentId);
   const nodes = await serializeProjectNodes(referencedNodes, context);
   const settings = await serializeProjectSettings(data.settings, context);
-  const dramaAssets = await serializeProjectDramaAssets(data.dramaAssets, context);
+  // 只保存画布时，旧视频引用仍可从素材库找回身份，素材库本身不用再转换一次。
+  const dramaAssets = includeDramaAssets ? await serializeProjectDramaAssets(data.dramaAssets, context) : undefined;
   return { ...data, nodes, settings, dramaAssets };
 }
 

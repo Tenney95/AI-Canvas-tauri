@@ -732,6 +732,33 @@ describe('project loading tolerates asset recovery failures', () => {
     expect(stored.nodes[0].data.videoReferences[0]).not.toHaveProperty('assetId');
   });
 
+  it('只保存画布时从共享库恢复旧视频引用，并跳过其他素材的文件检查', async () => {
+    mocks.getNativeProjectOwner.mockReturnValue('series');
+    const image = (id: string) => ({ id, kind: 'primary' as const, assetId: `asset-${id}`, relativePath: `${id}.png`,
+      imageUrl: `asset://localhost/project/data/${id}.png`, prompt: '', createdAt: 1, updatedAt: 2 });
+    const selected = image('selected');
+    const record: ProjectSaveData = {
+      id: 'canvas', parentId: 'series', name: '分集', createdAt: 1, updatedAt: 2, edges: [],
+      nodes: [{ id: 'video', data: { type: 'ai-video', videoReferences: [
+        { id: 'character:hero', kind: 'character', role: 'reference', url: selected.imageUrl },
+      ] } }],
+      dramaAssets: { version: 2, scenes: [], props: [], characters: [{
+        id: 'hero', kind: 'character', name: '主角', key: 'hero', identity: '', summary: '', visualNotes: '',
+        importance: 'main', confirmed: true, createdAt: 1, updatedAt: 2, source: 'manual',
+        primaryReferenceImageId: 'other', referenceImages: [selected, image('other')],
+      }] },
+    };
+
+    const saved = await serializeProjectRecord(record, { includeDramaAssets: false });
+
+    expect(saved.dramaAssets).toBeUndefined();
+    expect(saved.nodes).toMatchObject([{ data: { videoReferences: [
+      { assetId: selected.assetId, relativePath: selected.relativePath, url: selected.relativePath },
+    ] } }]);
+    expect(mocks.exists).toHaveBeenCalledExactlyOnceWith('/project/data/selected.png');
+    expect(mocks.identifyAsset).not.toHaveBeenCalled();
+  });
+
   it('collapses character media file paths into asset ids when saving', async () => {
     mocks.identifyAsset.mockResolvedValue({
       assetId: 'asset-shared',
