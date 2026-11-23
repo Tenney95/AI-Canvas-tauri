@@ -1,8 +1,10 @@
-/** v2摘要的输入/产物边界；只构造内存样本。 */
+/** 用内存样本核对媒体输入摘要及旧回执的兼容性。 */
+import { createHash } from 'node:crypto';
 import { expect, it } from 'vitest';
 import type { Node } from '@xyflow/react';
 import type { AppConfig, BaseNodeData } from '../../src/types';
-import { nativeMediaInputMaterial } from '../../src/services/nativeMediaInput';
+import { emptyDramaAssetLibrary, type DramaProp } from '../../src/types/dramaAssets';
+import { matchesNativeCanvasMediaInputFingerprint, nativeCanvasMediaInputMaterial, nativeMediaInputMaterial } from '../../src/services/nativeMediaInput';
 
 const fixture = () => ({ projects: [{ id: 'canvas', name: 'fixture', createdAt: 1, updatedAt: 1 }],
   currentProjectId: 'canvas', customStyles: [], config: { theme: 'dark', providers: { provider: { name: 'fixture', apiKey: 'fixture-only-key', baseUrl: 'https://fixture.example' } }, generalModels: [{ id: 'model', name: 'fixture', modelId: 'request-model',
@@ -28,6 +30,37 @@ it('v3引用节点的产物和工作流变更撤销旧输入，v2仍使用原算
   expect(nativeMediaInputMaterial(target, changed, 'media-input-v3')).not.toBe(original);
   expect(nativeMediaInputMaterial({ ...target, data: { ...target.data, audioUrl: 'result.wav', status: 'success' } }, state, 'media-input-v3')).toBe(original);
   expect(nativeMediaInputMaterial(target, { ...state, edges: [] }, 'media-input-v3')).not.toBe(original);
+});
+
+it('画布 v3 摘要忽略首次查看和再次查看，仍能识别道具与提示词的修改', () => {
+  const target = node();
+  const prop: DramaProp = { kind: 'prop', id: 'watch', key: 'watch', name: '怀表', summary: '', visualNotes: '银色',
+    source: 'manual', importance: 'supporting', confirmed: true, createdAt: 1, updatedAt: 1 };
+  const dramaAssets = { ...emptyDramaAssetLibrary(), props: [prop] };
+  const state = { ...fixture(), nodes: [target], edges: [], workflows: [], dramaAssets };
+  const scheme = 'media-input-v3';
+  const material = nativeCanvasMediaInputMaterial(target, state, scheme);
+  for (const lastViewedAt of [0, 20]) {
+    expect(nativeCanvasMediaInputMaterial(target, { ...state, dramaAssets: { ...dramaAssets, lastViewedAt } }, scheme)).toBe(material);
+  }
+  const editedLibrary = { ...dramaAssets, props: [{ ...prop, visualNotes: '金色' }] };
+  expect(nativeCanvasMediaInputMaterial(target, { ...state, dramaAssets: editedLibrary }, scheme)).not.toBe(material);
+  expect(nativeCanvasMediaInputMaterial({ ...target, data: { ...target.data, prompt: '修改后的输入' } }, state, scheme)).not.toBe(material);
+  expect(nativeCanvasMediaInputMaterial(target, state, 'media-input-v2')).toBe(nativeMediaInputMaterial(target, state, 'media-input-v2'));
+});
+
+it('兼容可完整复核的旧 v3 指纹，历史浏览时间无法还原时拒绝回填', async () => {
+  const target = node(), scheme = 'media-input-v3';
+  const state = { ...fixture(), nodes: [target], edges: [], workflows: [], dramaAssets: { ...emptyDramaAssetLibrary(), lastViewedAt: 0 } };
+  const viewed = { ...state, dramaAssets: { ...state.dramaAssets, lastViewedAt: 20 } };
+  const original = nativeMediaInputMaterial(target, state, scheme);
+  const stable = nativeCanvasMediaInputMaterial(target, viewed, scheme);
+  expect(original).not.toBe(stable);
+  const originalDigest = createHash('sha256').update(original).digest('hex');
+  const stableDigest = createHash('sha256').update(stable).digest('hex');
+  await expect(matchesNativeCanvasMediaInputFingerprint(target, state, scheme, stable, originalDigest)).resolves.toBe(true);
+  await expect(matchesNativeCanvasMediaInputFingerprint(target, viewed, scheme, stable, stableDigest)).resolves.toBe(true);
+  await expect(matchesNativeCanvasMediaInputFingerprint(target, viewed, scheme, stable, originalDigest)).resolves.toBe(false);
 });
 
 it.each(['media-input-v2', 'media-input-v3'] as const)('%s 将独立扩图垫图作为输入，结果回填不改变输入', (scheme) => {

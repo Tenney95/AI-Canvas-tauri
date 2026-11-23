@@ -3,10 +3,8 @@ import type { Node } from '@xyflow/react';
 import type { AppState } from '../useAppStore';
 import type { BaseNodeData } from '../../types';
 import { normalizeProjectMediaNodes } from '../../services/storageService';
-import { sha256BytesHex } from '../../services/mediaDataUrl';
 import { isProjectExpectedContextCurrent } from '../../services/projectExecutionContext';
-import { videoInputFingerprintMaterial } from '../../services/videoBatchPlanning';
-import { nativeMediaInputMaterial } from '../../services/nativeMediaInput';
+import { matchesNativeCanvasMediaInputFingerprint, nativeCanvasMediaInputMaterial } from '../../services/nativeMediaInput';
 import {
   readNativeProjectContent, readNativeProjectSelection,
 } from '../../services/indexedDb/nativeProjectRepository';
@@ -61,7 +59,7 @@ export function createNativeMediaActions(
         throw new Error('原画布或生成节点已变化，未准备参考素材');
       }
       const revision = before.getCurrentRevision();
-      const material = nativeMediaInputMaterial(target, before, 'media-input-v3');
+      const material = nativeCanvasMediaInputMaterial(target, before, 'media-input-v3');
       const references = new Set([nodeId, ...before.edges.filter((edge) => edge.target === nodeId).map((edge) => edge.source)]);
       const parameters = input ?? target.data;
       const mentionText = JSON.stringify([parameters.prompt, parameters.workflowInputs, parameters.videoReferences,
@@ -76,7 +74,7 @@ export function createNativeMediaActions(
         if (nativeRuntime.get(get) !== runtime || projectImportsApplying.has(context.projectId)
           || projectAssetSyncBarriers.has(context.projectId) || current.getCurrentRevision() !== revision
           || !isProjectExpectedContextCurrent(context, current, { checkCanvasRevision: false }) || !live
-          || nativeMediaInputMaterial(live, current, 'media-input-v3') !== material) {
+          || nativeCanvasMediaInputMaterial(live, current, 'media-input-v3') !== material) {
           throw new Error('生成输入或参考素材已变化，未提交请求');
         }
         const liveById = new Map(current.nodes.map((node) => [node.id, node]));
@@ -157,21 +155,24 @@ export function createNativeMediaActions(
     commitNativeMediaResult: async (record, relativePath, expected, signal) => {
       signal?.throwIfAborted();
       const { safeExchangePath } = await import('../../services/projectExchangeDomain');
-      if (record.category !== 'video' && !['media-input-v2', 'media-input-v3'].includes(record.fingerprintScheme ?? '') || safeExchangePath(relativePath) !== relativePath
+      const scheme = record.fingerprintScheme;
+      if (record.category !== 'video' && scheme !== 'media-input-v2' && scheme !== 'media-input-v3' || safeExchangePath(relativePath) !== relativePath
         || expected.kind !== 'canvas' || expected.canvasId !== record.canvasId || expected.projectId !== record.ownerProjectId
         || !isProjectExpectedContextCurrent(expected, get(), { checkCanvasRevision: false })) throw new Error('原画布已切换，媒体结果已保留');
       const assertSource = async () => {
         signal?.throwIfAborted();
         const state = get(), node = state.nodes.find((item) => item.id === record.nodeId);
-        if (!node) throw new Error('原视频节点或参考素材已变化，结果已保留');
-        const inputMaterial = ['media-input-v2', 'media-input-v3'].includes(record.fingerprintScheme ?? '')
-          ? (target: Node<BaseNodeData>, current: AppState) => nativeMediaInputMaterial(target, current, record.fingerprintScheme === 'media-input-v3' ? 'media-input-v3' : 'media-input-v2') : videoInputFingerprintMaterial;
-        const material = inputMaterial(node, state);
+        if (!node) throw new Error('原媒体节点或参考素材已变化，结果已保留');
+        const material = nativeCanvasMediaInputMaterial(node, state, scheme);
         if (material.includes('@drama{') && !record.recovery) throw new Error('原视频引用了尚不可安全验证的全局素材，结果已保留');
-        const digest = await sha256BytesHex(new TextEncoder().encode(material));
+        const matches = await matchesNativeCanvasMediaInputFingerprint(node, state, scheme, material, record.inputFingerprint);
         const latest = get(), latestNode = latest.nodes.find((item) => item.id === record.nodeId);
-        if (digest !== record.inputFingerprint || !latestNode || material !== inputMaterial(latestNode, latest)
-          || !isProjectExpectedContextCurrent(expected, latest, { checkCanvasRevision: false })) throw new Error('原视频节点或参考素材已变化，结果已保留');
+        if (!latestNode || !isProjectExpectedContextCurrent(expected, latest, { checkCanvasRevision: false })) throw new Error('原画布或媒体节点已变化，结果已保留');
+        if (!matches || material !== nativeCanvasMediaInputMaterial(latestNode, latest, scheme)) {
+          const error = new Error('原媒体节点或参考素材已变化，结果已保留');
+          error.name = 'NativeMediaInputChanged';
+          throw error;
+        }
         return material;
       };
       await assertSource();
@@ -197,11 +198,9 @@ export function createNativeMediaActions(
         const assertCurrent = () => {
           controller.signal.throwIfAborted();
           const current = get(), node = current.nodes.find((item) => item.id === record.nodeId);
-          const inputMaterial = ['media-input-v2', 'media-input-v3'].includes(record.fingerprintScheme ?? '')
-            ? (target: Node<BaseNodeData>, state: AppState) => nativeMediaInputMaterial(target, state, record.fingerprintScheme === 'media-input-v3' ? 'media-input-v3' : 'media-input-v2') : videoInputFingerprintMaterial;
           if (nativeRuntime.get(get) !== runtime || !node || current.nodes !== before.nodes || current.edges !== before.edges
-            || current.groups !== before.groups || current.dramaAssets !== before.dramaAssets
-            || inputMaterial(node, current) !== material
+            || current.groups !== before.groups || (scheme !== 'media-input-v3' && current.dramaAssets !== before.dramaAssets)
+            || nativeCanvasMediaInputMaterial(node, current, scheme) !== material
             || !isProjectExpectedContextCurrent(expected, current, { checkCanvasRevision: false })) throw new Error('原画布在媒体交付期间变化，产物已保留');
         };
         unsubscribe = api.subscribe(() => { try { assertCurrent(); } catch { controller.abort(); } });

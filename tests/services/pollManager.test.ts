@@ -6,6 +6,10 @@ import type { BaseNodeData } from '../../src/types';
 import {
   getPendingTaskCoveredNodeIds,
   getNativeMediaNodeRecovery,
+  clearNativeMediaNodeRecovery,
+  refreshNativeMediaNodeRecovery,
+  listNativeMediaNodeImages,
+  revealNativeMediaNodeImage,
   getPendingTasksForProject,
   readPendingMediaTaskViews,
   registerPendingTaskContextGuard,
@@ -30,6 +34,7 @@ import {
   stopPollingForDeletedProjects,
   removePendingTask,
   resumeMediaNodeTask,
+  reviewNativeMediaFromNode,
   resumeNativeMediaFromNode,
   resumeRunningHubNodeTask,
   readVideoEditorTransitionTaskResult,
@@ -111,6 +116,93 @@ describe('新画布异步任务提交边界', () => {
       expect(getNativeMediaNodeRecovery('video')).toBeUndefined();
     } finally {
       list.mockRestore(); inspect.mockRestore(); resume.mockRestore(); autoDeliver.mockRestore();
+    }
+  });
+
+  it('从原图片批次定位可核验的候选，文件变化或回执被替换时停止', async () => {
+    const context: CanvasContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, projectId: 'p2-fixture',
+      projectEpoch: 3, canvasId: 'project-1', canvasEpoch: 2, canvasRevision: 4, episodeId: null, runtimeEpoch: 'image-run' };
+    const rootRef = 'r2-11111111-1111-4111-8111-111111111111';
+    const files = ['a', 'b'].map((letter) => {
+      const sha256 = letter.repeat(64);
+      return { relativePath: `media/${sha256}.png`, bytes: 20, sha256 };
+    });
+    const operationId = '22222222-2222-4222-8222-222222222222';
+    const receipt: NativeMediaTaskRecord = {
+      projectId: 'media-task:' + operationId, operationId, kind: 'native-media-task-v1',
+      ownerProjectId: context.projectId, canvasId: context.canvasId, episodeId: null, nodeId: 'image',
+      projectEpoch: 3, canvasEpoch: 2, sourceCanvasRevision: 1, category: 'image', fingerprintScheme: 'media-input-v3',
+      inputFingerprint: 'd'.repeat(64), requestFingerprint: 'e'.repeat(64), protocolDigest: 'f'.repeat(64),
+      modelRef: 'apimart/gpt-image-2.6-sunburst', providerConfigId: 'apimart', providerBase: 'https://example.test',
+      status: 'submitted', lease: 'lease', revision: 1, createdAt: 1, updatedAt: 1, remoteTaskId: 'original',
+      apimartImageBatch: { version: 1, requestedCount: 2,
+        submissions: [{ id: operationId, state: 'submitted', taskIds: ['original'] }],
+        tasks: [{ taskId: 'original', state: 'completed', results: files }] },
+    };
+    useAppStore.setState({ projectExecutionContext: context, nodes: [{ id: 'image', type: 'ai-image', position: { x: 0, y: 0 },
+      data: { type: 'ai-image', label: '图', prompt: '已经改过的提示词' } }] });
+    const repository = await import('../../src/services/indexedDb/nativeMediaTaskRepository');
+    const project = await import('../../src/services/indexedDb/nativeProjectRepository');
+    const fs = await import('../../src/services/fs/core');
+    const inspect = vi.spyOn(repository, 'readAvailableNativeMediaTask').mockResolvedValue(receipt);
+    const readTarget = vi.spyOn(project, 'readNativeOutputHistoryTarget').mockResolvedValue({
+      project: { id: context.projectId, epoch: 3, storageRootRef: rootRef,
+        storageBindings: [{ rootRef, folderName: 'fixture', sourceRecordIds: [], source: 'project-managed' }] },
+      canvas: { id: context.canvasId, epoch: 2, episodeId: null, storageRootRef: rootRef },
+    });
+    const desktop = vi.spyOn(fileService, 'isTauriEnv').mockReturnValue(true);
+    const directory = vi.spyOn(fs, 'getProjectDataDir').mockResolvedValue('/fixture');
+    const asset = vi.spyOn(fs, 'getAssetUrlFromPath').mockImplementation(async (path) => `asset://localhost/${encodeURIComponent(path)}`);
+    const reveal = vi.spyOn(fileService, 'revealFileInFolder').mockResolvedValue(undefined);
+    const second = files[1]!;
+    const stored = { path: second.relativePath, bytes: second.bytes, sha256: second.sha256 };
+    const release = registerMediaNodeOperation('image', true);
+    try {
+      await refreshNativeMediaNodeRecovery(context, 'image', operationId);
+      await expect(resumeNativeMediaFromNode('image', operationId)).rejects.toThrow('正在处理');
+      await expect(reviewNativeMediaFromNode('image', operationId)).rejects.toThrow('正在处理');
+      const localResult = { ...second };
+      Reflect.deleteProperty(localResult, 'bytes');
+      const incomplete = { ...receipt, apimartImageBatch: undefined, localResult };
+      inspect.mockResolvedValueOnce(incomplete).mockResolvedValueOnce(incomplete);
+      expect(await listNativeMediaNodeImages('image', operationId)).toEqual([]);
+      await expect(revealNativeMediaNodeImage('image', operationId, { ordinal: 0, sha256: second.sha256 })).rejects.toThrow('原图已变化或不可用');
+      expect(tauriCore.invoke).not.toHaveBeenCalledWith('inspect_project_archive_assets', expect.anything());
+
+      vi.mocked(tauriCore.invoke).mockResolvedValueOnce([]).mockResolvedValueOnce([stored]);
+      const images = await listNativeMediaNodeImages('image', operationId);
+      expect(images).toEqual([{ ordinal: 1, sha256: second.sha256 }]);
+      expect(reveal).not.toHaveBeenCalled();
+
+      vi.mocked(tauriCore.invoke).mockResolvedValueOnce([{ ...stored, sha256: '0'.repeat(64) }]);
+      await expect(revealNativeMediaNodeImage('image', operationId, images[0]!)).rejects.toThrow('摘要已变化');
+      expect(reveal).not.toHaveBeenCalled();
+
+      vi.mocked(tauriCore.invoke).mockResolvedValueOnce([stored]);
+      await revealNativeMediaNodeImage('image', operationId, images[0]!);
+      expect(reveal).toHaveBeenCalledExactlyOnceWith('/fixture/' + second.relativePath);
+
+      const controller = new AbortController();
+      asset.mockImplementationOnce(async (path) => {
+        controller.abort();
+        return `asset://localhost/${encodeURIComponent(path)}`;
+      });
+      vi.mocked(tauriCore.invoke).mockResolvedValueOnce([stored]);
+      await expect(revealNativeMediaNodeImage('image', operationId, images[0]!, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+      expect(reveal).toHaveBeenCalledOnce();
+
+      vi.mocked(tauriCore.invoke).mockResolvedValueOnce([stored]);
+      inspect.mockResolvedValueOnce(receipt).mockResolvedValueOnce(undefined);
+      await expect(revealNativeMediaNodeImage('image', operationId, images[0]!)).rejects.toThrow();
+      useAppStore.setState({ projectExecutionContext: { ...context, runtimeEpoch: 'other-run' } });
+      await expect(revealNativeMediaNodeImage('image', operationId, images[0]!)).rejects.toThrow();
+      expect(reveal).toHaveBeenCalledOnce();
+      expect(receipt.status).toBe('submitted');
+    } finally {
+      clearNativeMediaNodeRecovery(context, 'image', operationId);
+      useAppStore.setState({ projectExecutionContext: null });
+      release();
+      inspect.mockRestore(); readTarget.mockRestore(); desktop.mockRestore(); directory.mockRestore(); asset.mockRestore(); reveal.mockRestore();
     }
   });
 });

@@ -4,14 +4,13 @@ import type { BaseNodeData } from '../types';
 import type { CanvasContext } from '../types/project';
 import { useAppStore } from '../store/useAppStore';
 import { isProjectExpectedContextCurrent } from './projectExecutionContext';
-import { videoInputFingerprintMaterial } from './videoBatchPlanning';
 import { readNativeProjectView } from './nativeProjectNavigation';
 import { restoreProjectRecord } from './storageService';
 import { verifyNativeVideoImageReference, type NativeVideoImageReference } from './nativeVideoImageReference';
 import { sha256BytesHex } from './mediaDataUrl';
 import { readNativeMediaMessageInput } from './nativeMediaOrigin';
 import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
-import { nativeMediaInputMaterial } from './nativeMediaInput';
+import { matchesNativeCanvasMediaInputFingerprint, nativeCanvasMediaInputMaterial } from './nativeMediaInput';
 import type { NativeMediaSubmissionPreparation } from '../types/media';
 export type { NativeMediaSubmissionPreparation } from '../types/media';
 
@@ -50,10 +49,7 @@ export async function captureNativeVideoSubmissionBaseline(context: CanvasContex
   const initial = useAppStore.getState(), node = initial.nodes.find((item) => item.id === nodeId);
   const project = initial.projects.find((item) => item.id === context.canvasId);
   if (!node || !project) throw new Error('原视频节点不存在，未提交请求');
-  const inputMaterial = scheme === 'media-input-v2' || scheme === 'media-input-v3'
-    ? (node: Node<BaseNodeData>, state: Parameters<typeof nativeMediaInputMaterial>[1]) => nativeMediaInputMaterial(node, state, scheme)
-    : videoInputFingerprintMaterial;
-  const material = inputMaterial(node, initial);
+  const material = nativeCanvasMediaInputMaterial(node, initial, scheme);
   const settings = project.settings?.visualStyle;
   const styleId = settings?.locked ? settings.styleId : node.data.style || settings?.styleId;
   const links = initial.edges.filter((edge) => edge.target === nodeId);
@@ -76,14 +72,14 @@ export async function captureNativeVideoSubmissionBaseline(context: CanvasContex
   const restoredNodes = restored.nodes as Node<BaseNodeData>[], restoredEdges = restored.edges as Edge[];
   const restoredNode = restoredNodes.find((item) => item.id === nodeId);
   const latest = useAppStore.getState(), latestNode = latest.nodes.find((item) => item.id === nodeId);
-  if (!restoredNode || !latestNode || material !== inputMaterial(latestNode, latest)
-    || material !== inputMaterial(restoredNode, { ...latest, nodes: restoredNodes, edges: restoredEdges })) {
+  if (!restoredNode || !latestNode || material !== nativeCanvasMediaInputMaterial(latestNode, latest, scheme)
+    || material !== nativeCanvasMediaInputMaterial(restoredNode, { ...latest, nodes: restoredNodes, edges: restoredEdges }, scheme)) {
     throw new Error('保存的节点或参考素材与当前输入不一致，未提交请求');
   }
   const inputFingerprint = await sha256BytesHex(new TextEncoder().encode(material));
   assertContext();
   const finalState = useAppStore.getState(), finalNode = finalState.nodes.find((item) => item.id === nodeId);
-  if (!finalNode || material !== inputMaterial(finalNode, finalState)) throw new Error('媒体输入已变化，未提交请求');
+  if (!finalNode || material !== nativeCanvasMediaInputMaterial(finalNode, finalState, scheme)) throw new Error('媒体输入已变化，未提交请求');
   return { inputFingerprint, canvasRevision: canvas.revision };
 }
 
@@ -100,12 +96,10 @@ export async function assertNativeVideoSubmissionInput(record: NativeMediaTaskRe
   }
   const state = useAppStore.getState(), node = state.nodes.find((item) => item.id === record.nodeId);
   if (!node) throw new Error('原媒体节点不存在');
-  const inputMaterial = record.fingerprintScheme === 'media-input-v2' || record.fingerprintScheme === 'media-input-v3'
-    ? (node: Node<BaseNodeData>, state: Parameters<typeof nativeMediaInputMaterial>[1]) => nativeMediaInputMaterial(node, state, record.fingerprintScheme === 'media-input-v3' ? 'media-input-v3' : 'media-input-v2')
-    : videoInputFingerprintMaterial;
-  const material = inputMaterial(node, state);
-  const digest = await sha256BytesHex(new TextEncoder().encode(material));
+  const scheme = record.fingerprintScheme;
+  const material = nativeCanvasMediaInputMaterial(node, state, scheme);
+  const matches = await matchesNativeCanvasMediaInputFingerprint(node, state, scheme, material, record.inputFingerprint);
   const latest = useAppStore.getState(), next = latest.nodes.find((item) => item.id === record.nodeId);
-  if (digest !== record.inputFingerprint || !next || material !== inputMaterial(next, latest)
+  if (!matches || !next || material !== nativeCanvasMediaInputMaterial(next, latest, scheme)
     || !isProjectExpectedContextCurrent(context, latest, { checkCanvasRevision: false })) throw new Error('原媒体输入或画布已变化');
 }

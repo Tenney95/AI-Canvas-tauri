@@ -7,11 +7,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   state: { currentProjectId: 'project' as string | null,
     nodes: [{ id: 'video', data: { videoTaskState: 'paused' as string | undefined } }], showToast: vi.fn() },
-  resume: vi.fn(), tasks: [] as Array<Record<string, unknown>>, busy: false,
+  resume: vi.fn(), tasks: [] as Array<Record<string, unknown>>, busy: false, hookIndex: 0,
 }));
 vi.mock('react', async () => ({ ...await vi.importActual<typeof import('react')>('react'),
   memo: <T,>(component: T) => component,
-  useState: () => [mocks.busy, (value: boolean) => { mocks.busy = value; }],
+  useState: () => mocks.hookIndex++ === 0 ? [mocks.busy, (value: boolean) => { mocks.busy = value; }] : [undefined, vi.fn()],
+  useEffect: vi.fn(),
 }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: (selector: (state: typeof mocks.state) => unknown) => selector(mocks.state) }));
 vi.mock('../../src/services/pollManager', () => ({
@@ -32,7 +33,7 @@ function elements(value: unknown): Element[] {
   const element = value as Element;
   return [element, ...elements(element.props.children)];
 }
-const render = (overlay = false) => VideoTaskStatus({ nodeId: 'video', overlay });
+const render = (overlay = false) => { mocks.hookIndex = 0; return VideoTaskStatus({ nodeId: 'video', overlay }); };
 const retryButton = () => elements(render()).find((element) => element.type === 'button')!;
 
 beforeEach(() => {

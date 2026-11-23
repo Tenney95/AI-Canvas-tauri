@@ -1,13 +1,16 @@
 /**
  * MediaTaskStatus — 提供媒体任务状态界面与交互。
  */
-import { memo, useState, type ReactNode } from 'react';
+import { memo, useEffect, useState, type ReactNode } from 'react';
 import { RotateCw } from 'lucide-react';
 import { useAppStore } from '../../../store/useAppStore';
-import { discardMediaTask, getNativeMediaNodeRecovery, getPendingTasksForProject, hasMuseQueryIdentity, resumeMediaNodeTask, resumeNativeMediaFromNode, reviewNativeMediaFromNode } from '../../../services/pollManager';
+import { discardMediaTask, getNativeMediaNodeRecovery, getPendingTasksForProject, hasMuseQueryIdentity, listNativeMediaNodeImages,
+  resumeMediaNodeTask, resumeNativeMediaFromNode, revealNativeMediaNodeImage, reviewNativeMediaFromNode, type NativeMediaNodeImage } from '../../../services/pollManager';
+import { isTauriEnv } from '../../../services/fs/core';
 import { COMFY_OUTPUT_UNAVAILABLE_MESSAGE, COMFY_TEXT_OUTPUT_UNAVAILABLE_MESSAGE, getComfyQueryAuthorizationMessage } from '../../../services/comfyPolling';
 import { useT } from '../../../i18n';
 import { GenerationWaitTime } from './NodeGenerationProgress';
+import Select from '../../shared/Select';
 
 /** 节点和提示词窗口共用；继续查询只读取原任务，不重新提交生成。 */
 function MediaTaskStatus({ nodeId, overlay = false, children }: { nodeId: string; overlay?: boolean; children?: ReactNode }) {
@@ -21,21 +24,54 @@ function MediaTaskStatus({ nodeId, overlay = false, children }: { nodeId: string
   const showToast = useAppStore((state) => state.showToast);
   const [busy, setBusy] = useState(false);
   const [confirmedIdentity, setConfirmedIdentity] = useState<string>();
+  const [saved, setSaved] = useState<{ key: string; images: NativeMediaNodeImage[]; signal: AbortSignal; ordinal?: number }>();
+  const [revealing, setRevealing] = useState<AbortSignal>();
+  const imageKey = !busy && !loading && projectId && nativeOperationId && taskState === 'delivery_pending'
+    && (nodeType === 'ai-image' || nodeType === 'ai-animation' || nodeType === 'ai-panorama') && isTauriEnv()
+    ? JSON.stringify([projectId, nodeId, nativeOperationId]) : undefined;
+  useEffect(() => {
+    if (!imageKey || !nativeOperationId) return;
+    const controller = new AbortController();
+    void listNativeMediaNodeImages(nodeId, nativeOperationId, controller.signal).then((images) => {
+      if (!controller.signal.aborted) setSaved({ key: imageKey, images, signal: controller.signal });
+    }).catch(() => { /* 原图尚不能核实时，仍可继续取回任务。 */ });
+    return () => controller.abort();
+  }, [imageKey, nativeOperationId, nodeId]);
+  const originals = saved && saved.key === imageKey && !saved.signal.aborted ? saved : undefined;
+  const selected = originals?.images.find((image) => image.ordinal === originals.ordinal) ?? originals?.images[0];
+  const opening = !!originals && revealing === originals.signal;
   const task = !nativeOperationId && projectId && (taskState || videoPaused) ? getPendingTasksForProject(projectId).find((item) => item.nodeId === nodeId
     || item.mediaContext?.canvasNodeId === nodeId) : undefined;
   if (loading || (!taskState && !videoPaused) || (!task && !nativeOperationId)) return null;
 
   const deliveryPending = taskState === 'delivery_pending' || task?.mediaRecoveryState === 'delivery_pending';
-  const resumeLabel = t(deliveryPending && (!task || task.taskType === 'comfyui' && task.nodeType === 'ai-video')
+  const resumeLabel = t(selected ? '继续回填' : deliveryPending && (!task || task.taskType === 'comfyui' && task.nodeType === 'ai-video')
     ? '继续保存' : '继续查询 / 保存');
+  const imageMessage = t(selected ? '原图已保存到本机，尚未回填到节点。' : '图片尚未回填，可继续取回原结果。');
+  const reveal = async () => {
+    if (!selected || !originals || !nativeOperationId || originals.signal.aborted || opening) return;
+    setRevealing(originals.signal);
+    try {
+      await revealNativeMediaNodeImage(nodeId, nativeOperationId, selected, originals.signal);
+    } catch {
+      if (!originals.signal.aborted) showToast(t('无法定位这张原图，请检查本机项目目录。'), 'error');
+    } finally {
+      if (!originals.signal.aborted) setRevealing(undefined);
+    }
+  };
   const resume = () => {
-    if (busy) return;
+    if (busy || opening) return;
     const result = task ? resumeMediaNodeTask(task.nodeId)
       : nativeOperationId ? resumeNativeMediaFromNode(nodeId, nativeOperationId) : undefined;
     if (!result) return;
     setBusy(true);
-    void result.catch(() => {
-      showToast(t(deliveryPending ? '媒体已生成，保存或回填尚未完成；可继续取回原结果。'
+    void result.catch((error: unknown) => {
+      if (imageKey && getNativeMediaNodeRecovery(nodeId) !== nativeOperationId) return;
+      if (selected && error instanceof Error && error.name === 'NativeMediaInputChanged') {
+        showToast(t('生成时的输入与当前节点不符，可查看已保存原图。'), 'error');
+        return;
+      }
+      showToast(imageKey ? imageMessage : t(deliveryPending ? '媒体已生成，保存或回填尚未完成；可继续取回原结果。'
         : '暂时无法继续查询，请检查连接配置'), 'error');
     }).finally(() => setBusy(false));
   };
@@ -48,7 +84,7 @@ function MediaTaskStatus({ nodeId, overlay = false, children }: { nodeId: string
     ? t('提交状态未知，请到对应平台核对；应用不会自动重新生成。')
     : task?.taskType === 'comfyui' && task.comfyRecoveryState === 'output_unavailable'
       ? t(task.nodeType === 'ai-text' ? COMFY_TEXT_OUTPUT_UNAVAILABLE_MESSAGE : COMFY_OUTPUT_UNAVAILABLE_MESSAGE)
-      : (authorizationMessage ? t(authorizationMessage) : task?.videoRecoveryMessage) || (deliveryPending
+      : (authorizationMessage ? t(authorizationMessage) : task?.videoRecoveryMessage) || (imageKey ? imageMessage : deliveryPending
         ? task?.nodeType === 'ai-text' ? t('文本已生成，回填或保存尚未完成；可继续取回原结果。')
           : t('媒体已生成，保存或回填尚未完成；可继续取回原结果。')
         : t('查询已暂停，任务已保留'));
@@ -121,7 +157,15 @@ function MediaTaskStatus({ nodeId, overlay = false, children }: { nodeId: string
     </div>
     {!canQuery && overlay && <button type="button" className={`ui-btn ui-btn--sm ui-btn--node-${kind} shrink-0`}
       onClick={() => useAppStore.getState().openNodeDialog(nodeId)}>{t('查看任务详情')}</button>}
-    {canQuery && <button type="button" className={`ui-btn ui-btn--sm ui-btn--node-${kind} shrink-0`} disabled={busy}
+    {originals && selected && <div className="flex flex-wrap items-center justify-center gap-1">
+      {originals.images.length > 1 && <Select size="sm" value={selected.ordinal} disabled={opening}
+        aria-label={t('选择已保存的原图')}
+        options={originals.images.map((image) => ({ value: String(image.ordinal), label: t('原图 {number}', { number: image.ordinal + 1 }) }))}
+        onChange={(value) => setSaved({ ...originals, ordinal: Number(value) })} />}
+      <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary" disabled={opening}
+        onClick={() => void reveal()}>{t('查看已保存原图')}</button>
+    </div>}
+    {canQuery && <button type="button" className={`ui-btn ui-btn--sm ui-btn--node-${kind} shrink-0`} disabled={busy || opening}
       aria-label={resumeLabel} onClick={resume}>
       <RotateCw size={14} aria-hidden="true" />{resumeLabel}
     </button>}

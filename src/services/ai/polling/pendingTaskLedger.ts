@@ -3,7 +3,7 @@ import { isPollTimeoutError } from '../../pollTask';
 import { derivedNodePlacement, generateId, getNextDisplayId } from '../../../store/store.utils';
 import { useAppStore } from '../../../store/useAppStore';
 import { pickImageOutputParameters } from '../imageOutputParameters';
-import { MediaPersistenceError, type MediaPersistenceFailureKind } from '../../fileService';
+import { isTauriEnv, MediaPersistenceError, revealFileInFolder, type MediaPersistenceFailureKind } from '../../fileService';
 import { imageBatchArtifactId } from '../../imageBatchService';
 import { sanitizeComfyOutputFile, type ComfyOutputFile } from '../../comfyOutputs';
 import {
@@ -624,7 +624,7 @@ async function restoreNativeMediaNodeRecoveries(context: CanvasContext, nodeId?:
   }
 }
 
-function nativeMediaNodeActionTarget(nodeId: string, operationId: string) {
+function nativeMediaNodeActionTarget(nodeId: string, operationId: string, access: 'exclusive' | 'read' = 'exclusive') {
   const store = useAppStore.getState(), context = captureLegacyCanvasContext(store);
   const node = store.nodes.find((item) => item.id === nodeId);
   const isCurrent = () => {
@@ -633,9 +633,66 @@ function nativeMediaNodeActionTarget(nodeId: string, operationId: string) {
       && getNativeMediaNodeRecovery(nodeId, state) === operationId
       && state.nodes.some((item) => item.id === nodeId && item.data.role !== 'source');
   };
-  if (!context || !node || !isCurrent() || isMediaOperationActive(context.canvasId, nodeId)
-    || isNativeMediaNodeBusy(context.canvasId, nodeId)) throw new Error('原媒体任务已变化或正在处理');
+  if (!context || !node || !isCurrent() || (access === 'exclusive'
+    && (isMediaOperationActive(context.canvasId, nodeId) || isNativeMediaNodeBusy(context.canvasId, nodeId)))) {
+    throw new Error('原媒体任务已变化或正在处理');
+  }
   return { context, node, isCurrent };
+}
+
+export interface NativeMediaNodeImage { ordinal: number; sha256: string }
+
+async function readNativeMediaNodeImageFiles(nodeId: string, operationId: string, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  // 收尾时节点可能已经显示“待回填”，此时可以查看已经落盘的图片。
+  const { context, node, isCurrent } = nativeMediaNodeActionTarget(nodeId, operationId, 'read');
+  if (context.modelGeneration !== 1 || node.data.mediaTaskState !== 'delivery_pending' || !isTauriEnv()) return;
+  const current = await inspectNativeMediaNodeRecovery(context, nodeId, operationId, signal);
+  if (!current || current.state !== 'delivery_pending' || current.record.category !== 'image'
+    || node.data.type !== (current.record.targetNodeType ?? 'ai-image') || !isCurrent()) return;
+  const { nativeMediaLocalOutputs } = await import('../../nativeMediaCollection');
+  const files = nativeMediaLocalOutputs(current.record).map((file) =>
+    file.category === 'image' && Number.isSafeInteger(file.bytes) && file.bytes > 0 ? file : undefined);
+  if (!files.some(Boolean)) return;
+  const { readNativeOutputHistoryTarget } = await import('../../indexedDb/nativeProjectRepository');
+  const target = await readNativeOutputHistoryTarget(context.canvasId, { signal });
+  if (!target || target.project.id !== context.projectId || target.project.epoch !== context.projectEpoch
+    || target.canvas.id !== context.canvasId || target.canvas.epoch !== context.canvasEpoch
+    || target.canvas.episodeId !== context.episodeId || !isCurrent()) return;
+  const { createNativeMediaDisplayResolver } = await import('../../nativeMediaDisplay');
+  return { files, rootRef: current.record.resultRootRef ?? target.project.storageRootRef,
+    display: createNativeMediaDisplayResolver(target.project), isCurrent };
+}
+
+/** 无法核验的候选单独略过，其余图片保留原回执里的顺序与编号。 */
+export async function listNativeMediaNodeImages(nodeId: string, operationId: string, signal?: AbortSignal): Promise<NativeMediaNodeImage[]> {
+  const source = await readNativeMediaNodeImageFiles(nodeId, operationId, signal);
+  if (!source) return [];
+  const images: NativeMediaNodeImage[] = [];
+  for (const [ordinal, file] of source.files.entries()) {
+    signal?.throwIfAborted();
+    if (!source.isCurrent()) return [];
+    if (!file) continue;
+    try { await source.display(source.rootRef, file); }
+    catch { continue; }
+    images.push({ ordinal, sha256: file.sha256 });
+  }
+  signal?.throwIfAborted();
+  return source.isCurrent() ? images : [];
+}
+
+/** 点击时重读文件和回执，避免节点换了任务却打开上一张图。 */
+export async function revealNativeMediaNodeImage(nodeId: string, operationId: string, image: NativeMediaNodeImage, signal?: AbortSignal): Promise<void> {
+  const source = await readNativeMediaNodeImageFiles(nodeId, operationId, signal);
+  const file = source?.files[image.ordinal];
+  if (!source || !file || file.sha256 !== image.sha256) throw new Error('原图已变化或不可用');
+  const { filePath } = await source.display(source.rootRef, file);
+  const latest = await readNativeMediaNodeImageFiles(nodeId, operationId, signal);
+  const next = latest?.files[image.ordinal];
+  if (!source.isCurrent() || !latest?.isCurrent() || source.rootRef !== latest.rootRef || !next
+    || next.sha256 !== file.sha256 || next.bytes !== file.bytes || next.relativePath !== file.relativePath) throw new Error('原图已变化或不可用');
+  signal?.throwIfAborted();
+  await revealFileInFolder(filePath);
 }
 
 export async function reviewNativeMediaFromNode(nodeId: string, operationId: string): Promise<void> {

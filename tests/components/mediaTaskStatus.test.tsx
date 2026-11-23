@@ -2,7 +2,7 @@
  * mediaTaskStatus — 回归测试：跨媒体原任务续取入口。
  */
 import type { ReactElement } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BaseNodeData } from '../../src/types';
 
 const mocks = vi.hoisted(() => ({
@@ -12,18 +12,32 @@ const mocks = vi.hoisted(() => ({
   tasks: [] as Array<Record<string, unknown>>, resume: vi.fn(), discard: vi.fn(),
   nativeOperationId: undefined as string | undefined, resumeNative: vi.fn(), reviewNative: vi.fn(),
   busy: false, confirmed: undefined as string | undefined, cursor: 0,
+  desktop: true, images: vi.fn(), reveal: vi.fn(), extraState: [] as unknown[],
+  effectDeps: undefined as unknown[] | undefined, dispose: undefined as (() => void) | undefined,
 }));
 vi.mock('react', async () => ({ ...await vi.importActual<typeof import('react')>('react'),
   memo: <T,>(component: T) => component,
-  useState: () => mocks.cursor++ === 0
-    ? [mocks.busy, (value: boolean) => { mocks.busy = value; }]
-    : [mocks.confirmed, (value: string | undefined) => { mocks.confirmed = value; }],
+  useState: () => {
+    const index = mocks.cursor++;
+    if (index === 0) return [mocks.busy, (value: boolean) => { mocks.busy = value; }];
+    if (index === 1) return [mocks.confirmed, (value: string | undefined) => { mocks.confirmed = value; }];
+    return [mocks.extraState[index], (value: unknown) => { mocks.extraState[index] = value; }];
+  },
+  useEffect: (effect: () => (() => void) | undefined, deps: unknown[]) => {
+    if (mocks.effectDeps && deps.every((value, i) => value === mocks.effectDeps![i])) return;
+    mocks.dispose?.();
+    mocks.effectDeps = deps;
+    mocks.dispose = effect();
+  },
 }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: (selector: (state: typeof mocks.state) => unknown) => selector(mocks.state) }));
+vi.mock('../../src/services/fs/core', () => ({ isTauriEnv: () => mocks.desktop }));
+vi.mock('../../src/components/shared/Select', () => ({ default: 'select-control' }));
 vi.mock('../../src/services/pollManager', () => ({
   getPendingTasksForProject: () => mocks.tasks, resumeMediaNodeTask: mocks.resume, discardMediaTask: mocks.discard,
   getNativeMediaNodeRecovery: () => mocks.nativeOperationId, resumeNativeMediaFromNode: mocks.resumeNative,
   reviewNativeMediaFromNode: mocks.reviewNative,
+  listNativeMediaNodeImages: mocks.images, revealNativeMediaNodeImage: mocks.reveal,
   hasMuseQueryIdentity: (task: { taskType?: string; taskId: string }) => task.taskType === 'muse'
     && task.taskId === 'ac655c56-b537-4c04-8913-fd150fc0e92a',
 }));
@@ -48,9 +62,93 @@ beforeEach(() => {
   mocks.resume.mockReset().mockResolvedValue(undefined); mocks.discard.mockReset(); mocks.state.showToast.mockReset();
   mocks.nativeOperationId = undefined; mocks.resumeNative.mockReset().mockResolvedValue(undefined);
   mocks.reviewNative.mockReset().mockResolvedValue(undefined);
+  mocks.desktop = true; mocks.images.mockReset().mockResolvedValue([]); mocks.reveal.mockReset().mockResolvedValue(undefined);
+  mocks.extraState = []; mocks.effectDeps = undefined; mocks.dispose = undefined;
 });
+afterEach(() => mocks.dispose?.());
 
 describe('跨媒体原任务续取入口', () => {
+  const originalButton = () => elements(render()).find((element) => element.type === 'button' && element.props.children === '查看已保存原图');
+
+  it('只显示核验后的原图，批量时按回执编号选择，查看不会续查或重新生成', async () => {
+    mocks.nativeOperationId = 'original-operation';
+    mocks.state.nodes[0].data.mediaTaskState = 'delivery_pending';
+    const first = { ordinal: 0, sha256: 'a'.repeat(64) };
+    const third = { ordinal: 2, sha256: 'b'.repeat(64) };
+    mocks.images.mockResolvedValue([first, third]);
+    expect(originalButton()).toBeUndefined();
+    await vi.waitFor(() => expect(originalButton()).toBeDefined());
+    const select = elements(render()).find((element) => element.props['aria-label'] === '选择已保存的原图')!;
+    expect(select.props.options).toEqual([{ value: '0', label: '原图 1' }, { value: '2', label: '原图 3' }]);
+    (select.props.onChange as (value: string) => void)('2');
+    expect(JSON.stringify(render(true))).toContain('原图已保存到本机');
+    (originalButton()!.props.onClick as () => void)();
+    expect(mocks.reveal).toHaveBeenCalledExactlyOnceWith('media', 'original-operation', third, expect.any(AbortSignal));
+    expect(mocks.resumeNative).not.toHaveBeenCalled();
+    expect(mocks.resume).not.toHaveBeenCalled();
+  });
+
+  it('待下载、提交未知、网页和旧任务都不显示查看原图', async () => {
+    mocks.nativeOperationId = 'original-operation';
+    mocks.state.nodes[0].data.mediaTaskState = 'delivery_pending';
+    expect(originalButton()).toBeUndefined();
+    await Promise.resolve();
+    expect(originalButton()).toBeUndefined();
+    expect(JSON.stringify(render())).toContain('图片尚未回填');
+    expect(mocks.images).toHaveBeenCalledTimes(1);
+    mocks.state.nodes[0].data.mediaTaskState = 'submit_unknown';
+    expect(originalButton()).toBeUndefined();
+    mocks.desktop = false;
+    mocks.state.nodes[0].data.mediaTaskState = 'delivery_pending';
+    expect(originalButton()).toBeUndefined();
+    mocks.desktop = true;
+    mocks.nativeOperationId = undefined;
+    expect(originalButton()).toBeUndefined();
+    expect(mocks.images).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['NativeMediaInputChanged', '生成时的输入与当前节点不符，可查看已保存原图。'],
+    ['Error', '原图已保存到本机，尚未回填到节点。'],
+  ])('已保存原图的回填失败仅根据已核对的原因提示：%s', async (name, message) => {
+    mocks.nativeOperationId = 'original-operation';
+    mocks.state.nodes[0].data.mediaTaskState = 'delivery_pending';
+    mocks.images.mockResolvedValue([{ ordinal: 0, sha256: 'a'.repeat(64) }]);
+    mocks.resumeNative.mockRejectedValue(Object.assign(new Error('private error'), { name }));
+    await vi.waitFor(() => expect(originalButton()).toBeDefined());
+    const resume = elements(render()).find((element) => element.props['aria-label'] === '继续回填')!;
+    (resume.props.onClick as () => void)();
+    await vi.waitFor(() => expect(mocks.state.showToast).toHaveBeenCalledExactlyOnceWith(message, 'error'));
+    expect(mocks.reveal).not.toHaveBeenCalled();
+  });
+
+  it('切换任务后丢弃旧列表，卸载后取消定位并忽略迟到的错误', async () => {
+    const image = { ordinal: 0, sha256: 'c'.repeat(64) };
+    let finishFirst!: (images: typeof image[]) => void;
+    let failReveal!: () => void;
+    mocks.images.mockImplementationOnce(() => new Promise((resolve) => { finishFirst = resolve; }))
+      .mockResolvedValueOnce([]).mockResolvedValueOnce([image]);
+    mocks.nativeOperationId = 'old';
+    mocks.state.nodes[0].data.mediaTaskState = 'delivery_pending';
+    render();
+    mocks.nativeOperationId = 'new';
+    render();
+    finishFirst([image]);
+    await Promise.resolve();
+    expect(originalButton()).toBeUndefined();
+    mocks.nativeOperationId = 'latest';
+    await vi.waitFor(() => expect(originalButton()).toBeDefined());
+    expect(elements(render()).some((element) => element.props['aria-label'] === '选择已保存的原图')).toBe(false);
+    mocks.reveal.mockImplementationOnce(() => new Promise((_, reject) => { failReveal = () => reject(new Error('stale')); }));
+    (originalButton()!.props.onClick as () => void)();
+    expect(originalButton()?.props.disabled).toBe(true);
+    mocks.dispose?.();
+    expect((mocks.reveal.mock.calls[0][3] as AbortSignal).aborted).toBe(true);
+    failReveal();
+    await Promise.resolve();
+    expect(mocks.state.showToast).not.toHaveBeenCalled();
+  });
+
   it('新项目 ComfyUI 视频保存失败后只续取绑定的原操作', async () => {
     mocks.tasks = [];
     mocks.nativeOperationId = 'original-operation';
