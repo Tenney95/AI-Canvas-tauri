@@ -66,15 +66,16 @@ vi.mock('@tauri-apps/plugin-global-shortcut', () => ({
 }));
 
 import ProjectLibraryModal from '../../src/components/ProjectLibraryModal';
+import { rememberOpenedSeriesEpisode } from '../../src/store/store.utils';
 import Header from '../../src/components/Header';
 import { useKeyboardShortcuts } from '../../src/hooks/useKeyboardShortcuts';
 import { openAssetSearchWindow } from '../../src/utils/assetSearchWindow';
 
 const onClose = vi.fn();
-function render(page = true) {
+function render(page = true, isOpen = true) {
   driver.index = 0;
   driver.effects = [];
-  return ProjectLibraryModal({ isOpen: true, onClose, presentation: page ? 'page' : 'modal' }) as Element;
+  return ProjectLibraryModal({ isOpen, onClose, presentation: page ? 'page' : 'modal' }) as Element;
 }
 function findAll(tree: unknown, predicate: (element: Element) => boolean): Element[] {
   if (Array.isArray(tree)) return tree.flatMap((element) => findAll(element, predicate));
@@ -261,6 +262,66 @@ describe('project startup page', () => {
     expect(onClose).toHaveBeenCalledOnce();
     expect(driver.state.switchProject).not.toHaveBeenCalled();
     expect(driver.state.currentProjectId).toBe('ep2');
+  });
+
+  const series = { id: 'series', name: '剧集', createdAt: 1, updatedAt: 1 };
+  const first = { ...series, id: 'ep1', name: '第一集', parentId: series.id, episodeNo: 1, snapshot: 'first-cover' };
+  const second = { ...first, id: 'ep2', name: '第二集', episodeNo: 2, snapshot: 'second-cover' };
+
+  it('skips episode preference reads while the project list is hidden', () => {
+    driver.state.projects = [series, first, second];
+    const read = vi.spyOn(localStorage, 'getItem');
+    try {
+      render(false, false);
+      driver.state = { ...driver.state, assetsPanelOpen: true, assetsPanelMode: 'page' };
+      render();
+      expect(read).not.toHaveBeenCalledWith('ai-canvas.last-episode.v1:' + series.id);
+    } finally { read.mockRestore(); }
+  });
+
+  it.each([true, false])('opens the remembered episode and shows its cover (startup page: %s)', async (page) => {
+    driver.state.projects = [series, first, second];
+    rememberOpenedSeriesEpisode(second);
+    driver.state.switchProject = vi.fn(async (id) => { driver.state.currentProjectId = id; return id; });
+    const tree = render(page);
+    expect(find(tree, (element) => element.props.snapshot === second.snapshot)).toBeDefined();
+    await click(button(tree, '打开项目 剧集'));
+    expect(driver.state.switchProject).toHaveBeenCalledWith(second.id, { captureSnapshot: !page });
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it.each(['deleted', 'moved', 'unavailable'])('falls back to the first remaining episode: %s', async (reason) => {
+    rememberOpenedSeriesEpisode(second);
+    driver.state.projects = [series, first];
+    if (reason === 'moved') driver.state.projects.push({ ...second, parentId: 'another-series' });
+    if (reason === 'unavailable') driver.state.projects.push(second);
+    const read = reason === 'unavailable' ? vi.spyOn(localStorage, 'getItem').mockImplementation(() => { throw new Error(); }) : undefined;
+    try {
+      await click(button(render(), '打开项目 剧集'));
+      expect(driver.state.switchProject).toHaveBeenCalledWith(first.id, { captureSnapshot: false });
+    } finally { read?.mockRestore(); }
+  });
+
+  it.each(['ready', 'readonly', 'error'] as const)('opens the workbench only for a writable, confirmed episode: %s', async (status) => {
+    vi.stubGlobal('window', { innerWidth: 1000, innerHeight: 700 });
+    vi.stubGlobal('document', { body: {} });
+    try {
+      driver.state.projects = [series, first, second];
+      rememberOpenedSeriesEpisode(second);
+      driver.state.switchProject = vi.fn(async (id) => {
+        driver.state.currentProjectId = id;
+        driver.state.projectLoadStatus = status;
+        return status === 'error' ? undefined : id;
+      });
+      const card = find(render(), (element) => typeof element.props.onContextMenu === 'function'
+        && typeof element.props.className === 'string' && element.props.className.startsWith('group '));
+      (card.props.onContextMenu as (event: unknown) => void)({ preventDefault: vi.fn(), clientX: 10, clientY: 20 });
+      await click(find(render(), (element) => element.props.label === '打开剧本创作工作台'));
+      expect(driver.state.switchProject).toHaveBeenCalledWith(second.id, { captureSnapshot: false });
+      if (status === 'ready') expect(driver.state.requestScriptWorkbenchOpen).toHaveBeenCalledWith(second.id);
+      else expect(driver.state.requestScriptWorkbenchOpen).not.toHaveBeenCalled();
+      expect(onClose).toHaveBeenCalledTimes(status === 'error' ? 0 : 1);
+    } finally { vi.unstubAllGlobals(); }
   });
 });
 

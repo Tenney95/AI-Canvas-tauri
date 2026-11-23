@@ -8,7 +8,7 @@ import { motion } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 import { GENERAL_ASSISTANT_SCOPE_ID } from '../services/chat/assistantScope';
-import { listTopLevelProjects, resolveOpenTargetId, seriesOwnerId } from '../store/store.utils';
+import { listTopLevelProjects, resolveProjectCardTargetId, seriesOwnerId } from '../store/store.utils';
 import type { NativeProjectViewItem } from '../store/nativeProjectView';
 import type { CanvasProject } from '../types';
 import * as fileService from '../services/fileService';
@@ -153,6 +153,7 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
   // 项目库只列顶层项目；分集在画布右侧的分集栏里管理。
   const topLevelProjects = useMemo(() => listTopLevelProjects(projects), [projects]);
   const activeProjectId = currentProjectId ? seriesOwnerId(projects, currentProjectId) : null;
+  const openedCanvasId = projectLoadStatus === 'ready' || projectLoadStatus === 'readonly' ? currentProjectId : null;
   const deleteEpisodeCount = deleteTarget ? projects.filter((project) => project.parentId === deleteTarget.id).length : 0;
   const deleteBinding = (deleteTarget as Partial<NativeProjectViewItem> | null)?.nativeView;
   const recycleMediaOnDelete = isTauri && deleteBinding?.episodeId === null;
@@ -176,9 +177,17 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
   }, [activeProjectId, topLevelProjects, query, sort]);
 
   const coverTargets = useMemo(() => {
+    const targets = new Map<string, CanvasProject | undefined>();
+    if (!isOpen || resourcePageOpen) return targets;
     const byId = new Map(projects.map((project) => [project.id, project]));
-    return new Map(visibleProjects.map((project) => [project.id, byId.get(resolveOpenTargetId(projects, project.id))]));
-  }, [projects, visibleProjects]);
+    for (const project of visibleProjects) {
+      if (project.snapshot) continue;
+      const targetId = project.id === activeProjectId && openedCanvasId
+        ? openedCanvasId : resolveProjectCardTargetId(projects, project.id);
+      targets.set(project.id, byId.get(targetId));
+    }
+    return targets;
+  }, [projects, visibleProjects, activeProjectId, openedCanvasId, isOpen, resourcePageOpen]);
   const [nativeCovers, setNativeCovers] = useState<{ targets: typeof coverTargets; snapshots: Map<string, string> }>();
   useEffect(() => {
     if (!isOpen || resourcePageOpen) return;
@@ -259,20 +268,22 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
 
   const openProject = async (projectId: string, openWorkbench = false) => {
     if (projectBusy || listUnavailable) return;
-    // 在画布中再次点当前剧集时，保留正在编辑的分集，不切回第一集。
-    if (projectId === activeProjectId && projectLoadStatus === 'ready') {
-      if (openWorkbench && currentProjectId) useAppStore.getState().requestScriptWorkbenchOpen(currentProjectId);
+    // 当前剧集直接沿用已打开的画布，即使本机偏好不可读也不用重新加载。
+    if (projectId === activeProjectId && openedCanvasId) {
+      if (openWorkbench && projectLoadStatus === 'ready') useAppStore.getState().requestScriptWorkbenchOpen(openedCanvasId);
       closeLibrary();
       return;
     }
     // 只有从项目库切走才重拍缩略图 —— 这里是唯一会看到缩略图的地方
     setIsOpeningProject(true);
     try {
-      await switchProject(projectId, { captureSnapshot: !isStartPage });
+      const targetId = resolveProjectCardTargetId(useAppStore.getState().projects, projectId);
+      const openedId = await switchProject(targetId, { captureSnapshot: !isStartPage });
       const state = useAppStore.getState();
-      if (state.currentProjectId === resolveOpenTargetId(state.projects, projectId)
-        && state.projectLoadStatus === 'ready') {
-        if (openWorkbench && state.currentProjectId) state.requestScriptWorkbenchOpen(state.currentProjectId);
+      if (openedId === targetId && state.currentProjectId === targetId
+        && (targetId === projectId || state.projects.some((project) => project.id === targetId && project.parentId === projectId))
+        && (state.projectLoadStatus === 'ready' || state.projectLoadStatus === 'readonly')) {
+        if (openWorkbench && state.projectLoadStatus === 'ready') state.requestScriptWorkbenchOpen(targetId);
         closeLibrary();
       }
     } catch {

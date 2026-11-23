@@ -21,7 +21,7 @@ import { createSharedProjectAssetActions } from './projects/sharedProjectAssetAc
 import { createEpisodeCreativeActions } from './projects/episodeCreativeActions';
 import type { BaseNodeData, CanvasProject, NodeGroup, ProjectSettings } from '../types';
 import type { ProjectSaveData } from '../services/fileService';
-import { projectMemoryOwnerId } from './store.utils';
+import { forgetDeletedSeriesEpisode, projectMemoryOwnerId, rememberOpenedSeriesEpisode } from './store.utils';
 import * as fileService from '../services/fileService';
 import { resumePendingTasks, getPendingTasksForProject } from '../services/pollManager';
 import { normalizeProjectSettings } from '../services/projectSettingsService';
@@ -424,7 +424,7 @@ async function runNativeImportMutation(set: ProjectSliceSet, get: ProjectSliceGe
       await activateNativeProject(set, get, entry, target, assertCurrent, false);
       get().loadConversationsForProject(target).catch((e) => console.warn('[项目更新] 加载会话失败:', e));
       if (target !== activeId) {
-        rememberActiveProject(target);
+        rememberActiveProject(get(), target);
         get().repairInterruptedForProject(target).catch((e) => console.warn('[项目更新] 修复中断消息失败:', e));
         get().loadAgentTasksForProject(target).catch((e) => console.warn('[项目更新] 加载任务失败:', e));
       }
@@ -582,7 +582,9 @@ function hasProjectCanvasData(data: ProjectSaveData | null): data is ProjectSave
   return Boolean(data && Array.isArray(data.nodes) && Array.isArray(data.edges));
 }
 
-function rememberActiveProject(projectId: string): void {
+function rememberActiveProject(state: AppState, projectId: string): void {
+  if (state.currentProjectId !== projectId || (state.projectLoadStatus !== 'ready' && state.projectLoadStatus !== 'readonly')) return;
+  rememberOpenedSeriesEpisode(state.projects.find((item) => item.id === projectId));
   activeProjectMetadataWrite = activeProjectMetadataWrite
     .then(() => setLastActiveProjectId(projectId))
     .catch(() => {
@@ -1089,16 +1091,16 @@ const projectTransferContext = {
 };
 export type ProjectTransferContext = typeof projectTransferContext;
 
-const seriesStructureContext = {
+const seriesStructureContext = (rememberActiveProject: (id: string) => void) => ({
   nativeRuntime, nativeBinding, loadProjectCatalog, activateNativeProject, mutateNativeMetadata,
   writeNativeProjectText, episodeCreativeWrites, serializeEpisodeCreativeWrite, rememberActiveProject,
   projectAssetSyncBarriers, projectImportsApplying, waitForProjectSaveQueue, enqueueProjectSave,
   patchProjectRecord,
   getProjectSwitchSequence,
-};
-export type SeriesStructureContext = typeof seriesStructureContext;
+});
+export type SeriesStructureContext = ReturnType<typeof seriesStructureContext>;
 
-const projectNavigationContext = {
+const projectNavigationContext = (rememberActiveProject: (id: string) => void) => ({
   NATIVE_PROJECT_PENDING_EDITS, nativeCanvasHasUnsavedEdits, hasMediaImportBlockingNavigation,
   nativeKnownIds, nativeRuntime, nativeBinding, loadProjectCatalog, activateNativeProject,
   projectInitializations, episodeCreativeWrites, getProjectGroups, withLoadedProjectSummaries,
@@ -1109,8 +1111,8 @@ const projectNavigationContext = {
   clearProjectSnapshot: (projectId: string) => {
     if (lastCapturedCanvasState?.projectId === projectId) lastCapturedCanvasState = null;
   },
-};
-export type ProjectNavigationContext = typeof projectNavigationContext;
+});
+export type ProjectNavigationContext = ReturnType<typeof projectNavigationContext>;
 
 const sharedProjectAssetContext = {
   readNativeProjectWriteBlock, nativeKnownIds, nativeRuntime, nativeBinding, saveNativeCurrentProject,
@@ -1138,8 +1140,9 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       }
     });
   }
-  const seriesStructureActions = createSeriesStructureActions(set, get, seriesStructureContext);
-  const projectNavigationActions = createProjectNavigationActions(set, get, api, projectNavigationContext);
+  const rememberOpened = (id: string) => rememberActiveProject(get(), id);
+  const seriesStructureActions = createSeriesStructureActions(set, get, seriesStructureContext(rememberOpened));
+  const projectNavigationActions = createProjectNavigationActions(set, get, api, projectNavigationContext(rememberOpened));
   return {
   projects: [
     { id: 'default', name: '默认画布', createdAt: Date.now(), updatedAt: Date.now() },
@@ -1356,7 +1359,11 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
 
   ...createProjectTransferActions(set, get, projectTransferContext),
 
-  deleteProject: projectNavigationActions.deleteProject,
+  deleteProject: async (id, options) => {
+    const target = get().projects.find((project) => project.id === id);
+    await projectNavigationActions.deleteProject(id, options);
+    if (target && !get().projects.some((project) => project.id === id)) forgetDeletedSeriesEpisode(target);
+  },
   switchProject: projectNavigationActions.switchProject,
   returnToStartPage: projectNavigationActions.returnToStartPage,
 

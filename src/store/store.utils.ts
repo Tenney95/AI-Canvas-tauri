@@ -3,6 +3,7 @@
  */
 import type { Node } from '@xyflow/react';
 import type { BaseNodeData, CanvasProject } from '../types';
+import type { NativeProjectViewItem } from './nativeProjectView';
 
 export const generateId = () => Math.random().toString(36).substring(2, 11);
 
@@ -47,6 +48,46 @@ export function listTopLevelProjects(projects: CanvasProject[]): CanvasProject[]
 /** 剧集项目自身没有画布，打开它等于打开它的第一集。 */
 export function resolveOpenTargetId(projects: CanvasProject[], projectId: string): string {
   return listEpisodes(projects, projectId)[0]?.id ?? projectId;
+}
+
+const LAST_EPISODE_KEY = 'ai-canvas.last-episode.v1:';
+
+function episodeIdentity(project: CanvasProject): string {
+  return (project as Partial<NativeProjectViewItem>).nativeView?.episodeId ?? project.id;
+}
+
+export function rememberOpenedSeriesEpisode(project: CanvasProject | undefined): void {
+  if (!project?.parentId) return;
+  try {
+    globalThis.localStorage?.setItem(LAST_EPISODE_KEY + project.parentId, episodeIdentity(project));
+  } catch {
+    // 本机偏好不可写时，仍然可以打开画布。
+  }
+}
+
+export function forgetDeletedSeriesEpisode(project: CanvasProject): void {
+  const key = LAST_EPISODE_KEY + (project.parentId ?? project.id);
+  try {
+    if (!project.parentId || globalThis.localStorage?.getItem(key) === episodeIdentity(project)) {
+      globalThis.localStorage?.removeItem(key);
+    }
+  } catch {
+    // 删除已经完成，偏好清理失败时，下次打开还会重新核对成员。
+  }
+}
+
+/** 项目卡片续开本机上次看过的分集，已移出本剧的记录按当前顺序回到第一集。 */
+export function resolveProjectCardTargetId(projects: CanvasProject[], projectId: string): string {
+  const episodes = listEpisodes(projects, projectId);
+  if (!episodes.length) return projectId;
+  try {
+    const lastEpisode = globalThis.localStorage?.getItem(LAST_EPISODE_KEY + projectId);
+    const match = lastEpisode && episodes.find((episode) => episodeIdentity(episode) === lastEpisode);
+    if (match) return match.id;
+  } catch {
+    // 隐私模式等环境可能无法读取本机存储。
+  }
+  return episodes[0].id;
 }
 
 export function computeImageNodeDimensions(dataUrl: string): Promise<{ nodeWidth: number; nodeHeight: number }> {

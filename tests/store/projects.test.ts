@@ -15,6 +15,8 @@ import { ProjectImportCommittedError } from '../../src/services/projectImportOut
 import type { PreparedProjectImport, ProjectImportPreview } from '../../src/services/projectImportService';
 import type { ProjectCatalogEntry } from '../../src/services/projectModelRouter';
 import type { NativeProjectAggregate } from '../../src/services/indexedDb/nativeProjectRepository';
+import * as nativeRepository from '../../src/services/indexedDb/nativeProjectRepository';
+import { rememberOpenedSeriesEpisode, resolveOpenTargetId, resolveProjectCardTargetId } from '../../src/store/store.utils';
 import { useAppStore } from '../../src/store/useAppStore';
 import { createProjectSlice, subscribeManualProjectSaveSuccess, waitForPendingProjectSaves } from '../../src/store/store.projects';
 import { createOrRefreshHotStore } from '../../src/store/store.hotReload';
@@ -911,6 +913,19 @@ describe('project creation', () => {
     expect(nativeMocks.readEpisode).toHaveBeenLastCalledWith(projectId, second.id);
     await expect(useAppStore.getState().loadEpisodeCreative(second.canvasId)).resolves.toMatchObject({ episodeScript: '正文 2' });
     expect(nativeMocks.readEpisode).toHaveBeenCalledTimes(2);
+
+    const pending = vi.spyOn(nativeRepository, 'listNativeProjectPendingTransfers').mockResolvedValueOnce([
+      { kind: 'update', phase: 'prepared', operationId: 'recording-readonly', updatedAt: 1 },
+    ]);
+    try {
+      useAppStore.setState({ saveCurrentProject: vi.fn(async () => first.canvasId) });
+      expect(await useAppStore.getState().switchProject(second.canvasId)).toBe(second.canvasId);
+      const state = useAppStore.getState();
+      expect(state.projectLoadStatus).toBe('readonly');
+      expect(resolveProjectCardTargetId(state.projects, projectId)).toBe(second.canvasId);
+      expect(localStorage.getItem('ai-canvas.last-episode.v1:' + projectId)).toBe(second.id);
+      expect(resolveOpenTargetId(state.projects, projectId)).toBe(first.canvasId);
+    } finally { pending.mockRestore(); }
   });
 });
 
@@ -926,6 +941,75 @@ export type ProjectNavigationFixture = typeof projectNavigationFixture;
 
 describe('project switching', () => {
   registerProjectSwitchTests(projectNavigationFixture);
+
+  it('只记录成功打开的旧分集，删除后只清理属于被删对象的记录', async () => {
+    stubInitializationActions();
+    const owner = { id: 'resume-series', name: '剧集', createdAt: 1, updatedAt: 1 };
+    const first = { ...owner, id: 'resume-first', parentId: owner.id, episodeNo: 1 };
+    const second = { ...first, id: 'resume-second', episodeNo: 2 };
+    const third = { ...first, id: 'resume-third', episodeNo: 3 };
+    const other = { ...owner, id: 'resume-other' };
+    const projects = [owner, first, second, third, other];
+    const key = 'ai-canvas.last-episode.v1:' + owner.id;
+    useAppStore.setState({ projects, currentProjectId: null,
+      saveCurrentProject: vi.fn(async () => useAppStore.getState().currentProjectId ?? undefined) });
+    fileMocks.loadProjectData.mockImplementation(async (id: string) => {
+      const project = projects.find((item) => item.id === id);
+      return project && { ...project, nodes: [], edges: [], groups: [] };
+    });
+    const { switchProject, deleteProject } = useAppStore.getState();
+    expect(await switchProject(second.id)).toBe(second.id);
+    fileMocks.loadProjectData.mockResolvedValueOnce(null);
+    expect(await switchProject(third.id)).toBeUndefined();
+    expect(resolveProjectCardTargetId(projects, owner.id)).toBe(second.id);
+
+    let finishRead!: (value: unknown) => void, entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    fileMocks.loadProjectData.mockImplementationOnce(() => {
+      entered();
+      return new Promise((resolve) => { finishRead = resolve; });
+    });
+    const late = switchProject(first.id);
+    await started;
+    expect(resolveProjectCardTargetId(projects, owner.id)).toBe(second.id);
+    expect(await switchProject(third.id)).toBe(third.id);
+    finishRead({ ...first, nodes: [], edges: [], groups: [] });
+    expect(await late).toBeUndefined();
+    expect(resolveProjectCardTargetId(projects, owner.id)).toBe(third.id);
+    await switchProject(second.id);
+
+    await deleteProject(second.id);
+    expect(useAppStore.getState().currentProjectId).toBe(first.id);
+    expect(localStorage.getItem(key)).toBe(first.id);
+    await switchProject(other.id);
+    expect(await switchProject(third.id)).toBe(third.id);
+    await switchProject(other.id);
+    await deleteProject(third.id);
+    expect(localStorage.getItem(key)).toBeNull();
+    await switchProject(first.id);
+    await deleteProject(first.id);
+    expect(localStorage.getItem(key)).toBe(first.id);
+    await switchProject(other.id);
+    await deleteProject(owner.id);
+    expect(localStorage.getItem(key)).toBeNull();
+  });
+
+  it('指定分集、独立画布和零集剧集保留各自目标，本机偏好不可写时仍能读取原记录', () => {
+    const owner = { id: 'series', name: '剧集', createdAt: 1, updatedAt: 1 };
+    const first = { ...owner, id: 'first', parentId: owner.id, episodeNo: 1 };
+    const second = { ...first, id: 'second', episodeNo: 2 };
+    const standalone = { ...owner, id: 'standalone-canvas', nativeView: { projectId: 'standalone', canvasId: 'standalone-canvas', episodeId: null } };
+    rememberOpenedSeriesEpisode(second);
+    const write = vi.spyOn(localStorage, 'setItem').mockImplementationOnce(() => { throw new Error(); });
+    try {
+      rememberOpenedSeriesEpisode(first);
+      const projects = [owner, first, second, standalone];
+      expect(resolveProjectCardTargetId(projects, owner.id)).toBe(second.id);
+      expect(resolveProjectCardTargetId(projects, first.id)).toBe(first.id);
+      expect(resolveProjectCardTargetId(projects, standalone.id)).toBe(standalone.id);
+      expect(resolveProjectCardTargetId([owner], owner.id)).toBe(owner.id);
+    } finally { write.mockRestore(); }
+  });
 });
 
 describe('returning to the startup page', () => {
