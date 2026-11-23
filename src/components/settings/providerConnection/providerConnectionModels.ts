@@ -69,6 +69,9 @@ export function mergeModels(
       executionProfile: configuration?.executionProfile ?? fallback?.executionProfile,
       imageReferenceRequestMode: category === 'image'
         ? configuration?.imageReferenceRequestMode ?? fallback?.imageReferenceRequestMode : undefined,
+      catalogTextLimits: category === 'text' ? incomingContract?.catalogTextLimits
+        ?? (incomingContract && Object.hasOwn(incomingContract, 'catalogTextLimits') ? undefined : currentContract?.catalogTextLimits)
+        : undefined,
     });
   }
   return [...models.values()];

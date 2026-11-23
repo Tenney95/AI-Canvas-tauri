@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Config slice — API provider configuration (keys, URLs) persistence
  */
 import type { StateCreator } from 'zustand';
@@ -33,7 +33,8 @@ import { migrateLegacyAppearance } from '../services/appearance/appearanceMigrat
 import { syncPerformanceModeRuntime } from '../services/performanceModeRuntime';
 import { hydrateRunningHubAliases, isRunningHubCredentialAlias } from '../services/runninghubSiteCredentials';
 import { normalizeComfyRefmodAssets } from '../utils/comfyRefmod';
-import { getProviderPolicy } from '../services/ai/providerPolicies';
+import { assertMagpieMediaSelection, getProviderPolicy, readPositiveTokenCount, resolveMagpieContextWindow } from '../services/ai/providerPolicies';
+import { normalizeMagpieBaseUrl } from '../services/ai/providerBaseUrl';
 import { parseCreationProfile } from '../services/creationProfiles/creationProfileManifest';
 import { getBillingStorageErrorMessage } from '../services/billing/billingStorageErrors';
 
@@ -161,14 +162,30 @@ function syncProviderModels(
       .map((model) => [model.modelId, model]),
   );
   const otherModels = generalModels.filter((model) => model.providerConfigId !== providerConfigId);
+  const magpieCatalog = config.catalogId === 'magpie'
+    ? new Map(config.catalogModels?.map((model) => [model.id, model])) : undefined;
   const selectedModels = config.selectedModels.map((model) => {
     const existing = linkedModels.get(model.id);
+    const listed = magpieCatalog?.get(model.id);
+    const textLimits = listed?.category === 'text' ? listed.catalogTextLimits : undefined;
+    if (magpieCatalog) {
+      assertMagpieMediaSelection(model);
+      if (listed && model.category !== listed.category) {
+        throw new Error(`模型“${model.name}”的类别与当前 Magpie 目录不一致，请核对模型与调用协议`);
+      }
+    }
+    const contextWindow = magpieCatalog
+      ? model.category === 'text' ? resolveMagpieContextWindow({ ...model, catalogTextLimits: textLimits }) : undefined
+      : model.contextWindow ?? existing?.contextWindow;
+    const catalogMaxOutputTokens = model.category === 'text' && textLimits?.source === 'magpie'
+      ? readPositiveTokenCount(textLimits.maxOutputTokens) : undefined;
     return {
       id: existing?.id || createGeneralModelId(providerConfigId, model.id),
       name: model.name,
       modelId: model.id,
       category: model.category,
-      contextWindow: model.contextWindow ?? existing?.contextWindow,
+      contextWindow,
+      ...(catalogMaxOutputTokens !== undefined ? { catalogMaxOutputTokens } : {}),
       description: model.description ?? existing?.description,
       inputModalities: model.inputModalities ?? existing?.inputModalities,
       providerConfigId,
@@ -311,6 +328,7 @@ function sanitizeGeneralModel(
     modelId: model.modelId,
     category: model.category,
     contextWindow: model.contextWindow,
+    ...(model.catalogMaxOutputTokens !== undefined ? { catalogMaxOutputTokens: model.catalogMaxOutputTokens } : {}),
     description: model.description,
     inputModalities: model.inputModalities,
     providerConfigId,
@@ -507,7 +525,7 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
     // 声明式任务恢复读取连接保存的地址；分享省略默认地址时也保留完整执行身份。
     const nextConfig = cfg.catalogId === 'libapi' || (!cfg.catalogId && providerName === 'libapi')
       ? { ...cfg, baseUrl: cfg.baseUrl?.trim() || LIBAPI_BASE_URL }
-      : cfg;
+      : cfg.catalogId === 'magpie' ? { ...cfg, baseUrl: normalizeMagpieBaseUrl(cfg.baseUrl) || undefined } : cfg;
     set((state) => ({
       config: {
         ...state.config,

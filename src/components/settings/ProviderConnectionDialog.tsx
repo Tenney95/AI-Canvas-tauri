@@ -40,7 +40,7 @@ import {
   resolveProviderImageModelForValidation,
   type ProviderDefinition,
 } from '../../services/ai/providerCatalogService';
-import { normalizeBaseUrl } from '../../services/ai/providerBaseUrl';
+import { normalizeBaseUrl, normalizeMagpieBaseUrl } from '../../services/ai/providerBaseUrl';
 import { testProviderConnection } from '../../services/testConnection';
 import { confirmAction } from '../../services/confirmDialog';
 import { useAppStore } from '../../store/useAppStore';
@@ -136,7 +136,7 @@ export default function ProviderConnectionDialog({
   const initialSelectedModels = materializeLegacyImageProtocolDefault(
     initialConfig?.selectedModels || [], initialConfig,
   );
-  const initialModel = initialDefinition?.id === 'custom-openai'
+  const initialModel = initialDefinition?.id === 'custom-openai' || initialDefinition?.id === 'magpie'
     ? initialSelectedModels.find((model) => model.id === initialModelId)
     : undefined;
   const initialCatalogModels = initialConfig?.catalogModels || [];
@@ -192,6 +192,9 @@ export default function ProviderConnectionDialog({
         .map((model) => applyKnownVideoTemplateDefaults(model, initialBaseUrl));
     },
   );
+  const [magpieSnapshot, setMagpieSnapshot] = useState(() => initialDefinition?.id === 'magpie' && initialConfig?.catalogModels !== undefined
+    ? { models: initialCatalogModels, updatedAt: initialConfig.catalogUpdatedAt } : undefined);
+  const magpieCatalogIds = useMemo(() => magpieSnapshot ? new Set(magpieSnapshot.models.map((model) => model.id)) : undefined, [magpieSnapshot]);
   const [selectedIds, setSelectedIds] = useState(() =>
     new Set(initialSelectedModels.map((model) => model.id)),
   );
@@ -257,6 +260,7 @@ export default function ProviderConnectionDialog({
       return item.id === 'tavily' && (!hasWebSearchConnection || isWebSearchProvider);
     }
     return item.id === 'custom-openai'
+      || item.id === 'magpie'
       || item.id === 'cccapi'
       || item.kind === 'workflow-api'
       || item.id === initialDefinitionId
@@ -376,6 +380,7 @@ export default function ProviderConnectionDialog({
       if (nextDefinition.id === 'runninghub-model') setSiteKeys(runningHubSiteDrafts(providerConfigs));
       const localModels = nextDefinition.policy.catalog.initialModelsOnCreate === 'empty' ? [] : fallbackModels[nextDefinition.id] || [];
       setModels(localModels);
+      setMagpieSnapshot(undefined);
       updateSelectedIds(new Set());
       setCatalogStatus(localModels.length > 0 ? 'ready' : 'idle');
       setCatalogMessage('');
@@ -430,10 +435,21 @@ export default function ProviderConnectionDialog({
       setModels((current) => mergeModels(fallbackModels.toapis || [], current.filter((model) => checkedIds.has(model.id)),
         { preferIncomingConfiguration: true }));
     }
+    if (definition?.id === 'magpie' && normalizeMagpieBaseUrl(next) !== normalizeMagpieBaseUrl(baseUrl)) invalidateMagpieCatalog();
     setBaseUrl(next);
   };
 
+  const invalidateMagpieCatalog = () => {
+    abortRef.current?.abort();
+    setMagpieSnapshot(undefined);
+    setCatalogStatus('idle');
+    setCatalogMessage('');
+    setModels((current) => current.filter((model) => selectedIds.has(model.id))
+      .map((model) => ({ ...model, catalogTextLimits: undefined })));
+  };
+
   const changeApiKey = (value: string | ((previous: string) => string)) => {
+    if (definition?.id === 'magpie') invalidateMagpieCatalog();
     if (definition?.policy.catalog.invalidateOnKeyChange) {
       abortRef.current?.abort();
       setCatalogStatus('idle');
@@ -476,8 +492,11 @@ export default function ProviderConnectionDialog({
       const checkedIds = selectedIdsRef.current;
       const retainedMissing = refresh === 'replace-unselected' && [...checkedIds].some((id) => !remoteIds.has(id));
       const keepModel = (id: string) => remoteIds.has(id) || (refresh === 'replace-unselected' && checkedIds.has(id));
+      if (definition.id === 'magpie') setMagpieSnapshot({ models: result.models, updatedAt: Date.now() });
       setModels((current) => mergeModels(
-        refresh === 'merge' ? current : current.filter((model) => keepModel(model.id)),
+        definition.id === 'magpie'
+          ? current.map((model) => remoteIds.has(model.id) ? model : { ...model, catalogTextLimits: undefined })
+          : refresh === 'merge' ? current : current.filter((model) => keepModel(model.id)),
         result.models,
       )
         .map((model) => applyKnownVideoTemplateDefaults(model, resolvedBaseUrl)));
@@ -697,10 +716,10 @@ export default function ProviderConnectionDialog({
     else update();
   };
 
-  /** 0 / 空 表示不声明，交回给按模型 ID 猜目录的兜底逻辑。 */
+  /** 0 / 空表示恢复自动。 */
   const updateModelContextWindow = (modelId: string, raw: string) => {
     const parsed = Number.parseInt(raw.replace(/[^\d]/g, ''), 10);
-    const contextWindow = Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+    const contextWindow = Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
     setModels((current) => current.map((model) => (
       model.id === modelId ? { ...model, contextWindow } : model
     )));
@@ -811,11 +830,14 @@ export default function ProviderConnectionDialog({
     const modelConfig = isWebSearchProvider || isWorkflowApi
       ? {}
       : {
-          selectedModels: selectedModels.map((model) => ({ ...model, provider: nextConnectionId })),
-          catalogModels: capCatalogModels(models, selectedIds)
-            .map((model) => ({ ...model, provider: nextConnectionId })),
+          selectedModels: selectedModels.map(({ catalogTextLimits, ...model }) => ({
+            ...model, provider: nextConnectionId, ...(definition.id === 'magpie' ? {} : { catalogTextLimits }),
+          })),
+          catalogModels: definition.id === 'magpie'
+            ? magpieSnapshot && capCatalogModels(magpieSnapshot.models, selectedIds).map((model) => ({ ...model, provider: nextConnectionId }))
+            : capCatalogModels(models, selectedIds).map((model) => ({ ...model, provider: nextConnectionId })),
           visibleModelCategories: CATEGORY_ORDER.filter((item) => visibleModelCategories.has(item)),
-          catalogUpdatedAt: savedAt,
+          catalogUpdatedAt: definition.id === 'magpie' ? magpieSnapshot?.updatedAt : savedAt,
         };
     savingRef.current = true;
     setSaving(true);
@@ -837,7 +859,8 @@ export default function ProviderConnectionDialog({
           ...(definition.id === 'relayonapi' ? initialConfig : {}),
           name: connectionName.trim() || definition.name,
           apiKey: definition.authType === 'api-key' ? apiKey.trim() : '',
-          baseUrl: isWorkflowApi ? normalizeWorkflowApiBaseUrl(baseUrl, true) : normalizeBaseUrl(baseUrl, chatApiProtocol) || undefined,
+          baseUrl: isWorkflowApi ? normalizeWorkflowApiBaseUrl(baseUrl, true)
+            : (definition.id === 'magpie' ? normalizeMagpieBaseUrl(baseUrl) : normalizeBaseUrl(baseUrl, chatApiProtocol)) || undefined,
           catalogId: definition.id,
           ...(definition.id === 'custom-openai' ? { chatApiProtocol, imageHosting: savedImageHosting } : {}),
           ...(definition.id === 'volcengine' ? { tosUpload: savedTosUpload } : {}),
@@ -931,7 +954,10 @@ export default function ProviderConnectionDialog({
               connectionName={connectionName}
               setConnectionName={setConnectionName}
               chatApiProtocol={chatApiProtocol}
-              setChatApiProtocol={setChatApiProtocol}
+              setChatApiProtocol={(next) => {
+                if (definition.id === 'magpie' && next !== chatApiProtocol) invalidateMagpieCatalog();
+                setChatApiProtocol(next);
+              }}
               apiKey={apiKey}
               setApiKey={changeApiKey}
               baseUrl={baseUrl}
@@ -1003,6 +1029,7 @@ export default function ProviderConnectionDialog({
                 visibleModelCategories={visibleModelCategories}
                 catalogStatus={catalogStatus}
                 catalogMessage={catalogMessage}
+                magpieCatalogIds={magpieCatalogIds}
                 missingCredentials={missingCredentials}
                 apiKey={apiKey}
                 baseUrl={baseUrl}

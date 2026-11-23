@@ -1344,22 +1344,19 @@ function suggestedOutputBudget(contextWindow: number): number {
  * 都没有时使用保守默认值。所有结果均为估算口径。
  */
 export function resolveTextModelContextSpec(
-  model?: Pick<GeneralModelConfig, 'modelId' | 'contextWindow'> | null,
+  model?: Pick<GeneralModelConfig, 'modelId' | 'contextWindow' | 'catalogMaxOutputTokens'> | null,
 ): TextModelContextSpec {
-  if (model?.contextWindow && model.contextWindow > 0) {
-    return {
-      contextWindow: model.contextWindow,
-      outputBudget: suggestedOutputBudget(model.contextWindow),
-      source: 'declared',
-    };
-  }
-  const matched = model
+  const declared = model?.contextWindow && model.contextWindow > 0 ? model.contextWindow : undefined;
+  const matched = !declared && model
     ? TEXT_MODEL_CONTEXT_CATALOG.find(([pattern]) => pattern.test(model.modelId))?.[1]
     : undefined;
-  const contextWindow = matched ?? DEFAULT_TEXT_CONTEXT_WINDOW;
+  const contextWindow = declared ?? matched ?? DEFAULT_TEXT_CONTEXT_WINDOW;
+  const outputLimit = model?.catalogMaxOutputTokens;
+  const outputBudget = Math.min(suggestedOutputBudget(contextWindow), Math.max(0, contextWindow - 1),
+    outputLimit !== undefined && Number.isSafeInteger(outputLimit) && outputLimit > 0 ? outputLimit : Infinity);
   return {
     contextWindow,
-    outputBudget: suggestedOutputBudget(contextWindow),
-    source: matched ? 'catalog' : 'default',
+    outputBudget,
+    source: declared ? 'declared' : matched ? 'catalog' : 'default',
   };
 }

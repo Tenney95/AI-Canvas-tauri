@@ -5,6 +5,8 @@
  * Responses、Anthropic Messages 或 Gemini generateContent，避免 Agent Runtime 和画布业务分叉。
  */
 import { buildResponsesBody, parseResponsesResponse, RESPONSES_OUTPUT } from './responsesApiProtocol';
+import { estimateTokens } from '../chat/tokenEstimate';
+import type { TextModelContextSpec } from '../../components/nodes/shared/defaultModels';
 import type { ChatApiProtocol } from '../../types';
 import type { ModelExecutionProfile, ModelProtocolPresetId } from '../../types/aiTypes';
 
@@ -37,7 +39,9 @@ export function isNativeTextProtocolPreset(
 
 export function resolveNativeTextChatProtocol(
   profile: ModelExecutionProfile | undefined,
+  catalogId?: string,
 ): ChatApiProtocol | undefined {
+  if (catalogId === 'magpie' && profile?.preset === 'openai-chat') return 'openai-compatible';
   if (profile?.preset === 'openai-responses') return 'openai-responses';
   if (profile?.preset === 'anthropic-chat') return 'anthropic-compatible';
   if (profile?.preset === 'gemini-chat') return 'gemini-native';
@@ -84,7 +88,51 @@ export interface BuildChatApiRequestOptions {
   messages: ChatApiMessage[];
   tools?: ChatApiToolDefinition[];
   stream: boolean;
+  /** 当前调用协议已核实支持的输出限制。 */
+  maxOutputTokens?: number;
+  /** 仅在有明确本地预算时对装配后的正文做估算预检。 */
+  estimatedInputTokenLimit?: number;
   signal?: AbortSignal;
+}
+
+export class ChatRequestBudgetError extends Error {
+  readonly code = 'CONTEXT_BUDGET_EXHAUSTED';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'ChatRequestBudgetError';
+  }
+}
+
+/** Magpie 的已验证文本端点按同一预算估算输入和限制输出。 */
+export function getMagpieChatBudgetOptions(
+  protocol: ChatApiProtocol,
+  budget: TextModelContextSpec | undefined,
+  outputDeclared: boolean,
+): Pick<BuildChatApiRequestOptions, 'maxOutputTokens' | 'estimatedInputTokenLimit'> {
+  if (!budget || protocol === 'gemini-native') return {};
+  if (budget.outputBudget <= 0) throw new ChatRequestBudgetError('本轮上下文预算无法容纳输入和输出，请增大上下文窗口。');
+  const outputReserve = protocol === 'anthropic-compatible' && !outputDeclared ? 4096 : budget.outputBudget;
+  return {
+    ...(outputDeclared ? { maxOutputTokens: budget.outputBudget } : {}),
+    estimatedInputTokenLimit: budget.contextWindow - outputReserve,
+  };
+}
+
+/** 网关转换图片后计量。估算正文时跳过传输用的 Base64/图片 URL。 */
+function estimateChatRequestInput(body: Record<string, unknown>): number {
+  let images = 0;
+  const text = JSON.stringify(body, function (this: Record<string, unknown>, key, value: unknown) {
+    if ((key === 'image_url' && (this.type === 'image_url' || this.type === 'input_image'))
+      || (key === 'source' && this.type === 'image')
+      || (key === 'inlineData' && value && typeof value === 'object'
+        && 'mimeType' in value && typeof value.mimeType === 'string' && value.mimeType.startsWith('image/'))) {
+      images += 1;
+      return undefined;
+    }
+    return value;
+  });
+  return estimateTokens(text) + images * 4_096;
 }
 
 export interface ParsedChatApiToolCall {
@@ -135,6 +183,7 @@ function buildOpenAiBody(options: BuildChatApiRequestOptions): Record<string, un
     messages: options.messages,
     stream: options.stream,
   };
+  if (options.maxOutputTokens !== undefined) body.max_completion_tokens = options.maxOutputTokens;
   if (options.tools?.length) {
     body.tools = options.tools;
     body.tool_choice = 'auto';
@@ -202,7 +251,7 @@ function buildAnthropicBody(options: BuildChatApiRequestOptions): Record<string,
 
   const body: Record<string, unknown> = {
     model: options.model,
-    max_tokens: 4096,
+    max_tokens: options.maxOutputTokens ?? 4096,
     messages,
     stream: options.stream,
   };
@@ -290,6 +339,7 @@ function buildGeminiBody(options: BuildChatApiRequestOptions): Record<string, un
   }
 
   const body: Record<string, unknown> = { contents };
+  if (options.maxOutputTokens !== undefined) body.generationConfig = { maxOutputTokens: options.maxOutputTokens };
   if (systemText) body.systemInstruction = { parts: [{ text: systemText }] };
   if (options.tools?.length) {
     body.tools = [{
@@ -346,6 +396,12 @@ export function buildChatApiRequest(options: BuildChatApiRequestOptions): { url:
   } else {
     path = '/chat/completions';
     body = buildOpenAiBody(options);
+  }
+  if (options.estimatedInputTokenLimit !== undefined) {
+    const estimated = estimateChatRequestInput(body);
+    if (estimated > options.estimatedInputTokenLimit) {
+      throw new ChatRequestBudgetError(`装配后的请求估算为 ${estimated} token，超过本轮输入预算 ${options.estimatedInputTokenLimit}。请减少上下文或附件，或选择更长上下文的模型。`);
+    }
   }
   return {
     url: `${baseUrl}${path}`,

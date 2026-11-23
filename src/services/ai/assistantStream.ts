@@ -20,6 +20,7 @@ import {
   getConfiguredModelGroups,
   hasVisionInputCapability,
   isVisionCapableTextModel,
+  resolveTextModelContextSpec,
 } from '../../components/nodes/shared/defaultModels';
 import { DEFAULT_BASE_URLS } from '../../constants/api';
 import { extractModelName, resolveGeneralModelConnection } from './helpers';
@@ -37,7 +38,7 @@ import {
 import { getAssistantTextModelCandidates } from '../projectSettingsService';
 import { isGeneralAssistantScope } from '../chat/assistantScope';
 import { prepareAssistantVisualMessages } from '../chat/assistantVisualContext';
-import { buildChatApiRequest, resolveChatApiProtocol, resolveNativeTextChatProtocol } from './chatApiProtocol';
+import { buildChatApiRequest, ChatRequestBudgetError, getMagpieChatBudgetOptions, resolveChatApiProtocol, resolveNativeTextChatProtocol } from './chatApiProtocol';
 import { MUSE_BASE_URL, MUSE_TEXT_MODEL } from './museModels';
 
 // ============================================
@@ -58,6 +59,11 @@ interface ResolvedModelConfig {
   supportsTools?: boolean;
   transport?: 'muse-webview';
   pluginProfile?: ModelExecutionProfile;
+  budget?: ReturnType<typeof resolveTextModelContextSpec>;
+  catalogOutputDeclared?: boolean;
+  contextSpec?: ReturnType<typeof resolveTextModelContextSpec>;
+  connectionBaseUrl?: string;
+  connectionCatalogId?: string;
 }
 
 /**
@@ -92,7 +98,7 @@ function resolveAssistantModelById(assistantModelId: string): ResolvedModelConfi
     if (!connection?.baseUrl || !gm.modelId) return null;
     const { provider, baseUrl } = connection;
 
-    const nativeTextProtocol = resolveNativeTextChatProtocol(gm.executionProfile);
+    const nativeTextProtocol = resolveNativeTextChatProtocol(gm.executionProfile, provider.catalogId);
     let protocol: ModelExecutionProtocol;
     try {
       protocol = gm.executionProfile && gm.executionProfile.preset !== 'plugin' && !nativeTextProtocol
@@ -113,6 +119,11 @@ function resolveAssistantModelById(assistantModelId: string): ResolvedModelConfi
       usesChatApiProtocol: !gm.executionProfile || !!nativeTextProtocol || gm.executionProfile.preset === 'plugin',
       pluginProfile: gm.executionProfile?.preset === 'plugin' ? gm.executionProfile : undefined,
       supportsVision: hasVisionInputCapability(gm),
+      contextSpec: resolveTextModelContextSpec(gm),
+      connectionBaseUrl: provider.baseUrl, connectionCatalogId: provider.catalogId,
+      ...(provider.catalogId === 'magpie' && gm.executionProfile?.preset !== 'plugin' ? {
+        budget: resolveTextModelContextSpec(gm), catalogOutputDeclared: gm.catalogMaxOutputTokens !== undefined,
+      } : {}),
     };
   }
 
@@ -136,6 +147,8 @@ function resolveAssistantModelById(assistantModelId: string): ResolvedModelConfi
       supportsVision: builtInModel.inputModalities?.includes('image') ?? true,
       supportsTools: false,
       transport: 'muse-webview',
+      contextSpec: resolveTextModelContextSpec({ modelId: builtInModel.value }),
+      connectionBaseUrl: provider.baseUrl, connectionCatalogId: provider.catalogId,
     };
   }
   const baseUrl = provider?.baseUrl || DEFAULT_BASE_URLS[builtInModel.provider] || '';
@@ -151,6 +164,8 @@ function resolveAssistantModelById(assistantModelId: string): ResolvedModelConfi
     protocol: getModelProtocolPreset('openai-chat'),
     chatApiProtocol: resolveChatApiProtocol(provider.chatApiProtocol),
     usesChatApiProtocol: true,
+    contextSpec: resolveTextModelContextSpec({ modelId: builtInModel.value }),
+    connectionBaseUrl: provider.baseUrl, connectionCatalogId: provider.catalogId,
     supportsVision: provider.selectedModels?.find((model) => (
       `${builtInModel.provider}/${model.id}` === assistantModelId || model.id === modelName
     ))?.inputModalities?.includes('image') ?? isVisionCapableTextModel(assistantModelId),
@@ -187,6 +202,8 @@ export interface StreamingCallOptions {
   projectId?: string;
   /** 本次调用显式选择的文本模型；不可用时拒绝，不回退或修改默认配置。 */
   modelId?: string;
+  /** Agent 每轮复用同一个模型选择与能力快照，只在内存中使用。 */
+  resolvedModel?: ResolvedModelConfig | null;
   /** 冻结材料的无工具执行器设 false，避免参考文本中的 @ 再读取文件或发起视觉描述。 */
   resolveVisualReferences?: boolean;
   /** 私人创作草稿请求不写入传输调试日志。 */
@@ -275,12 +292,20 @@ function buildAssistantTools(userMessage: string): AssistantToolDefinition[] {
  * @returns 完整响应文本
  */
 export async function streamAssistantReply(options: StreamingCallOptions): Promise<string> {
-  const modelConfig = resolveAssistantModel(options.projectId, options.modelId);
-  if (!modelConfig) {
+  const resolved = options.resolvedModel === undefined ? resolveAssistantModel(options.projectId, options.modelId) : options.resolvedModel;
+  if (!resolved) {
     throw new Error(options.modelId !== undefined
       ? '所选文本模型已不可用，请重新选择。'
       : '未配置助手模型，请在「设置 → API Key」中添加');
   }
+  const modelConfig = { ...resolved };
+  const assertConnectionCurrent = () => {
+    const provider = useAppStore.getState().config.providers[modelConfig.providerConfigId];
+    if (!provider || (modelConfig.transport !== 'muse-webview' && (provider.apiKey || '') !== modelConfig.apiKey)
+      || provider.baseUrl !== modelConfig.connectionBaseUrl || provider.catalogId !== modelConfig.connectionCatalogId) {
+      throw new Error('助手连接地址或凭据已变化，请确认当前连接后继续本轮');
+    }
+  };
   if (!modelConfig.usesChatApiProtocol && modelConfig.protocol.streamFormat !== 'openai-sse') {
     throw new Error('当前助手模型协议未声明 OpenAI SSE 兼容能力，不能用于对话助手或 Agent 工具调用');
   }
@@ -330,6 +355,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
 
   try {
     controller.signal.throwIfAborted();
+    assertConnectionCurrent();
     if (modelConfig.pluginProfile) {
       pluginLease = await resolvePluginModelProtocol(modelConfig.pluginProfile, () => useAppStore.getState().installedPlugins, controller);
       modelConfig.chatApiProtocol = pluginLease.adapter;
@@ -358,6 +384,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
     if (modelConfig.transport === 'muse-webview') {
       const { streamMuseText } = await import('./museTextService');
       controller.signal.throwIfAborted();
+      assertConnectionCurrent();
       let emitted = '';
       const emitSnapshot = (snapshot: string) => {
         controller.signal.throwIfAborted();
@@ -381,6 +408,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
           messages: requestMessages,
           tools,
           stream: !nonStream,
+          ...getMagpieChatBudgetOptions(modelConfig.chatApiProtocol, modelConfig.budget, modelConfig.catalogOutputDeclared === true),
           signal: controller.signal,
         })
       : buildModelProtocolRequest({
@@ -400,6 +428,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
 
     await pluginLease?.assertCurrent();
     controller.signal.throwIfAborted();
+    assertConnectionCurrent();
     const response = await (options.sensitive || usesVolcengineTos
       ? corsSafeFetch(builtRequest.url, builtRequest.init, { sensitive: true })
       : corsSafeFetch(builtRequest.url, builtRequest.init));
@@ -437,9 +466,10 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
     }
     const safeError = (usesVolcengineTos ? redactVolcengineError : redactModelProtocolError)(error, modelConfig.apiKey);
     const msg = safeError instanceof Error ? safeError.message : typeof safeError === 'string' ? safeError : '未知错误';
-    onEvent({ type: 'error', code: 'FETCH_ERROR', message: msg, retryable: true });
+    const budgetError = error instanceof ChatRequestBudgetError;
+    onEvent({ type: 'error', code: budgetError ? error.code : 'FETCH_ERROR', message: msg, retryable: !budgetError });
     onEvent({ type: 'done', finishReason: 'error' });
-    throw safeError;
+    throw budgetError && safeError !== error ? new ChatRequestBudgetError(msg) : safeError;
   } finally {
     pluginLease?.release();
     signal?.removeEventListener('abort', cancelFromCaller);

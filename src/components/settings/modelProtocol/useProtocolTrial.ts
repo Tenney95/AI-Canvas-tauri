@@ -27,10 +27,13 @@ import { prepareProtocolMediaFileRequest } from '../../../services/ai/modelProto
 import { PREPARED_MULTIPART_FILES } from '../../../services/ai/modelProtocolTemplate';
 import {
   buildChatApiRequest,
+  getMagpieChatBudgetOptions,
   isNativeTextProtocolPreset,
   parseChatApiResponse,
   resolveNativeTextChatProtocol,
 } from '../../../services/ai/chatApiProtocol';
+import { resolveTextModelContextSpec } from '../../nodes/shared/defaultModels';
+import { resolveMagpieContextWindow } from '../../../services/ai/providerPolicies';
 import { resolveKlingModelContract } from '../../../services/ai/providerCatalogService';
 import { resolveEffectivePromptLimits } from '../../../services/ai/imagePromptLimits';
 import { resolveConfiguredVideoCapability } from '../../../services/ai/videoModelCapabilityResolver';
@@ -309,11 +312,15 @@ export function useProtocolTrial({
     let lease: Awaited<ReturnType<typeof resolvePluginModelProtocol>> | undefined;
     try {
       if (preset === 'plugin') lease = await resolvePluginModelProtocol({ preset: 'plugin', plugin: pluginReference }, () => useAppStore.getState().installedPlugins, controller);
-      const nativeChatProtocol = lease?.adapter ?? (isNativeTextProtocolPreset(preset)
-        ? resolveNativeTextChatProtocol({ preset })
+      const nativeChatProtocol = lease?.adapter ?? (isNativeTextProtocolPreset(preset) || preset === 'openai-chat'
+        ? resolveNativeTextChatProtocol({ preset }, catalogId)
         : undefined);
       let result: { urls?: string[]; text?: string; taskId?: string };
       if (nativeChatProtocol) {
+        const outputLimit = model.catalogTextLimits?.maxOutputTokens;
+        const budget = catalogId === 'magpie' && model.category === 'text' && !lease
+          ? resolveTextModelContextSpec({ modelId: model.id, contextWindow: resolveMagpieContextWindow(model),
+            catalogMaxOutputTokens: outputLimit }) : undefined;
         const request = buildChatApiRequest({
           protocol: nativeChatProtocol,
           apiKey,
@@ -321,6 +328,7 @@ export function useProtocolTrial({
           model: model.id,
           messages: nativeProtocolTestMessages(variables),
           stream: false,
+          ...getMagpieChatBudgetOptions(nativeChatProtocol, budget, outputLimit !== undefined),
           signal: controller.signal,
         });
         await lease?.assertCurrent();

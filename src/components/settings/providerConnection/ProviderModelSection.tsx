@@ -17,7 +17,8 @@ import type { ImageModelCapability, VideoModelCapability } from '../../../types/
 import { resolveKlingModelContract, type ProviderDefinition } from '../../../services/ai/providerCatalogService';
 import { resolveEffectivePromptLimits } from '../../../services/ai/imagePromptLimits';
 import { resolveConfiguredVideoCapability } from '../../../services/ai/videoModelCapabilityResolver';
-import { normalizeBaseUrl } from '../../../services/ai/providerBaseUrl';
+import { normalizeBaseUrl, normalizeMagpieBaseUrl } from '../../../services/ai/providerBaseUrl';
+import { isMagpieRoutingGroup, resolveMagpieContextWindow } from '../../../services/ai/providerPolicies';
 import { createSeedanceQuickAdaptTemplate } from '../../../services/ai/seedanceModelCapabilities';
 import { createH3QuickAdaptTemplate } from '../../../services/ai/h3ModelCapabilities';
 import { useT } from '../../../i18n';
@@ -42,6 +43,7 @@ interface ProviderModelSectionProps {
   visibleModelCategories: Set<GeneralModelCategory>;
   catalogStatus: CatalogStatus;
   catalogMessage: string;
+  magpieCatalogIds?: ReadonlySet<string>;
   missingCredentials: boolean;
   apiKey: string;
   baseUrl: string;
@@ -187,6 +189,7 @@ export default function ProviderModelSection({
   visibleModelCategories,
   catalogStatus,
   catalogMessage,
+  magpieCatalogIds,
   missingCredentials,
   apiKey,
   baseUrl,
@@ -225,7 +228,8 @@ export default function ProviderModelSection({
   onFetchModels,
 }: ProviderModelSectionProps) {
   const t = useT();
-  const editableProtocols = definition.id === 'custom-openai';
+  const isMagpie = definition.id === 'magpie';
+  const editableProtocols = definition.id === 'custom-openai' || isMagpie;
   const klingContracts = new Map<string, ProviderModelSelection>();
   if (definition.id === 'kling') {
     for (const model of selectedModels) {
@@ -403,6 +407,10 @@ export default function ProviderModelSection({
                   <span className="provider-model-copy">
                     <strong>{model.name}</strong>
                     <small>{model.id}</small>
+                    {magpieCatalogIds && !magpieCatalogIds.has(model.id) && !model.categoryManual
+                      ? <small>{t('当前目录未列出此模型')}</small> : null}
+                    {isMagpie && model.category !== 'text' && !model.executionProfile
+                      ? <small>{t('目录候选，需配置调用协议')}</small> : null}
                     {editableProtocols && describeModelParameterGaps(model) ?
                       <small>{t(describeModelParameterGaps(model))}</small> : null}
                   </span>
@@ -486,12 +494,25 @@ export default function ProviderModelSection({
                             type="text"
                             inputMode="numeric"
                             value={model.contextWindow ?? ''}
-                            placeholder={t("留空则按模型 ID 推断")}
+                            placeholder={isMagpie ? undefined : t("留空则按模型 ID 推断")}
                             onChange={(event) => onUpdateModelContextWindow(
                               model.id,
                               event.target.value,
                             )}
                           />
+                          {isMagpie && (
+                            <small>
+                              {t('留空恢复自动。')}
+                              {' '}
+                              {t('目录窗口 {context}，输出上限 {output} token', {
+                                context: model.catalogTextLimits?.contextWindow ?? '—',
+                                output: model.catalogTextLimits?.maxOutputTokens ?? '—',
+                              })}
+                              {' '}
+                              {t('本地上下文预算 {context} token', { context: resolveMagpieContextWindow(model) ?? '—' })}
+                              {isMagpieRoutingGroup(model.id) ? ` ${t('路由组的目录值仅供参考。')}` : ''}
+                            </small>
+                          )}
                         </label>
                       </>
                     ) : null}
@@ -567,7 +588,7 @@ export default function ProviderModelSection({
                     : undefined}
                   catalogId={definition.id}
                   apiKey={apiKey.trim()}
-                  baseUrl={normalizeBaseUrl(baseUrl) || definition.defaultBaseUrl || ''}
+                  baseUrl={(isMagpie ? normalizeMagpieBaseUrl(baseUrl) : normalizeBaseUrl(baseUrl)) || definition.defaultBaseUrl || ''}
                   onChange={(profile) => onUpdateModelProtocol(protocolModel.id, profile)}
                   onVideoCapabilityChange={(capability) => onUpdateVideoCapability(protocolModel.id, capability)}
                   onImageReferenceRequestModeChange={(mode) => (

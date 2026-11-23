@@ -341,7 +341,7 @@ interface ProviderConnectionFormProps {
   connectionName: string;
   setConnectionName: Dispatch<SetStateAction<string>>;
   chatApiProtocol: ChatApiProtocol;
-  setChatApiProtocol: Dispatch<SetStateAction<ChatApiProtocol>>;
+  setChatApiProtocol: (protocol: ChatApiProtocol) => void;
   apiKey: string;
   setApiKey: Dispatch<SetStateAction<string>>;
   baseUrl: string;
@@ -423,7 +423,7 @@ export default function ProviderConnectionForm({
         </div>
       )}
 
-      {(definition.id === 'custom-openai' || isWorkflowApi) && (
+      {(definition.id === 'custom-openai' || definition.id === 'magpie' || isWorkflowApi) && (
         <label className="provider-field">
           <span>{t('连接名称')}</span>
           <input
@@ -435,7 +435,7 @@ export default function ProviderConnectionForm({
         </label>
       )}
 
-      {definition.id === 'custom-openai' && (
+      {(definition.id === 'custom-openai' || definition.id === 'magpie') && (
         <label className="provider-field">
           <span>{t('对话协议')}</span>
           <Select fixedMenu
@@ -443,9 +443,9 @@ export default function ProviderConnectionForm({
             value={chatApiProtocol}
             onChange={(selectedOptionValue) => setChatApiProtocol(selectedOptionValue as ChatApiProtocol)}
           >
-            {Object.entries(CHAT_API_PROTOCOL_LABELS).map(([value, label]) => (
-              <option key={value} value={value}>{t(label)}</option>
-            ))}
+            {Object.entries(CHAT_API_PROTOCOL_LABELS)
+              .filter(([value]) => definition.id !== 'magpie' || value !== 'gemini-native')
+              .map(([value, label]) => <option key={value} value={value}>{t(label)}</option>)}
           </Select>
           <small>
             {chatApiProtocol === 'openai-responses'

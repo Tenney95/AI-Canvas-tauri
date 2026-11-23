@@ -9,7 +9,7 @@ import * as taskService from '../../../src/services/chat/agentTaskService';
 import * as resultService from '../../../src/services/chat/agentResultService';
 import { executeRegisteredAgentToolCall } from '../../../src/services/chat/agentToolExecution';
 import { MCP_GLOBAL_TOOL_NAMES, MCP_SETTINGS_CONVERSATION_ID, MCP_SETTINGS_SCOPE_ID, MCP_SETTINGS_TOOL_NAMES } from '../../../src/services/mcp/mcpSettingsScope';
-import { buildChatApiRequest, type ChatApiMessage } from '../../../src/services/ai/chatApiProtocol';
+import { buildChatApiRequest, ChatRequestBudgetError, type ChatApiMessage } from '../../../src/services/ai/chatApiProtocol';
 
 const streamAssistantReplyMock = vi.hoisted(() => vi.fn());
 const resolveAssistantModelMock = vi.hoisted(() => vi.fn<
@@ -186,6 +186,16 @@ function arrangeCalls(calls: ProposedToolCall[], duringStream?: () => void) {
     calls.forEach((call) => onEvent({ type: 'tool.call.final', call }));
   });
 }
+
+it('pauses with a settled local failure when the assembled request cannot fit', async () => {
+  streamAssistantReplyMock.mockRejectedValueOnce(new ChatRequestBudgetError('装配后的请求超过本轮输入预算'));
+  await expect(runRound()).resolves.toMatchObject({ outcome: 'paused' });
+  expect(useAppStore.getState().agentTasks[0]).toMatchObject({
+    status: 'paused', pausedReason: 'context_budget_exhausted', errorCode: 'CONTEXT_BUDGET_EXHAUSTED',
+    dispatches: [expect.objectContaining({ kind: 'model', phase: 'settled', outcome: 'failed' })],
+  });
+  expect(executeGenerationMock).not.toHaveBeenCalled();
+});
 
 it('does not call the model when the execution persistence barrier fails', async () => {
   const saving = vi.spyOn(taskService, 'saveAgentTask').mockRejectedValue(new Error('injected storage failure'));

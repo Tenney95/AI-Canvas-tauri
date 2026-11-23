@@ -27,8 +27,8 @@ import type {
 } from '../../types';
 import type { ImageModelCapability, ImageOutputFormat, ImageParameterRange, ModelExecutionProfile, NormalizedModelExecutionProtocol, VideoModelCapability } from '../../types/aiTypes';
 import { corsSafeFetch } from './httpTransport';
-import { baseUrlCandidates } from './providerBaseUrl';
-import { getProviderPolicy, readPositiveTokenCount, resolveProviderCatalogId, type ProviderPolicy } from './providerPolicies';
+import { baseUrlCandidates, normalizeMagpieBaseUrl } from './providerBaseUrl';
+import { assertMagpieMediaSelection, getProviderPolicy, readPositiveTokenCount, resolveProviderCatalogId, type ProviderPolicy } from './providerPolicies';
 import { APIMART_OMNI_MODELS, APIMART_UPDATED_VIDEO_MODELS, isLegacyApimartOmni } from './apimartVideoModels';
 import { getChatApiHeaders, normalizeGeminiModelId, resolveChatApiProtocol } from './chatApiProtocol';
 import { XAI_BASE_URL, XAI_MODEL_MANIFEST } from './providers/xaiModelManifest';
@@ -713,6 +713,12 @@ const BUILT_IN_PROVIDER_ENTRIES: Omit<ProviderDefinition, 'policy'>[] = [
     kind: 'web-search',
   },
   {
+    id: 'magpie', name: 'Magpie', description: '使用自己的 Magpie 网关发现已启用模型及其目录长度',
+    badgeText: 'MP', authType: 'api-key', catalogAdapter: 'openai-compatible', modelsPath: '/models',
+    allowCustomBaseUrl: true, requestQuery: { kind: 'all' },
+    credentials: [API_KEY_FIELD, { key: 'baseUrl', label: '接口地址', required: true }],
+  },
+  {
     id: 'custom-openai',
     name: '自定义接口',
     description: 'OpenAI 兼容接口；非标准接口用模型的调用协议单独声明',
@@ -801,7 +807,7 @@ export function resolveWebSearchProviderId(
  * 分组厂商、自定义接口与工作流允许多条连接，各自使用独立的凭据身份。
  */
 export function createConnectionId(providerId: string): string {
-  if (!['custom-openai', 'workflow-api', 'cccapi', 'relayonapi'].includes(providerId)) return providerId;
+  if (!['custom-openai', 'workflow-api', 'cccapi', 'relayonapi', 'magpie'].includes(providerId)) return providerId;
   const suffix = globalThis.crypto?.randomUUID?.().slice(0, 8)
     ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
   return `${providerId === 'custom-openai' ? 'custom' : providerId}-${suffix}`;
@@ -847,6 +853,7 @@ export function resolveProviderImageModelForValidation(
       if (errors.length) throw new Error(errors[0]);
     }
   }
+  if (definition?.id === 'magpie') assertMagpieMediaSelection(model);
   if (model.category !== 'image') return model;
   if (model.imageCapability) assertImageModelCapability(model.imageCapability);
   if (definition?.id === 'cccapi' && definition.models?.some((item) => item.id === model.id
@@ -1048,10 +1055,12 @@ function parseCatalogItem(
   item: unknown,
   providerId: string,
   protocol: ChatApiProtocol,
+  catalogId: string,
 ): ProviderModelSelection | null {
   if (typeof item === 'string') {
     const id = item.trim();
-    return id ? { id, name: id, category: inferModelCategory(id), provider: providerId } : null;
+    return id ? { id, name: id, category: catalogId === 'magpie' ? 'text' : inferModelCategory(id), provider: providerId,
+      ...(catalogId === 'magpie' ? { catalogTextLimits: undefined } : {}) } : null;
   }
   if (!item || typeof item !== 'object') return null;
 
@@ -1066,18 +1075,39 @@ function parseCatalogItem(
     ? record.display_name ?? record.displayName
     : record.name ?? record.display_name ?? record.displayName;
   const name = typeof rawName === 'string' && rawName.trim() ? rawName.trim() : id;
-  const declaredCategory = record.category ?? record.type ?? record.modality;
+  const isMagpie = catalogId === 'magpie';
+  const declaredCategory = isMagpie ? record.kind ?? 'text' : record.category ?? record.type ?? record.modality;
+  if (isMagpie && !['text', 'image', 'video', 'audio'].includes(String(declaredCategory))) return null;
   const category: GeneralModelCategory = ['text', 'image', 'video', 'audio'].includes(String(declaredCategory))
     ? declaredCategory as GeneralModelCategory : inferModelCategory(id);
-  const supportsImageInput = record.supports_image === true || record.supportsImage === true;
+  const declaredInputs = isMagpie ? readStringArray(readRecord(record.modalities)?.input) : undefined;
+  const supportsImageInput = record.supports_image === true || record.supportsImage === true || declaredInputs?.includes('image');
+  const inputModalities = declaredInputs
+    ? declaredInputs.filter((item): item is 'text' | 'image' => item === 'text' || item === 'image')
+    : supportsImageInput ? ['text', 'image'] as const : undefined;
+  const catalogTextLimits = isMagpie && category === 'text' ? readMagpieTextLimits(record) : undefined;
   return {
     id,
     name,
     category,
     provider: providerId,
-    inputModalities: supportsImageInput ? ['text', 'image'] : undefined,
-    videoCapability: parseVideoCapability(record, category),
-    imageCapability: parseImageCapability(record, category),
+    inputModalities: inputModalities ? [...inputModalities] : undefined,
+    ...(isMagpie ? { catalogTextLimits } : {}),
+    // Magpie 目录声明模型与模态，媒体参数仍由网关操作合同或用户配置决定。
+    videoCapability: isMagpie ? undefined : parseVideoCapability(record, category),
+    imageCapability: isMagpie ? undefined : parseImageCapability(record, category),
+  };
+}
+
+function readMagpieTextLimits(record: Record<string, unknown>): ProviderModelSelection['catalogTextLimits'] {
+  const aliases = [record.context_window, record.context_length, record.max_input_tokens]
+    .filter((value) => value !== undefined);
+  const candidate = readPositiveTokenCount(aliases[0]);
+  const contextWindow = candidate !== undefined && aliases.every((value) => value === candidate) ? candidate : undefined;
+  const output = readPositiveTokenCount(record.max_output_tokens);
+  const maxOutputTokens = output !== undefined && (contextWindow === undefined || output < contextWindow) ? output : undefined;
+  return contextWindow === undefined && maxOutputTokens === undefined ? undefined : {
+    source: 'magpie', contextWindow, maxOutputTokens,
   };
 }
 
@@ -1203,19 +1233,27 @@ async function fetchCatalogAt(
   for (const [key, value] of Object.entries(definition.requestQuery ?? {})) {
     url.searchParams.set(key, value);
   }
-  const protocol = resolveChatApiProtocol(config.chatApiProtocol);
+  const protocol = definition.id === 'magpie' ? 'openai-compatible' : resolveChatApiProtocol(config.chatApiProtocol);
   const response = await fetchCatalogResponse(url.toString(), config.apiKey, protocol, signal);
   if (!response.ok) throw new Error(`模型列表拉取失败 (HTTP ${response.status})`);
 
   const payload: unknown = await response.json().catch(() => null);
   signal?.throwIfAborted();
+  if (definition.id === 'magpie') {
+    const page = readRecord(payload);
+    if (!page || !Array.isArray(page.data) || page.has_more === true) throw new Error('模型列表拉取失败 (HTTP 200)');
+    if (page.data.length === 0) return [];
+  }
   const items = readCatalogItems(payload);
   const models = (definition.id === 'aigc-si' ? normalizeAigcsiCatalogItems(items) : items)
-    .map((item) => parseCatalogItem(item, providerId, protocol))
+    .map((item) => parseCatalogItem(item, providerId, protocol, definition.id))
     .filter((item): item is ProviderModelSelection => (
       item !== null && isProviderModelVisible(definition.id, item.id)
     ));
-  if (models.length === 0) throw new Error('模型列表拉取失败 (HTTP 200)');
+  if (models.length === 0 || (definition.id === 'magpie'
+    && (models.length !== items.length || new Set(models.map((model) => model.id)).size !== models.length))) {
+    throw new Error('模型列表拉取失败 (HTTP 200)');
+  }
   return normalizeModels(models, providerId);
 }
 
@@ -1225,7 +1263,9 @@ async function fetchOpenAiCompatibleCatalog(
   config: ApiProviderConfig,
   signal?: AbortSignal,
 ): Promise<{ models: ProviderModelSelection[]; baseUrl: string }> {
-  const candidates = baseUrlCandidates(config.baseUrl || definition.defaultBaseUrl, resolveChatApiProtocol(config.chatApiProtocol));
+  const candidates = definition.id === 'magpie'
+    ? [normalizeMagpieBaseUrl(config.baseUrl)].filter(Boolean)
+    : baseUrlCandidates(config.baseUrl || definition.defaultBaseUrl, resolveChatApiProtocol(config.chatApiProtocol));
   if (candidates.length === 0) throw new Error('请填写接口地址');
 
   let lastError: unknown;
@@ -1320,13 +1360,14 @@ export async function fetchProviderModelCatalog(
   }
 
   try {
-    if (['libapi', 'relayonapi', 'aigc-si'].includes(definition.id) && !config.apiKey.trim()) throw new Error('请填写 API Key');
+    if (['libapi', 'relayonapi', 'aigc-si', 'magpie'].includes(definition.id) && !config.apiKey.trim()) throw new Error('请填写 API Key');
     const { models, baseUrl } = await fetchOpenAiCompatibleCatalog(
       definition,
       providerId,
       config,
       signal,
     );
+    if (definition.id === 'magpie') return { models, source: 'remote', resolvedBaseUrl: baseUrl };
     if (definition.id === 'libapi') {
       const matched = await matchActiveLibapiCatalog(models, baseUrl, signal);
       return {

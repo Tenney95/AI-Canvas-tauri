@@ -874,6 +874,33 @@ describe('model request transport boundary', () => {
     else if (modelId === 'nano-banana-2.1') expect(body.imageSize).toBe('4K');
     else expect(body).toMatchObject({ aspectRatio: modelId === 'gpt-image-2.5' ? '16:9' : '3840x2160', quality: modelId === 'gpt-image-2.5' ? 'auto' : 'medium' });
   });
+  it('Magpie 文本节点和助手的显式 Chat 预设使用同一目录输出预算', async () => {
+    const provider = 'magpie-transport';
+    const modelId = 'upstream/model';
+    const model = { id: modelId, name: 'Model', category: 'text' as const, provider,
+      executionProfile: { preset: 'openai-chat' as const } };
+    useAppStore.getState().saveProviderConfig(provider, {
+      name: 'Gateway', catalogId: 'magpie', apiKey: 'fixture', baseUrl: 'https://magpie.example',
+      selectedModels: [model], catalogModels: [{ ...model,
+        catalogTextLimits: { source: 'magpie', contextWindow: 32_000, maxOutputTokens: 1_024 },
+      }],
+    });
+    const id = useAppStore.getState().config.generalModels!.find((item) => item.providerConfigId === provider)!.id;
+    useAppStore.setState((state) => ({ config: { ...state.config, assistantModelId: id } }));
+    transportMocks.corsSafeFetch.mockImplementation(async () => jsonResponse({
+      choices: [{ message: { content: '预算生效' }, finish_reason: 'stop' }],
+    }));
+    await expect(generateText({ provider: 'general', model: `general/${id}`, prompt: '你好' })).resolves.toBe('预算生效');
+    await expect(streamAssistantReply({ systemPrompt: '系统', userMessage: '你好',
+      nonStream: true, onEvent: vi.fn(),
+    })).resolves.toBe('预算生效');
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(2);
+    for (const [url, request] of transportMocks.corsSafeFetch.mock.calls) {
+      expect(url).toBe('https://magpie.example/v1/chat/completions');
+      expect(JSON.parse(String(request.body))).toMatchObject({ model: modelId, max_completion_tokens: 1_024 });
+    }
+  });
+
   it.each(['DeepSeek-V4.1-Flash', 'GLM-5.3-Flash', 'Qwen3.8-Flash', 'mI MiMo-V2.5',
     'Hy3', 'claude-sonnet-4-6', 'gemini-3.5-flash', 'grok-4.5'])('uses shared OpenAI chat requests for CCC %s in nodes and conversations', async (modelId) => {
     const catalogModel = getProviderDefinition('cccapi')!.models!.find((model) => model.id === modelId)!;

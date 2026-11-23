@@ -71,7 +71,7 @@ export function serializeConnection(config: ApiProviderConfig, workflows: Workfl
       baseUrl: config.baseUrl,
       chatApiProtocol: resolveChatApiProtocol(config.chatApiProtocol),
       selectedModels: config.selectedModels,
-      catalogModels: config.catalogModels,
+      catalogModels: config.catalogId === 'magpie' ? undefined : config.catalogModels,
       visibleModelCategories: config.visibleModelCategories,
     },
   }, null, 2);
@@ -294,7 +294,8 @@ export function parseConnectionShare(text: string): ParsedConnectionShare | null
       ...(catalogId === 'cccapi' ? { cccGroup: asString(source.cccGroup)?.slice(0, 120) } : {}),
       ...(catalogId === 'relayonapi' ? { relayonGroup: asString(source.relayonGroup)?.slice(0, 120) } : {}),
       selectedModels: customWorkflow ? [] : parseModels(source.selectedModels, 'connection.selectedModels', diagnostics, definition),
-      catalogModels: customWorkflow ? [] : parseModels(source.catalogModels, 'connection.catalogModels', diagnostics, definition),
+      catalogModels: catalogId === 'magpie' ? undefined
+        : customWorkflow ? [] : parseModels(source.catalogModels, 'connection.catalogModels', diagnostics, definition),
       visibleModelCategories: visible,
     },
   };

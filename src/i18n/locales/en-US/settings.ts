@@ -1367,6 +1367,12 @@ const settings = {
   "部分项目的素材暂受保护，其他已核验的未引用文件仍可清理。": "Some project media is protected. Other verified, unreferenced files can still be cleaned up.",
   "查看扫描提示（{count}）": "View scan notices ({count})",
   "新项目可清理已核验的未引用原件；不可变媒体、导入副本、回收站和目录元数据继续保留。": "New projects can clean up verified, unreferenced original files. Immutable media, imported copies, trash, and directory metadata are retained.",
+  "目录候选，需配置调用协议": "Catalog candidate. Configure its request protocol.",
+  "留空恢复自动。": "Leave blank to use the automatic value.",
+  "目录窗口 {context}，输出上限 {output} token": "Catalog context {context}, output limit {output} tokens",
+  "本地上下文预算 {context} token": "Local context budget: {context} tokens",
+  "路由组的目录值仅供参考。": "Routing group limits are estimates.",
+  "当前目录未列出此模型": "This model is absent from the current catalog.",
 };
 
 export default settings;

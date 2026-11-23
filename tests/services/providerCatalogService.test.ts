@@ -8,6 +8,7 @@ import {
   getProviderDefinitions,
   createConnectionId,
   isRetiredProviderConnection,
+  resolveProviderImageModelForValidation,
 } from '../../src/services/ai/providerCatalogService';
 import { SORA2U_MODEL_MANIFEST } from '../../src/services/ai/providers/sora2uModelManifest';
 import {
@@ -125,6 +126,75 @@ describe('远端媒体目录长度合并', () => {
     expect(models.find(({ id }) => id === video.id)?.videoCapability).toMatchObject({ promptMaxCharacters: 26_000, durations: [60] });
     expect(models.find(({ id }) => id === 'other-image')?.imageCapability).toMatchObject({ promptMaxCharacters: 5_000, promptMaxNonAsciiCharacters: 5_000 });
     expect(models.find(({ id }) => id === 'raw-video')?.videoCapability).toBeUndefined();
+  });
+});
+
+describe('Magpie 连接目录', () => {
+  const connection = { name: 'Magpie', catalogId: 'magpie', apiKey: 'fixture', baseUrl: 'https://magpie.example' };
+
+  it('按连接获取全部模态，记录可靠长度，不根据型号名字推断媒体协议', async () => {
+    const payload = { data: [
+      { id: 'model/image-in-name', display_name: 'Text model', context_window: 128_000, context_length: 128_000,
+        max_input_tokens: 128_000, max_output_tokens: 16_000, modalities: { input: ['text', 'image', 'pdf'] } },
+      { id: 'group/wide', context_length: 1_000_000, max_output_tokens: 96_000 },
+      { id: 'model/conflict', context_window: 64_000, max_input_tokens: 32_000, max_output_tokens: -10 },
+      { id: 'model/fraction', context_window: 12.5 },
+      'model/id-only',
+      { id: 'provider/draw', kind: 'image', supported_endpoint_types: ['image-generation'] },
+      { id: 'provider/move', kind: 'video', supported_endpoint_types: ['openai-video'] },
+    ] };
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse(payload)));
+    vi.stubGlobal('fetch', fetchMock);
+    const first = createConnectionId('magpie');
+    const second = createConnectionId('magpie');
+    expect(first).not.toBe(second);
+    const a = await fetchProviderModelCatalog({ providerId: first, config: { ...connection, chatApiProtocol: 'anthropic-compatible' } });
+    const b = await fetchProviderModelCatalog({ providerId: second, config: { ...connection, baseUrl: 'https://other.example/v1' } });
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      'https://magpie.example/v1/models?kind=all', 'https://other.example/v1/models?kind=all',
+    ]);
+    expect(new Headers(fetchMock.mock.calls[0][1].headers).get('Authorization')).toBe('Bearer fixture');
+    expect(a.models.find((item) => item.id === 'model/image-in-name')).toMatchObject({
+      category: 'text', provider: first, inputModalities: ['text', 'image'],
+      catalogTextLimits: { source: 'magpie', contextWindow: 128_000, maxOutputTokens: 16_000 },
+    });
+    expect(b.models.find((item) => item.id === 'model/image-in-name')?.provider).toBe(second);
+    for (const id of ['model/conflict', 'model/fraction', 'model/id-only']) {
+      expect(a.models.find((item) => item.id === id)?.catalogTextLimits).toBeUndefined();
+    }
+    const definition = getProviderDefinition('magpie');
+    for (const [id, category] of [['provider/draw', 'image'], ['provider/move', 'video']]) {
+      const candidate = a.models.find((item) => item.id === id)!;
+      expect(candidate).toMatchObject({ category });
+      expect(candidate.executionProfile).toBeUndefined();
+      expect(() => resolveProviderImageModelForValidation(definition, candidate)).toThrow('请先配置调用协议');
+    }
+  });
+
+  it('分享仅传手动配置，导入后重新获取账号目录', () => {
+    const model = { id: 'same', name: 'Same', provider: 'magpie-a', category: 'text' as const };
+    const shared = serializeConnection({ ...connection, selectedModels: [{ ...model, contextWindow: 72_000 }],
+      catalogModels: [{ ...model, catalogTextLimits: { source: 'magpie', contextWindow: 128_000 } }],
+    });
+    expect(shared).not.toContain('catalogTextLimits');
+    expect(shared).not.toContain('fixture');
+    const imported = parseConnectionShare(shared)!;
+    expect(imported.config.selectedModels).toEqual([expect.objectContaining({ id: 'same', contextWindow: 72_000 })]);
+    expect(imported.config.catalogModels).toBeUndefined();
+  });
+
+  it('完整空目录可发布，权限错误、不完整页和重复 ID 不能替换上次成功快照', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: [] }))
+      .mockResolvedValueOnce(new Response(null, { status: 403 }))
+      .mockResolvedValueOnce(jsonResponse({ data: [], has_more: true }))
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: 'same' }, { id: 'same' }] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const options = { providerId: 'magpie-test', config: connection };
+    await expect(fetchProviderModelCatalog(options)).resolves.toMatchObject({ models: [], source: 'remote' });
+    await expect(fetchProviderModelCatalog(options)).rejects.toThrow('403');
+    await expect(fetchProviderModelCatalog(options)).rejects.toThrow();
+    await expect(fetchProviderModelCatalog(options)).rejects.toThrow();
   });
 });
 
