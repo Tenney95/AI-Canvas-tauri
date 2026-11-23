@@ -55,9 +55,11 @@ type JsonFieldKind = 'object' | 'value';
 
 interface ModelProtocolEditorProps {
   workflowMode?: boolean;
+  readOnlyProtocol?: boolean;
   initialPreviewVariables?: ModelProtocolVariables;
   model: ProviderModelSelection;
   inheritanceLabel?: string;
+  catalogId?: string;
   /** 试跑用的真实凭据与网关地址；缺任意一个就只能做本地预览。 */
   apiKey: string;
   baseUrl: string;
@@ -219,9 +221,11 @@ function JsonDraftField({
 
 export default function ModelProtocolEditor({
   workflowMode = false,
+  readOnlyProtocol = false,
   initialPreviewVariables,
   model,
   inheritanceLabel,
+  catalogId,
   apiKey,
   baseUrl,
   onChange,
@@ -277,12 +281,12 @@ export default function ModelProtocolEditor({
   const invalidFormFieldsRef = useRef(new Set<string>());
   const {
     previewVariablesJson, setPreviewVariablesJson, testVariablesJson, setTestVariablesJson,
-    testScenario, setTestScenario, testReferences, setTestReferences, session, responseSampleJson,
+    testScenario, setTestScenario, klingVideoContract, klingFrameMode, activeTestScenario, testReferences, setTestReferences, session, responseSampleJson,
     setResponseSampleJson, testRun, previewState, supportsStructuredResponse, responsePreviewState,
     runProtocolTest, resumeProtocolTest, cancelProtocolTest, trialRunning, sessionMessage,
     testRunDisabledReason, discardTrial, resetTrialForTemplate,
   } = useProtocolTrial({
-    model, initialPreviewVariables, workflowMode, testSessionScope, apiKey, baseUrl, preset,
+    model, catalogId, initialPreviewVariables, workflowMode, testSessionScope, apiKey, baseUrl, preset,
     protocol, protocolJson, error, invalidFormFieldsRef, pluginReference, pluginUnavailable, t,
   });
   useEffect(() => {
@@ -496,7 +500,7 @@ export default function ModelProtocolEditor({
         <PopupCloseButton ariaLabel={t('关闭协议设置')} onClick={onClose} />
       </div>
 
-      <div className={`provider-protocol-topbar ${showReferenceRequest ? 'has-reference-mode' : ''}`}>
+      {!readOnlyProtocol && <div className={`provider-protocol-topbar ${showReferenceRequest ? 'has-reference-mode' : ''}`}>
         <label className="provider-protocol-field">
           <span>{t('协议预设')}</span>
           <Select fixedMenu value={preset === 'plugin' ? selectedPluginKey : preset} onChange={changePreset}>
@@ -537,13 +541,13 @@ export default function ModelProtocolEditor({
             </button>
           </div>
         ) : null}
-      </div>
+      </div>}
 
       {preset === 'plugin' && <p role="status" className="text-xs text-canvas-text-secondary">
         {selectedPlugin?.available ? t('协议由宿主适配器执行，凭据由连接注入。') : t(selectedPlugin?.reason ?? '协议插件未就绪，请检查插件设置中的健康状态。')}
       </p>}
 
-      {preset === 'custom' ? (
+      {preset === 'custom' && !readOnlyProtocol ? (
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-canvas-text-secondary">
           <span>{t('按文档配置 → 预览请求与响应 → 试跑验证')}</span>
           {fileFields && <label className="provider-protocol-field">
@@ -619,21 +623,22 @@ export default function ModelProtocolEditor({
           <summary className="cursor-pointer text-xs text-canvas-text-secondary">{t('真实试跑配置')}</summary>
           <p className="my-2 text-xs text-canvas-text-muted">{t('试跑变量与本地预览分开；只有点击试跑才会发送真实请求。')}</p>
           {!workflowMode && model.category === 'video' ? <div className="mb-2 grid gap-2 sm:grid-cols-2">
-            <label className="ui-field sm:col-span-2"><span className="ui-label">{t('试跑场景')}</span>
+            {!klingVideoContract ? <label className="ui-field sm:col-span-2"><span className="ui-label">{t('试跑场景')}</span>
               <Select fixedMenu disabled={trialRunning} value={testScenario} onChange={(value) => setTestScenario(value as VideoTestScenario)}>
                 <option value="text">{t('文生视频（无参考素材）')}</option>
                 <option value="keyframe">{t('首尾帧（不混用参考素材）')}</option>
                 <option value="reference">{t('多参考素材（不使用首尾帧）')}</option>
               </Select>
-            </label>
-            <p className="m-0 text-xs text-canvas-text-muted sm:col-span-2">{t('视频素材由上方场景填写，JSON 只调整参数；未声明的参数可留空。')}</p>
-            {(testScenario === 'keyframe'
-              ? [['firstImage', '首帧图片地址'], ['lastImage', '尾帧图片地址（可选）']]
-              : testScenario === 'reference' ? [['images', '参考图片地址（每行一条）'], ['videos', '参考视频地址（每行一条）'], ['audios', '参考音频地址（每行一条）']] : []
+            </label> : null}
+            {!klingVideoContract ? <p className="m-0 text-xs text-canvas-text-muted sm:col-span-2">{t('视频素材由上方场景填写，JSON 只调整参数；未声明的参数可留空。')}</p> : null}
+            {(activeTestScenario === 'keyframe'
+              ? [['firstImage', '首帧图片地址'], ...(klingFrameMode === 'keyframes'
+                ? [['images', '中间帧地址（每行一条，可选）']] : []), ...(klingFrameMode !== 'single' ? [['lastImage', '尾帧图片地址（可选）']] : [])]
+              : activeTestScenario === 'reference' ? [['images', '参考图片地址（每行一条）'], ['videos', '参考视频地址（每行一条）'], ['audios', '参考音频地址（每行一条）']] : []
             ).map(([field, label]) => <label key={field} className="ui-field min-w-0">
               <span className="ui-label">{t(label)}</span>
               <textarea className="ui-textarea" rows={2} value={testReferences[field as keyof VideoTestReferences]}
-                disabled={trialRunning} spellCheck={false}
+                disabled={trialRunning} spellCheck={false} autoCorrect="off" autoCapitalize="none"
                 onChange={(event) => setTestReferences((current) => ({ ...current, [field]: event.target.value }))} />
             </label>)}
           </div> : null}
@@ -694,7 +699,7 @@ export default function ModelProtocolEditor({
         ) : null}
       </div>
 
-      {preset === 'custom' && !simpleEditor && view === 'form' ? (
+      {preset === 'custom' && !readOnlyProtocol && !simpleEditor && view === 'form' ? (
         <div className="provider-protocol-form">
           <section className="provider-protocol-form-section">
             <div className="provider-protocol-section-title">
@@ -1256,7 +1261,7 @@ export default function ModelProtocolEditor({
         </div>
       ) : null}
 
-      {preset === 'custom' && (simpleEditor || view === 'json') ? (
+      {preset === 'custom' && !readOnlyProtocol && (simpleEditor || view === 'json') ? (
         <div className="min-w-0 space-y-3">
           <div className={PROTOCOL_JSON_EDITOR_LAYOUT}>
             <ProtocolVariablePanel
@@ -1352,6 +1357,13 @@ export default function ModelProtocolEditor({
           </aside>
           </details>
         </div>
+      ) : null}
+
+      {readOnlyProtocol && preset === 'custom' ? (
+        <details className="text-xs text-canvas-text-secondary">
+          <summary className="cursor-pointer">{t('声明式协议 JSON')}</summary>
+          <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-all p-2 font-mono">{protocolJson}</pre>
+        </details>
       ) : null}
 
       {preset === 'custom' ? (

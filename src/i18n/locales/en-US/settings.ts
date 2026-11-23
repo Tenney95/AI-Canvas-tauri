@@ -4,6 +4,10 @@
 import pluginAndUsageSettings from './pluginAndUsageSettings';
 
 const settings = {
+  '提示词最多字符': 'Maximum prompt characters',
+  '非 ASCII 提示词预算': 'Non-ASCII prompt budget',
+  '混合提示词按 ASCII/最多字符 + 非 ASCII/非 ASCII 预算 ≤ 1 校验。': 'Mixed prompts must satisfy ASCII / maximum characters + non-ASCII / non-ASCII budget ≤ 1.',
+  'Kling 官方 API，支持图片、长图与视频': 'Official Kling API for images, long images, and video',
   "协议插件缺少宿主能力声明，请重新安装": "The protocol plugin is missing its host capability declaration. Reinstall it.",
   "协议插件缺少注册摘要，请重新安装": "The protocol plugin is missing its registration digests. Reinstall it.",
   "原生活动版本未提供所选协议预设": "The active native revision does not provide the selected protocol preset.",

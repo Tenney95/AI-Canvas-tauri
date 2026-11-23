@@ -951,11 +951,12 @@ async function resolvePromptReferences(
 /** 图片生成兼容入口：图片 URL 独立提取，视频/音频仍按旧行为内联到 prompt。 */
 export async function resolvePromptWithImageRefs(
   rawPrompt: string,
-  options: { preferLocalImages?: boolean; cameraSettings?: CameraGenerationSettings; signal?: AbortSignal } = {},
-): Promise<{ prompt: string; imageUrls: string[] }> {
-  const result = await resolvePromptReferences(rawPrompt, false, false, options.preferLocalImages, options.cameraSettings, options.signal);
+  options: { preferLocalImages?: boolean; preserveBindings?: boolean; cameraSettings?: CameraGenerationSettings; signal?: AbortSignal } = {},
+): Promise<{ prompt: string; imageUrls: string[]; segments?: PromptMediaSegment[] }> {
+  const result = await resolvePromptReferences(rawPrompt, false, options.preserveBindings, options.preferLocalImages, options.cameraSettings, options.signal);
   return { prompt: result.prompt, imageUrls: options.preferLocalImages
-    ? getMediaReferenceUrls(result.references, 'image', 'local') : result.imageUrls };
+    ? getMediaReferenceUrls(result.references, 'image', 'local') : result.imageUrls,
+    ...(result.segments ? { segments: result.segments } : {}) };
 }
 
 /** 视频生成入口：提取图片、视频和音频引用。 */

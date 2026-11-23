@@ -16,6 +16,7 @@ import {
   getGeneralModelGroups,
   getMediaModelOptions,
 } from '../../src/components/nodes/shared/defaultModels';
+import { assertVideoModelCapability } from '../../src/services/ai/videoRequestResolver';
 import { parseConnectionShare, serializeConnection } from '../../src/services/ai/providerConnectionTransfer';
 import { LIBAPI_MODEL_MANIFEST } from '../../src/services/ai/providers/libapiModelManifest';
 import { AIGCSI_MODEL_MANIFEST } from '../../src/services/ai/providers/aigcsiModelManifest';
@@ -26,6 +27,106 @@ import type { ApiProviderConfig, AppConfig, ProviderModelSelection } from '../..
 import { getProviderPolicy } from '../../src/services/ai/providerPolicies';
 import { resolveGeneralModelConnection } from '../../src/services/ai/helpers';
 import { jsonResponse } from './providerCatalogService/catalogResponse';
+
+it('远端目录优先使用类别声明，并保留嵌套提示词与长时长能力', async () => {
+  try {
+    const payload = { data: [
+      { id: 'kling-image-next', image_capability: { prompt_max_characters: 50_000 } },
+      { id: 'kling-unknown', category: 'image', imageCapability: { promptMaxCharacters: 80_000 } },
+      { id: 'private-generation', type: 'video', videoCapability: { promptMaxCharacters: 30_000,
+        minDuration: 4, maxDuration: 180, ratios: ['16:9'], maxImageReferences: 12 } },
+    ] };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(payload)));
+    const result = await fetchProviderModelCatalog({ providerId: 'custom', config: {
+      name: 'Custom', catalogId: 'custom-openai', apiKey: 'fixture', baseUrl: 'https://api.example/v1',
+    } });
+    expect(result.models.find((model) => model.id === 'kling-image-next')).toMatchObject({ category: 'image', imageCapability: { promptMaxCharacters: 50_000 } });
+    expect(result.models.find((model) => model.id === 'kling-unknown')?.category).toBe('image');
+    expect(result.models.find((model) => model.id === 'private-generation')?.videoCapability).toMatchObject({
+      promptMaxCharacters: 30_000, minDuration: 4, maxDuration: 180, ratios: ['16:9'], maxImageReferences: 12 });
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it('目录局部更新保留本地的提示词上限、时长和显式 false', async () => {
+  try {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ data: [
+      { id: 'private-image', category: 'image', imageCapability: { ratios: ['3:2'] } },
+      { id: 'private-video', category: 'video', videoCapability: { maxImageReferences: 10, supportsStandaloneAudio: false } },
+    ] })));
+    const result = await fetchProviderModelCatalog({ providerId: 'custom', config: {
+      name: 'Custom', catalogId: 'custom-openai', apiKey: 'fixture', baseUrl: 'https://api.example/v1',
+    }, fallbackModels: [
+      { id: 'private-image', name: 'Image', provider: 'custom', category: 'image',
+        imageCapability: { promptMaxCharacters: 100_000, ratios: ['1:1'] } },
+      { id: 'private-video', name: 'Video', provider: 'custom', category: 'video',
+        videoCapability: { promptMaxCharacters: 30_000, minDuration: 4, maxDuration: 180, supportsStandaloneAudio: true } },
+    ] });
+    expect(result.models.find((model) => model.id === 'private-image')?.imageCapability)
+      .toMatchObject({ promptMaxCharacters: 100_000, ratios: ['3:2'] });
+    expect(result.models.find((model) => model.id === 'private-video')?.videoCapability)
+      .toMatchObject({ promptMaxCharacters: 30_000, minDuration: 4, maxDuration: 180,
+        maxImageReferences: 10, supportsStandaloneAudio: false });
+  } finally { vi.unstubAllGlobals(); }
+});
+
+describe('远端媒体目录长度合并', () => {
+  const config: ApiProviderConfig = { name: '自定义接口', catalogId: 'custom-openai', apiKey: 'fixture', baseUrl: 'https://api.example/v1' };
+  const image = { id: 'private-image', name: 'Image', provider: 'custom', category: 'image',
+    imageCapability: { promptMaxCharacters: 50_000, promptMaxNonAsciiCharacters: 20_000 } } as const satisfies ProviderModelSelection;
+  const video: ProviderModelSelection = { id: 'private-video', name: 'Video', provider: 'custom', category: 'video',
+    videoCapability: { durations: [5, 10, 20, 30], minDuration: 5, maxDuration: 30, defaultDuration: 10, promptMaxCharacters: 26_000 } };
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([
+    { durations: [5, -10, 30] },
+    { durations: [5, '10', 30] },
+    { durations: [] },
+    { durations: [5, 30], min_duration: 10 },
+    { min_duration: 21, max_duration: 29 },
+    { max_duration: 4 },
+    { default_duration: 12 },
+  ])('无效时长 %j 保留原时长合同，其他元数据仍能更新', async (invalidTiming) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ data: [{ id: video.id, category: 'video',
+      video_capability: { ...invalidTiming, prompt_max_characters: 30_000 } }] })));
+    const { models } = await fetchProviderModelCatalog({ providerId: 'custom', config, fallbackModels: [video] });
+    expect(models[0].videoCapability).toMatchObject({ ...video.videoCapability, promptMaxCharacters: 30_000 });
+    expect(() => assertVideoModelCapability(models[0].videoCapability)).not.toThrow();
+  });
+
+  it('仅更新区间时收窄已有档位，丢弃不再适用的旧默认值', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ data: [{ id: video.id, category: 'video',
+      video_capability: { duration_range: { min: 15, max: 30 } } }] })));
+    const { models } = await fetchProviderModelCatalog({ providerId: 'custom', config, fallbackModels: [video] });
+    const capability = models[0].videoCapability;
+    expect(capability).toMatchObject({ durations: [20, 30], minDuration: 15, maxDuration: 30 });
+    expect(capability?.defaultDuration).toBeUndefined();
+    expect(() => assertVideoModelCapability(capability)).not.toThrow();
+  });
+
+  it('新的显式档位可以扩展长度，保留小数秒并断开与旧区间的关联', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ data: [{ id: video.id, category: 'video',
+      video_capability: { durations: [180, 2.5, 180], default_duration: 180 } }] })));
+    const { models } = await fetchProviderModelCatalog({ providerId: 'custom', config, fallbackModels: [video] });
+    expect(models[0].videoCapability).toMatchObject({ durations: [2.5, 180], minDuration: 2.5, maxDuration: 180, defaultDuration: 180 });
+    expect(() => assertVideoModelCapability(models[0].videoCapability)).not.toThrow();
+    expect(video.videoCapability?.durations).toEqual([5, 10, 20, 30]);
+  });
+
+  it('错误的双预算成组保留，合法总量可收紧原有加权预算，未知上限不伪造', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ data: [
+      { id: image.id, category: 'image', image_capability: { prompt_max_characters: 100_000, prompt_max_non_ascii_characters: 120_000 } },
+      { id: video.id, category: 'video', video_capability: { promptMaxCharacters: 3.5, durations: [60] } },
+      { id: 'other-image', category: 'image', image_capability: { prompt_max_characters: 5_000 } },
+      { id: 'raw-video', category: 'video', video_capability: { prompt_max_non_ascii_characters: 10_000, durations: [0] } },
+    ] })));
+    const { models } = await fetchProviderModelCatalog({ providerId: 'custom', config, fallbackModels: [image, { ...image, id: 'other-image' }, video] });
+    expect(models.find(({ id }) => id === image.id)?.imageCapability).toMatchObject(image.imageCapability);
+    expect(models.find(({ id }) => id === video.id)?.videoCapability).toMatchObject({ promptMaxCharacters: 26_000, durations: [60] });
+    expect(models.find(({ id }) => id === 'other-image')?.imageCapability).toMatchObject({ promptMaxCharacters: 5_000, promptMaxNonAsciiCharacters: 5_000 });
+    expect(models.find(({ id }) => id === 'raw-video')?.videoCapability).toBeUndefined();
+  });
+});
 
 describe('MiniMax 官方本地候选目录', () => {
   afterEach(() => vi.unstubAllGlobals());

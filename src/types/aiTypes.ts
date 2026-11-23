@@ -105,7 +105,7 @@ export interface ModelProtocolPollRetryConfig {
   /** 连续查询错误最多重试次数，默认 3。 */
   maxRetries?: number;
   backoff?: ModelProtocolPollBackoff;
-  /** 退避或 Retry-After 允许的最大等待时间。 */
+  /** 本地退避上限；遵循 Retry-After 时不提前重查，仍受总等待预算约束。 */
   maxDelayMs?: number;
   /** 是否遵循响应中的 Retry-After，默认 true。 */
   honorRetryAfter?: boolean;
@@ -282,6 +282,10 @@ export interface VideoInputConstraints {
  * 字段语义与内置 Seedance 能力表（apimartVideoModels）对齐，便于同一套 UI 消费。
  */
 export interface VideoModelCapability {
+  /** 最终提交提示词的 Unicode 码点上限；未声明时不猜测。 */
+  promptMaxCharacters?: number;
+  /** 与总上限共同计算 ASCII／非 ASCII 加权预算。 */
+  promptMaxNonAsciiCharacters?: number;
   /** 支持的生成操作；缺省仅用于兼容旧配置，不代表模型自动支持全部操作。 */
   operations?: VideoGenerationOperation[];
   /** 是否至少需要一份图片、视频或音频参考素材。 */
@@ -341,7 +345,15 @@ export interface VideoModelCapability {
  * 替代「全局 2K + 1:1」的兜底。字段语义与内置 APIMart 生图能力表对齐，
  * 便于同一套参数面板与生成入口消费。
  */
+/** Output count chosen by the upstream service for one operation. */
+export interface ImageOutputCountRange { min: number; max: number }
+
 export interface ImageModelCapability {
+  outputCountRange?: ImageOutputCountRange;
+  /** 最终提交提示词的 Unicode 码点上限，优先于模型名回退。 */
+  promptMaxCharacters?: number;
+  /** 非 ASCII 独立预算；与上述上限按 ASCII/max + 非ASCII/nonAsciiMax <= 1 混合计数。 */
+  promptMaxNonAsciiCharacters?: number;
   /** 只显示并提交厂商明确声明的原文件格式。 */
   outputFormats?: ImageOutputFormat[];
   defaultOutputFormat?: ImageOutputFormat;
@@ -370,12 +382,14 @@ export interface ImageModelCapability {
   /** 是否支持批量生成（n > 1）。不支持时生成入口应把数量钳制为 1。 */
   supportsBatch?: boolean;
   /** 单次批量数量上限（supportsBatch 为 true 时生效）。 */
+  minBatchCount?: number;
   maxBatchCount?: number;
   /** 是否支持图生图 / 参考图（image_urls）。false 时传入参考图应报错而非静默丢弃。 */
   supportsImageReference?: boolean;
   /** 参考图数量上限（supportsImageReference 为 true 时生效）。 */
   maxImageReferences?: number;
   /** 参考图是否支持 Base64 data URI（false 表示仅支持公网 URL）。 */
+  minImageReferences?: number;
   supportsDataUrlReference?: boolean;
   /** 分辨率字段名（不同模型可能用 resolution / 无此字段 / 其他）。 */
   resolutionField?: string;
@@ -438,7 +452,8 @@ export interface ResolvedModelProtocolPoll {
   retry?: ModelProtocolPollRetryConfig;
 }
 
-export const MAX_IMAGE_BATCH_COUNT = 8;
+/** 应用批次数预算；单次请求仍由具体模型能力约束，组图产物也需完整容纳。 */
+export const MAX_IMAGE_BATCH_COUNT = 16;
 
 /** 已提交任务的交付身份；不包含凭据、请求正文或素材路径。 */
 export interface MediaTaskReceipt {

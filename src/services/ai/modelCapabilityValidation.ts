@@ -108,7 +108,32 @@ export function assertModelProtocolResultMapping(
   }
 }
 
+export function isImageOutputCountRange(value: unknown): value is import('../../types/aiTypes').ImageOutputCountRange {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const range = value as Record<string, unknown>;
+  return Object.keys(range).length === 2 && Object.hasOwn(range, 'min') && Object.hasOwn(range, 'max')
+    && typeof range.min === 'number' && Number.isSafeInteger(range.min) && range.min >= 2
+    && typeof range.max === 'number' && Number.isSafeInteger(range.max) && range.max > range.min && range.max <= 128;
+}
+
+export function assertImageOutputCount(range: ImageModelCapability['outputCountRange'], actual: number): void {
+  if (range && (actual < range.min || actual > range.max)) {
+    throw new Error('原图片作业返回 ' + actual + ' 张，接口约定为 ' + range.min + '–' + range.max + ' 张，已保留原任务供核对');
+  }
+}
+
 export function assertImageModelCapability(capability: ImageModelCapability): void {
+  if (capability.outputCountRange !== undefined && (!isImageOutputCountRange(capability.outputCountRange)
+    || capability.supportsBatch === true || (capability.minBatchCount ?? 1) !== 1 || (capability.maxBatchCount ?? 1) !== 1)) {
+    throw new Error('自动候选范围必须与单次提交的图片能力一起配置');
+  }
+  for (const field of ['promptMaxCharacters', 'promptMaxNonAsciiCharacters'] as const) {
+    const value = capability[field];
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) throw new Error(`${field} 必须是正整数`);
+  }
+  if (capability.promptMaxNonAsciiCharacters !== undefined && capability.promptMaxCharacters === undefined) {
+    throw new Error('非 ASCII 提示词预算必须同时声明提示词最多字符');
+  }
   assertImageOutputCapability(capability);
   for (const [field, defaultField] of [
     ['resolutions', 'defaultResolution'], ['ratios', 'defaultRatio'], ['qualities', 'defaultQuality'],
@@ -124,11 +149,17 @@ export function assertImageModelCapability(capability: ImageModelCapability): vo
       throw new Error(`${defaultField} 必须属于 ${field}`);
     }
   }
-  for (const field of ['maxBatchCount', 'maxImageReferences'] as const) {
+  for (const field of ['minBatchCount', 'maxBatchCount', 'minImageReferences', 'maxImageReferences'] as const) {
     const value = capability[field];
-    if (value !== undefined && (!Number.isInteger(value) || value < (field === 'maxBatchCount' ? 1 : 0))) {
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < (field.endsWith('BatchCount') ? 1 : 0))) {
       throw new Error(`${field} 必须是有效整数`);
     }
+  }
+  if ((capability.minBatchCount ?? 1) > (capability.maxBatchCount ?? 1)) {
+    throw new Error('图片数量下限不能超过上限');
+  }
+  if ((capability.minImageReferences ?? 0) > (capability.maxImageReferences ?? 0)) {
+    throw new Error('参考图数量下限不能超过上限');
   }
   if (capability.supportsBatch === false && (capability.maxBatchCount ?? 1) > 1) {
     throw new Error('不支持批量时 maxBatchCount 不能大于 1');
@@ -202,6 +233,8 @@ export function resolveConfiguredImageParameters(
     }
     return normalized ?? fallback ?? allowed?.[0] ?? legacy;
   };
+  const minimum = capability.minBatchCount ?? 1;
+  if (params.count < minimum) throw new Error(`图片模型单次至少生成 ${minimum} 张图片`);
   const maximum = capability.supportsBatch === false ? 1 : capability.maxBatchCount;
   if (maximum !== undefined && params.count > maximum) {
     throw new Error(`图片模型单次最多生成 ${maximum} 张图片`);
@@ -217,6 +250,8 @@ export function resolveConfiguredImageParameters(
 }
 
 export function assertConfiguredImageReferences(capability: ImageModelCapability, count: number): void {
+  const minimum = capability.minImageReferences ?? 0;
+  if (count < minimum) throw new Error(`该图片模型至少需要 ${minimum} 张参考图`);
   if (count > 0 && capability.supportsImageReference === false) throw new Error('该图片模型不支持参考图（仅文生图）');
   if (capability.maxImageReferences !== undefined && count > capability.maxImageReferences) {
     throw new Error(`该图片模型最多支持 ${capability.maxImageReferences} 张参考图`);
@@ -278,6 +313,9 @@ export function assertModelCapabilityProtocol(model: ProviderModelSelection): vo
     throw new Error('executionProfile.preset：原生文本协议不能用于媒体模型');
   }
   if (!protocol) {
+    if (model.category === 'image' && model.imageCapability?.outputCountRange) {
+      throw new Error('自动候选范围需要映射可返回多张图片的执行协议');
+    }
     if (model.category === 'image' && model.imageCapability?.outputFormats?.length) {
       throw new Error(`模型“${model.name}”声明图片输出格式，但未配置格式请求协议`);
     }

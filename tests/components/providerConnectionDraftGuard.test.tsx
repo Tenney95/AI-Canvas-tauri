@@ -42,6 +42,7 @@ import type { VolcengineTosConfig, VolcengineTosCredentials } from '../../src/ty
 import type { ImageHostingConfig } from '../../src/types/imageHosting';
 import { IMAGE_HOSTING_TEMPLATES } from '../../src/services/imageHostingTemplates';
 import { MUSE_MODEL_MANIFEST } from '../../src/services/ai/museModels';
+import { getProviderDefinition, KLING_BASE_URL } from '../../src/services/ai/providerCatalogService';
 import type { ProviderModelSelection } from '../../src/types';
 
 type Element = ReactElement<Record<string, unknown> & { children?: unknown }>;
@@ -114,6 +115,34 @@ beforeEach(() => {
   render();
 });
 afterEach(() => vi.unstubAllGlobals());
+
+it('restores saved Kling limits over the catalog and keeps them when refreshing the local manifest', async () => {
+  const models = [...getProviderDefinition('kling')!.models!];
+  const image = models.find((model) => model.id === 'kling-image-4.0')!;
+  const video = models.find((model) => model.id === 'kling-video-4.0-flash-first-frame')!;
+  const connectionId = 'kling-user';
+  const saved: ApiProviderConfig = {
+    name: 'Kling', catalogId: 'kling', apiKey: 'fixture-key', baseUrl: KLING_BASE_URL, catalogModels: models,
+    selectedModels: [
+      { ...image, provider: connectionId, imageCapability: { ...image.imageCapability, promptMaxCharacters: 1000, promptMaxNonAsciiCharacters: 500 } },
+      { ...video, provider: connectionId, videoCapability: { ...video.videoCapability, maxDuration: 12, durations: video.videoCapability?.durations?.filter((seconds) => seconds <= 12) } },
+    ],
+  };
+  driver.scope = { values: [], index: 0 };
+  props = { ...props, connectionId, initialConfig: saved, initialModelId: undefined,
+    providerConfigs: { [connectionId]: saved }, fallbackModels: { kling: models } };
+  render();
+  const assertSavedLimits = () => {
+    expect(section().selectedModels.find((model) => model.id === image.id)?.imageCapability).toMatchObject({
+      promptMaxCharacters: 1000, promptMaxNonAsciiCharacters: 500,
+    });
+    expect(section().selectedModels.find((model) => model.id === video.id)?.videoCapability?.maxDuration).toBe(12);
+  };
+  assertSavedLimits();
+  await section().onFetchModels();
+  render();
+  assertSavedLimits();
+});
 
 function prepareVolcengine(config?: VolcengineTosConfig) {
   driver.scope = { values: [], index: 0 };

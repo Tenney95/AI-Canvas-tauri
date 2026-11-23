@@ -51,6 +51,17 @@ beforeEach(() => {
 });
 
 describe('跨媒体原任务续取入口', () => {
+  it('声明式图片查询暂停后，使用图片节点按钮继续原回执', async () => {
+    mocks.tasks = [];
+    mocks.nativeOperationId = 'original-image-operation';
+    const button = queryButton();
+    expect(button?.props.className).toContain('ui-btn--node-image');
+    (button!.props.onClick as () => void)();
+    expect(mocks.resumeNative).toHaveBeenCalledExactlyOnceWith('media', 'original-image-operation');
+    expect(mocks.resume).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(mocks.busy).toBe(false));
+  });
+
   it('新项目 ComfyUI 视频保存失败后只续取绑定的原操作', async () => {
     mocks.tasks = [];
     mocks.nativeOperationId = 'original-operation';

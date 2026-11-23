@@ -256,7 +256,8 @@ export function registerImageGenerationTests() {
       vi.doMock('../../../src/services/fileService', () => ({
         persistMediaUrlToProjectData,
       }));
-      vi.doMock('../../../src/services/ai/mediaModelCapabilities', () => ({
+      vi.doMock('../../../src/services/ai/mediaModelCapabilities', async (importOriginal) => ({
+        ...await importOriginal<typeof import('../../../src/services/ai/mediaModelCapabilities')>(),
         resolveImageOutputsPerJob: () => outputsPerJob,
         resolveImageParameterCapability: (model: string) => model === 'general/model-compatible'
           ? { resolutions: ['1K', '2k', '4K'], defaultResolution: '1K', ratios: ['1:1', '16:9', '9:16', 'auto'], defaultRatio: '1:1',

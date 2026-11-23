@@ -121,16 +121,18 @@ export default function ImageCapabilityEditor({ model, onChange, onApplyTemplate
             </Select>
           </label>
         ))}
-        {([['maxBatchCount', t('单次生成上限')], ['maxImageReferences', t('参考图数量上限')]] as const).map(([field, label]) => (
+        {([['maxBatchCount', t('单次生成上限')], ['maxImageReferences', t('参考图数量上限')],
+          ['promptMaxCharacters', t('提示词最多字符')], ['promptMaxNonAsciiCharacters', t('非 ASCII 提示词预算')]] as const).map(([field, label]) => (
           <label key={field} className="space-y-1 text-xs text-canvas-text-secondary">
             <span>{label}</span>
-            <input className="ui-input w-full" type="number" min={field === 'maxBatchCount' ? 1 : 0}
+            <input className="ui-input w-full" type="number" step="1" min={field === 'maxImageReferences' ? 0 : 1}
               aria-label={label} placeholder={t("未声明")} value={capability[field] ?? ''}
               onChange={(event) => onChange({ ...capability,
                 [field]: event.target.value === '' ? undefined : Number(event.target.value) })} />
           </label>
         ))}
       </div>
+      {capability.promptMaxNonAsciiCharacters !== undefined && <p className="text-xs text-canvas-text-muted">{t('混合提示词按 ASCII/最多字符 + 非 ASCII/非 ASCII 预算 ≤ 1 校验。')}</p>}
       {describeModelParameterGaps(model) && <p className="text-xs text-canvas-text-muted">{t(describeModelParameterGaps(model))}</p>}
       {error && <p role="alert" className="text-xs text-canvas-text">{error}</p>}
     </section>

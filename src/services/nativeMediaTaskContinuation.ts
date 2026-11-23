@@ -25,5 +25,6 @@ export async function continueNativeMediaTask(record: NativeMediaTaskRecord, sig
   if (current?.status !== 'delivered') throw createNativeMediaPendingError(current ?? record, failure);
   const error = new Error('媒体已保存并完成显示。');
   error.name = 'NativeMediaTaskDelivered';
-  Object.assign(error, { nativeOperationId: record.operationId }); throw error;
+  const imageOutputCount = current.recovery?.imageOutputCountRange ? current.localResults?.length : undefined;
+  Object.assign(error, { nativeOperationId: record.operationId, imageOutputCount }); throw error;
 }

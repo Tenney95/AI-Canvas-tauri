@@ -21,6 +21,7 @@ describe('provider video capability editor normalization', () => {
       frameRates: [30],
       durations: [10, 15],
       supportsAudio: true,
+      promptMaxCharacters: 30_000,
       inputConstraints: { promptMinCharacters: 3 },
     };
 
@@ -37,6 +38,17 @@ describe('provider video capability editor normalization', () => {
 
   it('keeps an empty capability empty instead of applying Seedance presets', () => {
     expect(createEditableVideoCapability()).toEqual({});
+  });
+
+  it('shows the saved maximum prompt length alongside a documented long duration', () => {
+    const html = renderToStaticMarkup(createElement(VideoCapabilityEditor, {
+      model: { id: 'long-video', name: 'Long Video', category: 'video', provider: 'custom',
+        videoCapability: { promptMaxCharacters: 100_000, minDuration: 60, maxDuration: 120 } },
+      onChange: () => undefined, onApplySeedanceTemplate: () => undefined,
+      onApplyH3Template: () => undefined, onClose: () => undefined,
+    }));
+    expect(html).toMatch(/<input[^>]*aria-label="提示词最多字符"[^>]*value="100000"/);
+    expect(html).toContain('aria-label="最长生成时长"');
   });
 
   it.each([

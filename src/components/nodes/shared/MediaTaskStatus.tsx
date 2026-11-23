@@ -101,11 +101,11 @@ function MediaTaskStatus({ nodeId, overlay = false, children }: { nodeId: string
     }).finally(() => setBusy(false));
   };
   return <div className={overlay ? 'generation-progress-overlay generation-progress-overlay--interactive nodrag nopan text-center'
-    : 'ui-card nodrag nopan flex flex-wrap items-center gap-2 p-2'} role="status"
+    : 'ui-card nodrag nopan flex flex-wrap items-center gap-2 p-2'}
     onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}
     onDoubleClick={(event) => event.stopPropagation()}>
     <div className={`flex min-w-0 flex-col gap-1${overlay ? ' max-w-full items-center' : ' flex-1'}`}>
-      <span className={`break-words text-canvas-text-secondary${overlay ? ' line-clamp-3 text-[11px]' : ' text-xs'}`} title={message}>{message}</span>
+      <span role="status" className={`break-words text-canvas-text-secondary${overlay ? ' line-clamp-3 text-[11px]' : ' text-xs'}`} title={message}>{message}</span>
       {diagnosticMessage && <span className={`break-words text-canvas-text-secondary${overlay ? ' text-[11px]' : ' text-xs'}`} title={diagnosticMessage}>{diagnosticMessage}</span>}
       <GenerationWaitTime nodeId={nodeId} />
       {identity && !canQuery && !overlay && <details className="text-xs text-canvas-text-secondary">

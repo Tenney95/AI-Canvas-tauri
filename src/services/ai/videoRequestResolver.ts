@@ -14,6 +14,7 @@ import type {
   VideoModelCapability,
   VideoParameterCapabilityOverride,
 } from '../../types/aiTypes';
+import { mixedPromptPrefixLimit } from './imagePromptLimits';
 import {
   DEFAULT_VIDEO_DURATION_SECONDS,
   DEFAULT_VIDEO_FPS,
@@ -24,6 +25,17 @@ import {
 const LEGACY_VIDEO_RESOLUTION = 832;
 const LEGACY_VIDEO_RESOLUTION_PRESET = '720p';
 const LEGACY_VIDEO_ASPECT_RATIO = '16:9';
+
+function countPromptCharacters(prompt: string): number {
+  let count = prompt.length;
+  for (let index = 0; index < prompt.length; index += 1) {
+    if (prompt.codePointAt(index)! > 0xffff) {
+      count -= 1;
+      index += 1;
+    }
+  }
+  return count;
+}
 
 export type VideoSubmissionControlParams = Pick<
   AIVideoGenParams,
@@ -494,6 +506,17 @@ export function assertVideoModelCapability(capability: VideoModelCapability | un
   }
 
   const promptMinimum = capability.inputConstraints?.promptMinCharacters;
+  const promptMaximum = capability.promptMaxCharacters;
+  if (promptMaximum !== undefined && (!Number.isSafeInteger(promptMaximum) || promptMaximum < 1
+    || promptMinimum !== undefined && promptMaximum < promptMinimum)) {
+    fail('INVALID_CAPABILITY', '模型能力 promptMaxCharacters 必须是正整数且不小于最少字符数',
+      'promptMaxCharacters', { value: promptMaximum });
+  }
+  const nonAsciiMaximum = capability.promptMaxNonAsciiCharacters;
+  if (nonAsciiMaximum !== undefined && (!Number.isSafeInteger(nonAsciiMaximum) || nonAsciiMaximum < 1
+    || promptMaximum === undefined || nonAsciiMaximum > promptMaximum)) {
+    fail('INVALID_CAPABILITY', '模型非 ASCII 提示词上限必须是正整数且不大于字符数上限', 'promptMaxNonAsciiCharacters');
+  }
   if (promptMinimum !== undefined && (!Number.isInteger(promptMinimum) || promptMinimum < 0)) {
     fail(
       'INVALID_CAPABILITY',
@@ -923,13 +946,24 @@ export function resolveCanonicalVideoRequest(
   assertReferenceCombinationSupported(references, capability, params.model);
 
   const minimumPromptLength = capability?.inputConstraints?.promptMinCharacters;
-  if (minimumPromptLength !== undefined && params.prompt.trim().length < minimumPromptLength) {
-    fail(
-      'INVALID_PARAMETER',
-      `提示词至少需要 ${minimumPromptLength} 个字符`,
-      'prompt',
-      { length: params.prompt.trim().length, minimum: minimumPromptLength },
-    );
+  if (minimumPromptLength !== undefined) {
+    const length = countPromptCharacters(params.prompt.trim());
+    if (length < minimumPromptLength) {
+      fail('INVALID_PARAMETER', `提示词至少需要 ${minimumPromptLength} 个字符`,
+        'prompt', { length, minimum: minimumPromptLength });
+    }
+  }
+
+  const maximum = capability?.promptMaxCharacters;
+  const nonAsciiMaximum = capability?.promptMaxNonAsciiCharacters;
+  const maximumPromptLength = maximum !== undefined && nonAsciiMaximum !== undefined
+    ? mixedPromptPrefixLimit(params.prompt, maximum, nonAsciiMaximum) : maximum;
+  if (maximumPromptLength !== undefined) {
+    const length = countPromptCharacters(params.prompt);
+    if (length > maximumPromptLength) {
+      fail('INVALID_PARAMETER', `提示词最多支持 ${maximumPromptLength} 个字符，请精简后重试`,
+        'prompt', { length, maximum: maximumPromptLength });
+    }
   }
 
   const inputModeCapability = capability?.inputModeCapabilities?.[inputMode];

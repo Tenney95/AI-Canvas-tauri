@@ -2,10 +2,11 @@
 import type { MediaDownloadAccess } from '../types/aiTypes';
 import type { CharacterImageTaskRecovery } from '../types/media';
 import { isSafeNativeProtocolTaskId, validateNativeProtocolContext } from './nativeProtocolContext';
+import { isImageOutputCountRange } from './ai/modelCapabilityValidation';
 import { validateAuthentication } from './ai/modelProtocolValidation';
 
 export type CharacterImageRecoverySeed = Pick<CharacterImageTaskRecovery, 'kind'> &
-  Partial<Pick<CharacterImageTaskRecovery, 'providerBase' | 'builtinMode' | 'workflow' | 'query' | 'mediaDownloadAccess'>>;
+  Partial<Pick<CharacterImageTaskRecovery, 'providerBase' | 'builtinMode' | 'workflow' | 'query' | 'mediaDownloadAccess' | 'imageOutputCountRange'>>;
 export type CharacterImageExecutionOutputs = Array<{ url: string; kind?: string }> & { incomplete?: true };
 export interface CharacterImageExecutionPlan {
   expectedCount?: number;
@@ -47,12 +48,13 @@ export function validateCharacterImageTaskRecovery(value: CharacterImageTaskReco
     && [Object.prototype, null].includes(Object.getPrototypeOf(object)) && Reflect.ownKeys(object).every((key) =>
       typeof key === 'string' && allowed.includes(key) && 'value' in Object.getOwnPropertyDescriptor(object, key)!);
   if (!fields(value, ['version', 'kind', 'connectionId', 'providerBase', 'modelRef', 'configurationDigest', 'expectedCount',
-    'tasks', 'builtinMode', 'workflow', 'query', 'mediaDownloadAccess'])) throw new Error('角色图片查询回执包含未知字段');
+    'tasks', 'imageOutputCountRange', 'builtinMode', 'workflow', 'query', 'mediaDownloadAccess'])) throw new Error('角色图片查询回执包含未知字段');
   if (!value || value.version !== 1 || !['builtin', 'apimart', 'general-async', 'workflow', 'protocol'].includes(value.kind)
     || !/^[a-f0-9]{64}$/.test(value.configurationDigest)
     || typeof value.connectionId !== 'string' || !value.connectionId || value.connectionId.length > 256
     || typeof value.modelRef !== 'string' || !value.modelRef || value.modelRef.length > 512
     || !Number.isSafeInteger(value.expectedCount) || value.expectedCount < 1 || value.expectedCount > 128
+    || value.imageOutputCountRange !== undefined && !isImageOutputCountRange(value.imageOutputCountRange)
     || !Array.isArray(value.tasks) || value.tasks.length > 128
     || value.tasks.some((task) => !fields(task, ['taskId', 'recoveryContext']) || !isSafeNativeProtocolTaskId(task.taskId, secrets))
     || new Set(value.tasks.map((task) => task.taskId)).size !== value.tasks.length) throw new Error('角色图片查询回执无效');
@@ -66,7 +68,9 @@ export function validateCharacterImageTaskRecovery(value: CharacterImageTaskReco
   if (value.kind === 'workflow' && (!fields(value.workflow, ['adapter', 'connectionId', 'providerBase', 'category', 'digest',
     'workflowId', 'modelId', 'serverId', 'outputNodeIds']) || value.workflow?.category !== 'image'
     || value.workflow.connectionId !== value.connectionId || value.workflow.providerBase !== value.providerBase)) throw new Error('角色图片工作流回执无效');
-  if (value.kind === 'protocol' && (!fields(value.query, ['modelId', 'digest']) || !value.query?.modelId
+  if (value.kind === 'protocol' && (!fields(value.query, ['modelId', 'digest', 'serverId', 'credentialProof']) || !value.query?.modelId
+    || value.query.serverId !== undefined && !/^[a-z0-9-]{1,64}$/.test(value.query.serverId)
+    || value.query.credentialProof !== undefined && (!value.query.serverId || !/^[a-f0-9]{64}$/.test(value.query.credentialProof))
     || !/^[a-f0-9]{64}$/.test(value.query.digest))) throw new Error('角色图片原查询协议缺失');
   if (value.kind === 'builtin' && !['standard', 'protocol', 'volcengine', 'ccc', 'dreamina'].includes(value.builtinMode ?? '')) {
     throw new Error('角色图片原接口合同无效');

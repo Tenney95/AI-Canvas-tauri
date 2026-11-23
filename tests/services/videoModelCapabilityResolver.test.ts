@@ -28,6 +28,13 @@ function previousPublishedCapability(id: string): VideoModelCapability {
 }
 
 describe('videoModelCapabilityResolver', () => {
+  it('向参数面板与插件保留声明的提示词上限', () => {
+    const input = config();
+    input.providers.custom = { name: 'Custom', apiKey: '', catalogId: 'custom-openai' };
+    input.generalModels = [{ id: 'video', name: 'Video', modelId: 'private-video', category: 'video', providerConfigId: 'custom',
+      videoCapability: { promptMaxCharacters: 100_000, minDuration: 4, maxDuration: 180 } }];
+    expect(resolveVideoModelCapability('general/video', input)).toMatchObject({ promptMaxCharacters: 100_000, maxDuration: 180 });
+  });
   it('uses native duration and operation contracts for SD2.5 and H3', () => {
     expect(resolveVideoModelCapability('apimart/doubao-seedance-2.5', config())).toMatchObject({ maxDuration: 30, maxVideoReferences: 10 });
     expect(resolveVideoModelCapability('volcengine/doubao-seedance-2-5-260628', config())).toMatchObject({

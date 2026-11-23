@@ -38,27 +38,37 @@ export function mergeModels(
       && existing.name.trim().toLowerCase() !== existing.id.trim().toLowerCase();
     const preserveExistingMetadata = incomingHasOnlyRawName && existingHasFriendlyName;
     // 用户手动指定过分类时，重新拉取目录或合并模型不再覆盖该分类。
-    const preserveExistingCategory = Boolean(existing?.categoryManual) || preserveExistingMetadata;
+    const preserveExistingCategory = Boolean(existing?.categoryManual)
+      || (options.preferIncomingConfiguration
+        ? preserveExistingMetadata && !model.categoryManual && !model.executionProfile
+        : Boolean(existing?.executionProfile) || preserveExistingMetadata);
     // 编辑初始化可显式让保存值覆盖本地新模板；目录刷新仍默认保留当前编辑值。
-    const configuration = options.preferIncomingConfiguration ? model : existing;
-    const fallbackConfiguration = options.preferIncomingConfiguration ? existing : model;
+    const category = preserveExistingCategory && existing ? existing.category : model.category;
+    const currentContract = existing?.category === category ? existing : undefined;
+    const incomingContract = model.category === category ? model : undefined;
+    const configuration = options.preferIncomingConfiguration ? incomingContract : currentContract;
+    const fallbackConfiguration = options.preferIncomingConfiguration ? currentContract : incomingContract;
+    // 显式协议及其能力成套保留。裸目录项只能提供元数据，不能把另一个操作的能力拼进当前协议。
+    const fallback = configuration?.executionProfile ? undefined : fallbackConfiguration;
     models.set(model.id, {
       ...existing,
       ...model,
       name: preserveExistingMetadata ? existing.name : model.name,
-      category: preserveExistingCategory && existing ? existing.category : model.category,
+      category,
       description: existing?.descriptionManual
         ? existing.description
         : model.description || existing?.description,
       descriptionManual: existing?.descriptionManual ?? model.descriptionManual,
       inputModalities: existing?.inputModalitiesManual
         ? existing.inputModalities
-        : model.inputModalities ?? existing?.inputModalities,
+        : incomingContract?.inputModalities ?? currentContract?.inputModalities,
       inputModalitiesManual: existing?.inputModalitiesManual ?? model.inputModalitiesManual,
       categoryManual: existing?.categoryManual ?? model.categoryManual,
-      imageCapability: configuration?.imageCapability ?? fallbackConfiguration?.imageCapability,
-      videoCapability: configuration?.videoCapability ?? fallbackConfiguration?.videoCapability,
-      executionProfile: configuration?.executionProfile ?? fallbackConfiguration?.executionProfile,
+      imageCapability: category === 'image' ? configuration?.imageCapability ?? fallback?.imageCapability : undefined,
+      videoCapability: category === 'video' ? configuration?.videoCapability ?? fallback?.videoCapability : undefined,
+      executionProfile: configuration?.executionProfile ?? fallback?.executionProfile,
+      imageReferenceRequestMode: category === 'image'
+        ? configuration?.imageReferenceRequestMode ?? fallback?.imageReferenceRequestMode : undefined,
     });
   }
   return [...models.values()];

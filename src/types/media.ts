@@ -72,6 +72,8 @@ export interface NativeMediaRecoveryBinding {
   serverId?: string;
   digest?: string;
   expectedCount?: number;
+  imageOutputCountRange?: import('./aiTypes').ImageOutputCountRange;
+  credentialProof?: string;
 }
 export interface NativeApimartImageBatch {
   version: 1;
@@ -191,12 +193,15 @@ export interface CharacterImageTaskRecovery {
   modelRef: string;
   configurationDigest: string;
   expectedCount: number;
+  imageOutputCountRange?: import('./aiTypes').ImageOutputCountRange;
   tasks: Array<{ taskId: string; recoveryContext?: Record<string, unknown> }>;
   builtinMode?: 'standard' | 'protocol' | 'volcengine' | 'ccc' | 'dreamina';
   workflow?: import('../services/nativeWorkflowRepository').NativeWorkflowDescriptor;
   query?: {
     modelId: string;
     digest: string;
+    serverId?: string;
+    credentialProof?: string;
   };
   mediaDownloadAccess?: import('./aiTypes').MediaDownloadAccess;
 }

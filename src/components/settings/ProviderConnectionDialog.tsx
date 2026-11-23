@@ -184,7 +184,11 @@ export default function ProviderConnectionDialog({
   const [models, setModels] = useState<ProviderModelSelection[]>(
     () => {
       const options = { preferIncomingConfiguration: initialDefinition?.policy.catalog.refresh === 'replace-unselected' };
-      return mergeModels(mergeModels(initialLocalModels, initialCatalogModels, options), initialSelectedModels, options)
+      const catalog = mergeModels(initialLocalModels, initialCatalogModels, options);
+      // Kling 的目录保留官方默认值，已启用模型保存用户收紧的限制。
+      return mergeModels(catalog, initialSelectedModels, {
+        preferIncomingConfiguration: options.preferIncomingConfiguration || initialDefinition?.id === 'kling',
+      })
         .map((model) => applyKnownVideoTemplateDefaults(model, initialBaseUrl));
     },
   );
@@ -468,7 +472,7 @@ export default function ProviderConnectionDialog({
       if (controller.signal.aborted) return;
       const resolvedBaseUrl = result.resolvedBaseUrl || baseUrl;
       const remoteIds = new Set(result.models.map((model) => model.id));
-      const { refresh } = definition.policy.catalog;
+      const refresh = result.source === 'local-fallback' ? 'merge' : definition.policy.catalog.refresh;
       const checkedIds = selectedIdsRef.current;
       const retainedMissing = refresh === 'replace-unselected' && [...checkedIds].some((id) => !remoteIds.has(id));
       const keepModel = (id: string) => remoteIds.has(id) || (refresh === 'replace-unselected' && checkedIds.has(id));

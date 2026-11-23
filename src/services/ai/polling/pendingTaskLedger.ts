@@ -13,11 +13,11 @@ import {
 } from '../../comfyPolling';
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../../canvasDerivationGuard';
 import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from '../../projectExecutionContext';
-import { isSafeMediaParameterText, MEDIA_PARAMETER_TEXT_FIELDS } from '../modelCapabilityValidation';
+import { isImageOutputCountRange, isSafeMediaParameterText, MEDIA_PARAMETER_TEXT_FIELDS } from '../modelCapabilityValidation';
 import type { BaseNodeData, NodeType } from '../../../types';
 import type { CanvasContext } from '../../../types/project';
 import type { NativeMediaTaskRecord } from '../../indexedDb/nativeMediaTaskRepository';
-import type { MediaDownloadAccess, MediaTaskContext, MediaTaskReceipt, ResolvedModelProtocolPoll } from '../../../types/aiTypes';
+import type { ImageOutputCountRange, MediaDownloadAccess, MediaTaskContext, MediaTaskReceipt, ResolvedModelProtocolPoll } from '../../../types/aiTypes';
 import { sanitizeMediaDownloadAccess, sanitizeMediaResultUrls } from '../mediaDownloadAccess';
 import { getHttpResponseError } from '../httpUtils';
 import { getGenerationNodeType } from '../../../utils/nodeGeneration';
@@ -224,12 +224,12 @@ export function cancelNodePolling(nodeId: string, preservePending = false): void
 }
 
 /** 轮询结束时传入登记返回的信号清理本轮，避免旧请求移除后续登记。 */
-export function cleanupNodePolling(nodeId: string, expectedSignal?: AbortSignal): boolean {
+export function cleanupNodePolling(nodeId: string, expectedSignal?: AbortSignal, notifyNativeDelivery = true): boolean {
   if (expectedSignal && !isNodePollingCurrent(nodeId, expectedSignal)) return false;
   const projectId = runtime.pollingProjects.get(nodeId);
-  runtime.abortControllers.delete(nodeId);
+  abortControllers.delete(nodeId);
   runtime.pollingProjects.delete(nodeId);
-  if (projectId) void resumeNativeMediaLocalDelivery(projectId, nodeId).catch(() => undefined);
+  if (projectId && notifyNativeDelivery) void resumeNativeMediaLocalDelivery(projectId, nodeId).catch(() => undefined);
   return true;
 }
 
@@ -262,6 +262,7 @@ export interface PendingTask {
   batchCount?: number;
   /** 单个远端作业固定返回多候选时的交付数量；不随当前连接配置变化。 */
   expectedImageOutputs?: number;
+  imageOutputCountRange?: ImageOutputCountRange;
   /** 固定候选任务内部重挂的历史节点，仅用于严格匹配旧消息回执。 */
   imageOutputNodeIds?: string[];
   /** 同一节点对应的多个异步任务 ID（APIMart / RunningHub 批量图片生成）。 */
@@ -308,7 +309,7 @@ export interface PendingTask {
 /** UI 恢复提示的最小身份与状态；不含查询协议、下载授权、URL 或生成参数。 */
 export interface MediaTaskSnapshot extends Readonly<Pick<PendingTask,
   'projectId' | 'nodeId' | 'taskId' | 'attemptId' | 'submitted' | 'mediaRecoveryState'
-  | 'mediaSubmissionUncertain' | 'expectedImageOutputs' | 'terminalFailure'>> {
+  | 'mediaSubmissionUncertain' | 'expectedImageOutputs' | 'imageOutputCountRange' | 'terminalFailure'>> {
   readonly mediaContext?: Readonly<Pick<MediaTaskContext, 'conversationId' | 'messageId' | 'editorTransition'>>;
   readonly imageOutputNodeIds?: readonly string[];
   readonly taskType?: PendingTask['taskType'];
@@ -504,15 +505,44 @@ export function isMediaOperationActive(projectId: string, nodeId: string): boole
   return runtime.activeMediaOperations.has(JSON.stringify([projectId, nodeId]));
 }
 
-/** 原生结果的自动入口；忙节点不抢原调用，缺缓存时仅允许续取已确认的原 CCC 图片。 */
+/** 打开原画布可以续查一次。节点释放事件只投影暂停状态，防止错误触发无限重查。 */
 export async function resumeNativeMediaLocalDelivery(canvasId: string, nodeId?: string): Promise<void> {
   if (runtime.stoppedProjectIds.has(canvasId)) return;
   const context = captureLegacyCanvasContext(useAppStore.getState());
   if (!context || context.modelGeneration !== 1 || context.canvasId !== canvasId) return;
   const { resumeNativeMediaLocalResults } = await import('../../nativeMediaAutoDelivery');
-  await resumeNativeMediaLocalResults(canvasId, { nodeId, allowOriginalCccTaskQuery: true, isNodeBusy: (projectId, targetId) =>
-    isMediaOperationActive(projectId, targetId) || isNativeMediaNodeBusy(projectId, targetId)
-    || runtime.pollingProjects.get(targetId) === projectId && runtime.abortControllers.has(targetId) });
+  await resumeNativeMediaLocalResults(canvasId, { nodeId, allowOriginalCccTaskQuery: true,
+    isNodeBusy: isNativeMediaDeliveryBusy, queryProtocol: nodeId ? undefined : queryNativeProtocolReceipt,
+    showPausedProtocol: (record, expected, saving) =>
+      showNativeMediaNodeRecovery(expected, record.nodeId, record.operationId, saving ? 'delivery_pending' : 'paused') });
+}
+
+function isNativeMediaDeliveryBusy(canvasId: string, nodeId: string): boolean {
+  return isMediaOperationActive(canvasId, nodeId) || isNativeMediaNodeBusy(canvasId, nodeId)
+    || runtime.pollingProjects.get(nodeId) === canvasId && abortControllers.has(nodeId);
+}
+
+async function queryNativeProtocolReceipt(record: NativeMediaTaskRecord, context: CanvasContext, parentSignal: AbortSignal): Promise<boolean> {
+  const { nodeId, operationId } = record;
+  parentSignal.throwIfAborted();
+  if (isNativeMediaDeliveryBusy(context.canvasId, nodeId)
+    || !isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) return false;
+  const signal = registerNodePolling(nodeId, parentSignal);
+  try {
+    const { deliverNativeMediaCachedResult } = await import('../../nativeMediaAutoDelivery');
+    const delivered = await deliverNativeMediaCachedResult(operationId, context, signal, undefined, 'protocol-auto');
+    if (delivered) clearNativeMediaNodeRecovery(context, nodeId, operationId);
+    return delivered;
+  } catch (error) {
+    if (!signal.aborted) {
+      const { readAvailableNativeMediaTask } = await import('../../indexedDb/nativeMediaTaskRepository');
+      const current = await readAvailableNativeMediaTask(context.projectId, context.canvasId, operationId, { signal }).catch(() => undefined);
+      if (!signal.aborted && current?.status === 'failed') clearNativeMediaNodeRecovery(context, nodeId, operationId);
+    }
+    throw error;
+  } finally {
+    cleanupNodePolling(nodeId, signal, false);
+  }
 }
 
 // 只投影当前画布的提示；恢复时仍以原生账本和原任务租约为准。
@@ -616,7 +646,7 @@ async function restoreNativeMediaNodeRecoveries(context: CanvasContext, nodeId?:
   const canvasCurrent = () => isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false });
   for (const record of records) {
     if (!canvasCurrent()) return;
-    const canRestore = () => !isMediaOperationActive(context.canvasId, record.nodeId) && !isNativeMediaNodeBusy(context.canvasId, record.nodeId)
+    const canRestore = () => !isNativeMediaDeliveryBusy(context.canvasId, record.nodeId)
       && !getNativeMediaNodeRecovery(record.nodeId);
     if (record.origin?.deliveryMode === 'chat' || !canRestore()
       || !useAppStore.getState().nodes.some((node) => node.id === record.nodeId && node.data.role !== 'source')) continue;
@@ -633,8 +663,9 @@ function nativeMediaNodeActionTarget(nodeId: string, operationId: string) {
       && getNativeMediaNodeRecovery(nodeId, state) === operationId
       && state.nodes.some((item) => item.id === nodeId && item.data.role !== 'source');
   };
-  if (!context || !node || !isCurrent() || isMediaOperationActive(context.canvasId, nodeId)
-    || isNativeMediaNodeBusy(context.canvasId, nodeId)) throw new Error('原媒体任务已变化或正在处理');
+  if (!context || !node || !isCurrent() || isNativeMediaDeliveryBusy(context.canvasId, nodeId)) {
+    throw new Error('原媒体任务已变化或正在处理');
+  }
   return { context, node, isCurrent };
 }
 
@@ -1225,7 +1256,7 @@ function inferLegacyProviderConfigId(task: LegacyPendingTask): string | undefine
 
 function sanitizePendingTask(task: LegacyPendingTask): PendingTask {
   const { baseUrl: legacyBaseUrl, comfyQueryHttpStatus, comfyOutputFile, comfyTextOutputNodeIds, mediaDownloadAccess, resultUrls, mediaFailureDiagnostic, terminalFailure,
-    imageOutputNodeIds, ...safeTask } = task;
+    imageOutputNodeIds, imageOutputCountRange, ...safeTask } = task;
   delete safeTask.apiKey;
   const providerConfigId = inferLegacyProviderConfigId(task);
   const parameters = sanitizeMediaParameters(task.mediaContext?.parameters);
@@ -1246,6 +1277,7 @@ function sanitizePendingTask(task: LegacyPendingTask): PendingTask {
     ...(urls ? { resultUrls: urls } : {}),
     ...(outputFile ? { comfyOutputFile: outputFile } : {}),
     ...(textOutputNodeIds.length ? { comfyTextOutputNodeIds: textOutputNodeIds } : {}),
+    ...(isImageOutputCountRange(imageOutputCountRange) ? { imageOutputCountRange } : {}),
     ...(migratedImageNodes.length ? { imageOutputNodeIds: migratedImageNodes } : {}),
     ...(sanitizeMediaFailureDiagnostic(mediaFailureDiagnostic) ? { mediaFailureDiagnostic: sanitizeMediaFailureDiagnostic(mediaFailureDiagnostic) } : {}),
     ...(terminalFailure === true ? { terminalFailure: true as const } : {}),
@@ -1271,6 +1303,7 @@ function updateMediaTaskSnapshot(tasks: PendingTask[], serialized: string | null
       submitted: task.submitted, mediaRecoveryState: task.mediaRecoveryState,
       taskType: task.taskType,
       mediaSubmissionUncertain: task.mediaSubmissionUncertain, expectedImageOutputs: task.expectedImageOutputs,
+      ...(task.imageOutputCountRange ? { imageOutputCountRange: Object.freeze({ ...task.imageOutputCountRange }) } : {}),
       ...(task.terminalFailure ? { terminalFailure: true as const } : {}),
       ...(task.mediaContext ? { mediaContext: Object.freeze({ conversationId: task.mediaContext.conversationId,
         messageId: task.mediaContext.messageId,

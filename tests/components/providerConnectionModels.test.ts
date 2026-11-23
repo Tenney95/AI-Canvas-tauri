@@ -19,6 +19,26 @@ it('preserves configured image tiers and video limits when refreshing a raw cata
   expect(refreshed[1].videoCapability).toEqual(configured[1].videoCapability);
 });
 
+it('keeps a configured request whole and never attaches it to a different category', () => {
+  const current: ProviderModelSelection = { id: 'same-id', name: 'Edited image', provider: 'custom', category: 'image',
+    executionProfile: { preset: 'custom', protocol: { version: 2, mode: 'sync',
+      submit: { method: 'POST', path: '/custom/image', body: { prompt: '{{prompt}}' } },
+      response: { type: 'json', result: { urlPath: 'output' } } } } };
+  expect(mergeModels([current], [{ ...current, executionProfile: undefined, imageCapability: { maxBatchCount: 8 } }])[0])
+    .toMatchObject({ executionProfile: current.executionProfile, imageCapability: undefined });
+  const incoming: ProviderModelSelection = { id: current.id, name: 'Remote video', provider: current.provider,
+    category: 'video', videoCapability: { durations: [4, 8] } };
+  expect(mergeModels([current], [incoming])[0]).toMatchObject({
+    category: 'image', videoCapability: undefined, executionProfile: current.executionProfile,
+  });
+  expect(mergeModels([{ ...current, executionProfile: undefined }], [incoming])[0]).toMatchObject({
+    category: 'video', videoCapability: incoming.videoCapability, executionProfile: undefined,
+  });
+  expect(mergeModels([current], [{ ...incoming, categoryManual: true }], { preferIncomingConfiguration: true })[0]).toMatchObject({
+    category: 'video', videoCapability: incoming.videoCapability, executionProfile: undefined,
+  });
+});
+
 it.each(['cccapi', 'toapis', 'libapi', 'relayonapi'])('%s 刷新目录保留当前连接的显式协议和能力，不借用同名其他厂商合同', (catalogId) => {
   const catalog = structuredClone(getProviderDefinition(catalogId)!.models!.find((model) => model.category === 'image')!);
   const configured: ProviderModelSelection = { ...catalog, provider: catalogId,
@@ -98,8 +118,8 @@ describe('RelayOnAPI 编辑初始化保留已保存配置', () => {
     expect(normal.imageCapability).toEqual(current.imageCapability);
     expect(normal.executionProfile).toEqual(current.executionProfile);
     const preferred = mergeModels([current], [incoming], preferSaved)[0];
-    expect(preferred.imageCapability).toEqual(incoming.imageCapability);
-    expect(preferred.executionProfile).toEqual(incoming.executionProfile);
+    expect(preferred.imageCapability).toEqual(current.imageCapability);
+    expect(preferred.executionProfile).toEqual(current.executionProfile);
     for (const result of [normal, preferred]) {
       expect(result).toMatchObject({ name: current.name, category: current.category,
         description: current.description, descriptionManual: true, inputModalities: ['text'], inputModalitiesManual: true });

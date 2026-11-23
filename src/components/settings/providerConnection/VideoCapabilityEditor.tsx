@@ -542,6 +542,13 @@ export default function VideoCapabilityEditor({
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="space-y-1 text-[10px] text-canvas-text-secondary">
+              <span>{t('提示词最多字符')}</span>
+              <input type="number" min="1" step="1" aria-label={t('提示词最多字符')}
+                className="ui-input w-full" value={capability.promptMaxCharacters ?? ''} placeholder={t('不限')}
+                onChange={(event) => commit({ ...capability,
+                  promptMaxCharacters: optionalNumber(event.target.value, { integer: true }) })} />
+            </label>
+            <label className="space-y-1 text-[10px] text-canvas-text-secondary">
               <span>{t("提示词最少字符")}</span>
               <input
                 type="number"

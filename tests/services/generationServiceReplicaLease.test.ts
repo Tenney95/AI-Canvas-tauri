@@ -601,6 +601,30 @@ describe('节点视频生成的宿主任务租约', () => {
     expect(mocks.store.getCurrentRevision()).toBe(0);
   });
 
+  it('原生顺序组图以已交付的实际数量显示完成提示', async () => {
+    const capabilities = await import('../../src/services/ai/mediaModelCapabilities');
+    const capability = vi.spyOn(capabilities, 'resolveImageParameterCapability').mockReturnValue({
+      modelId: 'series-auto', resolutionStyle: 'K', resolutions: ['2K'], ratios: ['1:1'], supportsBatch: false,
+      outputCountRange: { min: 2, max: 10 },
+    });
+    try {
+      mocks.store.projectExecutionContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'runtime',
+        projectId: 'p', projectEpoch: 1, canvasId: 'p', episodeId: null, canvasEpoch: 1, canvasRevision: 0 };
+      const input: BaseNodeData = { ...data(), type: 'ai-image', model: 'general/series-auto', batchCount: 2 };
+      mocks.store.nodes = [{ id: 'video', data: input }];
+      mocks.imageOutputs.mockReturnValue(10);
+      mocks.prepareBatch.mockImplementationOnce(() => {
+        mocks.store.nodes.push({ id: 'copy', data: { ...input, batchCount: 1 } });
+        return { nodeIds: ['video', 'copy'], batchGroupId: 'batch' };
+      });
+      for (const imageOutputCount of [3, 5]) mocks.imageBatch.mockRejectedValueOnce(
+        Object.assign(new Error('fixture delivered'), { name: 'NativeMediaTaskDelivered', imageOutputCount }));
+      expect(await run(undefined, input)).toEqual({ success: true });
+      expect(mocks.imageBatch.mock.calls.map(([options]) => options.nodeId)).toEqual(['video', 'copy']);
+      expect(mocks.store.showToast).toHaveBeenCalledWith('批量生成完成：2 次作业，共 8 张候选');
+    } finally { capability.mockRestore(); }
+  });
+
   it('默认 PNG 不回写生成输入，连续两张图片沿用同一租约且历史保存有效格式', async () => {
     const capabilities = await import('../../src/services/ai/mediaModelCapabilities');
     const capability = vi.spyOn(capabilities, 'resolveImageParameterCapability').mockReturnValue({

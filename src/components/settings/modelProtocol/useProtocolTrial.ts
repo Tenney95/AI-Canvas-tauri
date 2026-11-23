@@ -10,6 +10,7 @@ import {
 } from '../../../services/ai/modelProtocol';
 import {
   assertRealProtocolTestVariables,
+  buildImageTestVariables,
   buildVideoTestVariables,
   defaultVideoTestScenario,
   describeProtocolTestRunBlocker,
@@ -30,6 +31,10 @@ import {
   parseChatApiResponse,
   resolveNativeTextChatProtocol,
 } from '../../../services/ai/chatApiProtocol';
+import { resolveKlingModelContract } from '../../../services/ai/providerCatalogService';
+import { resolveEffectivePromptLimits } from '../../../services/ai/imagePromptLimits';
+import { resolveConfiguredVideoCapability } from '../../../services/ai/videoModelCapabilityResolver';
+import { assertKlingImageResponse } from '../../../services/ai/providers/klingImageResponse';
 import { corsSafeFetch } from '../../../services/ai/httpTransport';
 import { parseResponseError } from '../../../services/ai/httpUtils';
 import { assertModelProtocolResult, assertModelProtocolResultMapping, resolveConfiguredImageBackground } from '../../../services/ai/modelCapabilityValidation';
@@ -87,6 +92,7 @@ export function createPreviewVariables(model: ProviderModelSelection): ModelProt
     try { dimensions = resolveImageTemplateDimensions(model.imageCapability, imageSize, aspectRatio); } catch { /* 保留预览占位 */ }
     try { imageBackground = resolveConfiguredImageBackground(model.imageCapability); } catch { /* 无效能力留待保存时报告 */ }
     try { imageOutput = resolveConfiguredImageOutput(model.imageCapability, {}); } catch { /* 编辑草稿留待保存时校验 */ }
+    const count = model.imageCapability?.minBatchCount ?? 1;
     return {
       ...common,
       imageSize,
@@ -96,8 +102,8 @@ export function createPreviewVariables(model: ProviderModelSelection): ModelProt
       aspectRatio,
       size: `${dimensions.width}x${dimensions.height}`,
       ...dimensions,
-      n: 1,
-      batchCount: 1,
+      n: count,
+      batchCount: count,
       imageUrls: imageUrls.length ? imageUrls : undefined,
       googleImageParts: buildGoogleImageParts(common.prompt, imageUrls),
     };
@@ -151,10 +157,11 @@ function createResponseSample(): ProtocolJsonValue {
 }
 
 export function useProtocolTrial({
-  model, initialPreviewVariables, workflowMode, testSessionScope, apiKey, baseUrl, preset,
+  model, catalogId, initialPreviewVariables, workflowMode, testSessionScope, apiKey, baseUrl, preset,
   protocol, protocolJson, error, invalidFormFieldsRef, pluginReference, pluginUnavailable, t,
 }: {
   model: ProviderModelSelection;
+  catalogId?: string;
   initialPreviewVariables?: ModelProtocolVariables;
   workflowMode: boolean;
   testSessionScope?: string;
@@ -176,6 +183,15 @@ export function useProtocolTrial({
     () => serializeJson(initialPreviewVariables ?? createPreviewVariables(model)),
   );
   const [testScenario, setTestScenario] = useState<VideoTestScenario>(() => defaultVideoTestScenario(model));
+  const klingVideoContract = useMemo(() => {
+    if (catalogId !== 'kling' || workflowMode || model.category !== 'video' || preset !== 'custom') return undefined;
+    try {
+      const profile = { preset: 'custom' as const, protocol: JSON.parse(protocolJson) as NormalizedModelExecutionProtocol };
+      return resolveKlingModelContract(model.id, profile);
+    } catch { return undefined; }
+  }, [catalogId, workflowMode, model.category, model.id, preset, protocolJson]);
+  const klingFrameMode = klingVideoContract?.videoFrameMode;
+  const activeTestScenario = klingVideoContract ? defaultVideoTestScenario(klingVideoContract) : testScenario;
   const [testReferences, setTestReferences] = useState<VideoTestReferences>({ firstImage: '', lastImage: '', images: '', videos: '', audios: '' });
   const sessionIdentity = useMemo(() => ({
     scopeId: testSessionScope ?? (model.provider || 'protocol-editor'), modelId: model.id, baseUrl,
@@ -319,16 +335,33 @@ export function useProtocolTrial({
           preset, protocol, protocolJson, invalidFormFieldsRef.current.size > 0,
         );
         assertModelProtocolResultMapping(model.category, currentProtocol);
+        const kling = !workflowMode && catalogId === 'kling'
+          ? resolveKlingModelContract(model.id, { preset: 'custom', protocol: currentProtocol }) : undefined;
         if (!workflowMode && model.category === 'video') {
-          variables = await buildVideoTestVariables(model, testScenario, testReferences, variables);
+          const testModel = kling ? { ...model, videoCapability: resolveConfiguredVideoCapability(
+            catalogId, model.id, { preset: 'custom', protocol: currentProtocol }, model.videoCapability,
+          ) } : model;
+          const references = kling?.videoFrameMode === 'single' ? { ...testReferences, lastImage: '' } : testReferences;
+          variables = await buildVideoTestVariables(testModel, activeTestScenario, references, variables, kling?.videoFrameMode);
+        } else if (!workflowMode && model.category === 'image') {
+          const verified = kling?.imageCapability;
+          const testModel = verified ? {
+            ...model,
+            imageCapability: { ...verified, ...resolveEffectivePromptLimits(verified, model.imageCapability) },
+          } : model;
+          variables = await buildImageTestVariables(testModel, variables, Boolean(kling), controller.signal);
         }
         const { protocol: submitProtocol, variables: submitVariables } = !workflowMode && preset === 'custom' && currentProtocol.submit.bodyEncoding === 'multipart'
           && (model.category === 'image' || model.category === 'video')
           ? await prepareProtocolMediaFileRequest(currentProtocol, variables, { signal: controller.signal, trial: true })
           : { protocol: currentProtocol, variables };
         if (controller.signal.aborted) return;
+        const imageOutputCountRange = model.category === 'image' && !workflowMode
+          ? (kling ?? model).imageCapability?.outputCountRange : undefined;
         result = await startProtocolTestSession({
           identity: sessionIdentity, category: model.category, apiKey, protocol: submitProtocol, variables: submitVariables,
+          ...(kling?.imageCapability ? { validateResponse: assertKlingImageResponse } : {}),
+          ...(imageOutputCountRange ? { imageOutputCountRange } : {}),
         });
       }
       if (controller.signal.aborted) return;
@@ -416,7 +449,8 @@ export function useProtocolTrial({
 
   return {
     previewVariablesJson, setPreviewVariablesJson, testVariablesJson, setTestVariablesJson,
-    testScenario, setTestScenario, testReferences, setTestReferences, session, responseSampleJson,
+    testScenario, setTestScenario, klingVideoContract, klingFrameMode, activeTestScenario,
+    testReferences, setTestReferences, session, responseSampleJson,
     setResponseSampleJson, testRun, previewState, supportsStructuredResponse, responsePreviewState,
     runProtocolTest, resumeProtocolTest, cancelProtocolTest, trialRunning, sessionMessage,
     testRunDisabledReason, discardTrial, resetTrialForTemplate,

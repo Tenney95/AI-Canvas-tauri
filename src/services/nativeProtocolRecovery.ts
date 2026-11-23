@@ -2,9 +2,60 @@
 import type { ModelExecutionProfile, NormalizedModelExecutionProtocol } from '../types/aiTypes';
 import { resolveModelExecutionProfile } from './ai/modelProtocol';
 import { getRelayonVideoRecoveryProfiles } from './ai/providers/relayonModelManifest';
+import type { MediaKind } from '../types/media';
 import { nativeProtocolTaskDigest, nativeProtocolQueryDigest } from './nativeModelProtocolTask';
 import { sha256BytesHex } from './mediaDataUrl';
 import { projectModelSourceToken } from './projectModelComparisonMaterial';
+
+// Published recovery revisions contain only query material. Keep them when the current model catalog changes.
+function queryOnly(auth: NormalizedModelExecutionProtocol['auth'], taskIdPath: string,
+  poll: NonNullable<NormalizedModelExecutionProtocol['poll']>): NormalizedModelExecutionProtocol {
+  return { version: 2, mode: 'async', auth,
+    submit: { method: 'POST', path: '/recovery-only' },
+    response: { type: 'json', taskIdPath }, poll };
+}
+
+const klingV1 = queryOnly({ type: 'bearer' }, 'data.id', {
+  method: 'GET', path: '/tasks', pathMode: 'origin', query: { task_ids: '{{submit.data.id}}' },
+  response: { statusPath: 'data.0.status', successValues: ['succeeded'], failureValues: ['failed'],
+    errorPath: 'data.0.message', result: { urlPath: 'data.0.outputs.*.url' } },
+  intervalMs: 5_000, maxDurationMs: 7_200_000,
+  retry: { maxRetries: 5, backoff: 'exponential', maxDelayMs: 60_000, honorRetryAfter: true, retryNetworkErrors: true },
+});
+const xaiV1 = queryOnly({ type: 'bearer' }, 'request_id', {
+  method: 'GET', path: '/videos/{{submit.request_id}}',
+  response: { statusPath: 'status', successValues: ['done'], failureValues: ['failed', 'expired'],
+    result: { urlPath: 'video.url', mimeType: 'video/mp4' }, errorPath: 'error.message', progressPath: 'progress' },
+  intervalMs: 10_000, maxDurationMs: 3_600_000,
+  retry: { httpStatuses: [408, 429, 500, 502, 503, 504], maxRetries: 5, backoff: 'exponential', maxDelayMs: 60_000,
+    honorRetryAfter: true, retryNetworkErrors: true },
+});
+const QUERY_CONTRACTS = ([
+  { id: 'kling-tasks-v1', catalogId: 'kling', categories: ['image', 'video'], protocol: klingV1 },
+  { id: 'xai-video-v1', catalogId: 'xai', categories: ['video'], protocol: xaiV1 },
+] satisfies Array<{ id: string; catalogId: string; categories: MediaKind[]; protocol: NormalizedModelExecutionProtocol }>)
+  .map((contract) => ({
+    ...contract, categories: contract.categories as readonly MediaKind[],
+    protocol: resolveModelExecutionProfile({ preset: 'custom', protocol: contract.protocol })!,
+  }));
+
+export async function captureNativeQueryContractId(catalogId: string, category: MediaKind, modelId: string, queryDigest: string): Promise<string | undefined> {
+  const contract = QUERY_CONTRACTS.find((item) => item.catalogId === catalogId && item.categories.includes(category));
+  return contract && await nativeProtocolQueryDigest(modelId, contract.protocol) === queryDigest ? contract.id : undefined;
+}
+
+export async function resolveNativeQueryContract(
+  contractId: string | undefined, catalogId: string, category: MediaKind, modelId: string, digest: string | undefined,
+): Promise<NormalizedModelExecutionProtocol | undefined> {
+  const contract = QUERY_CONTRACTS.find((item) => item.id === contractId && item.catalogId === catalogId && item.categories.includes(category));
+  if (!contract) return undefined;
+  return await nativeProtocolQueryDigest(modelId, contract.protocol) === digest ? structuredClone(contract.protocol) : undefined;
+}
+
+/** Per-operation comparison value for a vendor API token. Never store the token in a task record. */
+export function nativeQueryCredentialProof(operationId: string, connectionId: string, apiKey: string): Promise<string> {
+  return sha256BytesHex(new TextEncoder().encode(JSON.stringify(['native-query-v1', operationId, connectionId, apiKey])));
+}
 
 interface NativeRecoveryProtocolOptions {
   modelId: string;

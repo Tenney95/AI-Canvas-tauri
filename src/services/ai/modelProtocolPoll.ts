@@ -4,7 +4,7 @@
  * 轮询请求同样强制同源（调用方传入 allowedBaseUrl 时再校验一次），
  * 只对瞬时网络错误与可重试 HTTP 状态码退避重试，避免把业务错误也重放一遍。
  */
-import { pollTask, PollTimeoutError, withPollRequestDeadline } from '../pollTask';
+import { isPollTimeoutError, pollTask, PollTimeoutError, withPollRequestDeadline } from '../pollTask';
 import type {
   ModelProtocolAuthConfig,
   ModelProtocolPollRetryConfig,
@@ -40,6 +40,7 @@ import {
 } from './modelProtocolShared';
 import type { ExecuteModelProtocolResult } from './modelProtocolTypes';
 import { validateAuthentication } from './modelProtocolValidation';
+import { getKlingImageQueryTaskId, selectKlingImageQueryTask } from './providers/klingImageResponse';
 import { redactVolcengineError } from './providers/volcengineError';
 
 export function resolvePoll(
@@ -117,6 +118,7 @@ function resolvePollRetryConfig(
 }
 
 function isTransientNetworkError(error: unknown): boolean {
+  if (isPollTimeoutError(error)) return true;
   if (error instanceof TypeError) return true;
   if (
     typeof DOMException !== 'undefined'
@@ -141,28 +143,8 @@ function calculateRetryDelayMs(
       ? retryCount
       : 1;
   const backoffDelay = intervalMs * multiplier;
-  const requestedDelay = retry.honorRetryAfter && retryAfterMs !== undefined
-    ? Math.max(backoffDelay, retryAfterMs)
-    : backoffDelay;
-  return Math.max(intervalMs, Math.min(retry.maxDelayMs, requestedDelay));
-}
-
-async function waitForRetryDelay(delayMs: number, signal?: AbortSignal): Promise<void> {
-  if (delayMs <= 0) return;
-  if (signal?.aborted) throw new Error('任务已被取消');
-  await new Promise<void>((resolve, reject) => {
-    const finish = () => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    };
-    const timer = setTimeout(finish, delayMs);
-    const onAbort = () => {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-      reject(new Error('任务已被取消'));
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
+  const localDelay = Math.max(intervalMs, Math.min(retry.maxDelayMs, backoffDelay));
+  return retry.honorRetryAfter && retryAfterMs !== undefined ? Math.max(localDelay, retryAfterMs) : localDelay;
 }
 
 function buildResolvedRequestInit(
@@ -205,6 +187,7 @@ async function pollResolvedModelProtocolRequest(
   allowedBaseUrl?: string,
   validateResponse?: (payload: unknown) => void,
   sensitive = poll.sensitive === true,
+  expectedTaskId?: string,
 ): Promise<ExecuteModelProtocolResult> {
   if (poll.resultDownload) {
     if (!allowedBaseUrl) throw new Error('同源结果下载缺少厂商连接地址');
@@ -225,61 +208,73 @@ async function pollResolvedModelProtocolRequest(
   }
   const successValues = new Set(poll.successValues.map(normalizeStatus));
   const failureValues = new Set(poll.failureValues.map(normalizeStatus));
+  const klingTaskId = getKlingImageQueryTaskId(poll);
+  if (klingTaskId && expectedTaskId !== undefined && klingTaskId !== expectedTaskId) {
+    throw new Error('Kling 查询地址与原任务回执的 ID 不一致，请核对原任务');
+  }
   const retry = resolvePollRetryConfig(poll.retry);
   const retryHttpStatuses = new Set(retry.httpStatuses);
-  const pollStartedAt = Date.now();
   let consecutiveErrors = 0;
-  let pendingExtraDelayMs = 0;
+  let requestActive = false;
+  let queryMayRetry = true;
+  const fetchState = async (querySignal: AbortSignal): Promise<ProtocolJsonValue> => {
+    if (requestActive) {
+      queryMayRetry = false;
+      throw new PollTimeoutError('上一次任务查询尚未释放，已暂停等待，请继续查询原任务');
+    }
+    requestActive = true;
+    queryMayRetry = true;
+    try {
+      const requestUrl = applyQueryAuthentication(poll.url, poll.auth, apiKey);
+      const requestInit = { ...buildResolvedRequestInit(poll, apiKey), signal: querySignal };
+      const traceId = import.meta.env.DEV && !sensitive
+        ? globalThis.crypto?.randomUUID?.() ?? `ai-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}` : undefined;
+      const debug = traceId ? { body: poll.method === 'GET' ? undefined : poll.body, bodyEncoding: poll.bodyEncoding ?? 'json',
+        traceId, stage: 'poll' as const, apiKey } : undefined;
+      const response = await (sensitive ? corsSafeFetch(requestUrl, requestInit, { sensitive: true })
+        : debug ? corsSafeFetch(requestUrl, requestInit, { debug }) : corsSafeFetch(requestUrl, requestInit));
+      let payload = await readJsonResponse(response, '模型任务查询失败',
+        klingTaskId ? 'message' : poll.errorPath, apiKey, {
+        url: requestUrl, method: poll.method, source: 'Model Protocol', traceId, apiKey, sensitive,
+      });
+      querySignal.throwIfAborted();
+      queryMayRetry = false;
+      try {
+        if (klingTaskId) payload = selectKlingImageQueryTask(payload, klingTaskId) as ProtocolJsonValue;
+        validateResponse?.(payload);
+      } catch (error) {
+        throw redactModelProtocolError(error, apiKey);
+      }
+      querySignal.throwIfAborted();
+      consecutiveErrors = 0;
+      return payload;
+    } finally {
+      requestActive = false;
+    }
+  };
   const result = await pollTask<ProtocolJsonValue, ExecuteModelProtocolResult>({
-    fetchState: async (querySignal) => {
-      if (pendingExtraDelayMs > 0) {
-        const maxDurationMs = poll.maxDurationMs ?? Infinity;
-        if (Date.now() - pollStartedAt + pendingExtraDelayMs >= maxDurationMs) {
+    fetchState,
+    onFetchError: (error, remainingMs) => {
+      const retryAfterMs = error instanceof ModelProtocolHttpError ? error.retryAfterMs : undefined;
+      const retryableHttpError = error instanceof ModelProtocolHttpError
+        && retryHttpStatuses.has(error.status);
+      const retryableNetworkError = retry.retryNetworkErrors
+        && !(error instanceof ModelProtocolHttpError)
+        && isTransientNetworkError(error);
+      if (queryMayRetry && (retryableHttpError || retryableNetworkError) && consecutiveErrors < retry.maxRetries) {
+        consecutiveErrors += 1;
+        const retryDelayMs = calculateRetryDelayMs(
+          poll.intervalMs,
+          consecutiveErrors,
+          retry,
+          retryAfterMs,
+        );
+        if (retryDelayMs >= remainingMs || retryDelayMs > 2_147_483_647) {
           throw new PollTimeoutError('模型任务轮询超时');
         }
-        const delayMs = pendingExtraDelayMs;
-        pendingExtraDelayMs = 0;
-        await waitForRetryDelay(delayMs, querySignal);
+        return retryDelayMs;
       }
-      try {
-        const requestUrl = applyQueryAuthentication(poll.url, poll.auth, apiKey);
-        const requestInit = { ...buildResolvedRequestInit(poll, apiKey), signal: querySignal };
-        const traceId = import.meta.env.DEV && !sensitive
-          ? globalThis.crypto?.randomUUID?.() ?? `ai-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}` : undefined;
-        const debug = traceId ? { body: poll.method === 'GET' ? undefined : poll.body, bodyEncoding: poll.bodyEncoding ?? 'json',
-          traceId, stage: 'poll' as const, apiKey } : undefined;
-        const response = await (sensitive ? corsSafeFetch(requestUrl, requestInit, { sensitive: true })
-          : debug ? corsSafeFetch(requestUrl, requestInit, { debug }) : corsSafeFetch(requestUrl, requestInit));
-        const payload = await readJsonResponse(response, '模型任务查询失败', poll.errorPath, apiKey, {
-          url: requestUrl, method: poll.method, source: 'Model Protocol', traceId, apiKey, sensitive,
-        });
-        try {
-          validateResponse?.(payload);
-        } catch (error) {
-          throw redactModelProtocolError(error, apiKey);
-        }
-        consecutiveErrors = 0;
-        return payload;
-      } catch (error) {
-        const retryAfterMs = error instanceof ModelProtocolHttpError ? error.retryAfterMs : undefined;
-        const retryableHttpError = error instanceof ModelProtocolHttpError
-          && retryHttpStatuses.has(error.status);
-        const retryableNetworkError = retry.retryNetworkErrors
-          && !(error instanceof ModelProtocolHttpError)
-          && isTransientNetworkError(error);
-        if ((retryableHttpError || retryableNetworkError) && consecutiveErrors < retry.maxRetries) {
-          consecutiveErrors += 1;
-          const retryDelayMs = calculateRetryDelayMs(
-            poll.intervalMs,
-            consecutiveErrors,
-            retry,
-            retryAfterMs,
-          );
-          pendingExtraDelayMs = Math.max(0, retryDelayMs - poll.intervalMs);
-          return {};
-        }
-        throw error;
-      }
+      return 'throw';
     },
     isComplete: (payload) => {
       const status = normalizeStatus(readModelProtocolFirstScalar(payload, poll.statusPath));
@@ -365,9 +360,10 @@ export async function pollResolvedModelProtocol(
   allowedBaseUrl?: string,
   validateResponse?: (payload: unknown) => void,
   sensitive = poll.sensitive === true,
+  expectedTaskId?: string,
 ): Promise<ExecuteModelProtocolResult> {
   try {
-    return await pollResolvedModelProtocolRequest(poll, apiKey, signal, allowedBaseUrl, validateResponse, sensitive);
+    return await pollResolvedModelProtocolRequest(poll, apiKey, signal, allowedBaseUrl, validateResponse, sensitive, expectedTaskId);
   } catch (error) {
     throw sensitive ? redactVolcengineError(error, apiKey) : error;
   }

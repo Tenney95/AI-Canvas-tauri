@@ -134,11 +134,12 @@ export function assertSerializedBodyWithinLimit(
   );
 }
 
-export function buildRequestInit(
+function buildRequestInit(
   request: ModelProtocolRequestTemplate,
   auth: ModelProtocolAuthConfig | undefined,
   apiKey: string,
   context: Record<string, unknown>,
+  body: ProtocolJsonValue | undefined,
   signal?: AbortSignal,
   idempotencyKey?: string,
 ): RequestInit {
@@ -156,7 +157,6 @@ export function buildRequestInit(
     }
     headers['Idempotency-Key'] = idempotencyKey;
   }
-  const body = renderRequestBody(request, context);
   const serializedBody = request.method === 'GET' || body === undefined
     ? undefined
     : serializeModelProtocolBody(body, request.bodyEncoding, headers);
@@ -181,7 +181,7 @@ export function buildModelProtocolRequest(
   const url = buildSameOriginUrl(options.baseUrl, protocol.submit, context);
   return {
     url: applyQueryAuthentication(url, protocol.auth, options.apiKey),
-    init: buildRequestInit(protocol.submit, protocol.auth, options.apiKey, context, options.signal, options.idempotencyKey),
+    init: buildRequestInit(protocol.submit, protocol.auth, options.apiKey, context, renderedBody, options.signal, options.idempotencyKey),
     protocol,
     ...(renderedBody === undefined ? {} : { renderedBody }),
   };

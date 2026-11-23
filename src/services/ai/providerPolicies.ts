@@ -42,6 +42,7 @@ const POLICY_OVERRIDES: Record<string, PolicyOverrides> = {
   'custom-openai': { syncGeneralModels: true },
   xai: { syncGeneralModels: true },
   google: { syncGeneralModels: true },
+  kling: { syncGeneralModels: true, referenceTransport: 'request-files', publicUploadFallback: 'deny' },
   minimax: { syncGeneralModels: true, upload: 'minimax',
     modelMenuGroup: { scope: 'connection', description: '使用当前 MiniMax 官方连接中的图片、视频和语音模型' } },
   sora2u: { syncGeneralModels: true, publicUploadFallback: 'deny',
@@ -83,4 +84,8 @@ export function resolveProviderCatalogId(
 
 export function getProviderPolicy(catalogId: string | undefined): Readonly<ProviderPolicy> {
   return POLICIES.get(catalogId ?? '') ?? DEFAULT_POLICY;
+}
+
+export function readPositiveTokenCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }

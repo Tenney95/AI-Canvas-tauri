@@ -33,7 +33,7 @@ import { COMFY_QUERY_TIMEOUT_MS } from '../../comfyQuery';
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../../canvasDerivationGuard';
 import { pollResolvedModelProtocol } from '../modelProtocol';
 import { assertMinimaxQueryResponse, usesMinimaxResolvedVideoPoll } from '../providers/minimaxModelManifest';
-import { assertModelProtocolResult } from '../modelCapabilityValidation';
+import { assertImageOutputCount, assertModelProtocolResult } from '../modelCapabilityValidation';
 import {
   extractFlowMusicLyrics,
   extractFlowMusicTrack,
@@ -794,12 +794,14 @@ async function resumeCustomProtocol(task: PendingTask, parentSignal?: AbortSigna
       task = { ...task, mediaDownloadAccess };
       updatePendingTask(nodeId, { mediaDownloadAccess }, task.taskId, task.attemptId);
     }
-    const settled = await settleMediaTaskQueries(polls.map((poll) => (querySignal: AbortSignal) => pollResolvedModelProtocol(
+    const settled = await settleMediaTaskQueries(polls.map((poll, index) => (querySignal: AbortSignal) => pollResolvedModelProtocol(
       { ...poll, maxDurationMs: poll.maxDurationMs ?? MEDIA_POLL_MAX_DURATION_MS },
       providerConfig.apiKey || '', querySignal, providerConfig.baseUrl,
       // 原任务只按已保存的查询合同识别，不借用连接现在的模型或自定义协议。
       usesMinimaxResolvedVideoPoll(poll, task.taskId, task.mediaDownloadAccess?.origin)
         ? assertMinimaxQueryResponse : undefined,
+      undefined,
+      polls.length === 1 ? task.taskId : task.taskIds?.[index] ?? '',
     )), signal);
     const uncertain = settled.find((result) => result.status === 'rejected' && !(result.reason instanceof PollTaskFailedError));
     if (uncertain?.status === 'rejected') throw uncertain.reason;
@@ -815,8 +817,16 @@ async function resumeCustomProtocol(task: PendingTask, parentSignal?: AbortSigna
     }
     assertModelProtocolResult(nodeType === 'ai-video' ? 'video' : nodeType === 'ai-audio' ? 'audio' : 'image', { urls });
     markMediaTaskDeliveryPending(task, signal, urls);
+    if (task.imageOutputCountRange) {
+      assertImageOutputCount(task.imageOutputCountRange, urls.length);
+      if (task.expectedImageOutputs !== undefined && task.expectedImageOutputs !== urls.length) {
+        throw new Error('原图片候选数量已变化，请核对原任务');
+      }
+      task = { ...task, expectedImageOutputs: urls.length };
+      updatePendingTask(task.nodeId, { expectedImageOutputs: urls.length }, task.taskId, task.attemptId);
+    }
     if (await deliverMediaMessageResult(task, urls, signal)) return;
-    const requestedCount = Math.max(1, task.batchCount ?? 1);
+    const requestedCount = Math.max(1, task.expectedImageOutputs ?? task.batchCount ?? 1);
     if (nodeType === 'ai-image' && requestedCount > 1) {
       const imageSize = nodeData.imageSize || '2K';
       const aspectRatio = nodeData.aspectRatio || '1:1';
