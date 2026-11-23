@@ -35,6 +35,7 @@ export interface ModelMenuProps {
   expandedGroupIds: readonly string[];
   onGroupToggle: (id: string) => void;
   emptyText?: string;
+  emptyAction?: { label: string; onClick: () => void };
   onClose?: () => void;
 }
 
@@ -66,7 +67,7 @@ function focusModelMenuControl(menu: HTMLElement | null, control?: HTMLButtonEle
 
 /** 公共菜单不读取配置、凭据或默认偏好；折叠与选择均由调用方控制。 */
 export function ModelMenu({ groups, value, onChange, expandedGroupIds, onGroupToggle,
-  emptyText, onClose }: ModelMenuProps) {
+  emptyText, emptyAction, onClose }: ModelMenuProps) {
   const t = useT();
   const menuRef = useRef<HTMLDivElement>(null);
   const focusGroupRef = useRef<string | null>(null);
@@ -140,7 +141,13 @@ export function ModelMenu({ groups, value, onChange, expandedGroupIds, onGroupTo
 
   return <div ref={menuRef} className="ui-model-menu" role="menu" aria-label={t('模型与工作流')} tabIndex={-1}
     data-ui-select-portal="" onKeyDown={handleKeyDown}>
-    {visibleGroups.length === 0 ? <p className="ui-model-menu__empty" role="status">{emptyText ?? t('暂无可用模型')}</p>
+    {visibleGroups.length === 0 ? <>
+      <p className="ui-model-menu__empty" role="status">{emptyText ?? t('暂无可用模型')}</p>
+      {emptyAction && <button type="button" role="menuitem" tabIndex={-1} data-model-menu-control=""
+        className="ui-menu__item" onClick={(event) => { event.stopPropagation(); emptyAction.onClick(); }}>
+        {emptyAction.label}
+      </button>}
+    </>
       : visibleGroups.map((group, groupIndex) => {
         const expanded = !group.disabled && expandedGroupIds.includes(group.id);
         const headerId = `${menuId}-group-${groupIndex}`;

@@ -91,6 +91,23 @@ beforeEach(() => {
 });
 
 describe('公共 ModelMenu', () => {
+  it('空目录只展示宿主提供的操作，操作获得焦点并独立于模型选择', () => {
+    const action = { label: '打开设置', onClick: vi.fn() };
+    const options = props({ groups: [], emptyText: '当前没有可选模型', emptyAction: action });
+    const nodes = renderMenu(options);
+    const button = nodes.find((node) => node.props.role === 'menuitem')!;
+    expect(button.props.children).toBe(action.label);
+    expect(button.props['data-model-menu-control']).toBe('');
+    const control = fakeControl();
+    hooks.refs[0].current = fakeMenu([control]);
+    hooks.layouts.splice(0).forEach((fn) => fn());
+    expect(control.focus).toHaveBeenCalledExactlyOnceWith({ preventScroll: true });
+    invoke(button, 'onClick', event());
+    expect(action.onClick).toHaveBeenCalledOnce();
+    expect(options.onChange).not.toHaveBeenCalled();
+    expect(renderMenu(props({ groups: [] })).some((node) => node.props.role === 'menuitem')).toBe(false);
+  });
+
   it('折叠内容不进入焦点树，禁用厂商不会展开或选中', () => {
     const options = props({ expandedGroupIds: ['locked'] });
     const nodes = renderMenu(options);

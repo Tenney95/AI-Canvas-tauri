@@ -22,7 +22,7 @@ import {
 import { useAppStore } from '../../../store/useAppStore';
 import { useT } from '../../../i18n';
 import ProviderBadge from '../../shared/ProviderBadge';
-import { ModelMenu, type ModelPickerGroup } from '../../shared/ModelPicker';
+import { ModelMenu, type ModelMenuProps, type ModelPickerGroup } from '../../shared/ModelPicker';
 import { resolveAppearanceMode } from '../../../services/appearance/appearanceRuntime';
 import { comfyBaseUrlFor, DEFAULT_COMFY_URL, probeComfyServer } from '../../../services/comfyServers';
 import { getGenerationNodeType } from '../../../utils/nodeGeneration';
@@ -58,6 +58,15 @@ interface ModelSelectorProps {
   defaultExpandedGroupIds?: string[];
 }
 
+function getMenuHost(trigger: HTMLElement): 'main' | 'detached' | 'dialog' {
+  if (new URLSearchParams(window.location.search).get('view')) return 'detached';
+  // 设置面板使用 ModalOverlay 的默认层级 250。上层弹窗可能有草稿，留给用户自行关闭。
+  for (let layer = trigger.closest<HTMLElement>('[aria-modal="true"]'); layer; layer = layer.parentElement) {
+    if (Number.parseInt(window.getComputedStyle(layer).zIndex, 10) >= 250) return 'dialog';
+  }
+  return 'main';
+}
+
 export default function ModelSelector({
   nodeType,
   disabled = false,
@@ -79,8 +88,9 @@ export default function ModelSelector({
   defaultExpandedGroupIds = [],
 }: ModelSelectorProps) {
   const t = useT();
-  const [open, setOpen] = useState(false);
-  if (disabled && open) setOpen(false);
+  const [menuHost, setMenuHost] = useState<ReturnType<typeof getMenuHost> | null>(null);
+  const open = menuHost !== null;
+  if (disabled && open) setMenuHost(null);
   const [editorOpening, setEditorOpening] = useState(false);
   const editorOpeningRef = useRef(false);
   const [workflowsCollapsed, setWorkflowsCollapsed] = useState(true);
@@ -195,7 +205,7 @@ export default function ModelSelector({
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node) && !dropdownRef.current?.contains(e.target as Node)) {
-        setOpen(false);
+        setMenuHost(null);
       }
     };
     if (open) {
@@ -209,7 +219,7 @@ export default function ModelSelector({
     const handler = (e: KeyboardEvent) => {
       if (e.isComposing || e.keyCode === 229) return;
       if (e.key === 'Escape' || (e.key === 'Tab' && dropdownRef.current?.contains(e.target as Node))) {
-        setOpen(false);
+        setMenuHost(null);
         ref.current?.querySelector<HTMLButtonElement>('.model-selector-trigger')?.focus({ preventScroll: true });
         if (e.key === 'Escape') {
           e.preventDefault();
@@ -321,7 +331,7 @@ export default function ModelSelector({
     if (!currentWorkflow || !canEditWorkflow || editorOpeningRef.current) return;
     editorOpeningRef.current = true;
     setEditorOpening(true);
-    setOpen(false);
+    setMenuHost(null);
     try {
       const { openComfyUIWorkflowEditor } = await import('../../../services/comfyUIWindowService');
       const result = await openComfyUIWorkflowEditor(
@@ -383,6 +393,34 @@ export default function ModelSelector({
       })),
     });
   }
+  let emptyText: string | undefined;
+  let emptyAction: ModelMenuProps['emptyAction'];
+  if (menuHost && menuGroups.length === 0) {
+    const hasLocalWorkflows = canSelectWorkflow && workflowUrls.size > 0;
+    const checking = hasLocalWorkflows && [...workflowUrls.values()].some((url) => url && availableComfyUrls[url] === undefined);
+    if (checking) {
+      emptyText = t('正在检查 ComfyUI 工作流连接…');
+    } else {
+      const tab = hasLocalWorkflows ? 'ComfyUI' : 'API Key';
+      if (hasLocalWorkflows) {
+        emptyText = t('已导入的 ComfyUI 工作流暂不可用，请检查服务器连接。');
+      } else if (menuHost !== 'detached' && !configuredGroupsOverride && !generalModels.length && !dreaminaLoggedIn && !Object.keys(configProviders).length) {
+        emptyText = t('尚未添加模型连接。');
+      } else {
+        emptyText = t('当前用途没有可选模型，请检查连接和已启用的模型。');
+      }
+      if (menuHost === 'main') {
+        emptyAction = { label: t('打开 {tab} 设置', { tab }), onClick: () => {
+          setMenuHost(null);
+          useAppStore.getState().setSettingsOpen(true, hasLocalWorkflows ? 'comfyui' : 'api');
+        } };
+      } else {
+        const hint = menuHost === 'detached' ? t('请前往主窗口的「设置 → {tab}」。', { tab })
+          : t('关闭当前弹窗后，请前往「设置 → {tab}」。', { tab });
+        emptyText = `${emptyText} ${hint}`;
+      }
+    }
+  }
   const expandedGroupIds = [
     ...filteredGroups.filter((group) => !collapsedGroups.has(group.id)).map((group) => group.id),
     ...(!workflowsCollapsed ? [workflowGroupId] : []),
@@ -395,7 +433,7 @@ export default function ModelSelector({
       if (persistPreference) saveModelPreference(generationNodeType, model.value);
       onSelect(model);
       onWorkflowSelect?.(undefined);
-      setOpen(false);
+      setMenuHost(null);
       ref.current?.querySelector<HTMLButtonElement>('.model-selector-trigger')?.focus({ preventScroll: true });
       return;
     }
@@ -403,7 +441,7 @@ export default function ModelSelector({
     if (workflow && onWorkflowSelect) {
       if (persistPreference) saveWorkflowModelPreference(generationNodeType, workflow);
       onWorkflowSelect(workflow.id);
-      setOpen(false);
+      setMenuHost(null);
       ref.current?.querySelector<HTMLButtonElement>('.model-selector-trigger')?.focus({ preventScroll: true });
     }
   };
@@ -439,8 +477,9 @@ export default function ModelSelector({
         title={displayLabel}
         onClick={(e) => {
           e.stopPropagation();
-          if (!open) setAvailableComfyUrls({});
-          setOpen(!open);
+          if (open) { setMenuHost(null); return; }
+          setAvailableComfyUrls({});
+          setMenuHost(getMenuHost(e.currentTarget));
         }}
       >
         <span className={appearance === 'pill' ? 'ui-model-pill__avatar' : 'model-selector-icon'}>
@@ -479,7 +518,7 @@ export default function ModelSelector({
           title={t('清除当前模型选择')}
           onClick={(event) => {
             event.stopPropagation();
-            setOpen(false);
+            setMenuHost(null);
             onClear?.();
           }}
         >
@@ -500,10 +539,12 @@ export default function ModelSelector({
         >
           <ModelMenu
             groups={menuGroups}
+            emptyText={emptyText}
+            emptyAction={emptyAction}
             value={selectedWorkflowId ? `workflow:${selectedWorkflowId}` : effectiveModel}
             onChange={selectMenuItem}
             onClose={() => {
-              setOpen(false);
+              setMenuHost(null);
               ref.current?.querySelector<HTMLButtonElement>('.model-selector-trigger')?.focus({ preventScroll: true });
             }}
             expandedGroupIds={expandedGroupIds}

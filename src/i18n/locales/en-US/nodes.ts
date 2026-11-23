@@ -967,6 +967,13 @@ const nodes = {
   // ── ModelSelector ──
   '选择模型': 'Select model',
   '通用模型': 'General models',
+  '正在检查 ComfyUI 工作流连接…': 'Checking the connection to ComfyUI workflows…',
+  '已导入的 ComfyUI 工作流暂不可用，请检查服务器连接。': 'The imported ComfyUI workflows are unavailable. Check the server connection.',
+  '尚未添加模型连接。': 'No model connections have been added.',
+  '当前用途没有可选模型，请检查连接和已启用的模型。': 'No models are available for this task. Check your connections and enabled models.',
+  '打开 {tab} 设置': 'Open {tab} settings',
+  '请前往主窗口的「设置 → {tab}」。': 'In the main window, open Settings → {tab}.',
+  '关闭当前弹窗后，请前往「设置 → {tab}」。': 'Close this dialog, then open Settings → {tab}.',
   '用户自定义的兼容接口模型': 'User-defined compatible interface models',
   '请先在设置中配置 {name} API Key': 'Configure the {name} API key in Settings first',
   'ComfyUI 工作流': 'ComfyUI workflows',

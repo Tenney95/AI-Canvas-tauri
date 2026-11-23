@@ -12,7 +12,7 @@ const driver = vi.hoisted(() => ({
   states: [] as unknown[], stateIndex: 0, effectIndex: 0,
   effects: [] as Array<{ deps: readonly unknown[]; cleanup?: () => void }>,
   pending: [] as Array<() => void>,
-  probe: vi.fn(), editor: vi.fn(), toast: vi.fn(), resolveUrl: vi.fn(),
+  probe: vi.fn(), editor: vi.fn(), toast: vi.fn(), resolveUrl: vi.fn(), openSettings: vi.fn(),
   config: { providers: {}, comfyUIUrl: 'http://localhost:8188', comfyServers: [{ id: 'remote', name: '远程', url: 'https://comfy.example.com' }] },
 }));
 vi.mock('react', async () => ({
@@ -40,7 +40,7 @@ vi.mock('react', async () => ({
 }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: Object.assign(
   (select: (state: unknown) => unknown) => select({ config: driver.config }),
-  { getState: () => ({ showToast: driver.toast }) },
+  { getState: () => ({ showToast: driver.toast, setSettingsOpen: driver.openSettings }) },
 ) }));
 vi.mock('../../src/i18n', () => ({ useT: () => (text: string) => text }));
 vi.mock('../../src/services/comfyServers', () => ({
@@ -60,8 +60,8 @@ function all(tree: unknown): Element[] {
   const element = tree as Element;
   return [element, ...all(element.props.children)];
 }
-function click(element: Element) {
-  (element.props.onClick as (event: unknown) => void)({ stopPropagation: vi.fn() });
+function click(element: Element, currentTarget: { closest: () => unknown } = { closest: () => null }) {
+  (element.props.onClick as (event: unknown) => void)({ stopPropagation: vi.fn(), currentTarget });
 }
 function workflow(id: string, extra: Partial<WorkflowDefinition> = {}): WorkflowDefinition {
   return { id, name: id, category: 'ai-image', fileName: `${id}.json`, fileContent: '{}', createdAt: 0, updatedAt: 0, ...extra };
@@ -87,10 +87,12 @@ beforeEach(() => {
   vi.useFakeTimers();
   driver.states = []; driver.effects = []; driver.pending = [];
   driver.probe.mockReset().mockResolvedValue(false);
+  driver.openSettings.mockReset();
   driver.editor.mockReset().mockResolvedValue({ missingNodeClasses: [] });
   driver.resolveUrl.mockReset().mockReturnValue('https://comfy.example.com');
   driver.config.comfyServers = [{ id: 'remote', name: '远程', url: 'https://comfy.example.com' }];
-  vi.stubGlobal('window', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
+  vi.stubGlobal('window', { location: { search: '' }, getComputedStyle: (element: { style: object }) => element.style,
+    addEventListener: vi.fn(), removeEventListener: vi.fn() });
   vi.stubGlobal('document', { body: {}, addEventListener: vi.fn(), removeEventListener: vi.fn() });
 });
 afterEach(() => {
@@ -99,6 +101,42 @@ afterEach(() => {
 });
 
 describe('模型选择器工作流可用性', () => {
+  it('空画布目录可打开 API Key 设置，随后收起菜单', () => {
+    const picker = menu(open([]));
+    expect(picker?.emptyText).toBe('尚未添加模型连接。');
+    picker!.emptyAction!.onClick();
+    expect(driver.openSettings).toHaveBeenCalledExactlyOnceWith(true, 'api');
+    expect(menu(render([]))).toBeUndefined();
+  });
+
+  it('独立窗口只指引到主窗口，不能从空快照推断没有连接', () => {
+    vi.stubGlobal('window', { ...window, location: { search: '?view=chat' } });
+    const picker = menu(open([]));
+    expect(picker?.emptyText).toContain('请前往主窗口');
+    expect(picker?.emptyText).not.toContain('尚未添加模型连接');
+    expect(picker?.emptyAction).toBeUndefined();
+  });
+
+  it('设置窗口会被当前弹窗遮住时，保留编辑并提示先关闭弹窗', () => {
+    const trigger = render([]).find((element) => String(element.props.className).startsWith('model-selector-trigger'))!;
+    click(trigger, { closest: () => ({ style: { zIndex: 'auto' }, parentElement: { style: { zIndex: '390' } } }) });
+    const picker = menu(render([]));
+    expect(picker?.emptyText).toContain('关闭当前弹窗后');
+    expect(picker?.emptyAction).toBeUndefined();
+  });
+
+  it('区分工作流探测中和服务不可用，后者可以打开 ComfyUI 设置', async () => {
+    const flows = [workflow('local')];
+    const pending = menu(open(flows));
+    expect(pending?.emptyText).toBe('正在检查 ComfyUI 工作流连接…');
+    expect(pending?.emptyAction).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(0);
+    const offline = menu(render(flows));
+    expect(offline?.emptyText).toContain('请检查服务器连接');
+    offline!.emptyAction!.onClick();
+    expect(driver.openSettings).toHaveBeenCalledExactlyOnceWith(true, 'comfyui');
+  });
+
   it.each([undefined, ''])('未绑定或显式清空 (%s) 不把历史偏好显示为当前选择', (selectedModel) => {
     localStorage.setItem('canvas-model-prefs', JSON.stringify({ 'ai-text': 'general/preferred' }));
     const onSelect = vi.fn();
