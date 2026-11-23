@@ -1025,8 +1025,6 @@ const nodes = {
     'e.g. Output an English prompt / describe only the character, not the background / organize in Midjourney style',
   '反推结果': 'Reverse result',
   '正在读{source}并反推提示词...': 'Reading the {source} and reversing the prompt…',
-  '点下面的「开始反推」生成提示词，生成后可直接在这里修改':
-    'Click "Start reversal" below to generate a prompt; you can edit it here afterwards',
   '反推中...': 'Reversing…',
   '重新反推': 'Reverse again',
   '开始反推': 'Start reversal',
