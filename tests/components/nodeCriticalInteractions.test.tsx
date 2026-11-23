@@ -187,11 +187,9 @@ describe('audio node clock and waveform ownership', () => {
     await installReactHookDriver(undefined, effects, undefined, setters);
     const node: TestNode = { id: 'audio', type: 'ai-audio', position: { x: 0, y: 0 }, data };
     const store = createStore([node], () => 1);
-    installStoreMock(store); installCommonNodeMocks();
     const upload = vi.fn<() => Promise<{ dataUrl: string; filePath: string; fileName: string } | null>>().mockResolvedValue(null);
-    vi.doMock('../../src/components/nodes/shared/useSourceFileUpload', () => ({
-      useSourceFileUpload: () => ({ isUploading: false, handleUpload: upload }),
-    }));
+    installStoreMock(store);
+    installCommonNodeMocks(upload);
     vi.doMock('@xyflow/react', () => ({ Handle: () => null, Position: { Left: 'left', Right: 'right' } }));
     vi.doMock('../../src/hooks/useViewportMediaSource', () => ({ useViewportMediaSource: (source?: string) => source }));
     vi.doMock('../../src/components/nodes/shared/audio/useAudioNodeAsr', () => ({ useAudioNodeAsr: () => ({}) }));

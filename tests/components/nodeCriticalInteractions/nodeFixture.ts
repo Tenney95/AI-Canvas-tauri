@@ -1,4 +1,5 @@
 import { vi } from 'vitest';
+import type { useSourceFileUpload } from '../../../src/components/nodes/shared/useSourceFileUpload';
 import type { AppState } from '../../../src/store/useAppStore';
 import type { ComfyNodeProgress } from '../../../src/types/comfyProgress';
 import type { AppConfig } from '../../../src/types';
@@ -197,7 +198,9 @@ export function mockComfyDeliveries() {
   };
 }
 
-export function installCommonNodeMocks() {
+export function installCommonNodeMocks(
+  handleUpload: ReturnType<typeof useSourceFileUpload>['handleUpload'] = vi.fn(async () => null),
+) {
   vi.doMock('../../../src/hooks/useCompletionFlash', () => ({ useCompletionFlash: () => false }));
   vi.doMock('../../../src/hooks/useReferencedImageWatcher', () => ({
     useReferencedImageRevisions: () => () => 0,
@@ -210,7 +213,7 @@ export function installCommonNodeMocks() {
     }),
   }));
   vi.doMock('../../../src/components/nodes/shared/useSourceFileUpload', () => ({
-    useSourceFileUpload: () => ({ isUploading: false, handleUpload: vi.fn() }),
+    useSourceFileUpload: () => ({ isUploading: false, handleUpload }),
   }));
 }
 
