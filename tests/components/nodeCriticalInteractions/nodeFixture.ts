@@ -197,7 +197,7 @@ export function mockComfyDeliveries() {
   };
 }
 
-export function installCommonNodeMocks() {
+export function installCommonNodeMocks(handleUpload?: ReturnType<typeof import('../../../src/components/nodes/shared/useSourceFileUpload').useSourceFileUpload>['handleUpload']) {
   vi.doMock('../../../src/hooks/useCompletionFlash', () => ({ useCompletionFlash: () => false }));
   vi.doMock('../../../src/hooks/useReferencedImageWatcher', () => ({
     useReferencedImageRevisions: () => () => 0,
@@ -210,7 +210,7 @@ export function installCommonNodeMocks() {
     }),
   }));
   vi.doMock('../../../src/components/nodes/shared/useSourceFileUpload', () => ({
-    useSourceFileUpload: () => ({ isUploading: false, handleUpload: vi.fn() }),
+    useSourceFileUpload: () => ({ isUploading: false, handleUpload: handleUpload ?? vi.fn() }),
   }));
 }
 

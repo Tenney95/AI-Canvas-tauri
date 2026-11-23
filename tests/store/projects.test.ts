@@ -943,7 +943,7 @@ describe('project creation', () => {
     await expect(useAppStore.getState().loadEpisodeCreative(second.canvasId)).resolves.toMatchObject({ episodeScript: '正文 2' });
     expect(nativeMocks.readEpisode).toHaveBeenCalledTimes(2);
 
-    const pending = vi.spyOn(nativeRepository, 'listNativeProjectPendingTransfers').mockResolvedValueOnce([
+    const pendingTransfers = vi.spyOn(nativeRepository, 'listNativeProjectPendingTransfers').mockResolvedValueOnce([
       { kind: 'update', phase: 'prepared', operationId: 'recording-readonly', updatedAt: 1 },
     ]);
     try {
@@ -954,7 +954,7 @@ describe('project creation', () => {
       expect(resolveProjectCardTargetId(state.projects, projectId)).toBe(second.canvasId);
       expect(localStorage.getItem('ai-canvas.last-episode.v1:' + projectId)).toBe(second.id);
       expect(resolveOpenTargetId(state.projects, projectId)).toBe(first.canvasId);
-    } finally { pending.mockRestore(); }
+    } finally { pendingTransfers.mockRestore(); }
   });
 });
 

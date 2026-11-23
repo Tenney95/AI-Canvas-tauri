@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HistorySnapshotLike } from '../../src/utils/historyOperationLabels';
 
 const driver = vi.hoisted(() => ({
-  values: [true, false], index: 0,
+  values: [true, false] as unknown[], index: 0,
   memos: [] as Array<{ value: unknown; deps: readonly unknown[] }>, memoIndex: 0,
   translate: (text: string) => text,
   describeChange: vi.fn(),
@@ -20,9 +20,10 @@ const driver = vi.hoisted(() => ({
 }));
 vi.mock('react', async (importOriginal) => ({
   ...await importOriginal<typeof import('react')>(),
-  useState: () => {
+  useState: (initial: unknown) => {
     const index = driver.index++;
-    return [driver.values[index], (value: boolean | ((previous: boolean) => boolean)) => {
+    if (!(index in driver.values)) driver.values[index] = typeof initial === 'function' ? initial() : initial;
+    return [driver.values[index], (value: unknown) => {
       driver.values[index] = typeof value === 'function' ? value(driver.values[index]) : value;
     }];
   },
@@ -93,6 +94,10 @@ describe('history panel subscriptions', () => {
     render();
     expect(driver.describeChange).not.toHaveBeenCalled();
     expect(driver.selectors.at(-1)?.(driver.state)).toBeNull();
+
+    driver.values[0] = true;
+    render();
+    expect(driver.describeChange).toHaveBeenCalledOnce();
   });
 
   it('compares committed steps without tracking the live graph at an older undo position', () => {

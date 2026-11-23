@@ -27,6 +27,33 @@ interface TimelineRow extends HistoryOperationLabel {
   index: number;
 }
 
+interface CommittedTimeline {
+  history: readonly HistorySnapshotLike[] | null;
+  translate: ReturnType<typeof useT>;
+  labels: WeakMap<HistorySnapshotLike, { next: HistorySnapshotLike; label: HistoryOperationLabel }>;
+  rows: TimelineRow[];
+}
+
+function buildCommittedTimeline(
+  history: CommittedTimeline['history'],
+  translate: CommittedTimeline['translate'],
+  previous?: CommittedTimeline,
+): CommittedTimeline {
+  const previousLabels = previous?.translate === translate ? previous.labels : undefined;
+  if (!history) return { history, translate, labels: previousLabels ?? new WeakMap(), rows: [] };
+  const labels: CommittedTimeline['labels'] = new WeakMap();
+  const rows: TimelineRow[] = [];
+  for (let index = 1; index < history.length; index += 1) {
+    const before = history[index - 1];
+    const next = history[index];
+    const cached = previousLabels?.get(before);
+    const entry = cached?.next === next ? cached : { next, label: describeCanvasChange(before, next, translate) };
+    labels.set(before, entry);
+    rows.push({ ...entry.label, index: index - 1 });
+  }
+  return { history, translate, labels, rows };
+}
+
 export default function HistoryTimelinePanel({ nodesDragging }: { nodesDragging: boolean }) {
   const t = useT();
   const [expanded, setExpanded] = useState(true);
@@ -64,25 +91,15 @@ export default function HistoryTimelinePanel({ nodesDragging }: { nodesDragging:
   const canUndo = historyIndex >= 0 && history.length > 0;
   const canRedo = historyIndex < history.length - 1;
 
-  // 快照不可变。同一对快照只比一次，换语言时重新生成标题。
-  const describeCommitted = useMemo(() => {
-    const labels = new WeakMap<HistorySnapshotLike, { next: HistorySnapshotLike; label: HistoryOperationLabel }>();
-    return (previous: HistorySnapshotLike, next: HistorySnapshotLike) => {
-      const cached = labels.get(previous);
-      if (cached?.next === next) return cached.label;
-      const label = describeCanvasChange(previous, next, t);
-      labels.set(previous, { next, label });
-      return label;
-    };
-  }, [t]);
-  const committedRows = useMemo<TimelineRow[]>(() => {
-    if (!showRows) return [];
-    const rows: TimelineRow[] = [];
-    for (let index = 1; index < history.length; index += 1) {
-      rows.push({ ...describeCommitted(history[index - 1], history[index]), index: index - 1 });
-    }
-    return rows;
-  }, [showRows, history, describeCommitted]);
+  // 只在可见历史或语言变化时更新标题。收起时只留下弱引用缓存。
+  const visibleHistory = showRows ? history : null;
+  const [committed, setCommitted] = useState(() => buildCommittedTimeline(null, t));
+  let committedRows = committed.rows;
+  if (visibleHistory !== committed.history || t !== committed.translate) {
+    const updated = buildCommittedTimeline(visibleHistory, t, committed);
+    committedRows = updated.rows;
+    setCommitted(updated);
+  }
 
   const latestRow = useMemo<TimelineRow | null>(() => {
     if (!trackLive || !live) return null;
