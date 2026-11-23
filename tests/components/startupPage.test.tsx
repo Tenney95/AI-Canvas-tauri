@@ -223,13 +223,59 @@ describe('project startup page', () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it('blocks creation when the list failed to load and provides retry', async () => {
+  it('读取旧项目列表失败时可以重试，也可以直接新建项目', async () => {
     driver.state.projectLoadStatus = 'error';
     driver.state.projects = [];
+    driver.state.createProject = vi.fn(async () => 'new-project');
     const tree = render();
-    expect(button(tree, '新建项目').props.disabled).toBe(true);
     await click(button(tree, '重试'));
     expect(driver.state.initFromDb).toHaveBeenCalledOnce();
+
+    const create = button(render(), '新建项目');
+    expect(create.props.disabled).toBeFalsy();
+    await click(create);
+    const input = find(render(), (element) => element.type === 'input' && element.props.placeholder === '输入项目名称');
+    (input.props.onChange as (event: unknown) => void)({ target: { value: '新作品' } });
+    const form = find(render(), (element) => element.type === 'form');
+    await (form.props.onSubmit as (event: unknown) => Promise<void>)({ preventDefault: vi.fn() });
+    expect(driver.state.createProject).toHaveBeenCalledWith('新作品');
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['p1', 'ready'],
+    ['default', 'error'],
+  ] as const)('只有一张默认画布卡片时，按钮和菜单都能确认删除（%s）', async (id, status) => {
+    driver.state.projects = [{ id, name: '默认画布', createdAt: 1, updatedAt: 2 }];
+    driver.state.projectLoadStatus = status;
+    driver.state.deleteProject = vi.fn(async () => undefined);
+    vi.stubGlobal('window', { innerWidth: 1000, innerHeight: 700 });
+    vi.stubGlobal('document', { body: {} });
+    try {
+      const trash = button(render(), '删除项目 默认画布');
+      expect(trash.props.disabled).toBeFalsy();
+      await click(trash);
+      const dialog = find(render(), (element) => element.props.role === 'alertdialog');
+      expect(driver.state.deleteProject).not.toHaveBeenCalled();
+      if (id === 'default') {
+        expect(find(dialog, (element) => element.props.id === 'delete-project-description').props.children)
+          .toBe('这张卡片是加载项目列表时显示的占位项。确认后会从当前列表移除，本地项目和素材都会保留。');
+      }
+      await click(button(dialog, '取消'));
+      expect(driver.state.deleteProject).not.toHaveBeenCalled();
+      expect(findAll(render(), (element) => element.props.role === 'alertdialog')).toHaveLength(0);
+
+      const card = find(render(), (element) => typeof element.props.onContextMenu === 'function'
+        && typeof element.props.className === 'string' && element.props.className.startsWith('group '));
+      (card.props.onContextMenu as (event: unknown) => void)({ preventDefault: vi.fn(), clientX: 10, clientY: 20 });
+      const menuDelete = find(render(), (element) => element.props.label === '删除项目');
+      expect(menuDelete.props.disabled).toBeFalsy();
+      await click(menuDelete);
+      expect(driver.state.deleteProject).not.toHaveBeenCalled();
+      await click(button(render(), '确认删除'));
+      expect(driver.state.deleteProject).toHaveBeenCalledOnce();
+      expect(driver.state.deleteProject).toHaveBeenCalledWith(id);
+    } finally { vi.unstubAllGlobals(); }
   });
 
   it('lets users select another project when the last canvas failed but the list is available', async () => {

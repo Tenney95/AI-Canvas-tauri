@@ -35,6 +35,15 @@ async function readRetiredProject(projectId: string): Promise<unknown> {
   } finally { db.close(); }
 }
 
+function seedNativeV1(prepare?: (database: IDBDatabase) => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const open = factory.open(NATIVE_PROJECT_DATABASE_NAME, 1);
+    open.onupgradeneeded = () => prepare?.(open.result);
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => { open.result.close(); resolve(); };
+  });
+}
+
 describe('独立新项目仓储', () => {
   it('从 v3 仅增加操作索引，自动保存不复制已结算回执且仍冻结未结算更新', async () => {
     const projectId = id('p2', '1');
@@ -596,6 +605,28 @@ describe('独立新项目仓储', () => {
     open.mockClear();
     await expect(readNativeProject('旧项目', { factory })).rejects.toThrow('invalid-project-id');
     expect(open).not.toHaveBeenCalled();
+  });
+
+  it('没有对象存储的 v1 空库可只读探测，首次新建项目时原地升级', async () => {
+    await seedNativeV1();
+    const deleteDatabase = vi.spyOn(factory, 'deleteDatabase');
+    expect(await openNativeProjectDatabase(false, { factory })).toBeNull();
+    expect(await listNativeProjectIdentities({ factory })).toEqual([]);
+    expect(await factory.databases()).toEqual([{ name: NATIVE_PROJECT_DATABASE_NAME, version: 1 }]);
+
+    const project = await createNativeProject({ name: '新项目', projectId: id('p2', '1'), canvasId: id('c2', '2') }, { factory });
+    expect(await readNativeProject(project.project.id, { factory })).toEqual(project);
+    expect(await factory.databases()).toEqual([{ name: NATIVE_PROJECT_DATABASE_NAME, version: NATIVE_PROJECT_DATABASE_VERSION }]);
+    expect(deleteDatabase).not.toHaveBeenCalled();
+  });
+
+  it('v1 已有部分对象存储时仍拒绝读写并保留原库', async () => {
+    await seedNativeV1((database) => database.createObjectStore(ROOTS, { keyPath: 'id' }));
+    const deleteDatabase = vi.spyOn(factory, 'deleteDatabase');
+    await expect(openNativeProjectDatabase(false, { factory })).rejects.toThrow('unsupported-schema');
+    await expect(createNativeProject({ name: '新项目' }, { factory })).rejects.toThrow('unsupported-schema');
+    expect(await factory.databases()).toEqual([{ name: NATIVE_PROJECT_DATABASE_NAME, version: 1 }]);
+    expect(deleteDatabase).not.toHaveBeenCalled();
   });
 
   it('原子创建独立根、正文与主画布；任一画布冲突不留下半个新项目', async () => {

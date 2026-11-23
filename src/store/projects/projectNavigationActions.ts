@@ -25,6 +25,18 @@ import type {
   ProjectSlice, ProjectSliceGet, ProjectSliceSet, ProjectNavigationContext,
 } from '../store.projects';
 
+async function readNativeEntryAfterCatalogError(projectId: string, catalogError: unknown) {
+  // 旧项目摘要读不出来时，单独核对目标作品在新旧库里的身份和当前内容。
+  const model = await resolveProjectModel(projectId);
+  if (model.dataModel === 'missing') return undefined;
+  if (model.dataModel !== 'native' || model.target !== 'project' || model.aggregate.project.id !== projectId) {
+    throw catalogError;
+  }
+  const { project, episodes, canvases } = model.aggregate;
+  return { dataModel: 'native' as const, project, episodes,
+    episodeIds: episodes.map((episode) => episode.id), canvasIds: canvases.map((canvas) => canvas.id) };
+}
+
 export function createProjectNavigationActions(
   set: ProjectSliceSet,
   get: ProjectSliceGet,
@@ -47,6 +59,8 @@ export function createProjectNavigationActions(
     invalidateSeriesLibrarySave, waitForProjectSaveQueue, waitForLoadingPaint, getProjectSwitchSequence,
     beginProjectSwitch, clearProjectSnapshot,
   } = context;
+  const loadNativeEntry = (projectId: string) => loadProjectCatalog(projectId)
+    .catch((error: unknown) => readNativeEntryAfterCatalogError(projectId, error));
   return {
     createProject: async (name, options) => {
       const current = get();
@@ -102,9 +116,14 @@ export function createProjectNavigationActions(
           await createNativeProject({ projectId, canvasId, name: defaultName });
           nativeKnownIds.add(projectId); nativeKnownIds.add(canvasId);
           fileService.registerNativeProjectFolders([{ id: projectId, projectId }, { id: canvasId, projectId }]);
-          const catalog = await loadProjectCatalog();
+          const catalog = await loadProjectCatalog().catch(async (error: unknown) => {
+            const entry = await readNativeEntryAfterCatalogError(projectId, error);
+            if (!entry) throw error;
+            const otherProjects = get().projects.filter((item) => item.id !== 'default' && nativeBinding(item)?.projectId !== projectId);
+            return { projects: [...otherProjects, ...projectNativeCatalogEntry(entry)], native: [entry] };
+          });
           const entry = catalog.native.find((item) => item.project.id === projectId);
-          if (!entry) throw new Error('已创建的项目无法重新读取');
+          if (!entry?.canvasIds.includes(canvasId)) throw new Error('已创建的项目无法重新读取');
           set({ projects: catalog.projects });
           if (!isLatestCreate()) return options?.signal?.aborted ? undefined : canvasId;
           await activateNativeProject(set, get, entry, canvasId, () => { if (!isLatestCreate()) throw new Error('项目创建已取消'); });
@@ -130,6 +149,13 @@ export function createProjectNavigationActions(
       const state = get();
       const target = state.projects.find((project) => project.id === id);
       if (!target) return;
+      if (id === 'default') {
+        // 启动失败时留下的是临时卡片，只从列表移走，项目库仍可重试读取。
+        if (state.projectLoadStatus === 'error' && state.currentProjectId === null) {
+          set({ projects: state.projects.filter((project) => project.id !== id) });
+        }
+        return;
+      }
       if (state.projectLoadStatus !== 'ready' || state.switchingProjectName !== null
         || state.isCreatingProject || state.isReturningToStartPage) {
         get().showToast('项目导航中，已取消删除', 'error'); return;
@@ -209,9 +235,8 @@ export function createProjectNavigationActions(
             projectDeleted = true;
             stopPollingForDeletedProjects(ids);
           }
-          const catalog = await loadProjectCatalog();
+          const entry = await loadNativeEntry(native.projectId);
           assertCanDelete();
-          const entry = catalog.native.find((item) => item.project.id === native.projectId);
           if (entry) {
             if (activeOwner && activeId) {
               const nextId = activeId === id ? (entry.episodes[0]?.canvasId ?? entry.project.id) : activeId;
@@ -334,7 +359,6 @@ export function createProjectNavigationActions(
           operationLogs: [],
           ...retainedChatState,
         });
-        await get().createProject('默认画布');
       } else {
         // 替补项目可能是个剧集，剧集自己没有画布，要落到它的第一集上。
         const fallbackId = listTopLevelProjects(filtered)[0]?.id;
@@ -487,7 +511,7 @@ export function createProjectNavigationActions(
 
         const native = nativeBinding(project);
         if (native) {
-          const entry = await loadProjectCatalog(native.projectId);
+          const entry = await loadNativeEntry(native.projectId);
           if (!isLatestSwitch()) return;
           if (!entry) throw new Error('新项目已不存在');
           const openedId = await activateNativeProject(set, get, entry, id, assertCanReplaceSource);

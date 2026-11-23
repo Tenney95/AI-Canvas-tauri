@@ -158,11 +158,6 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
   const deleteBinding = (deleteTarget as Partial<NativeProjectViewItem> | null)?.nativeView;
   const recycleMediaOnDelete = isTauri && deleteBinding?.episodeId === null;
 
-  const deletableProjectCount = useMemo(
-    () => topLevelProjects.filter((project) => project.id !== 'default').length,
-    [topLevelProjects],
-  );
-
   const visibleProjects = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN');
     return topLevelProjects
@@ -296,7 +291,7 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
   const submitNewProject = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const name = newProjectName.trim();
-    if (!name || projectBusy || listUnavailable) return;
+    if (!name || projectBusy) return;
     const projectId = await createProject(name);
     if (projectId) closeLibrary();
   };
@@ -388,9 +383,9 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
     }
   };
 
-  const canDeleteProject = (project: CanvasProject) => (
-    project.id !== 'default' && deletableProjectCount > 1
-  );
+  const canDeleteProject = (project: CanvasProject) => !projectBusy && (project.id === 'default'
+    ? projectLoadStatus === 'error' && currentProjectId === null
+    : projectLoadStatus === 'ready');
 
   const projectHeading = (
     <div className="flex shrink-0 items-baseline gap-2">
@@ -499,7 +494,7 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
               type="button"
               onClick={() => setIsCreating(true)}
               className="ui-btn ui-btn--primary ui-btn--sm"
-              disabled={isCreating || projectBusy || listUnavailable}
+              disabled={isCreating || projectBusy}
             >
               <Icon icon="mdi:plus" width="14" height="14" aria-hidden="true" />
               {t('新建')}
@@ -507,7 +502,7 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
           </div>
           {listUnavailable ? (
             <div className="ui-alert ui-alert--warning mt-3 flex items-center justify-between gap-2" role="alert">
-              <span>{t('项目列表读取失败，请重试后再打开或新建项目')}</span>
+              <span>{t('项目列表读取失败。可以重试，也可以新建项目。')}</span>
               <button type="button" className="ui-btn ui-btn--sm" onClick={() => void useAppStore.getState().initFromDb()}>
                 {t('重试')}
               </button>
@@ -564,7 +559,7 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
                   </button>
                   <button
                     type="submit"
-                    disabled={!newProjectName.trim() || projectBusy || listUnavailable}
+                    disabled={!newProjectName.trim() || projectBusy}
                     className="inline-flex h-8 items-center gap-1.5 rounded-md bg-indigo-500 px-3 text-xs font-medium text-white transition-colors hover:bg-indigo-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/60 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {isCreatingProject ? (
@@ -579,7 +574,7 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
                 <button
                   type="button"
                   onClick={() => setIsCreating(true)}
-                  disabled={projectBusy || listUnavailable}
+                  disabled={projectBusy}
                   className="group flex min-h-[188px] flex-col items-center justify-center rounded-lg border border-dashed border-canvas-border bg-canvas-surface/60 text-canvas-text-muted transition-[border-color,background-color,color] duration-150 hover:border-indigo-400/40 hover:bg-canvas-surface hover:text-indigo-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/60"
                 >
                   <span className="flex h-10 w-10 items-center justify-center rounded-lg border border-canvas-border bg-canvas-card transition-colors group-hover:border-indigo-400/30 group-hover:bg-indigo-500/10">
@@ -721,17 +716,16 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
                             className={duplicatingId === project.id ? 'animate-spin' : undefined}
                           />
                         </button>
-                        {canDeleteProject(project) ? (
-                          <button
-                            type="button"
-                            aria-label={t('删除项目 {name}', { name: project.name })}
-                            data-tooltip={t('删除项目')}
-                            onClick={() => setDeleteTarget(project)}
-                            className="flex h-8 w-8 items-center justify-center rounded-md text-canvas-text-muted transition-colors hover:bg-red-500/10 hover:text-red-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/50"
-                          >
-                            <Icon icon="mdi:trash-can-outline" width="17" height="17" aria-hidden="true" />
-                          </button>
-                        ) : null}
+                        <button
+                          type="button"
+                          aria-label={t('删除项目 {name}', { name: project.name })}
+                          data-tooltip={t('删除项目')}
+                          disabled={!canDeleteProject(project)}
+                          onClick={() => setDeleteTarget(project)}
+                          className="flex h-8 w-8 items-center justify-center rounded-md text-canvas-text-muted transition-colors hover:bg-red-500/10 hover:text-red-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/50 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <Icon icon="mdi:trash-can-outline" width="17" height="17" aria-hidden="true" />
+                        </button>
                       </div>
                     </div>
                   )}
@@ -825,20 +819,17 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
               />
               <ProjectMenuItem icon="mdi:history" label={t('导入更新恢复点')} disabled={projectBusy}
                 onClick={() => { setRecoveryOwnerId(seriesOwnerId(projects, contextMenu.project.id)); setContextMenu(null); }} />
-              {canDeleteProject(contextMenu.project) ? (
-                <>
-                  <div className="my-1 border-t border-canvas-border" />
-                  <ProjectMenuItem
-                    icon="mdi:trash-can-outline"
-                    label={t('删除项目')}
-                    danger
-                    onClick={() => {
-                      setDeleteTarget(contextMenu.project);
-                      setContextMenu(null);
-                    }}
-                  />
-                </>
-              ) : null}
+              <div className="my-1 border-t border-canvas-border" />
+              <ProjectMenuItem
+                icon="mdi:trash-can-outline"
+                label={t('删除项目')}
+                danger
+                disabled={!canDeleteProject(contextMenu.project)}
+                onClick={() => {
+                  setDeleteTarget(contextMenu.project);
+                  setContextMenu(null);
+                }}
+              />
             </div>
           </div>,
           document.body,
@@ -870,7 +861,7 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
                     ? t('删除整部剧“{name}”？', { name: deleteTarget.name })
                     : t('删除“{name}”？', { name: deleteTarget.name })}</h3>
                   <p id="delete-project-description" className="mt-1.5 text-xs leading-5 text-canvas-text-secondary">
-                    {recycleMediaOnDelete ? <>
+                    {deleteTarget.id === 'default' ? t('这张卡片是加载项目列表时显示的占位项。确认后会从当前列表移除，本地项目和素材都会保留。') : recycleMediaOnDelete ? <>
                       {deleteEpisodeCount > 0
                         ? t('将移除整部剧及其 {count} 个分集的项目记录。', { count: deleteEpisodeCount })
                         : t('将移除此项目的项目记录。')}{' '}
@@ -893,7 +884,7 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
                 </button>
                 <button
                   type="button"
-                  disabled={isDeleting}
+                  disabled={isDeleting || !canDeleteProject(deleteTarget)}
                   onClick={() => void confirmDeleteProject()}
                   className="inline-flex h-9 items-center gap-2 rounded-md bg-red-500 px-3.5 text-xs font-medium text-white transition-colors hover:bg-red-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/60 disabled:cursor-not-allowed disabled:opacity-50"
                 >

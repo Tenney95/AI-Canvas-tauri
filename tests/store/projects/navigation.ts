@@ -761,6 +761,27 @@ export function registerProjectSwitchTests({
     expect(showToast).toHaveBeenCalledWith('项目未删除；已停止的任务不会自动重启', 'error');
   });
 
+  it('唯一的真实项目也可以叫默认画布，删除后回到空列表', async () => {
+    const project = { id: 'saved-default-canvas', name: '默认画布', createdAt: 1, updatedAt: 1 };
+    useAppStore.setState({ projects: [project], currentProjectId: project.id, projectLoadStatus: 'ready' });
+
+    await useAppStore.getState().deleteProject(project.id);
+
+    expect(lifecycleMocks.deleteContent).toHaveBeenCalledWith(expect.objectContaining({ targetId: project.id }));
+    expect(useAppStore.getState()).toMatchObject({ projects: [], currentProjectId: null, projectLoadStatus: 'ready' });
+  });
+
+  it.each(['loading', 'ready'] as const)('在 %s 状态下保留启动占位项，跳过持久化删除', async (status) => {
+    const placeholder = { id: 'default', name: '默认画布', createdAt: 1, updatedAt: 1 };
+    useAppStore.setState({ projects: [placeholder], currentProjectId: null, projectLoadStatus: status });
+
+    await useAppStore.getState().deleteProject(placeholder.id);
+
+    expect(useAppStore.getState().projects).toEqual([placeholder]);
+    expect(lifecycleMocks.deleteContent).not.toHaveBeenCalled();
+    expect(fileMocks.deleteProjectDataDir).not.toHaveBeenCalled();
+  });
+
   it('blocks persistence when the current project did not load successfully', async () => {
     const showToast = vi.fn();
     useAppStore.setState({
@@ -925,7 +946,8 @@ export function registerProjectSwitchTests({
     const showToast = vi.fn();
     stubInitializationActions();
     fileMocks.loadProjectsList.mockRejectedValue(new Error('indexeddb unavailable'));
-    useAppStore.setState({ showToast });
+    const placeholder = { id: 'default', name: '默认画布', createdAt: 1, updatedAt: 1 };
+    useAppStore.setState({ projects: [placeholder], showToast });
 
     await useAppStore.getState().initFromDb();
 
@@ -935,6 +957,13 @@ export function registerProjectSwitchTests({
     });
     expect(fileMocks.saveProject).not.toHaveBeenCalled();
     expect(showToast).toHaveBeenCalledWith('项目数据读取失败，未创建空项目', 'error');
+
+    expect(useAppStore.getState().projects).toEqual([placeholder]);
+    await useAppStore.getState().deleteProject(placeholder.id);
+    expect(useAppStore.getState()).toMatchObject({ projects: [], currentProjectId: null, projectLoadStatus: 'error' });
+    expect(lifecycleMocks.deleteContent).not.toHaveBeenCalled();
+    expect(fileMocks.deleteProjectDataDir).not.toHaveBeenCalled();
+    expect(fileMocks.saveProject).not.toHaveBeenCalled();
   });
 
   it('starts at the project list without reading canvas data or resuming generation', async () => {

@@ -45,6 +45,7 @@ const project = {
     'The project record will be removed; historical receipts and media files will be kept. This cannot be directly undone.',
   '将移除整部剧及其 {count} 个分集的项目记录。': 'The series and its {count} episode records will be removed.',
   '将移除此项目的项目记录。': 'The project record will be removed.',
+  '这张卡片是加载项目列表时显示的占位项。确认后会从当前列表移除，本地项目和素材都会保留。': 'This card is a placeholder shown while loading the project list. Removing it from this list keeps your local projects and media files intact.',
   '符合条件的素材目录将移入系统回收站。受到保护或回收失败时，素材目录会保留。项目记录不能直接撤销。':
     'Eligible media folders will move to the system trash. The folder stays in place if protected or if recycling fails. Project records cannot be restored from this dialog.',
   '删除并回收素材': 'Delete and recycle media',
@@ -58,7 +59,7 @@ const project = {
   '{month}月{date}日 {time}': '{month}/{date} {time}',
   '{year}年{month}月{date}日': '{year}/{month}/{date}',
   '项目打开失败，请重试': 'Failed to open the project. Please try again',
-  '项目列表读取失败，请重试后再打开或新建项目': 'Failed to read the project list. Try again before opening or creating a project',
+  '项目列表读取失败。可以重试，也可以新建项目。': 'Failed to load the project list. You can retry or create a new project.',
   '正在加载项目': 'Loading project…',
   '正在读取最近使用…': 'Reading recent items…',
   '启动页': 'Start page',

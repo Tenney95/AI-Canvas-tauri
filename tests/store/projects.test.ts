@@ -13,7 +13,7 @@ import type { SharedAssetSyncCommitInput } from '../../src/services/indexedDb/sh
 import { createEmptyStoryGraph } from '../../src/services/storyGraphService';
 import { ProjectImportCommittedError } from '../../src/services/projectImportOutcome';
 import type { PreparedProjectImport, ProjectImportPreview } from '../../src/services/projectImportService';
-import type { ProjectCatalogEntry } from '../../src/services/projectModelRouter';
+import type { ProjectCatalogEntry, ResolvedProjectModel } from '../../src/services/projectModelRouter';
 import type { NativeProjectAggregate } from '../../src/services/indexedDb/nativeProjectRepository';
 import * as nativeRepository from '../../src/services/indexedDb/nativeProjectRepository';
 import { rememberOpenedSeriesEpisode, resolveOpenTargetId, resolveProjectCardTargetId } from '../../src/store/store.utils';
@@ -56,7 +56,10 @@ vi.mock('../../src/services/projectModelRouter', () => ({
     ...[...nativeMocks.projects.values()].map(({ project, episodes, canvases }): ProjectCatalogEntry => ({ dataModel: 'native', project,
       episodes, episodeIds: episodes.map((episode) => episode.id), canvasIds: canvases.map((canvas) => canvas.id) })),
   ],
-  resolveProjectModel: async () => ({ dataModel: 'missing' as const }),
+  resolveProjectModel: async (id: string): Promise<ResolvedProjectModel> => {
+    const aggregate = nativeMocks.projects.get(id);
+    return aggregate ? { dataModel: 'native', target: 'project', aggregate } : { dataModel: 'missing' };
+  },
 }));
 vi.mock('../../src/services/indexedDb/nativeProjectRepository', async () => ({
   ...await vi.importActual<typeof import('../../src/services/indexedDb/nativeProjectRepository')>('../../src/services/indexedDb/nativeProjectRepository'),
@@ -851,6 +854,32 @@ describe('project creation', () => {
     expect(await useAppStore.getState().switchProject(canvasId!)).toBe(canvasId);
     expect(useAppStore.getState().nodes.map((node) => node.id)).toEqual(['node']);
     expect(fileMocks.claimNativeProjectDataDir).toHaveBeenCalledTimes(Number(tauri));
+  });
+
+  it('旧项目列表持续读取失败时，新建的画布仍能从启动页再次打开', async () => {
+    stubInitializationActions();
+    fileMocks.loadProjectsList.mockRejectedValue(new Error('旧项目列表不可用'));
+    useAppStore.setState({
+      projects: [{ id: 'default', name: '默认画布', createdAt: 1, updatedAt: 1 }],
+      currentProjectId: null,
+      projectLoadStatus: 'error',
+    });
+
+    const openedId = await useAppStore.getState().createProject('新作品');
+    expect(nativeMocks.create).toHaveBeenCalledOnce();
+    const { canvasId, projectId } = nativeMocks.create.mock.calls[0]![0];
+    expect(openedId).toBe(canvasId);
+    expect(nativeMocks.projects.get(projectId)?.canvas?.id).toBe(canvasId);
+    expect(useAppStore.getState()).toMatchObject({
+      projects: [{ id: canvasId, name: '新作品' }], currentProjectId: canvasId, projectLoadStatus: 'ready',
+    });
+
+    expect(await useAppStore.getState().returnToStartPage()).toBe(true);
+    expect(useAppStore.getState().currentProjectId).toBeNull();
+    expect(await useAppStore.getState().switchProject(canvasId)).toBe(canvasId);
+    expect(useAppStore.getState()).toMatchObject({ currentProjectId: canvasId, projectLoadStatus: 'ready' });
+    expect(nativeMocks.create).toHaveBeenCalledOnce();
+    expect(fileMocks.saveProject).not.toHaveBeenCalled();
   });
 
   it('零集新剧集可以打开项目根，不会创建旧画布或删除作品', async () => {

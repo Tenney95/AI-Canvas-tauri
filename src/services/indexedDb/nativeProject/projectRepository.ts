@@ -196,16 +196,18 @@ export async function openNativeProjectDatabase(create: boolean, options: Native
     try { opening = factory.open(NATIVE_PROJECT_DATABASE_NAME, NATIVE_PROJECT_DATABASE_VERSION); }
     catch (error) { finish(error); return; }
     opening.onupgradeneeded = (event) => {
-      if (settled || options.signal?.aborted || (!create && event.oldVersion === 0)) {
-        missing = !create && event.oldVersion === 0;
+      const db = opening.result;
+      // WebKit 里也可能已有一个没有任何表的 v1 空库，首次写入时再建表。
+      const empty = event.oldVersion === 0 || (event.oldVersion === 1 && db.objectStoreNames.length === 0);
+      if (settled || options.signal?.aborted || (!create && empty)) {
+        missing = !create && empty;
         opening.transaction?.abort();
         return;
       }
-      const db = opening.result;
       const transaction = opening.transaction!;
       upgrade = transaction;
       try {
-        if (event.oldVersion === 0) {
+        if (empty) {
           db.createObjectStore(ROOTS, { keyPath: 'id' });
           db.createObjectStore(CONTENTS, { keyPath: 'projectId' });
           db.createObjectStore(CANVASES, { keyPath: 'id' }).createIndex('projectId', 'projectId', { unique: false });
