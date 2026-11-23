@@ -300,7 +300,7 @@ describe('上传策略使用显式厂商身份', () => {
       .resolves.toBe(`https://cdn.example/custom-${connectionId}-reference`);
 
     expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
-    expect(directFetch).toHaveBeenCalledExactlyOnceWith('https://uguu.se/upload', expect.objectContaining({
+    expect(directFetch).toHaveBeenCalledExactlyOnceWith('https://uguu.se/upload.php', expect.objectContaining({
       method: 'POST', body: expect.any(FormData),
     }));
     expect(directFetch.mock.calls[0][1]?.headers).toBeUndefined();

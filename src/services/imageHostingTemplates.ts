@@ -1,5 +1,8 @@
 import type { GlobalImageHostingConfig, ImageHostingConfig, PublicImageHostingProvider } from '../types/imageHosting';
 
+// 官网的上传表单通过这个入口接收文件并返回 JSON。
+export const UGUU_UPLOAD_URL = 'https://uguu.se/upload.php';
+
 /** 对照 uploadService 现有上传合同填写；只生成用户显式选择的连接草稿。 */
 export const IMAGE_HOSTING_TEMPLATES: ReadonlyArray<{ id: string; label: string; config: ImageHostingConfig }> = [
   { id: 'apimart', label: 'APIMart 上传格式', config: {
@@ -18,7 +21,7 @@ export const IMAGE_HOSTING_TEMPLATES: ReadonlyArray<{ id: string; label: string;
     allowedExtensions: ['jpg', 'png', 'webp', 'gif', 'heic'],
   } },
   { id: 'uguu', label: 'Uguu 公共图床格式', config: {
-    enabled: true, uploadUrl: 'https://uguu.se/upload', fileField: 'files[]', responseUrlPath: 'files[0].url',
+    enabled: true, uploadUrl: UGUU_UPLOAD_URL, fileField: 'files[]', responseUrlPath: 'files[0].url',
     auth: 'none', successPath: 'success', successValue: 'true',
   } },
 ];
@@ -38,7 +41,7 @@ export const PUBLIC_IMAGE_HOSTING_TEMPLATES: ReadonlyArray<{
       successPath: 'status', successValue: 'success', maxFileBytes: 30_000_000,
     } },
   { id: 'uguu', label: 'Uguu', description: '免费且无需密钥；支持图片、视频和音频，单文件 128 MiB，约 3 小时后过期。', docsUrl: 'https://uguu.se/api/', config: {
-    enabled: true, uploadUrl: 'https://uguu.se/upload', fileField: 'files[]', responseUrlPath: 'files[0].url',
+    enabled: true, uploadUrl: UGUU_UPLOAD_URL, fileField: 'files[]', responseUrlPath: 'files[0].url',
     auth: 'none', successPath: 'success', successValue: 'true', maxFileBytes: 128 * 1024 * 1024,
   } },
   { id: 'catbox', label: 'Catbox', description: '支持图片、视频和音频，可免费匿名上传；GIF 最高 20 MB，其他文件最高 200 MB。商业服务外链须事先获许可。',
@@ -65,9 +68,12 @@ export const PUBLIC_IMAGE_HOSTING_TEMPLATES: ReadonlyArray<{
   } },
 ];
 
-/** 只兼容已知 Cloudinary 图片旧入口，不改第三方端点，也不原地修改保存的配置。 */
+/** 只替换已知的内置服务旧地址，保留用户填写的地址和原配置对象。 */
 export function normalizeGlobalImageHostingConfig(provider: PublicImageHostingProvider, config: ImageHostingConfig): ImageHostingConfig {
   const next = { ...config };
+  if (provider === 'uguu' && config.uploadUrl === 'https://uguu.se/upload') {
+    next.uploadUrl = UGUU_UPLOAD_URL;
+  }
   if (provider !== 'cloudinary') return next;
   try {
     const endpoint = new URL(config.uploadUrl);

@@ -59,7 +59,7 @@ describe('自定义图床合同', () => {
     expect(PUBLIC_IMAGE_HOSTING_TEMPLATES.map((item) => item.id))
       .toEqual(['bohe', 'uguu', 'catbox', 'imagekit', 'cloudinary', 'custom']);
     expect(new Set(PUBLIC_IMAGE_HOSTING_TEMPLATES.map((item) => item.id)).size).toBe(PUBLIC_IMAGE_HOSTING_TEMPLATES.length);
-    expect(resolveGlobalImageHosting().uploadUrl).toBe('https://uguu.se/upload');
+    expect(resolveGlobalImageHosting().uploadUrl).toBe('https://uguu.se/upload.php');
     expect(resolveGlobalImageHosting({ provider: 'bohe', configs: {} }).maxFileBytes).toBe(30_000_000);
   });
 
@@ -142,7 +142,9 @@ describe('自定义图床合同', () => {
   });
 
   it('全局缺省使用 Uguu，配置损坏或沿用模型密钥时不能静默换站', () => {
-    expect(resolveGlobalImageHosting().uploadUrl).toBe('https://uguu.se/upload');
+    const legacy = { ...resolveGlobalImageHosting(), uploadUrl: 'https://uguu.se/upload' };
+    expect(resolveGlobalImageHosting({ provider: 'uguu', configs: { uguu: legacy } }).uploadUrl).toBe('https://uguu.se/upload.php');
+    expect(resolveGlobalImageHosting({ provider: 'custom', configs: { custom: legacy } }).uploadUrl).toBe('https://uguu.se/upload');
     expect(() => resolveGlobalImageHosting({ provider: 'unknown', configs: {} } as never)).toThrow('重新选择');
     expect(() => resolveGlobalImageHosting({ provider: 'catbox', configs: { catbox: { ...base, enabled: false } } })).toThrow('已停用');
     expect(() => resolveGlobalImageHosting({ provider: 'imagekit', configs: { imagekit: { ...base, credentialSource: 'connection' } } })).toThrow('自己的密钥');
@@ -268,7 +270,7 @@ describe('自定义图床合同', () => {
     ['apimart', '/uploads/images', 'file', { url: 'https://cdn.example/image.png' }],
     ['toapis', '/uploads/images', 'file', { success: true, data: { url: 'https://cdn.example/image.png' } }],
     ['libapi', '/files', 'file', { url: 'https://cdn.example/image.png' }],
-    ['uguu', 'https://uguu.se/upload', 'files[]', { success: true, files: [{ url: 'https://cdn.example/image.png' }] }],
+    ['uguu', 'https://uguu.se/upload.php', 'files[]', { success: true, files: [{ url: 'https://cdn.example/image.png' }] }],
   ] as const)('%s 模板遵循内置请求字段、响应路径及连接身份', async (id, path, field, payload) => {
     const config = structuredClone(IMAGE_HOSTING_TEMPLATES.find((item) => item.id === id)!.config);
     const connection = { baseUrl: 'https://relay.example/team/v1/', apiKey: 'current-connection-key' };

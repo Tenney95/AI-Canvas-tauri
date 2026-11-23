@@ -1047,7 +1047,7 @@ describe('共享参考图压缩的实际请求边界', () => {
     expect(await uploadToRemote(source, provider)).toBe('https://cdn.example/ready.png');
     const uploads = provider === 'apimart' ? mocks.transport : localFetch;
     const [endpoint, init] = uploads.mock.calls.find(([, request]) => request?.method === 'POST')!;
-    expect(endpoint).toBe(provider === 'apimart' ? 'https://upload.example/v1/uploads/images' : 'https://uguu.se/upload');
+    expect(endpoint).toBe(provider === 'apimart' ? 'https://upload.example/v1/uploads/images' : 'https://uguu.se/upload.php');
     const file = (init.body as FormData).get(provider === 'apimart' ? 'file' : 'files[]') as File;
     await assertPreparedPng(file, 7);
     expect(file.name).toMatch(/\.png$/);
@@ -1091,7 +1091,7 @@ describe('共享参考图压缩的实际请求边界', () => {
         .rejects.toThrow('Uguu 上传失败 (502)');
       const uploadCalls = mocks.invoke.mock.calls.filter(([command]) => command === 'proxy_fetch');
       expect(uploadCalls).toHaveLength(1);
-      expect(uploadCalls[0][1].req.url).toBe('https://uguu.se/upload');
+      expect(uploadCalls[0][1].req.url).toBe('https://uguu.se/upload.php');
       expect(uploadCalls[0][1].req.uploadDiagnosticId).toMatch(/^upload-/);
       const event = info.mock.calls.filter(([label]) => label === '[Upload Diagnostics]')
         .map(([, value]) => JSON.parse(String(value)) as Record<string, unknown>)
@@ -1170,7 +1170,7 @@ describe('共享参考图压缩的实际请求边界', () => {
     expect(requests).toHaveLength(2);
     const apimartImage = provider === 'apimart' && kind === 'image';
     for (const [endpoint, init] of requests) {
-      expect(endpoint).toBe(apimartImage ? 'https://upload.example/v1/uploads/images' : 'https://uguu.se/upload');
+      expect(endpoint).toBe(apimartImage ? 'https://upload.example/v1/uploads/images' : 'https://uguu.se/upload.php');
       expect((init.body as FormData).has(apimartImage ? 'file' : 'files[]')).toBe(true);
       if (apimartImage) expect(init.headers).toEqual({ Authorization: 'Bearer test-key' });
     }

@@ -39,14 +39,11 @@ import { assertMinimaxResponse, resolveMinimaxBaseUrl } from './ai/providers/min
 import type { ApiProviderConfig } from '../types';
 import { uploadCustomImage } from './imageHostingService';
 import { startUploadDiagnostics, logUploadFailureResponse, logUploadNetworkFailure, logUploadTransport } from './uploadDiagnostics';
-import { resolveGlobalImageHosting } from './imageHostingTemplates';
+import { resolveGlobalImageHosting, UGUU_UPLOAD_URL } from './imageHostingTemplates';
 import type { ImageHostingConfig, PublicImageHostingProvider } from '../types/imageHosting';
 import { assertVolcengineTosEndpoint, assertVolcengineTosMediaSize, uploadVolcengineTosReference } from './ai/providers/volcengineTosUpload';
 
 const DEFAULT_UPLOAD_BASE = APIMART_BASE_URL;
-
-/** uguu.se 免费图床上传地址 */
-const UGUU_UPLOAD_URL = 'https://uguu.se/upload';
 
 /** 上传缓存 TTL：2.5 小时，给图床地址失效预留半小时安全窗口 */
 const UPLOAD_TTL_MS = 150 * 60 * 1000;

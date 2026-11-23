@@ -240,12 +240,14 @@ fn build_proxy_http_client(
 
 #[cfg(any(target_os = "macos", test))]
 fn is_uguu_upload(req: &ProxyFetchRequest) -> bool {
-    req.method == "POST" && req.url == "https://uguu.se/upload"
+    // 已配置的连接可能仍使用公开 API 的旧地址。
+    req.method == "POST"
+        && matches!(req.url.as_str(), "https://uguu.se/upload.php" | "https://uguu.se/upload")
 }
 
 #[cfg(target_os = "macos")]
 fn system_uguu_proxy(req: &ProxyFetchRequest) -> Option<reqwest::Proxy> {
-    // 保留进程对 HTTPS 的显式代理配置。仅为固定 Uguu 上传入口补系统代理。
+    // 优先使用进程的显式代理配置，只给这两个 Uguu 上传地址补系统代理。
     if !is_uguu_upload(req)
         || ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]
             .into_iter()

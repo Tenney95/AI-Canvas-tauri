@@ -10,14 +10,17 @@ fn test_request(url: String, method: &str) -> ProxyFetchRequest {
 }
 
 #[test]
-fn macos_proxy_fallback_is_scoped_to_the_fixed_uguu_upload() {
-    let endpoint = "https://uguu.se/upload";
-    assert!(is_uguu_upload(&test_request(endpoint.into(), "POST")));
-    assert!(!is_uguu_upload(&test_request(endpoint.into(), "GET")));
+fn macos_proxy_fallback_is_scoped_to_the_fixed_uguu_upload_endpoints() {
+    for endpoint in ["https://uguu.se/upload.php", "https://uguu.se/upload"] {
+        assert!(is_uguu_upload(&test_request(endpoint.into(), "POST")));
+        assert!(!is_uguu_upload(&test_request(endpoint.into(), "GET")));
+    }
     for url in [
         "http://uguu.se/upload",
-        "https://uguu.se/upload.php",
+        "http://uguu.se/upload.php",
         "https://uguu.se/upload?output=text",
+        "https://uguu.se/upload.php?output=text",
+        "https://uguu.se/upload.php/",
         "https://uguu.se.example/upload",
         "https://api.example/upload",
     ] {

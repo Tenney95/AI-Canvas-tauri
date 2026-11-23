@@ -479,7 +479,7 @@ describe('uploadService 内存上传治理', () => {
       success: true, files: [{ url: 'https://cdn.example/custom-same-name' }],
     })) });
     await expect(uploadToRemote('data:image/png;base64,BAUG', provider)).resolves.toBe('https://cdn.example/custom-same-name');
-    expect(mocks.invoke).toHaveBeenCalledWith('proxy_fetch', { req: expect.objectContaining({ url: 'https://uguu.se/upload' }) });
+    expect(mocks.invoke).toHaveBeenCalledWith('proxy_fetch', { req: expect.objectContaining({ url: 'https://uguu.se/upload.php' }) });
   });
 
   it('外部取消会调用 cancel_proxy_fetch 真正停止原生上传', async () => {
