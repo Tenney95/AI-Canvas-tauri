@@ -49,12 +49,16 @@ export default function RootView({ view }: RootViewProps) {
                   : view === 'comfyui-settings'
                     ? <ComfyManagementWindow />
                     : <App />}
-          {view !== 'script-workbench' && <LazyLoadBoundary label="引用内容预览">
-            <ReferencePreviewHost detached={view === 'chat'} />
-          </LazyLoadBoundary>}
         </Suspense>
       </LazyLoadBoundary>
       <OverlayScrollbarLayer />
+      {view !== 'script-workbench' && (
+        <LazyLoadBoundary label="引用内容预览">
+          <Suspense fallback={null}>
+            <ReferencePreviewHost detached={view === 'chat'} />
+          </Suspense>
+        </LazyLoadBoundary>
+      )}
     </>
   );
 }
