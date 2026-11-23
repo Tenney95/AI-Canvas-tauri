@@ -18,7 +18,9 @@ const { code } = await transform(source, {
   lineLimit: 160,
   supported: { 'inline-script': true },
 });
-const updated = html.slice(0, start + openingTag.length) + '\n' + code + html.slice(end);
+const lineEnding = html.match(/\r?\n/)?.[0] ?? '\n';
+const inlineScript = lineEnding + code.replaceAll('\n', lineEnding);
+const updated = html.slice(0, start + openingTag.length) + inlineScript + html.slice(end);
 if (process.argv.includes('--check')) {
   if (updated !== html) throw new Error('手册脚本需要同步，请运行 node scripts/sync-site-manual.mjs');
 } else if (updated !== html) {
