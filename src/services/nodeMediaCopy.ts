@@ -36,9 +36,12 @@ type ShotBinding<K extends ShotFrameBinding['kind']> = ShotFrameBinding & { kind
 /** 画面/成片渲染优先使用仍在画布上的来源；剪贴板也在复制时捕获这一版内容。 */
 export function snapshotShotlistBinding<K extends ShotFrameBinding['kind']>(binding: ShotBinding<K>, source: BaseNodeData): ShotBinding<K> {
   const url = binding.kind === 'video' ? source.videoUrl : source.imageUrl || source.thumbnailUrl;
+  const sourceDuration = typeof source.videoDuration === 'number' && Number.isFinite(source.videoDuration)
+    ? source.videoDuration
+    : binding.sourceDuration;
   return { nodeId: binding.nodeId, kind: binding.kind, url, filePath: source.filePath,
     assetId: source.assetId, relativePath: source.relativePath,
-    sourceDuration: source.videoDuration ?? binding.sourceDuration };
+    sourceDuration };
 }
 
 export function needsNodeMediaCopy(data: BaseNodeData, crossProject = false): boolean {
