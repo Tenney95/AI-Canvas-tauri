@@ -5,7 +5,7 @@
  */
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { calcAnchoredPosition } from '../../../utils/popupPosition';
+import { trackModelMenuPosition } from '../../shared/modelMenuPosition';
 import type {
   GeneralModelConfig,
   NodeType,
@@ -172,33 +172,7 @@ export default function ModelSelector({
     const trigger = ref.current?.querySelector<HTMLButtonElement>('.model-selector-trigger');
     const dropdown = dropdownRef.current;
     if (!trigger || !dropdown) return;
-    const update = () => {
-      const rect = trigger.getBoundingClientRect();
-      const availableHeight = Math.max(rect.top - 12, window.innerHeight - rect.bottom - 12, 0);
-      dropdown.style.width = `${Math.min(380, Math.max(0, window.innerWidth - 16))}px`;
-      dropdown.style.maxHeight = `${Math.min(360, availableHeight)}px`;
-      let layer = 300;
-      for (let parent: HTMLElement | null = ref.current; parent; parent = parent.parentElement) {
-        const value = Number.parseInt(window.getComputedStyle(parent).zIndex, 10);
-        if (Number.isFinite(value)) layer = Math.max(layer, value + 1);
-      }
-      dropdown.style.zIndex = String(layer);
-      const position = calcAnchoredPosition(rect, dropdown.offsetWidth, dropdown.offsetHeight, 4, 8);
-      dropdown.style.left = `${position.left}px`;
-      dropdown.style.top = `${position.top}px`;
-      dropdown.dataset.placement = position.placement;
-    };
-    update();
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update);
-    observer?.observe(dropdown);
-    observer?.observe(trigger);
-    window.addEventListener('resize', update);
-    document.addEventListener('scroll', update, true);
-    return () => {
-      observer?.disconnect();
-      window.removeEventListener('resize', update);
-      document.removeEventListener('scroll', update, true);
-    };
+    return trackModelMenuPosition(trigger, dropdown);
   }, [open]);
 
   // 点击外部关闭（捕获阶段避免 React Flow 拦截）

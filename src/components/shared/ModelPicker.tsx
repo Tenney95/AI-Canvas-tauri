@@ -4,7 +4,7 @@
 import { useId, useLayoutEffect, useEffect, useRef, useState, useCallback, type KeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useT } from '../../i18n';
-import { calcAnchoredPosition } from '../../utils/popupPosition';
+import { trackModelMenuPosition } from './modelMenuPosition';
 
 export interface ModelPickerItem {
   value: string;
@@ -251,36 +251,11 @@ export default function ModelPicker({ groups, value, onChange, placeholder: cust
     const portal = portalRef.current;
     const trigger = triggerRef.current;
     if (!expanded || !portal || !trigger) return;
-    const update = () => {
-      const rect = trigger.getBoundingClientRect();
-      const availableHeight = Math.max(rect.top - 12, window.innerHeight - rect.bottom - 12, 0);
-      portal.style.width = `${Math.min(380, Math.max(0, window.innerWidth - 16))}px`;
-      portal.style.maxHeight = `${Math.min(360, availableHeight)}px`;
-      let layer = 300;
-      for (let parent: HTMLElement | null = wrapRef.current; parent; parent = parent.parentElement) {
-        const value = Number.parseInt(window.getComputedStyle(parent).zIndex, 10);
-        if (Number.isFinite(value)) layer = Math.max(layer, value + 1);
-      }
-      portal.style.zIndex = String(layer);
-      const position = calcAnchoredPosition(rect, portal.offsetWidth, portal.offsetHeight, 4, 8);
-      portal.style.left = `${position.left}px`;
-      portal.style.top = `${position.top}px`;
-      portal.dataset.placement = position.placement;
-    };
-    update();
+    const stopPositioning = trackModelMenuPosition(trigger, portal);
     const target = portal.querySelector<HTMLButtonElement>('[aria-checked="true"]:not(:disabled)')
       ?? portal.querySelector<HTMLButtonElement>('[data-model-menu-control]:not(:disabled)');
     focusModelMenuControl(portal, target ?? undefined);
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update);
-    observer?.observe(portal);
-    observer?.observe(trigger);
-    window.addEventListener('resize', update);
-    document.addEventListener('scroll', update, true);
-    return () => {
-      observer?.disconnect();
-      window.removeEventListener('resize', update);
-      document.removeEventListener('scroll', update, true);
-    };
+    return stopPositioning;
   }, [expanded]);
 
   return <div ref={wrapRef} className={`ui-select ui-select--custom ui-model-picker nodrag nopan ${className}`}>
