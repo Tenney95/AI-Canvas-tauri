@@ -53,3 +53,8 @@ export function baseUrlCandidates(
   if (/\/v\d/i.test(pathname)) return [base];
   return [base, `${base}/${protocol === 'gemini-native' ? 'v1beta' : 'v1'}`];
 }
+
+/** Magpie 的目录和三个兼容 API 共用同一 /v1 基址。 */
+export function normalizeMagpieBaseUrl(raw: string | null | undefined): string {
+  return baseUrlCandidates(raw, 'openai-compatible').at(-1) ?? '';
+}

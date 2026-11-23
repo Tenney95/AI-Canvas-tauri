@@ -1,10 +1,12 @@
 /** 角色任务续查：复用各通道原查询合同，不包含生成重提交入口。 */
 import type { CharacterImageTaskRecovery } from '../types/media';
 import { DEFAULT_BASE_URLS } from '../constants/api';
-import type { MediaDownloadAccess, NormalizedModelExecutionProtocol } from '../types/aiTypes';
+import type { ImageOutputCountRange, MediaDownloadAccess, NormalizedModelExecutionProtocol } from '../types/aiTypes';
 import type { ModelProtocolVariables } from './ai/modelProtocolTypes';
 import { useAppStore } from '../store/useAppStore';
 import { executeCharacterImageTask, validateCharacterImageTaskRecovery, type CharacterImageExecutionOutputs } from './characterImageTaskContext';
+import { assertImageOutputCount } from './ai/modelCapabilityValidation';
+import { captureNativeQueryContractId, nativeQueryCredentialProof, resolveNativeQueryContract } from './nativeProtocolRecovery';
 import { PollTaskFailedError } from './pollTask';
 import { queryDreaminaResult } from './dreaminaResult';
 import { queryApimartImageResult } from './ai/apimartImageResult';
@@ -13,7 +15,8 @@ import { createCccImageResultPoll, queryCccImageResult } from './ai/cccImageResu
 import { pollResolvedModelProtocol, resolvePoll } from './ai/modelProtocolPoll';
 import { captureNativeProtocolContext, nativeProtocolQueryPaths, nativeProtocolQueryDigest, resolveNativeProtocolContext } from './nativeModelProtocolTask';
 import { submitModelProtocol } from './ai/modelProtocol';
-import { getProviderDefinition } from './ai/providerCatalogService';
+import { getProviderDefinition, usesKlingImageProtocol } from './ai/providerCatalogService';
+import { assertKlingImageResponse } from './ai/providers/klingImageResponse';
 import { normalizeNativeMediaProviderBase } from './indexedDb/nativeMediaTaskRepository';
 import { projectModelSourceToken } from './projectModelComparisonMaterial';
 import { sha256BytesHex } from './mediaDataUrl';
@@ -29,7 +32,7 @@ export async function characterImageConfigurationDigest(modelRef: string, connec
   return sha256BytesHex(new TextEncoder().encode(projectModelSourceToken([modelRef, connectionId, connection, model, workflow])));
 }
 
-type Query = Pick<CharacterImageTaskRecovery, 'kind' | 'connectionId' | 'providerBase' | 'builtinMode' | 'workflow' | 'query'> & { modelRef?: string };
+type Query = Pick<CharacterImageTaskRecovery, 'kind' | 'connectionId' | 'providerBase' | 'builtinMode' | 'workflow' | 'query' | 'imageOutputCountRange'> & { modelRef?: string };
 type Task = CharacterImageTaskRecovery['tasks'][number];
 export async function queryCharacterImageOriginal(query: Query, task: Task, operationId: string,
   signal?: AbortSignal, originalApiKey?: string): Promise<Array<{ url: string; kind?: string }>> {
@@ -55,18 +58,40 @@ export async function queryCharacterImageOriginal(query: Query, task: Task, oper
   const apiKey = originalApiKey ?? provider.apiKey;
   if (!apiKey) throw new Error('原图片连接缺少凭据');
   if (query.kind === 'protocol' && query.query) {
+    if (query.query.credentialProof && query.query.credentialProof !== await nativeQueryCredentialProof(operationId, query.connectionId, apiKey)) {
+      throw new Error('原账户的 API Key 已变化，请恢复原凭据后继续查询');
+    }
     const { characterImageRecoveryProtocols } = await import('./ai/generateImage');
-    const candidates = characterImageRecoveryProtocols(query.query.modelId, query.connectionId, query.modelRef);
-    let protocol: NormalizedModelExecutionProtocol | undefined;
+    let protocol = await resolveNativeQueryContract(query.query.serverId, resolveProviderCatalogId(query.connectionId, provider),
+      'image', query.query.modelId, query.query.digest);
+    const candidates = query.query.serverId ? [] : characterImageRecoveryProtocols(query.query.modelId, query.connectionId, query.modelRef);
     for (const candidate of candidates) if (await nativeProtocolQueryDigest(query.query.modelId, candidate) === query.query.digest) {
       protocol = candidate; break;
     }
     if (!protocol?.poll) throw new Error('原图片查询合同已变化，未发送原任务 ID');
     const context = resolveNativeProtocolContext(protocol, task.taskId, task.recoveryContext);
     const sensitive = getProviderPolicy(resolveProviderCatalogId(query.connectionId, provider)).upload === 'volcengine-tos';
-    const result = await pollResolvedModelProtocol(resolvePoll(baseUrl, protocol.poll, protocol.auth, context), apiKey, signal, baseUrl, undefined, sensitive);
-    if (!result.urls?.length) throw new Error('原图片任务没有返回可保存的结果');
-    return result.urls.map((url) => ({ url }));
+    const poll = resolvePoll(baseUrl, protocol.poll, protocol.auth, context);
+    const controller = new AbortController();
+    const querySignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+    const assertConnection = () => {
+      const current = useAppStore.getState().config.providers[query.connectionId];
+      if (current?.apiKey !== provider.apiKey || current.baseUrl !== provider.baseUrl || current.catalogId !== provider.catalogId) {
+        controller.abort(new Error('原图片连接已变化，请恢复原连接后继续查询'));
+      }
+    };
+    const unsubscribe = useAppStore.subscribe(assertConnection);
+    try {
+      assertConnection();
+      querySignal.throwIfAborted();
+      const result = await pollResolvedModelProtocol(poll, apiKey, querySignal, baseUrl, undefined, sensitive, task.taskId);
+      querySignal.throwIfAborted();
+      if (!result.urls?.length) throw new Error('原图片任务没有返回可保存的结果');
+      assertImageOutputCount(query.imageOutputCountRange, result.urls.length);
+      return result.urls.map((url) => ({ url }));
+    } finally {
+      unsubscribe();
+    }
   }
   if (query.kind === 'builtin' && query.builtinMode === 'ccc') {
     if (getProviderDefinition(query.connectionId, provider)?.id !== 'cccapi') throw new Error('原 CCC 图片连接身份无效');
@@ -159,7 +184,7 @@ export async function executeCharacterWorkflow(guard: unknown,
 
 export async function executeCharacterProtocol(guard: unknown, input: {
   apiKey: string; baseUrl: string; protocol: NormalizedModelExecutionProtocol; variables: ModelProtocolVariables;
-  expectedCount?: number; mediaDownloadAccess?: MediaDownloadAccess; signal?: AbortSignal;
+  expectedCount?: number; imageOutputCountRange?: ImageOutputCountRange; mediaDownloadAccess?: MediaDownloadAccess; signal?: AbortSignal;
 }): Promise<never> {
   const connectionId = input.mediaDownloadAccess?.providerConfigId;
   const policy = connectionId ? getProviderPolicy(resolveProviderCatalogId(connectionId,
@@ -167,21 +192,41 @@ export async function executeCharacterProtocol(guard: unknown, input: {
   const sensitive = policy?.upload === 'volcengine-tos';
   const idempotencyKey = policy?.submitIdempotency ? crypto.randomUUID() : undefined;
   const modelId = String(input.variables.model ?? '');
+  const usesKlingProtocol = connectionId && resolveProviderCatalogId(connectionId,
+    useAppStore.getState().config.providers[connectionId]) === 'kling'
+    && usesKlingImageProtocol(modelId, { preset: 'custom', protocol: input.protocol });
   const query = input.protocol.mode === 'async' && input.protocol.poll && input.protocol.response.taskIdPath
     ? { modelId, digest: await nativeProtocolQueryDigest(modelId, input.protocol) } : undefined;
+  const catalogId = connectionId ? resolveProviderCatalogId(connectionId, useAppStore.getState().config.providers[connectionId]) : undefined;
+  const serverId = query && catalogId ? await captureNativeQueryContractId(catalogId, 'image', modelId, query.digest) : undefined;
   if (query) nativeProtocolQueryPaths(input.protocol);
   return executeCharacterImageTask(guard, { expectedCount: input.expectedCount,
-    recovery: { kind: query ? 'protocol' : 'builtin', providerBase: input.baseUrl, ...(query ? { query } : { builtinMode: 'protocol' }) },
+    recovery: { kind: query ? 'protocol' : 'builtin', providerBase: input.baseUrl, ...(query ? { query: { ...query, ...(serverId ? { serverId } : {}) } } : { builtinMode: 'protocol' }),
+      ...(input.imageOutputCountRange ? { imageOutputCountRange: input.imageOutputCountRange } : {}) },
     mediaDownloadAccess: input.mediaDownloadAccess,
     execute: async (beforeSubmit, received) => {
-      const submitted = await submitModelProtocol({ ...input, beforeSubmit, sensitive: true,
+      const submitted = await submitModelProtocol({ ...input, beforeSubmit: async () => {
+        if (connectionId && useAppStore.getState().config.providers[connectionId]?.apiKey !== input.apiKey) {
+          throw new Error('图片连接凭据已变化，请重新确认生成');
+        }
+        await beforeSubmit();
+        input.signal?.throwIfAborted();
+        if (connectionId && useAppStore.getState().config.providers[connectionId]?.apiKey !== input.apiKey) {
+          throw new Error('图片连接凭据已变化，请重新确认生成');
+        }
+      }, sensitive: true,
+        ...(usesKlingProtocol ? { validateResponse: assertKlingImageResponse } : {}),
         ...(idempotencyKey ? { idempotencyKey } : {}),
         ...(query ? { captureRecoveryContext: (payload: unknown) => captureNativeProtocolContext(input.protocol, payload, input.variables, [input.apiKey]) } : {}) })
         .catch((error: unknown) => { throw sensitive ? redactVolcengineError(error, input.apiKey) : error; });
-      if (submitted.urls?.length) return submitted.urls.map((url) => ({ url }));
+      if (submitted.urls?.length) {
+        assertImageOutputCount(input.imageOutputCountRange, submitted.urls.length);
+        return submitted.urls.map((url) => ({ url }));
+      }
       if (!submitted.taskId || !submitted.poll) throw new Error('原图片协议没有返回任务身份或完整产物');
       await received(submitted.taskId, submitted.recoveryContext);
-      const result = await pollResolvedModelProtocol(submitted.poll, input.apiKey, input.signal, input.baseUrl, undefined, sensitive);
+      const result = await pollResolvedModelProtocol(submitted.poll, input.apiKey, input.signal, input.baseUrl, undefined, sensitive, submitted.taskId);
+      assertImageOutputCount(input.imageOutputCountRange, result.urls?.length ?? 0);
       return (result.urls ?? []).map((url) => ({ url }));
     } });
 }

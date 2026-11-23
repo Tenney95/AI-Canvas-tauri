@@ -22,6 +22,7 @@ import { collectConnectedReferenceMedia, getMediaReferenceUrls, mergeMediaRefere
 import { executeModelProtocol, resolveModelExecutionProfile } from './modelProtocol';
 import {
   buildChatApiRequest,
+  getMagpieChatBudgetOptions,
   parseChatApiResponse,
   resolveChatApiProtocol,
   resolveNativeTextChatProtocol,
@@ -29,6 +30,7 @@ import {
 } from './chatApiProtocol';
 import type { ChatApiProtocol } from '../../types';
 import { resolvePluginModelProtocol } from './pluginModelProtocol';
+import { resolveTextModelContextSpec } from '../../components/nodes/shared/defaultModels';
 
 // aiService 内部仍保留 runninghubwf 的默认 URL
 (DEFAULT_BASE_URLS as Record<string, string>).runninghubwf = 'https://api.runninghub.cn';
@@ -194,7 +196,8 @@ export async function generateTextResult(params: AIGenerateParams): Promise<Text
     signal.throwIfAborted();
     const messages: ChatApiMessage[] = [{ role: 'user', content: resolvedContent }];
 
-    const nativeTextProtocol = resolveNativeTextChatProtocol(generalModel?.executionProfile);
+    const catalogId = config.providers[providerConfigId]?.catalogId;
+    const nativeTextProtocol = resolveNativeTextChatProtocol(generalModel?.executionProfile, catalogId);
     if (nativeTextProtocol) chatApiProtocol = nativeTextProtocol;
     if (generalModel?.executionProfile && generalModel.executionProfile.preset !== 'plugin' && !nativeTextProtocol) {
       const protocol = resolveModelExecutionProfile(generalModel.executionProfile);
@@ -217,6 +220,9 @@ export async function generateTextResult(params: AIGenerateParams): Promise<Text
     }
 
     // 未配置模型级协议时按连接协议执行；旧连接缺省仍是 OpenAI Chat Completions。
+    const budget = generalModel && !lease && catalogId === 'magpie'
+      ? resolveTextModelContextSpec(generalModel) : undefined;
+    const catalogOutputDeclared = generalModel?.catalogMaxOutputTokens !== undefined;
     const request = buildChatApiRequest({
       protocol: chatApiProtocol,
       apiKey,
@@ -224,6 +230,7 @@ export async function generateTextResult(params: AIGenerateParams): Promise<Text
       model: modelName,
       messages,
       stream: false,
+      ...getMagpieChatBudgetOptions(chatApiProtocol, budget, catalogOutputDeclared),
       signal,
     });
     // 不设超时（仅 ComfyUI 才设超时）

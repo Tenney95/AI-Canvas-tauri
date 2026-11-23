@@ -72,6 +72,16 @@ function params(overrides: Partial<AIVideoGenParams> = {}): AIVideoGenParams {
   };
 }
 
+it('视频提示词按最终 Unicode 码点上限校验，并允许声明的长时长', () => {
+  const capability: VideoModelCapability = { promptMaxCharacters: 10, minDuration: 4, maxDuration: 120 };
+  expect(() => resolveCanonicalVideoRequest(params({ prompt: '🎥'.repeat(10), seedanceDuration: 120 }), { capability })).not.toThrow();
+  expect(() => resolveCanonicalVideoRequest(params({ prompt: '🎥'.repeat(11) }), { capability })).toThrow('最多支持 10');
+  expect(() => resolveCanonicalVideoRequest(params(), { capability: { promptMaxCharacters: 0 } })).toThrow('必须是正整数');
+  expect(() => resolveCanonicalVideoRequest(params(), { capability: {
+    promptMaxCharacters: 3, inputConstraints: { promptMinCharacters: 4 },
+  } })).toThrow('不小于最少字符数');
+});
+
 function reference(
   kind: MediaReference['kind'],
   url: string,

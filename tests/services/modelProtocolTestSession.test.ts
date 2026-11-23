@@ -109,7 +109,7 @@ describe('protocol trial session recovery', () => {
     expect(result).toEqual({ urls: ['https://cdn.example/result.mp4'], taskId: 'task-1' });
     expect(transport.submit).toHaveBeenCalledTimes(1);
     expect(transport.poll.mock.calls[1]).toEqual([
-      poll, 'private-key-new', expect.any(AbortSignal), target.baseUrl,
+      poll, 'private-key-new', expect.any(AbortSignal), target.baseUrl, undefined, undefined, 'task-1',
     ]);
     expect(getProtocolTestSession(target)).toBeUndefined();
   });

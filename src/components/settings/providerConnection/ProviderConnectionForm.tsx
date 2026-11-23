@@ -67,7 +67,7 @@ export function CccGroupConnectionsForm({ providerConfigs, presetModels, onSave,
       const existingModelIds = new Set([...cachedModels, ...savedModels].map((model) => model.id));
       // 新版内置型号只补入本组候选，不把模板字段合并进已保存的模型合同。
       const addedPresets = isRelay ? presets.filter((model) => !existingModelIds.has(model.id)) : [];
-      const options = { preferIncomingConfiguration: isRelay || bananaGroup };
+      const options = { preferIncomingConfiguration: true };
       const merged = mergeModels(bananaGroup ? mergeModels(presets, cachedModels, options) : [...cachedModels, ...addedPresets], savedModels, options);
       const savedById = new Map(savedModels.map((model) => [model.id, model]));
       const cachedCustomById = new Map(cachedModels.filter((model) => model.executionProfile?.preset === 'custom')
@@ -142,7 +142,7 @@ export function CccGroupConnectionsForm({ providerConfigs, presetModels, onSave,
         if (item.id !== id) return item;
         // 万象及香蕉历史连接保留目录缺失的已选身份，不能靠刷新静默停用旧节点。
         const bananaGroup = !isRelay && isCccBananaGroup(groupOf(item.config));
-        const retainSelected = isRelay || bananaGroup;
+        const retainSelected = isRelay || bananaGroup || result.source === 'local-fallback';
         const preservedConfigurations = new Map(item.models.filter((model) => item.selectedIds.has(model.id)
           || (bananaGroup && model.executionProfile?.preset === 'custom')).map((model) => [model.id, model]));
         const merged = mergeModels(item.models.filter((model) => ids.has(model.id) || (retainSelected && item.selectedIds.has(model.id))), result.models);
@@ -341,7 +341,7 @@ interface ProviderConnectionFormProps {
   connectionName: string;
   setConnectionName: Dispatch<SetStateAction<string>>;
   chatApiProtocol: ChatApiProtocol;
-  setChatApiProtocol: Dispatch<SetStateAction<ChatApiProtocol>>;
+  setChatApiProtocol: (protocol: ChatApiProtocol) => void;
   apiKey: string;
   setApiKey: Dispatch<SetStateAction<string>>;
   baseUrl: string;
@@ -423,7 +423,7 @@ export default function ProviderConnectionForm({
         </div>
       )}
 
-      {(definition.id === 'custom-openai' || isWorkflowApi) && (
+      {(definition.id === 'custom-openai' || definition.id === 'magpie' || isWorkflowApi) && (
         <label className="provider-field">
           <span>{t('连接名称')}</span>
           <input
@@ -435,7 +435,7 @@ export default function ProviderConnectionForm({
         </label>
       )}
 
-      {definition.id === 'custom-openai' && (
+      {(definition.id === 'custom-openai' || definition.id === 'magpie') && (
         <label className="provider-field">
           <span>{t('对话协议')}</span>
           <Select fixedMenu
@@ -443,9 +443,9 @@ export default function ProviderConnectionForm({
             value={chatApiProtocol}
             onChange={(selectedOptionValue) => setChatApiProtocol(selectedOptionValue as ChatApiProtocol)}
           >
-            {Object.entries(CHAT_API_PROTOCOL_LABELS).map(([value, label]) => (
-              <option key={value} value={value}>{t(label)}</option>
-            ))}
+            {Object.entries(CHAT_API_PROTOCOL_LABELS)
+              .filter(([value]) => definition.id !== 'magpie' || value !== 'gemini-native')
+              .map(([value, label]) => <option key={value} value={value}>{t(label)}</option>)}
           </Select>
           <small>
             {chatApiProtocol === 'openai-responses'

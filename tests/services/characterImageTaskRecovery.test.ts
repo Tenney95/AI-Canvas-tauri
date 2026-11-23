@@ -12,7 +12,7 @@ const driver = vi.hoisted(() => ({
   submit: vi.fn(), poll: vi.fn(), queryApimartImageResult: vi.fn(), queryWorkflow: vi.fn(),
   protocols: [] as NormalizedModelExecutionProtocol[], events: [] as string[],
 }));
-vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => driver.state } }));
+vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => driver.state, subscribe: () => () => {} } }));
 vi.mock('../../src/services/ai/apimartImageResult', () => ({ fetchApimartTask: vi.fn(), queryApimartImageResult: driver.queryApimartImageResult }));
 vi.mock('../../src/services/nativeWorkflowTasks', () => ({ assertWorkflowContract: vi.fn(), queryNativeWorkflowOriginal: driver.queryWorkflow }));
 vi.mock('../../src/services/ai/modelProtocol', async (original) => ({

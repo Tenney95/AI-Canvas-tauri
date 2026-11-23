@@ -64,6 +64,7 @@ import ModelProtocolEditor from '../../src/components/settings/ModelProtocolEdit
 import { useAppStore } from '../../src/store/useAppStore';
 import { getDefaultCustomProtocol, parseModelExecutionProtocol, previewModelProtocolRequest } from '../../src/services/ai/modelProtocol';
 import { PREPARED_MULTIPART_FILES } from '../../src/services/ai/modelProtocolTemplate';
+import { getProviderDefinition, KLING_BASE_URL, KLING_IMAGE_MODEL_MANIFEST, KLING_VIDEO_MODEL_MANIFEST } from '../../src/services/ai/providerCatalogService';
 
 type Element = ReactElement<Record<string, unknown> & { children?: unknown }>;
 type Props = ComponentProps<typeof ModelProtocolEditor>;
@@ -357,6 +358,78 @@ describe('model protocol editor interactions', () => {
       model: 'image-model', prompt: 'A cinematic product shot',
     }) }));
     expect(driver.execute.mock.calls[0][0].variables.imageUrls).toBeUndefined();
+  });
+
+  it('offers one first-frame URL for Kling Flash and uses the connection’s effective duration in a trial', async () => {
+    // 先完成模块加载，断言只等待试跑编排，不受整套回归的并发转译影响。
+    await import('../../src/services/ai/generateVideo');
+    const model = KLING_VIDEO_MODEL_MANIFEST.find((entry) => entry.id === 'kling-video-4.0-flash-first-frame')!;
+    props.model = { ...model, videoCapability: { ...model.videoCapability, defaultDuration: 12, maxDuration: 12, durations: [12] } };
+    props.catalogId = 'kling';
+    props.baseUrl = KLING_BASE_URL;
+    props.readOnlyProtocol = true;
+    driver.execute.mockResolvedValue({ urls: ['https://cdn.example/result.mp4'] });
+    render();
+    expect(elements(tree).some((element) => element.type === 'option' && element.props.value === 'custom')).toBe(false);
+    const protocolJson = find((element) => element.type === 'pre' && typeof element.props.children === 'string'
+      && element.props.children.includes('/image-to-video/kling-4.0-flash'));
+    expect(protocolJson.props.contentEditable).toBeUndefined();
+    find((element) => element.type === 'summary' && element.props.children === '本地请求预览');
+    const label = find((element) => element.type === 'label'
+      && elements(element.props.children).some((child) => child.props.children === '首帧图片地址'));
+    expect(elements(tree).some((element) => element.props.children === '尾帧图片地址（可选）')).toBe(false);
+    const first = 'https://media.vendor.com/frame.png';
+    change(elements(label).find((element) => element.type === 'textarea')!, first);
+    await click(button('试跑'));
+    await vi.waitFor(() => expect(driver.execute).toHaveBeenCalledOnce());
+    expect(driver.execute).toHaveBeenCalledWith(expect.objectContaining({
+      variables: expect.objectContaining({ duration: 12, resolution: '720p', imageWithRoles: [{ type: 'first_frame', url: first }] }),
+      protocol: expect.objectContaining({ submit: expect.objectContaining({ path: '/image-to-video/kling-4.0-flash' }) }),
+    }));
+  });
+
+  it('blocks Kling image trials that exceed the configured budget and accepts the boundary', async () => {
+    const model = KLING_IMAGE_MODEL_MANIFEST[0];
+    props.model = { ...model, imageCapability: { ...model.imageCapability, promptMaxCharacters: 8, promptMaxNonAsciiCharacters: 4 } };
+    props.catalogId = 'kling';
+    props.baseUrl = KLING_BASE_URL;
+    props.readOnlyProtocol = true;
+    render();
+    const trialLabel = find((element) => element.type === 'label' && elements(element.props.children).some((child) => child.props.children === '试跑参数 JSON'));
+    const trial = find((element) => element.type === 'textarea' && element.props.id === trialLabel.props.htmlFor);
+    change(trial, JSON.stringify({ prompt: '天空海洋岛' }));
+    await click(button('试跑'));
+    expect(driver.execute).not.toHaveBeenCalled();
+    change(trial, JSON.stringify({ prompt: '天空海洋' }));
+    await click(button('试跑'));
+    expect(driver.execute).toHaveBeenCalledOnce();
+    expect(driver.execute).toHaveBeenCalledWith(expect.objectContaining({ variables: expect.objectContaining({ prompt: '天空海洋' }) }));
+  });
+
+  it('uses a valid initial output count for the selectable Kling series trial', async () => {
+    props.model = getProviderDefinition('kling')!.models!.find((entry) => entry.id === 'kling-image-4.0-series-selected')!;
+    props.catalogId = 'kling';
+    props.baseUrl = KLING_BASE_URL;
+    props.readOnlyProtocol = true;
+    driver.execute.mockResolvedValue({ urls: ['https://cdn.example/result-1.png', 'https://cdn.example/result-2.png'] });
+    render();
+    await click(button('试跑'));
+    expect(driver.execute).toHaveBeenCalledWith(expect.objectContaining({ variables: expect.objectContaining({ n: 2 }) }));
+  });
+
+  it.each([
+    ['kling-video-4.0-text', []],
+    ['kling-video-4.0-keyframes', ['首帧图片地址', '中间帧地址（每行一条，可选）', '尾帧图片地址（可选）']],
+  ] as const)('binds the video trial fields to the confirmed operation for %s', (id, labels) => {
+    props.model = KLING_VIDEO_MODEL_MANIFEST.find((entry) => entry.id === id)!;
+    props.catalogId = 'kling';
+    props.baseUrl = KLING_BASE_URL;
+    props.readOnlyProtocol = true;
+    render();
+    expect(elements(tree).some((element) => element.type === 'option' && element.props.value === 'reference')).toBe(false);
+    const materialLabels = elements(tree).filter((element) => element.type === 'span'
+      && typeof element.props.children === 'string' && /帧.*地址|参考.*地址/.test(element.props.children));
+    expect(materialLabels.map((element) => element.props.children)).toEqual(labels);
   });
 
   it('blocks placeholder trial media locally and does not report text-only media results as success', async () => {

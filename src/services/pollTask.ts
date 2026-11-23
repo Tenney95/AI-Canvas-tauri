@@ -44,8 +44,9 @@ export async function withPollRequestDeadline<T>(
   timeoutMs = POLL_REQUEST_TIMEOUT_MS,
 ): Promise<T> {
   if (signal?.aborted) throw pollingCancellation(signal);
+  if (timeoutMs <= 0) throw new PollTimeoutError('任务查询等待超时，原任务未取消');
   const controller = new AbortController();
-  const deadline = Number.isFinite(timeoutMs) ? Date.now() + Math.max(0, timeoutMs) : Infinity;
+  const deadline = Number.isFinite(timeoutMs) ? performance.now() + timeoutMs : Infinity;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let abort: (() => void) | undefined;
   try {
@@ -61,14 +62,14 @@ export async function withPollRequestDeadline<T>(
           const error = new PollTimeoutError('任务查询等待超时，原任务未取消');
           controller.abort(error);
           reject(error);
-        }, Math.max(0, timeoutMs));
+        }, Math.ceil(timeoutMs));
       }
       // 即使底层忽略 abort，迟到结果也只会完成已经 settled 的 Promise。
       Promise.resolve().then(() => {
         if (controller.signal.aborted) throw pollingCancellation(controller.signal);
         return operation(controller.signal);
       }).then((value) => {
-        if (Date.now() >= deadline) {
+        if (performance.now() >= deadline) {
           const error = new PollTimeoutError('任务查询等待超时，原任务未取消');
           controller.abort(error);
           reject(error);
@@ -80,6 +81,8 @@ export async function withPollRequestDeadline<T>(
     if (abort) signal?.removeEventListener('abort', abort);
   }
 }
+
+type PollFetchErrorAction = 'throw' | 'continue' | number;
 
 export interface PollTaskOptions<TRaw, TResult> {
   /** 每次轮询调用此函数获取最新状态（应返回原始 JSON 或结构化数据） */
@@ -112,9 +115,10 @@ export interface PollTaskOptions<TRaw, TResult> {
   /**
    * fetchState 抛出网络/HTTP 错误时的处理策略：
    * - 'throw'（默认）：立即向上抛出
-   * - 'continue'：静默忽略，等待下一轮
+   * - 'continue'：静默忽略，按默认间隔等待下一轮
+   * - 函数：根据错误和剩余时长返回上述策略，或指定下一次查询的等待毫秒数
    */
-  onFetchError?: 'throw' | 'continue';
+  onFetchError?: 'throw' | 'continue' | ((error: unknown, remainingMs: number) => PollFetchErrorAction | Promise<PollFetchErrorAction>);
 
   /** AbortSignal 用于外部取消轮询 */
   signal?: AbortSignal;
@@ -176,7 +180,8 @@ export async function pollTask<TRaw = unknown, TResult = unknown>(
     timeoutMsg = '任务轮询超时',
   } = options;
 
-  const startTime = Date.now();
+  const deadline = performance.now() + maxDuration;
+  let nextInterval = interval;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     // 检查是否被取消
@@ -186,11 +191,13 @@ export async function pollTask<TRaw = unknown, TResult = unknown>(
 
     // 等待间隔（第一轮立即执行，之后等待）
     if (attempt > 0) {
-      await waitForPollInterval(interval, signal);
+      const remainingMs = deadline - performance.now();
+      await waitForPollInterval(Math.max(0, Math.ceil(Math.min(nextInterval, remainingMs))), signal);
+      nextInterval = interval;
     }
 
     // 检查时长限制
-    if (Date.now() - startTime >= maxDuration) {
+    if (performance.now() >= deadline) {
       throw new PollTimeoutError(timeoutMsg);
     }
 
@@ -198,9 +205,18 @@ export async function pollTask<TRaw = unknown, TResult = unknown>(
     let state: TRaw;
     try {
       state = await withPollRequestDeadline(fetchState, signal,
-        Math.min(requestTimeoutMs, maxDuration - (Date.now() - startTime)));
+        Math.min(requestTimeoutMs, deadline - performance.now()));
     } catch (err) {
-      if (signal?.aborted || err instanceof PollTimeoutError) throw err;
+      if (signal?.aborted) throw pollingCancellation(signal);
+      const remainingMs = deadline - performance.now();
+      if (remainingMs <= 0) throw new PollTimeoutError(timeoutMsg);
+      if (typeof onFetchError === 'function') {
+        const action = await onFetchError(err, remainingMs);
+        if (action === 'throw') throw err;
+        if (typeof action === 'number') nextInterval = action;
+        continue;
+      }
+      if (err instanceof PollTimeoutError) throw err;
       if (onFetchError === 'continue') continue;
       throw err;
     }

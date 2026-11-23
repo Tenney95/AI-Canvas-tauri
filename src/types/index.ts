@@ -575,6 +575,12 @@ export interface ProviderModelSelection {
    * 中转站的自定义命名基本都猜不中，声明出来助手才不会过早压缩上下文。
    */
   contextWindow?: number;
+  /** 当前连接目录声明的文本预算，与手动 contextWindow 分开保存。 */
+  catalogTextLimits?: {
+    source: 'magpie';
+    contextWindow?: number;
+    maxOutputTokens?: number;
+  };
   /** 自定义媒体模型的提交、轮询与结果解析规则。 */
   executionProfile?: ModelExecutionProfile;
   /** 图片模型存在参考图时使用的请求协议；缺省保持 generations JSON 兼容方式。 */
@@ -944,6 +950,8 @@ export interface GeneralModelConfig {
   modelId: string;            // 模型 ID
   category: GeneralModelCategory; // 模型种类
   contextWindow?: number;     // 文本模型上下文窗口（token）；未声明时按模型 ID 目录推断
+  /** 配置连接的目录声明的输出上限；没有声明时由原协议决定默认输出。 */
+  catalogMaxOutputTokens?: number;
   description?: string;       // 用户可编辑的模型用途说明，用于 Agent 路由参考
   inputModalities?: Array<'text' | 'image'>;
   /** 对应 config.providers 中的连接 ID，凭据和地址仅从该连接读取。 */

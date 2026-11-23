@@ -14,12 +14,28 @@ import { generateImageStandard } from '../../../src/services/ai/providers/standa
 import { mediaProviderRegistry } from '../../../src/services/ai/mediaProviderRegistry';
 import { useAppStore } from '../../../src/store/useAppStore';
 import { uploadMinimaxImageReference, uploadToRemote } from '../../../src/services/uploadService';
-import { clearProjectTasks, getPendingTasksForProject, removePendingTask } from '../../../src/services/pollManager';
+import {
+  clearProjectTasks, getNativeMediaNodeRecovery, getPendingTasksForProject, removePendingTask,
+  resumeMediaNodeTask, resumeNativeMediaFromNode, resumeNativeMediaLocalDelivery, resumePendingTasks,
+} from '../../../src/services/pollManager';
 import { LIBAPI_MODEL_MANIFEST } from '../../../src/services/ai/providers/libapiModelManifest';
 import { AIGCSI_BASE_URL, AIGCSI_MODEL_MANIFEST } from '../../../src/services/ai/providers/aigcsiModelManifest';
 import { MINIMAX_BASE_URL, MINIMAX_MODEL_MANIFEST } from '../../../src/services/ai/providers/minimaxModelManifest';
-import { pollResolvedModelProtocol } from '../../../src/services/ai/modelProtocol';
+import { pollResolvedModelProtocol, resolveModelExecutionProfile } from '../../../src/services/ai/modelProtocol';
 import { executeRunningHubModel } from '../../../src/services/ai/providers/runninghubMedia';
+import { KLING_BASE_URL } from '../../../src/services/ai/providerCatalogService';
+import * as mediaPersistence from '../../../src/services/fileService';
+import { registerCharacterImageTaskContext } from '../../../src/services/characterImageTaskContext';
+import { recoverCharacterImageTask } from '../../../src/services/characterImageTaskRecovery';
+import { nativeQueryCredentialProof } from '../../../src/services/nativeProtocolRecovery';
+import { nativeProtocolQueryDigest } from '../../../src/services/nativeModelProtocolTask';
+import { nativeMediaInputMaterial } from '../../../src/services/nativeMediaInput';
+import { sha256BytesHex } from '../../../src/services/mediaDataUrl';
+import { createNativeProject } from '../../../src/services/indexedDb/nativeProjectRepository';
+import { listNativeMediaTasks, prepareNativeMediaTask, recordNativeMediaSubmission } from '../../../src/services/indexedDb/nativeMediaTaskRepository';
+import type { CharacterImageTaskRecovery } from '../../../src/types/media';
+import type { CanvasContext } from '../../../src/types/project';
+import { configureKling } from './klingImageFixture';
 import { jsonResponse, setupTransportFixture } from './transportFixture';
 
 setupTransportFixture(transportMocks.corsSafeFetch);
@@ -1132,5 +1148,190 @@ describe('LibAPI 音频合同与原任务交付', () => {
     expect(getPendingTasksForProject('libapi-audio-project')).toEqual([expect.objectContaining({
       taskId: 'libapi-retained-audio', submitted: true, providerConfigId: 'libapi-audio',
     })]);
+  });
+});
+
+describe('Kling 图片交付与原任务恢复', () => {
+  it.each([2, 7, 10])('每次自动组图作业完整交付 %s 张结果', async (count) => {
+    const params = configureKling('kling-image-4.0-series-auto');
+    const urls = Array.from({ length: count }, (_, i) => 'https://cdn.example/auto-' + i + '.png');
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ code: 0, data: { id: 'auto' } }))
+      .mockResolvedValueOnce(jsonResponse({ code: 0, data: [{ id: 'auto', status: 'succeeded', outputs: urls.map((url) => ({ url })) }] }));
+    const result = await generateImage({ ...params, collectCandidates: true });
+    expect(result.expectedOutputCount).toBe(count);
+    expect([result.url, ...result.additionalResults!.map((image) => image.url)]).toEqual(urls);
+    expect(JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0][1].body)).settings).toMatchObject({ series_amount: 'auto' });
+    expect(transportMocks.corsSafeFetch.mock.calls.map(([, init]) => init.method)).toEqual(['POST', 'GET']);
+  });
+
+  it('自动候选数量不符时保留原任务，恢复后保存服务端返回的实际数量', async () => {
+    const params = configureKling('kling-image-4.0-series-auto');
+    const projectId = 'kling-auto-recovery';
+    const nodeId = 'kling-auto-node';
+    clearProjectTasks(projectId);
+    useAppStore.setState({ currentProjectId: projectId, projectLoadStatus: 'ready',
+      projects: [{ id: projectId, name: 'Kling auto recovery', createdAt: 1, updatedAt: 1 }],
+      nodes: [{ id: nodeId, type: 'ai-image',
+      position: { x: 0, y: 0 }, data: { type: 'ai-image', label: 'Auto', status: 'loading' } }] });
+    const response = (n: number) => jsonResponse({ code: 0, data: [{ id: 'original', status: 'succeeded',
+      outputs: Array.from({ length: n }, (_, i) => ({ url: 'https://cdn.example/auto-' + i + '.png' })) }] });
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ code: 0, data: { id: 'original' } }))
+      .mockResolvedValueOnce(response(1)).mockResolvedValueOnce(response(5));
+    try {
+      await expect(generateImagesBatch({ ...params, nodeId }, 1)).rejects.toThrow('原任务已保留');
+      expect(getPendingTasksForProject(projectId)[0]).toMatchObject({ taskId: 'original', imageOutputCountRange: { min: 2, max: 10 } });
+      useAppStore.setState((state) => ({ config: { ...state.config, generalModels: [] } }));
+      const save = vi.spyOn(mediaPersistence, 'persistMediaUrlToProjectData').mockImplementation(async (url) => ({
+        mediaUrl: url, sourceUrl: url,
+      }));
+      await resumeMediaNodeTask(nodeId);
+      expect(transportMocks.corsSafeFetch.mock.calls.slice(0, 3).map(([, init]) => init.method)).toEqual(['POST', 'GET', 'GET']);
+      expect(String(transportMocks.corsSafeFetch.mock.calls[2][0])).toContain('task_ids=original');
+      expect(useAppStore.getState().nodes.filter((node) => node.data.imageUrl)).toHaveLength(5);
+      expect(save).toHaveBeenCalledTimes(5);
+      expect(getPendingTasksForProject(projectId)).toHaveLength(0);
+    } finally { clearProjectTasks(projectId); }
+  });
+
+  it.each(['unchanged', 'key', 'address', 'catalog', 'digest', 'category'] as const)(
+    '角色恢复只查询原合同和账号，模型已移除且 %s', async (change) => {
+      const params = configureKling();
+      const config = useAppStore.getState().config;
+      const selected = config.generalModels![0];
+      const protocol = resolveModelExecutionProfile(selected.executionProfile)!;
+      const operation = 'character-kling-op';
+      const recovery: CharacterImageTaskRecovery = { version: 1, kind: 'protocol', connectionId: 'official',
+        modelRef: params.model, providerBase: KLING_BASE_URL, configurationDigest: 'a'.repeat(64), expectedCount: 1,
+        query: { modelId: selected.modelId, serverId: change === 'category' ? 'replicate-video-v1' : 'kling-tasks-v1',
+          digest: change === 'digest' ? 'b'.repeat(64) : await nativeProtocolQueryDigest(selected.modelId, protocol),
+          credentialProof: await nativeQueryCredentialProof(operation, 'official', config.providers.official.apiKey) },
+        tasks: [{ taskId: 'original-role', recoveryContext: { submit: { data: { id: 'original-role' } } } }] };
+      useAppStore.setState({ config: { ...config, generalModels: [], providers: { official: { ...config.providers.official,
+        selectedModels: [], ...(change === 'key' ? { apiKey: 'different-account-fixture' } : {}),
+        ...(change === 'address' ? { baseUrl: 'https://different.example' } : {}),
+        ...(change === 'catalog' ? { catalogId: 'custom-openai' } : {}) } } } });
+      const output = 'https://cdn.example/recovered-role.png';
+      transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ code: 0, data: [
+        { id: 'someone-else', status: 'failed' }, { id: 'original-role', status: 'succeeded', outputs: [{ url: output }] },
+      ] }));
+      if (change === 'unchanged') {
+        await expect(recoverCharacterImageTask(recovery, operation)).resolves.toEqual([{ url: output }]);
+        expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith(KLING_BASE_URL + '/tasks?task_ids=original-role',
+          expect.objectContaining({ method: 'GET' }), expect.anything());
+      } else {
+        await expect(recoverCharacterImageTask(recovery, operation)).rejects.toThrow('已变化');
+        expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+      }
+    });
+
+  it.each(['unchanged', 'key', 'address', 'catalog', 'digest', 'category', 'legacy', 'unknown', 'retry', 'canvas-switch', 'existing-result'] as const)(
+    '画布重开绑定原生查询，模型已移除且 %s', async (change) => {
+      configureKling();
+      const config = useAppStore.getState().config;
+      const selected = config.generalModels![0];
+      const protocol = resolveModelExecutionProfile(selected.executionProfile)!;
+      const root = await createNativeProject({ name: 'Kling recovery fixture' });
+      const canvas = root.canvas!;
+      const context: CanvasContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, projectId: root.project.id,
+        projectEpoch: root.project.epoch, canvasId: canvas.id, canvasEpoch: canvas.epoch, canvasRevision: canvas.revision,
+        episodeId: null, runtimeEpoch: 'kling-reopened-view' };
+      const nodeId = 'original-native-node';
+      useAppStore.setState({ projectExecutionContext: context, currentProjectId: canvas.id, projectLoadStatus: 'ready',
+        nodes: [{ id: nodeId, type: 'ai-image', position: { x: 0, y: 0 }, data: { type: 'ai-image', label: '原节点', prompt: '原输入',
+          status: change === 'existing-result' ? 'success' : 'loading',
+          ...(change === 'existing-result' ? { imageUrl: 'asset://local/current.png' } : {}) } }] });
+      const state = useAppStore.getState();
+      const input = nativeMediaInputMaterial(state.nodes[0], state, 'media-input-v3');
+      const operationId = crypto.randomUUID();
+      const receipt = await prepareNativeMediaTask({ context, operationId, nodeId,
+        category: 'image', providerConfigId: 'official', providerBase: KLING_BASE_URL, modelRef: 'general/kling',
+        inputFingerprint: await sha256BytesHex(new TextEncoder().encode(input)), requestFingerprint: 'b'.repeat(64), protocolDigest: 'c'.repeat(64),
+        fingerprintScheme: 'media-input-v3', submissionKind: 'async', sourceCanvasRevision: canvas.revision,
+        recovery: { kind: 'general-protocol', modelId: selected.modelId,
+          serverId: change === 'category' ? 'replicate-video-v1' : 'kling-tasks-v1',
+          digest: change === 'digest' ? 'b'.repeat(64) : await nativeProtocolQueryDigest(selected.modelId, protocol),
+          ...(change === 'legacy' ? {} : { credentialProof: await nativeQueryCredentialProof(operationId, 'official', config.providers.official.apiKey) }) } });
+      await recordNativeMediaSubmission(operationId, receipt.lease, { unknown: true });
+      if (change !== 'unknown') {
+        await recordNativeMediaSubmission(operationId, receipt.lease, { taskId: 'original-native',
+          pollContext: { submit: { data: { id: 'original-native' } } } });
+      }
+      useAppStore.setState({ config: { ...config, generalModels: [], providers: { official: { ...config.providers.official,
+        selectedModels: [], ...(change === 'key' ? { apiKey: 'other-native-account' } : {}),
+        ...(change === 'address' ? { baseUrl: 'https://other-native.example' } : {}),
+        ...(change === 'catalog' ? { catalogId: 'custom-openai' } : {}) } } } });
+      const next = jsonResponse({ code: 0, data: [
+        { id: 'unrelated', status: 'succeeded', outputs: [{ url: 'https://cdn.example/other.png' }] },
+        { id: 'original-native', status: 'failed', message: 'original native fixture' },
+      ] });
+      if (change === 'retry') {
+        transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ code: 0, data: [{ id: 'unrelated', status: 'failed' }] }));
+      }
+      transportMocks.corsSafeFetch.mockImplementationOnce(async (_url: string, init: RequestInit) => {
+        if (change === 'canvas-switch') {
+          useAppStore.setState({ currentProjectId: null, projectExecutionContext: null });
+          expect(init.signal?.aborted).toBe(true);
+        }
+        return next;
+      });
+      await resumePendingTasks(context.canvasId).catch((error) => {
+        if (change !== 'canvas-switch') throw error;
+      });
+      const boundGet = [KLING_BASE_URL + '/tasks?task_ids=original-native', 'GET'];
+      const requests = () => transportMocks.corsSafeFetch.mock.calls.map(([url, init]) => [url, init.method]);
+      const queried = ['unchanged', 'retry', 'canvas-switch'].includes(change);
+      expect(requests()).toEqual(queried ? [boundGet] : []);
+      if (change === 'retry') {
+        expect(getNativeMediaNodeRecovery(nodeId)).toBe(operationId);
+        expect(useAppStore.getState().nodes[0].data).toMatchObject({ status: 'idle', mediaTaskState: 'paused' });
+        await resumeNativeMediaLocalDelivery(context.canvasId, nodeId);
+        expect(requests()).toEqual([boundGet]);
+        await expect(resumeNativeMediaFromNode(nodeId, operationId)).rejects.toThrow('已确认原任务失败');
+        expect(requests()).toEqual([boundGet, boundGet]);
+      }
+      const saved = (await listNativeMediaTasks(context.projectId))[0];
+      expect(saved.status).toBe(change === 'unknown' ? 'outcome-unknown' : ['retry', 'unchanged'].includes(change) ? 'failed' : 'submitted');
+      expect(saved.remoteTaskId).toBe(change === 'unknown' ? undefined : 'original-native');
+      const data = useAppStore.getState().nodes[0].data;
+      if (change === 'existing-result') expect(data).toMatchObject({ status: 'success', imageUrl: 'asset://local/current.png' });
+      else if (change !== 'canvas-switch') expect(data.status).not.toBe('loading');
+      if (['key', 'address', 'catalog', 'digest', 'category'].includes(change)) expect(data.mediaTaskState).toBe('paused');
+      if (change === 'legacy') expect(data.mediaTaskState).toBe('paused');
+    });
+
+  it('HTTP 200 业务错误不重发生成，也不无限查询', async () => {
+    const params = configureKling();
+    transportMocks.corsSafeFetch
+      .mockResolvedValueOnce(jsonResponse({ code: 0, data: { id: 'original-kling', status: 'submitted' } }))
+      .mockResolvedValueOnce(jsonResponse({ code: 1001, message: 'invalid key' }));
+    await expect(generateImagesBatch(params, 1)).rejects.toThrow('业务码 1001');
+    expect(transportMocks.corsSafeFetch.mock.calls.map(([, init]) => init.method)).toEqual(['POST', 'GET']);
+  });
+
+  it.each([false, true])('角色工作台沿官方合同提交并先保存原任务 ID，series=%s', async (series) => {
+    const params = configureKling(series);
+    const count = series ? 10 : 9;
+    const completed = new Error('角色图片已交付');
+    const received = vi.fn();
+    const destination = registerCharacterImageTaskContext({ assertCurrent: vi.fn(), execute: async (plan) => {
+      expect(plan.expectedCount).toBe(count);
+      expect(plan.recovery.kind).toBe('protocol');
+      const results = await plan.execute(async () => {}, async (id) => { received(id); }, 'kling-role-fixture');
+      expect(results).toHaveLength(count);
+      throw completed;
+    } });
+    transportMocks.corsSafeFetch
+      .mockResolvedValueOnce(jsonResponse({ code: 0, data: { id: 'role-original', status: 'submitted' } }))
+      .mockImplementationOnce(async () => {
+        expect(received).toHaveBeenCalledWith('role-original');
+        return jsonResponse({ code: 0, data: [{ id: 'role-original', status: 'succeeded',
+          outputs: Array.from({ length: count }, (_, index) => ({ type: 'image', url: `https://cdn.example/role-${index}.png` })) }] });
+      });
+    try {
+      await expect(generateImagesBatch({ ...params, characterWorkbench: 'global' }, series ? 1 : 9,
+        undefined, destination.beforeSubmit)).rejects.toBe(completed);
+      expect(transportMocks.corsSafeFetch.mock.calls[0][0]).toBe(`${KLING_BASE_URL}/image-generation/kling-4.0`);
+      expect(transportMocks.corsSafeFetch.mock.calls.map(([, init]) => init.method)).toEqual(['POST', 'GET']);
+    } finally { destination.release(); }
   });
 });

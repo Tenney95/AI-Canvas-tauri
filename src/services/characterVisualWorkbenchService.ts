@@ -33,6 +33,7 @@ import { createNativeCharacterImageSubmissionGuard, listNativeCharacterImageTask
 import { runNativeCharacterImageTask, type NativeCharacterImageSubmissionGuard } from './nativeCharacterImageTask';
 import { registerCharacterImageTaskContext, validateCharacterImageTaskRecovery, type CharacterImageExecutionPlan } from './characterImageTaskContext';
 import { characterImageConfigurationDigest, recoverCharacterImageTask } from './characterImageTaskRecovery';
+import { nativeQueryCredentialProof } from './nativeProtocolRecovery';
 import { getProviderDefinition } from './ai/providerCatalogService';
 import { mapImageDimensions } from './aiDimensions';
 import { mediaProviderConfigId } from './workflowExecutionService';
@@ -691,8 +692,13 @@ async function executeCharacterVisualPlan(row: StoredRun, plan: CharacterImageEx
     providerBase: base.replace(/\/+$/, ''), configurationDigest: await characterImageConfigurationDigest(row.model, connectionId, row.workflowId),
     expectedCount, tasks: [], ...(plan.mediaDownloadAccess ? { mediaDownloadAccess: plan.mediaDownloadAccess } : {}),
   };
+  if (!options.resume && recovery.query?.serverId && connection?.apiKey) {
+    recovery.query = { ...recovery.query,
+      credentialProof: await nativeQueryCredentialProof(row.operationId, connectionId, connection.apiKey) };
+  }
   if (recovery.workflow?.workflowId !== row.workflowId) throw new Error(t('原图片工作流归属已变化'));
-  if (recovery.configurationDigest !== await characterImageConfigurationDigest(row.model, connectionId, row.workflowId)) {
+  if (!(options.resume && recovery.query?.serverId)
+    && recovery.configurationDigest !== await characterImageConfigurationDigest(row.model, connectionId, row.workflowId)) {
     throw new Error(t('模型配置已变化，请恢复原连接后继续查询'));
   }
   const secrets = Object.values(config.providers).flatMap((provider) => provider?.apiKey ? [provider.apiKey] : []);

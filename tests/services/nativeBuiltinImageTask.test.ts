@@ -3,11 +3,13 @@ import { webcrypto } from 'node:crypto';
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { CanvasContext } from '../../src/types/project';
-import type { BaseNodeData } from '../../src/types';
+import type { ApiProviderConfig, BaseNodeData } from '../../src/types';
 import type { NativeMediaSubmissionPreparation } from '../../src/types/media';
 import type { NativeMediaTaskRecord } from '../../src/services/indexedDb/nativeMediaTaskRepository';
 import type { FileTransferOptions } from '../../src/services/fileService';
-type FixtureState = { currentProjectId: string; projectExecutionContext: CanvasContext; nodes: unknown[]; messages: unknown[]; config: { providers: Record<string, { apiKey?: string; baseUrl?: string }> };
+type FixtureState = { currentProjectId: string; projectExecutionContext: CanvasContext; nodes: unknown[]; messages: unknown[]; config: {
+  providers: Record<string, Partial<Pick<ApiProviderConfig, 'apiKey' | 'baseUrl' | 'catalogId'>>>;
+};
   beginNativeMediaSubmissionPreparation: (context: CanvasContext) => Promise<NativeMediaSubmissionPreparation>;
   updateNodeDataTransient: (nodeId: string, data: Partial<BaseNodeData>) => void;
   commitNativeMediaResult: (record: NativeMediaTaskRecord, path: string, context: CanvasContext, signal?: AbortSignal) => Promise<void> };
@@ -27,6 +29,7 @@ vi.mock('../../src/services/ai/httpTransport', async (original) => ({
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: io.invoke, convertFileSrc: (path: string) => `asset://local/${path}` }));
 vi.mock('../../src/services/pollManager', () => ({ savePendingTask: io.legacySave, updatePendingTask: vi.fn(), removePendingTask: io.legacyRemove,
+  registerMediaNodeOperation: () => () => {},
   registerNodePolling: (_nodeId: string, parent?: AbortSignal) => {
     parent?.throwIfAborted();
     return parent ? AbortSignal.any([io.polling.signal, parent]) : io.polling.signal;
@@ -46,6 +49,8 @@ import { runNativeBuiltinImageTask, resumeNativeBuiltinImageTask } from '../../s
 import { generateDreaminaImage } from '../../src/services/dreaminaService';
 import { PollTaskFailedError } from '../../src/services/pollTask';
 import { generateImageStandardBatch } from '../../src/services/ai/providers/standardImage';
+import { runConfiguredModelProtocol } from '../../src/services/ai/modelProtocolRuntime';
+import { KLING_BASE_URL, KLING_IMAGE_MODEL_MANIFEST } from '../../src/services/ai/providerCatalogService';
 import { resumeNativeMediaLocalResults } from '../../src/services/nativeMediaAutoDelivery';
 
 beforeEach(async () => {
@@ -103,6 +108,32 @@ beforeEach(async () => {
   });
 });
 afterEach(() => vi.unstubAllGlobals());
+
+it.each(['rejected', 'response-lost'] as const)('声明式原生任务发送前落盘，提交结果为 %s', async (outcome) => {
+  const { id: modelId, name, executionProfile } = KLING_IMAGE_MODEL_MANIFEST[0];
+  io.state.config.providers.official = { apiKey: 'isolated-kling-key', baseUrl: KLING_BASE_URL, catalogId: 'kling' };
+  let statusAtDispatch: string | undefined;
+  io.fetch.mockImplementationOnce(async () => {
+    const [receipt] = await listNativeMediaTasks(io.context.projectId);
+    statusAtDispatch = receipt?.status;
+    if (outcome === 'response-lost') throw new Error('network lost after dispatch');
+    return Response.json({ message: 'invalid request' }, { status: 400 });
+  });
+  await expect(runConfiguredModelProtocol({
+    model: { id: 'kling-fixture', modelId, name, executionProfile, providerConfigId: 'official', category: 'image' },
+    nodeId: 'source', category: 'image', beforeSubmit: async () => {},
+    variables: { prompt: '原输入', n: 1, imageSize: '2k', aspectRatio: '1:1' },
+  })).rejects.toMatchObject(outcome === 'rejected' ? { status: 400, definitiveFailure: true }
+    : { name: 'NativeMediaTaskPending', remoteTaskKnown: false });
+  expect(statusAtDispatch).toBe('outcome-unknown');
+  expect(io.fetch).toHaveBeenCalledExactlyOnceWith(KLING_BASE_URL + '/image-generation/kling-4.0',
+    expect.objectContaining({ method: 'POST' }), expect.anything());
+  expect(await listNativeMediaTasks(io.context.projectId)).toEqual([expect.objectContaining({
+    status: outcome === 'rejected' ? 'failed' : 'outcome-unknown',
+  })]);
+  expect(io.dispatcher).not.toHaveBeenCalled();
+});
+
 const standard = (execute: Parameters<typeof runNativeBuiltinImageTask>[0]['execute']) => runNativeBuiltinImageTask({ nodeId: 'source',
   mode: 'standard', modelId: 'image-model', connectionId: 'fixture', baseUrl: 'https://fixture.example', requestMaterial: ['frozen-input'], beforeSubmit: async () => {}, execute });
 

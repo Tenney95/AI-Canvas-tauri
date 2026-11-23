@@ -614,6 +614,7 @@ export default function PromptPanel({
   const imageCapability = resolveImageOutputCapability(baseImageCapability, outputFormat);
   const imageOutputsPerJob = nodeType === 'ai-image' && !selectedWorkflowId
     ? resolveImageOutputsPerJob(selectedModel, selectedProvider, imageModelConfig) : 1;
+  const imageOutputRange = imageCapability?.outputCountRange;
   const imageResolutions = dreaminaImageModel?.resolutions ?? imageCapability?.resolutions;
   const imageGeneralModel = selectedProvider === 'general'
     ? imageModelConfig.generalModels?.find((model) => model.id === selectedModel?.replace(/^general\//, ''))
@@ -634,11 +635,9 @@ export default function PromptPanel({
     !imageCapability?.ratios?.length
     || (imageCapability?.hasResolutionField !== false && !imageResolutions?.length)
   );
-  const imageRatioValues = useMemo<readonly string[] | undefined>(() => (
-    dreaminaImageModel
-      ? DREAMINA_IMAGE_RATIOS
-      : imageCapability?.ratios?.filter((ratio) => ratio !== 'auto')
-  ), [dreaminaImageModel, imageCapability]);
+  const imageRatioValues = dreaminaImageModel
+    ? DREAMINA_IMAGE_RATIOS
+    : imageCapability?.ratios?.filter((ratio) => ratio !== 'auto');
   const imageSupportsAdaptive = !dreaminaImageModel && (
     !imageCapability
     || imageCapability.defaultRatio === 'auto'
@@ -708,11 +707,12 @@ export default function PromptPanel({
     onSubmit(expandSkillReferences(sourcePrompt, listRuntimeSkills()), postProcess);
   }, [onSubmit, prompt]);
 
+  const imageBatchMinimum = nodeType === 'ai-image' && !selectedWorkflowId ? imageCapability?.minBatchCount ?? 1 : 1;
   const handleSingleSubmit = useCallback((overridePrompt?: string, postProcess?: ImagePostProcess) => {
-    onChangeBatchCount?.(1);
+    onChangeBatchCount?.(imageBatchMinimum);
     setBatchMenuOpen(false);
     handleSubmit(overridePrompt, postProcess);
-  }, [handleSubmit, onChangeBatchCount]);
+  }, [handleSubmit, imageBatchMinimum, onChangeBatchCount]);
 
   const clearBatchLongPress = useCallback(() => {
     if (batchLongPressTimerRef.current) {
@@ -729,7 +729,7 @@ export default function PromptPanel({
     && (imageCapability?.supportsBatch === false || imageCapability?.maxBatchCount === 1);
   const imageBatchMaximum = sequentialImageBatch ? MAX_IMAGE_BATCH_COUNT : imageCapability?.supportsBatch === false
     ? 1 : Math.min(MAX_IMAGE_BATCH_COUNT, imageCapability?.maxBatchCount ?? MAX_IMAGE_BATCH_COUNT);
-  const imageBatchCounts = IMAGE_BATCH_COUNTS.filter((count) => count <= imageBatchMaximum);
+  const imageBatchCounts = IMAGE_BATCH_COUNTS.filter((count) => count >= imageBatchMinimum && count <= imageBatchMaximum);
   const batchSupported = (selectedProvider !== 'general' || imageCapability?.supportsBatch === true || sequentialImageBatch)
     && imageBatchMaximum > 1 && nodeType === 'ai-image'
     && Boolean(onChangeBatchCount)
@@ -962,9 +962,12 @@ export default function PromptPanel({
       disabled={!canGenerate || !hasGenerationInput}
       aria-haspopup="menu"
       aria-expanded={!!shortcutMenuAnchor || (batchSupported && batchMenuOpen)}
-      data-tooltip={`${isGenerating ? t('生成中') : imageOutputsPerJob > 1
+      data-tooltip={`${isGenerating ? t('生成中') : imageOutputRange
+        ? t('每次作业自动返回 {min}–{max} 张候选图', { min: imageOutputRange.min, max: imageOutputRange.max }) : imageOutputsPerJob > 1
         ? t('点击生成 {count} 张候选图，长按选择作业次数', { count: imageOutputsPerJob })
-        : (batchSupported ? t('点击生成 1 张，长按选择数量') : t('调用模型生成'))} · ${t('右键设置发送快捷键')}`}
+        : (batchSupported ? (imageBatchMinimum > 1
+          ? t('点击生成 {count} 张，长按选择数量', { count: imageBatchMinimum })
+          : t('点击生成 1 张，长按选择数量')) : t('调用模型生成'))} · ${t('右键设置发送快捷键')}`}
       onPointerDown={handleBatchPointerDown}
       onPointerUp={clearBatchLongPress}
       onPointerCancel={clearBatchLongPress}
@@ -1342,24 +1345,28 @@ export default function PromptPanel({
                       aria-label={imageOutputsPerJob > 1 ? t('选择生成作业次数') : t('选择批量生成数量')}
                       aria-hidden={!batchMenuOpen}
                     >
-                      {imageBatchCounts.map((count) => (
-                        <button
+                      {imageBatchCounts.map((count) => {
+                        const candidateLabel = imageOutputRange
+                          ? t('生成 {jobs} 次作业，共 {min}–{max} 张候选图', {
+                            jobs: count, min: count * imageOutputRange.min, max: count * imageOutputRange.max,
+                          })
+                          : imageOutputsPerJob > 1
+                            ? t('生成 {jobs} 次作业，共 {count} 张候选图', { jobs: count, count: count * imageOutputsPerJob })
+                            : undefined;
+                        return <button
                           key={count}
                           type="button"
                           role="menuitem"
                           tabIndex={batchMenuOpen ? 0 : -1}
                           className={`image-batch-menu-item${batchCount === count ? ' active' : ''}`}
-                          aria-label={imageOutputsPerJob > 1
-                            ? t('生成 {jobs} 次作业，共 {count} 张候选图', { jobs: count, count: count * imageOutputsPerJob })
-                            : t('生成 {count} 张图片', { count })}
-                          title={imageOutputsPerJob > 1
-                            ? t('生成 {jobs} 次作业，共 {count} 张候选图', { jobs: count, count: count * imageOutputsPerJob })
-                            : count >= 4 ? t('生成 {count} 张，费用可能按张计算', { count }) : t('生成 {count} 张', { count })}
+                          aria-label={candidateLabel ?? t('生成 {count} 张图片', { count })}
+                          title={candidateLabel ?? (count >= 4
+                            ? t('生成 {count} 张，费用可能按张计算', { count }) : t('生成 {count} 张', { count }))}
                           onClick={handleBatchSelect(count)}
                         >
                           {count}
-                        </button>
-                      ))}
+                        </button>;
+                      })}
                     </div>
                   </div>
                 )}

@@ -10,6 +10,28 @@ import { getModelProtocolPresetVideoCapability } from './modelProtocolPresets';
 import { SORA2U_MODEL_MANIFEST, withSora2uReferenceLimits } from './providers/sora2uModelManifest';
 import { resolveProviderCatalogId } from './providerPolicies';
 import { resolveRelayonVideoCapability } from './providers/relayonModelManifest';
+import { resolveKlingModelContract } from './providerCatalogService';
+import { resolveEffectivePromptLimits } from './imagePromptLimits';
+
+function withVerifiedVideoLimits(verified: VideoModelCapability, configured: VideoModelCapability | undefined): VideoModelCapability {
+  if (!configured || !verified.durations?.length) return verified;
+  const allowed = verified.durations.filter((seconds) =>
+    (configured.minDuration === undefined || seconds >= configured.minDuration)
+    && (configured.maxDuration === undefined || seconds <= configured.maxDuration)
+    && (!configured.durations?.length || configured.durations.includes(seconds)));
+  // 旧声明完全偏离原合同，恢复已核实的档位与默认值，显式请求仍按有效档位校验。
+  const durations = allowed.length > 0 ? allowed : verified.durations;
+  const preferred = configured.defaultDuration ?? verified.defaultDuration;
+  return {
+    ...verified,
+    ...resolveEffectivePromptLimits(verified, configured),
+    durations,
+    minDuration: durations[0],
+    maxDuration: durations.at(-1),
+    defaultDuration: preferred !== undefined && durations.includes(preferred) ? preferred
+      : verified.defaultDuration !== undefined && durations.includes(verified.defaultDuration) ? verified.defaultDuration : durations[0],
+  };
+}
 
 /** 参数面板、预检和生成共用有效合同；只做运行期投影，不改写已保存的连接。 */
 export function resolveConfiguredVideoCapability(
@@ -20,6 +42,10 @@ export function resolveConfiguredVideoCapability(
 ): VideoModelCapability | undefined {
   const configured = capability ?? getModelProtocolPresetVideoCapability(profile);
   if (catalogId === 'relayonapi') return resolveRelayonVideoCapability(modelId, profile, configured);
+  if (catalogId === 'kling') {
+    const verified = resolveKlingModelContract(modelId, profile)?.videoCapability;
+    if (verified) return withVerifiedVideoLimits(verified, configured);
+  }
   return catalogId === 'sora2u' ? withSora2uReferenceLimits(modelId, configured) : configured;
 }
 
@@ -42,6 +68,8 @@ function safeCapability(capability: VideoModelCapability): VideoModelCapability 
   const constraints = capability.inputConstraints;
   return {
     operations: capability.operations ? [...capability.operations] : undefined,
+    promptMaxCharacters: capability.promptMaxCharacters,
+    promptMaxNonAsciiCharacters: capability.promptMaxNonAsciiCharacters,
     requiresReference: capability.requiresReference,
     resolutions: capability.resolutions ? [...capability.resolutions] : undefined,
     defaultResolution: capability.defaultResolution,

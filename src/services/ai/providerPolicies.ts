@@ -1,5 +1,5 @@
 /** 厂商接线策略。仅依赖类型，Store 不需加载目录、模型合同或网络执行模块。 */
-import type { ApiProviderConfig } from '../../types';
+import type { ApiProviderConfig, ProviderModelSelection } from '../../types';
 
 export interface ProviderPolicy {
   readonly syncGeneralModels: boolean;
@@ -40,8 +40,11 @@ const POLICY_OVERRIDES: Record<string, PolicyOverrides> = {
   grsai: { publicUploadFallback: 'deny' },
   volcengine: { upload: 'volcengine-tos' },
   'custom-openai': { syncGeneralModels: true },
+  magpie: { syncGeneralModels: true, catalog: { fallback: 'deny', invalidateOnKeyChange: true, connectionTest: 'catalog' } },
   xai: { syncGeneralModels: true },
+  replicate: { syncGeneralModels: true, publicUploadFallback: 'deny' },
   google: { syncGeneralModels: true },
+  kling: { syncGeneralModels: true, referenceTransport: 'request-files', publicUploadFallback: 'deny' },
   minimax: { syncGeneralModels: true, upload: 'minimax',
     modelMenuGroup: { scope: 'connection', description: '使用当前 MiniMax 官方连接中的图片、视频和语音模型' } },
   sora2u: { syncGeneralModels: true, publicUploadFallback: 'deny',
@@ -83,4 +86,32 @@ export function resolveProviderCatalogId(
 
 export function getProviderPolicy(catalogId: string | undefined): Readonly<ProviderPolicy> {
   return POLICIES.get(catalogId ?? '') ?? DEFAULT_POLICY;
+}
+
+/** 目录只授权发现。保存之前至少需要明确的媒体协议，完整映射由合同校验器检查。 */
+export function assertMagpieMediaSelection(model: ProviderModelSelection): void {
+  if (model.category === 'text') return;
+  const preset = model.executionProfile?.preset;
+  if (!preset) throw new Error(`模型“${model.name}”是 Magpie 目录候选，请先配置调用协议或取消启用`);
+  if (preset === 'openai-chat' || preset === 'openai-responses' || preset === 'anthropic-chat'
+    || preset === 'gemini-chat' || preset === 'plugin') {
+    throw new Error(`模型“${model.name}”需要媒体调用协议，请检查当前模型类别`);
+  }
+}
+
+export function isMagpieRoutingGroup(modelId: string): boolean {
+  return modelId.startsWith('group/') || modelId.startsWith('auto/');
+}
+
+/** 目录没有成员的共同上限。手动值可用于已在网关核实的路由配置。 */
+export function resolveMagpieContextWindow(model: Pick<ProviderModelSelection, 'id' | 'contextWindow' | 'catalogTextLimits'>): number | undefined {
+  const published = readPositiveTokenCount(model.catalogTextLimits?.source === 'magpie' ? model.catalogTextLimits.contextWindow : undefined);
+  const override = readPositiveTokenCount(model.contextWindow);
+  if (override !== undefined) return published === undefined ? override : Math.min(override, published);
+  if (isMagpieRoutingGroup(model.id)) return Math.min(32_000, published ?? Infinity);
+  return published ?? 32_000;
+}
+
+export function readPositiveTokenCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }

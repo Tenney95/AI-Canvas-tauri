@@ -34,6 +34,7 @@ export interface StandardImageParams {
   baseUrl: string;
   modelName: string;
   prompt: string;
+  promptMaxCharacters?: number;
   dimensions: { width: number; height: number };
   imageQuality?: string;
   imageBackground?: string;
@@ -331,7 +332,7 @@ export async function generateImageStandardBatch(
   count: number,
   signal?: AbortSignal,
 ): Promise<BatchImageResult> {
-  assertImagePromptLength(params.modelName, params.prompt, imagePromptCharacterLimit(params.modelName));
+  assertImagePromptLength(params.modelName, params.prompt, params.promptMaxCharacters ?? imagePromptCharacterLimit(params.modelName));
   const apiKey = params.apiKey;
   try {
     const requestedCount = Math.max(1, Math.floor(count));

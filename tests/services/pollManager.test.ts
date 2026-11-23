@@ -111,6 +111,13 @@ describe('新画布异步任务提交边界', () => {
       useAppStore.setState({ projectExecutionContext: { ...context, runtimeEpoch: 'other-run' } });
       await expect(resumeNativeMediaFromNode('video', receipt.operationId)).rejects.toThrow('原媒体任务已变化');
       useAppStore.setState({ projectExecutionContext: context });
+      const pollingSignal = registerNodePolling('video');
+      try {
+        await expect(resumeNativeMediaFromNode('video', receipt.operationId)).rejects.toThrow('正在处理');
+        expect(resume).not.toHaveBeenCalled();
+      } finally {
+        cleanupNodePolling('video', pollingSignal, false);
+      }
       await resumeNativeMediaFromNode('video', receipt.operationId);
       expect(resume).toHaveBeenCalledExactlyOnceWith(receipt.operationId, expect.any(AbortSignal), { allowUnstartedStage: false });
       expect(getNativeMediaNodeRecovery('video')).toBeUndefined();

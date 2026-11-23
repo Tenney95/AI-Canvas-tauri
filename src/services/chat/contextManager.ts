@@ -114,7 +114,7 @@ export function resolveAssistantContextSpec(projectId?: string, modelId?: string
 }
 
 function toAssistantContextSpec(
-  model: Pick<GeneralModelConfig, 'modelId' | 'contextWindow' | 'name'> | null,
+  model: Pick<GeneralModelConfig, 'modelId' | 'contextWindow' | 'catalogMaxOutputTokens' | 'name'> | null,
 ): AssistantContextSpec {
   const spec = resolveTextModelContextSpec(model);
   return {

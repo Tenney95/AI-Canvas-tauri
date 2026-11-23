@@ -3,11 +3,11 @@
  * 只保留任务身份与不含密钥的查询描述，调用时使用当前连接注入的 Key。
  */
 import type { GeneralModelCategory } from '../../types';
-import type { ResolvedModelProtocolPoll } from '../../types/aiTypes';
+import type { ImageOutputCountRange, ResolvedModelProtocolPoll } from '../../types/aiTypes';
 import { PollTaskFailedError } from '../pollTask';
 import { ModelProtocolHttpError } from './modelProtocolHttp';
 import { pollResolvedModelProtocol, submitModelProtocol } from './modelProtocol';
-import { assertModelProtocolResult } from './modelCapabilityValidation';
+import { assertImageOutputCount, assertModelProtocolResult } from './modelCapabilityValidation';
 import type {
   ExecuteModelProtocolResult,
   SubmitModelProtocolOptions,
@@ -54,6 +54,7 @@ export class ProtocolTestSessionError extends Error {
 interface ProtocolTestSession {
   status: ProtocolTestSessionSnapshot['status'];
   category?: GeneralModelCategory;
+  imageOutputCountRange?: ImageOutputCountRange;
   taskId?: string;
   poll?: ResolvedModelProtocolPoll;
   pauseReason?: ProtocolTestSessionSnapshot['pauseReason'];
@@ -69,6 +70,7 @@ interface SessionContext {
 export interface StartProtocolTestSessionOptions extends Omit<SubmitModelProtocolOptions, 'baseUrl' | 'signal'> {
   identity: ProtocolTestSessionIdentity;
   category?: GeneralModelCategory;
+  imageOutputCountRange?: ImageOutputCountRange;
 }
 
 export interface ResumeProtocolTestSessionOptions {
@@ -175,12 +177,13 @@ async function querySession(
   try {
     // 每次续查重新验证；查询入口本身还会复核 Header、鉴权和结果下载同源。
     assertSameOrigin(poll, context.baseUrl);
-    const result = await pollResolvedModelProtocol(poll, apiKey, session.controller.signal, context.baseUrl);
+    const result = await pollResolvedModelProtocol(poll, apiKey, session.controller.signal, context.baseUrl, undefined, undefined, session.taskId);
     if (!isCurrent(context.key, session) || session.controller.signal.aborted) {
       throw new ProtocolTestSessionError('paused');
     }
     // 只有可交付的结果才清理任务；映射错误仍保留原 ID 供查询和诊断。
     if (session.category) assertModelProtocolResult(session.category, result);
+    assertImageOutputCount(session.imageOutputCountRange, result.urls?.length ?? 0);
     sessions.delete(context.key);
     notify(context.key);
     return { ...result, taskId: session.taskId };
@@ -204,7 +207,7 @@ export async function startProtocolTestSession(options: StartProtocolTestSession
   if (sessions.has(context.key)) throw new ProtocolTestSessionError('existing-session');
   if (sessions.size >= MAX_PROTOCOL_TEST_SESSIONS) throw new ProtocolTestSessionError('session-limit');
   const session: ProtocolTestSession = {
-    status: 'submitting', category: options.category, controller: new AbortController(), busy: true,
+    status: 'submitting', category: options.category, imageOutputCountRange: options.imageOutputCountRange, controller: new AbortController(), busy: true,
   };
   sessions.set(context.key, session);
   notify(context.key);
@@ -238,6 +241,7 @@ export async function startProtocolTestSession(options: StartProtocolTestSession
     if (session.category) {
       try {
         assertModelProtocolResult(session.category, result);
+        assertImageOutputCount(session.imageOutputCountRange, result.urls?.length ?? 0);
       } catch (error) {
         submitting = false;
         session.status = 'failed';

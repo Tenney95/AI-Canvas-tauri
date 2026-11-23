@@ -50,6 +50,7 @@ import { configValuesEqual } from './configPatch';
 export interface GenerationResult {
   success: boolean;
   message?: string;
+  imageOutputCount?: number;
   recovery?: GenerationRecovery;
 }
 
@@ -231,12 +232,15 @@ async function runSequentialImageBatch(
   const projectId = state.currentProjectId;
   let owner: SequentialImageBatch | undefined;
   let completed = 0;
+  let deliveredImages = 0;
   try {
     // 与单次生成共用旧任务保护；创建新批次前不能覆盖原节点的恢复身份。
     prepareMediaNodeGeneration(nodeId);
     const outputsPerJob = resolveImageOutputsPerJob(data.model ?? '', data.provider ?? '', state.config);
+    const outputRange = resolveImageParameterCapability(data.model, data.provider, state.config)?.outputCountRange;
+    const slotStride = outputRange?.max ?? outputsPerJob;
     const nodeIds = prepareImageBatchNodes({ nodeId, count, projectId, commitHistory: options?.history !== 'transient',
-      ...(outputsPerJob > 1 ? { slotStride: outputsPerJob } : {}) }).nodeIds;
+      ...(slotStride > 1 ? { slotStride } : {}) }).nodeIds;
     owner = { projectId, nodeIds, remainingNodeIds: new Set(nodeIds), controller: new AbortController(),
       expectedRevision: useAppStore.getState().getCurrentRevision() };
     const activeOwner = owner;
@@ -245,7 +249,9 @@ async function runSequentialImageBatch(
       .map((node) => [node.id, imageBatchInputSignature(node.data)]));
     for (const targetId of nodeIds) imageBatchOwners.set(targetId, activeOwner);
     notifyImageBatches();
-    if (!options?.silent) state.showToast(outputsPerJob > 1
+    if (!options?.silent) state.showToast(outputRange
+      ? `正在生成 ${count} 次作业，共 ${count * outputRange.min}–${count * outputRange.max} 张候选`
+      : outputsPerJob > 1
       ? `正在生成 ${count} 次作业，共 ${count * outputsPerJob} 张候选` : `正在逐张生成 ${count} 张图片`);
     const signal = parentLease?.signal ? AbortSignal.any([parentLease.signal, activeOwner.controller.signal]) : activeOwner.controller.signal;
     for (const targetId of nodeIds) {
@@ -272,9 +278,10 @@ async function runSequentialImageBatch(
       if (!result.success) return result;
       activeOwner.currentNodeId = undefined;
       completed += 1;
+      deliveredImages += result.imageOutputCount ?? outputsPerJob;
     }
     if (!options?.silent) state.showToast(outputsPerJob > 1
-      ? `批量生成完成：${completed} 次作业，共 ${completed * outputsPerJob} 张候选` : `批量生成完成：共 ${completed} 张`);
+      ? `批量生成完成：${completed} 次作业，共 ${deliveredImages} 张候选` : `批量生成完成：共 ${completed} 张`);
     return { success: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : '批量生成已停止';
@@ -578,7 +585,8 @@ export async function executeGeneration(
         throw new Error('原生图片生成缺少耐久原回执，未确认交付');
       }
       if (batchCount > 1 || outputsPerJob > 1) {
-        const outputCount = batchCount * outputsPerJob;
+        const outputRange = imageCapability?.outputCountRange;
+        const outputCount = outputRange ? batchCount : batchCount * outputsPerJob;
         const commitHistory = batchOptions?.history !== 'transient' && !(lease && imageBatchLeases.has(lease));
         batchNodeIds = prepareImageBatchNodes({
           nodeId,
@@ -588,7 +596,8 @@ export async function executeGeneration(
         }).nodeIds;
         if (cloudGuard) completeCanvasDerivation(cloudGuard);
         cloudGuard = guardedSubmission ? registerCanvasDerivation(useAppStore.getState(), nodeId) : null;
-        notify(`正在批量生成 ${outputCount} 张图片`);
+        notify(outputRange ? `正在生成自动组图，每次返回 ${outputRange.min}–${outputRange.max} 张候选`
+          : `正在批量生成 ${outputCount} 张图片`);
         const imageOptions = {
           ...(batchOptions?.imagePromptResolution ? { imagePromptResolution: batchOptions.imagePromptResolution } : {}),
           prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
@@ -610,7 +619,7 @@ export async function executeGeneration(
           targetNodeIds: batchNodeIds,
           isCurrent: guardedSubmission ? isStillCurrentSubmission : undefined,
           signal: beginMediaSaving(),
-          batch: outputsPerJob > 1 ? { ...batch, expectedOutputCount: batch.expectedOutputCount ?? outputCount } : batch,
+          batch: outputsPerJob > 1 && !outputRange ? { ...batch, expectedOutputCount: batch.expectedOutputCount ?? outputCount } : batch,
           commitHistory,
           silent: batchOptions?.silent,
           model: nodeModel, provider: nodeProvider,
@@ -622,7 +631,7 @@ export async function executeGeneration(
           ...imageOutput,
           aspectRatio,
         });
-        return mediaDelivered ? { success: true } : { success: false, message: taskReceipt
+        return mediaDelivered ? { success: true, ...(outputRange ? { imageOutputCount: batch.results.length } : {}) } : { success: false, message: taskReceipt
           ? '部分图片仍待保存或取回，原任务已保留' : '部分图片未能保存或生成，请核对已返回结果' };
       }
       const imageOptions = {
@@ -942,7 +951,8 @@ export async function executeGeneration(
           notify(t('原图已生成，8 向宫格处理失败'), 'error');
         }
       }
-      return { success: true };
+      return 'imageOutputCount' in err && typeof err.imageOutputCount === 'number' && err.imageOutputCount > 0
+        ? { success: true, imageOutputCount: err.imageOutputCount } : { success: true };
     }
     const pausedError = isMediaTaskPausedError(err);
     if (err instanceof Error && (err.name === 'NativeVolcengineTaskPending' || err.name === 'NativeMediaTaskPending')) {

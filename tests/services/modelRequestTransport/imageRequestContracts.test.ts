@@ -9,7 +9,7 @@ vi.mock('../../../src/services/ai/httpTransport', () => transportMocks);
 
 import { generateImage, generateImagesBatch, inspectImagePromptLength } from '../../../src/services/ai/generateImage';
 import { registerCharacterImageTaskContext } from '../../../src/services/characterImageTaskContext';
-import { getProviderDefinition } from '../../../src/services/ai/providerCatalogService';
+import { getProviderDefinition, KLING_BASE_URL } from '../../../src/services/ai/providerCatalogService';
 import { generateImageStandard } from '../../../src/services/ai/providers/standardImage';
 import { resolveImageParameterCapability } from '../../../src/services/ai/mediaModelCapabilities';
 import { getImageSizePresets } from '../../../src/services/ai/modelSizeProfiles';
@@ -19,6 +19,7 @@ import { uploadToRemote } from '../../../src/services/uploadService';
 import { clearProjectTasks, getPendingTasksForProject } from '../../../src/services/pollManager';
 import { AIGCSI_BASE_URL } from '../../../src/services/ai/providers/aigcsiModelManifest';
 import type { ModelExecutionProfile, ProtocolJsonValue } from '../../../src/types/aiTypes';
+import { configureKling } from './klingImageFixture';
 import { jsonResponse, setupTransportFixture } from './transportFixture';
 
 const protocolSubmitDebug = () => expect.objectContaining({ debug: expect.objectContaining({
@@ -1287,5 +1288,142 @@ describe('CCC Gemini 旧连接的原生图片路由', () => {
       .rejects.toThrow('参考图');
     expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
     expect(useAppStore.getState().config).toEqual(saved);
+  });
+});
+
+describe('Kling 图片请求合同', () => {
+  it('保留连接较小的 ASCII 上限，同时约束超出合同的非 ASCII 上限', async () => {
+    const params = configureKling();
+    useAppStore.setState((state) => ({
+      config: { ...state.config, generalModels: state.config.generalModels!.map((item) => ({
+        ...item, imageCapability: { ...item.imageCapability, promptMaxCharacters: 24_000, promptMaxNonAsciiCharacters: 23_000 },
+      })) },
+    }));
+    const effective = resolveImageParameterCapability(params.model, params.provider, useAppStore.getState().config);
+    expect(effective).toMatchObject({ promptMaxCharacters: 24_000, promptMaxNonAsciiCharacters: 21_000 });
+    await expect(generateImage({ ...params, prompt: '图'.repeat(21_001) })).rejects.toMatchObject({
+      name: 'ImagePromptOverflowError', maxCharacters: 21_000,
+    });
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('普通图与组图保留最大产物集，series=%s', async (series) => {
+    const params = configureKling(series);
+    const count = series ? 10 : 9;
+    transportMocks.corsSafeFetch
+      .mockResolvedValueOnce(jsonResponse({ code: 0, data: { id: 'original-kling', status: 'submitted' } }))
+      .mockResolvedValueOnce(jsonResponse({ code: 0, data: [{ id: 'original-kling', status: 'succeeded',
+        outputs: Array.from({ length: count }, (_, index) => ({ type: 'image', url: `https://cdn.example/${index}.png` })) }] }));
+    const result = await generateImagesBatch(params, series ? 1 : 9);
+    expect(result.results).toHaveLength(count);
+    expect(result.failedCount).toBe(0);
+    const [url, init] = transportMocks.corsSafeFetch.mock.calls[0];
+    expect(url).toBe(`${KLING_BASE_URL}/image-generation/kling-4.0`);
+    expect(JSON.parse(String(init.body)).settings).toMatchObject(series
+      ? { result_type: 'series', series_amount: 10 } : { result_type: 'single', n: 9 });
+    expect(transportMocks.corsSafeFetch.mock.calls.filter(([, request]) => request.method === 'POST')).toHaveLength(1);
+  });
+
+  it('网页长图按风格图、主体图的顺序发送，省略比例', async () => {
+    const params = configureKling('kling-long-image-4.0-webpage-style-subject');
+    const images = ['https://cdn.example/style.png', 'https://cdn.example/subject.png'];
+    await expect(generateImage({ ...params, image_urls: [images[0]] })).rejects.toThrow('至少');
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+    useAppStore.setState({ currentProjectId: 'long-image-slots', projects: [{ id: 'long-image-slots', name: 'Long image slots',
+      createdAt: 1, updatedAt: 1, settings: { visualStyle: { styleReference: { imageUrl: 'https://cdn.example/master.png', enabled: true } } } }] });
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ code: 0, data: { id: 'long-image' } }))
+      .mockResolvedValueOnce(jsonResponse({ code: 0, data: [{ id: 'long-image', status: 'succeeded', outputs: [{ url: images[1] }] }] }));
+    await generateImage({ ...params, image_urls: images, imageSize: '2k' });
+    const [url, init] = transportMocks.corsSafeFetch.mock.calls[0];
+    expect(url).toBe(KLING_BASE_URL + '/long-image-generation/kling-4.0');
+    expect(JSON.parse(String(init.body))).toMatchObject({ settings: { skill: 'webpage', resolution: '2k' },
+      contents: [expect.anything(), { type: 'style_refer_image', url: images[0] }, { type: 'subject_refer_image', url: images[1] }] });
+    expect(JSON.parse(String(init.body)).settings).not.toHaveProperty('aspect_ratio');
+  });
+
+  it.each(['style-subject', 'subject'])('网页长图 %s 仅为风格槽使用项目母图', async (mode) => {
+    const params = configureKling('kling-long-image-4.0-webpage-' + mode);
+    const style = 'https://cdn.example/master.png';
+    const subject = 'https://cdn.example/subject.png';
+    useAppStore.setState({ currentProjectId: 'long-project', projects: [{ id: 'long-project', name: 'Long image',
+      createdAt: 1, updatedAt: 1, settings: { visualStyle: { styleReference: { imageUrl: style, enabled: true } } } }] });
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ code: 0, data: { id: 'long-image' } }))
+      .mockResolvedValueOnce(jsonResponse({ code: 0, data: [{ id: 'long-image', status: 'succeeded', outputs: [{ url: subject }] }] }));
+    await generateImage({ ...params, image_urls: [subject] });
+    const body = JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0][1].body));
+    expect(body.contents.slice(1)).toEqual([
+      ...(mode === 'style-subject' ? [{ type: 'style_refer_image', url: style, id: 'image1' }] : []),
+      { type: 'subject_refer_image', url: subject, id: mode === 'style-subject' ? 'image2' : 'image1' },
+    ]);
+  });
+
+  it('预检识别中文上限，替换文本重新校验，未确认时不提交', async () => {
+    const params = { ...configureKling(), prompt: '图'.repeat(21_001) };
+    const overflow = await inspectImagePromptLength(params);
+    expect(overflow).toMatchObject({ characters: 21_001, maxCharacters: 21_000 });
+    await expect(generateImagesBatch({ ...params, imagePromptResolution: {
+      original: params.prompt, replacement: '🎨'.repeat(21_001),
+    } }, 1)).rejects.toMatchObject({ name: 'ImagePromptOverflowError', maxCharacters: 21_000 });
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+  });
+
+  it('十张公网参考图保持顺序，并使用官方引用 ID', async () => {
+    const params = configureKling();
+    const references = Array.from({ length: 10 }, (_, index) => `https://cdn.example/ref-${index}.png`);
+    transportMocks.corsSafeFetch
+      .mockResolvedValueOnce(jsonResponse({ code: 0, data: { id: 'kling-ref', status: 'submitted' } }))
+      .mockResolvedValueOnce(jsonResponse({ code: 0, data: [{ id: 'kling-ref', status: 'succeeded',
+        outputs: [{ type: 'image', url: 'https://cdn.example/result.png' }] }] }));
+    const result = await generateImagesBatch({ ...params, prompt: '图片10的人物，图片1的风格', image_urls: references }, 1);
+    expect(result.failedCount).toBe(0);
+    const body = JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0][1].body));
+    expect(body.contents.slice(1).map((item: { id: string; url: string }) => [item.id, item.url]))
+      .toEqual(references.map((url, index) => [`image${index + 1}`, url]));
+    expect(body.contents[0].text).toContain('@image10');
+    expect(body.contents[0].text).toContain('图片10的人物，图片1的风格');
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it('合并风格母图、显式参考和画布引用后，正文的引用仍对应同一素材', async () => {
+    const params = configureKling();
+    const style = 'https://cdn.example/style.png';
+    const explicit = 'https://cdn.example/explicit.png';
+    const subject = 'https://cdn.example/subject.png';
+    useAppStore.setState({
+      currentProjectId: 'kling-project',
+      projects: [{ id: 'kling-project', name: 'Fixture', createdAt: 1, updatedAt: 1,
+        settings: { visualStyle: { styleReference: { imageUrl: style, enabled: true } } } }],
+      nodes: [{ id: 'subject', type: 'source-image', position: { x: 0, y: 0 },
+        data: { type: 'source-image', label: '主体', imageUrl: subject } }],
+    });
+    transportMocks.corsSafeFetch
+      .mockResolvedValueOnce(jsonResponse({ code: 0, data: { id: 'kling-binding', status: 'submitted' } }))
+      .mockResolvedValueOnce(jsonResponse({ code: 0, data: [{ id: 'kling-binding', status: 'succeeded',
+        outputs: [{ type: 'image', url: 'https://cdn.example/result.png' }] }] }));
+    const result = await generateImagesBatch({ ...params, prompt: '使用 @{subject:主体} 和 @{subject:主体}，保留手写图片1。',
+      image_urls: [explicit, style, explicit] }, 1);
+    expect(result.failedCount).toBe(0);
+    const body = JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0][1].body));
+    expect(body.contents.slice(1)).toEqual([style, explicit, subject].map((url, index) => ({
+      type: 'refer_image', url, id: `image${index + 1}`,
+    })));
+    expect(body.contents[0].text).toContain('【项目风格母图】@image1');
+    expect(body.contents[0].text).toContain('使用 @image3 和 @image3，保留手写图片1。');
+  });
+
+  it('超过十张参考图在提交前拒绝', async () => {
+    const params = configureKling();
+    await expect(generateImagesBatch({ ...params,
+      image_urls: Array.from({ length: 11 }, (_, index) => `https://cdn.example/ref-${index}.png`),
+    }, 1)).rejects.toThrow('10');
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+  });
+
+  it('本地小图在付费提交前拒绝，不上传图床', async () => {
+    const params = configureKling();
+    const reference = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j8Z0AAAAASUVORK5CYII=';
+    await expect(generateImagesBatch({ ...params, image_urls: [reference] }, 1)).rejects.toThrow('300');
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 });

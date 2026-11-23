@@ -51,6 +51,7 @@ export function buildResponsesBody(options: BuildChatApiRequestOptions): RecordV
     model: options.model, input, stream: options.stream,
     store: false, include: ['reasoning.encrypted_content'],
   };
+  if (options.maxOutputTokens !== undefined) body.max_output_tokens = options.maxOutputTokens;
   if (options.tools?.length) {
     body.tools = options.tools.map((tool) => ({
       type: 'function', name: tool.function.name, description: tool.function.description,

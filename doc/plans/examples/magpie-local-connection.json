@@ -1,0 +1,12 @@
+{
+  "kind": "ai-canvas/provider-connection",
+  "version": 1,
+  "connection": {
+    "name": "Magpie（本机文本）",
+    "catalogId": "custom-openai",
+    "baseUrl": "http://127.0.0.1:3425/v1",
+    "chatApiProtocol": "openai-compatible",
+    "selectedModels": [],
+    "catalogModels": []
+  }
+}

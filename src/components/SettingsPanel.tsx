@@ -19,8 +19,7 @@ import ShortcutSettings from './settings/ShortcutSettings';
 import CanvasZoomRangeSettings from './settings/CanvasZoomRangeSettings';
 import ComfyUISettings from './settings/ComfyUISettings';
 import FileAppSettings from './settings/FileAppSettings';
-import PluginSettings from './settings/PluginSettings';
-import AppearanceSettings from './settings/AppearanceSettings';
+import LazyLoadBoundary from './shared/LazyLoadBoundary';
 import type {
   InteractionMode,
   NodeToolbarMode,
@@ -35,6 +34,8 @@ import { applyMainWindowWorkArea } from '../services/mainWindowBoundsService';
 
 const SharedAssetStorageSettings = lazy(() => import('./settings/SharedAssetStorageSettings'));
 const ExternalAgentSettings = lazy(() => import('./settings/ExternalAgentSettings'));
+const PluginSettings = lazy(() => import('./settings/PluginSettings'));
+const AppearanceSettings = lazy(() => import('./settings/AppearanceSettings'));
 
 /** 窗口尺寸预设：每种比例给紧凑 / 标准 / 大屏三档主流尺寸 */
 const WINDOW_ASPECT_OPTIONS: {
@@ -272,7 +273,13 @@ export default function SettingsPanel() {
 
             {activeTab === 'comfyui' && <ComfyUISettings />}
 
-            {activeTab === 'appearance' && <AppearanceSettings />}
+            {(activeTab === 'appearance' || activeTab === 'plugins') && (
+              <LazyLoadBoundary key={activeTab} label={t('设置')}>
+                <Suspense fallback={<p role="status" className="ui-hint">{t('加载中…')}</p>}>
+                  {activeTab === 'appearance' ? <AppearanceSettings /> : <PluginSettings />}
+                </Suspense>
+              </LazyLoadBoundary>
+            )}
 
             {activeTab === 'general' && (
               <div className="space-y-4">
@@ -838,7 +845,6 @@ export default function SettingsPanel() {
 
             {activeTab === 'mcp' && <McpSettings />}
 
-            {activeTab === 'plugins' && <PluginSettings />}
             {activeTab === 'external-agents' && <Suspense fallback={<p role="status" className="ui-hint">{t('正在加载外部 Agent 设置…')}</p>}><ExternalAgentSettings /></Suspense>}
           </div>
         </div>

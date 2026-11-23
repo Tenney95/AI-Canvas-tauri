@@ -103,6 +103,21 @@ describe('imageBatchService', () => {
         width: 1024, height: 1024, taskReceipt: receipt })) };
   }
 
+  it('delivers all ten fixed series outputs and acknowledges the original task once', async () => {
+    const { applyImageBatchResults } = await import('../../src/services/imageBatchService');
+    const batch: BatchImageResult = { requestedCount: 1, expectedOutputCount: 10, failedCount: 0,
+      allTasksSettled: true, taskReceipt: receipt,
+      results: Array.from({ length: 10 }, (_, index) => ({ url: `https://example.com/series-${index}.png`,
+        width: 2048, height: 2048, taskReceipt: receipt })) };
+    expect(await applyImageBatchResults({ nodeId: 'source', targetNodeIds: ['source'], batch,
+      projectId: 'project-a', prompt: 'series', imageSize: '2k', aspectRatio: '1:1' })).toBe(true);
+    expect(store.nodes).toHaveLength(10);
+    expect(store.nodes.map((node) => node.data.imageUrl)).toEqual(batch.results.map((item) => item.url));
+    expect(store.recordOutputHistory).toHaveBeenCalledTimes(10);
+    expect(completeMediaNodeTask).toHaveBeenCalledOnce();
+    expect(completeMediaNodeTask).toHaveBeenCalledWith(receipt);
+  });
+
   it('reserves separate candidate space for three sequential jobs without overlapping any of the twelve nodes', async () => {
     const { prepareImageBatchNodes } = await import('../../src/services/imageBatchService');
     const jobs = prepareImageBatchNodes({ nodeId: 'source', count: 3, projectId: 'project-a', slotStride: 4 });

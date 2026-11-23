@@ -1,4 +1,5 @@
 /** 新画布媒体回执账本：只记录原任务身份和恢复条件，不读取或改写旧待续队列。 */
+import { isImageOutputCountRange } from '../ai/modelCapabilityValidation';
 import type { NativeVideoImageReference } from '../nativeVideoImageReference';
 import { readNativeMediaOrigin, type NativeMediaOrigin } from '../nativeMediaOrigin';
 import { safeExchangePath } from '../projectExchangeDomain';
@@ -114,11 +115,13 @@ export function validateNativeMediaTaskRecord(value: NativeMediaTaskRecord): Nat
   if (value?.recovery !== undefined) {
     const binding = value.recovery;
     if (!binding || ![Object.prototype, null].includes(Object.getPrototypeOf(binding))
-      || Reflect.ownKeys(binding).some((field) => typeof field !== 'string' || !['kind', 'workflowId', 'modelId', 'serverId', 'digest', 'expectedCount'].includes(field)
+      || Reflect.ownKeys(binding).some((field) => typeof field !== 'string' || !['kind', 'workflowId', 'modelId', 'serverId', 'digest', 'expectedCount', 'imageOutputCountRange', 'credentialProof'].includes(field)
         || !('value' in Object.getOwnPropertyDescriptor(binding, field)!))
       || !['general-protocol', 'workflow', 'builtin-audio', 'builtin-image', 'builtin-video'].includes(binding.kind)
       || [binding.workflowId, binding.modelId, binding.serverId].some((field) => field !== undefined && !id(field))
+      || binding.credentialProof !== undefined && (!binding.serverId || !/^[a-f0-9]{64}$/.test(binding.credentialProof))
       || binding.digest !== undefined && !/^[a-f0-9]{64}$/.test(binding.digest)
+      || binding.imageOutputCountRange !== undefined && (value.category !== 'image' || !isImageOutputCountRange(binding.imageOutputCountRange))
       || binding.expectedCount !== undefined && (!Number.isSafeInteger(binding.expectedCount) || binding.expectedCount < 1 || binding.expectedCount > 128)) return fail('媒体恢复合同身份损坏');
   }
   if (value?.pollContext !== undefined) validateNativeProtocolContext(value.pollContext);
@@ -377,7 +380,8 @@ export async function recordNativeMediaSubmission(operationId: string, lease: st
       if ('taskId' in outcome && current.status === 'submitted' && current.remoteTaskId === outcome.taskId && configValuesEqual(current.pollContext, outcome.pollContext)
         || 'unknown' in outcome && current.status === 'outcome-unknown'
         || 'notStarted' in outcome && current.status === 'failed') return current;
-      if (current.status !== 'prepared' && !(current.status === 'outcome-unknown' && 'taskId' in outcome)
+      // 只有原提交租约可确认从未发出或服务商明确拒绝的请求；已经取得 ID 的记录不能降级。
+      if (current.status !== 'prepared' && !(current.status === 'outcome-unknown' && ('taskId' in outcome || 'notStarted' in outcome))
         || current.revision >= Number.MAX_SAFE_INTEGER) return fail();
       const next: NativeMediaTaskRecord = { ...current, status: 'taskId' in outcome ? 'submitted' : 'unknown' in outcome ? 'outcome-unknown' : 'failed',
         ...('taskId' in outcome ? { remoteTaskId: outcome.taskId, ...(outcome.pollContext !== undefined ? { pollContext: structuredClone(outcome.pollContext) } : {}) } : {}), revision: current.revision + 1, updatedAt: Date.now() };

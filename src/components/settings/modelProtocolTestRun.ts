@@ -6,6 +6,9 @@ import type { MediaReference, ModelProtocolPresetId, NormalizedModelExecutionPro
 import { parseModelExecutionProtocol, type ModelProtocolVariables } from '../../services/ai/modelProtocol';
 import type { PluginModelProtocolReference } from '../../types/plugin';
 import { parsePluginProtocolReference } from '../../services/plugins/pluginProtocolPresetService';
+import { assertConfiguredImageReferences, resolveConfiguredImageParameters } from '../../services/ai/modelCapabilityValidation';
+import { assertImagePromptLength, imagePromptCharacterLimit } from '../../services/ai/imagePromptLimits';
+import { klingImageReferenceValue, klingKeyframeVariables, resolveKlingInlineReferences } from '../../services/ai/providers/klingImageResponse';
 import type { ChatApiMessage } from '../../services/ai/chatApiProtocol';
 
 export type ProtocolChoice = ModelProtocolPresetId | 'legacy';
@@ -71,7 +74,7 @@ function realMediaUrl(value: string): string {
   return url.href;
 }
 
-export function videoTestReferences(scenario: VideoTestScenario, input: VideoTestReferences): MediaReference[] {
+export function videoTestReferences(scenario: VideoTestScenario, input: VideoTestReferences, allowMiddleFrames = false): MediaReference[] {
   const references: MediaReference[] = [];
   const append = (text: string, kind: MediaReference['kind'], role: MediaReference['role']) => {
     for (const value of text.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)) {
@@ -80,7 +83,11 @@ export function videoTestReferences(scenario: VideoTestScenario, input: VideoTes
   };
   if (scenario === 'keyframe') {
     if (!input.firstImage.trim()) throw new Error('首尾帧试跑需要填写首帧图片地址');
+    if ([input.firstImage, input.lastImage].some((value) => value.trim().includes('\n'))) {
+      throw new Error('首帧和尾帧各接受一个图片地址');
+    }
     append(input.firstImage, 'image', 'first_frame');
+    if (allowMiddleFrames) append(input.images, 'image', 'reference');
     append(input.lastImage, 'image', 'last_frame');
   } else if (scenario === 'reference') {
     append(input.images, 'image', 'reference');
@@ -108,8 +115,9 @@ export async function buildVideoTestVariables(
   scenario: VideoTestScenario,
   input: VideoTestReferences,
   overrides: ModelProtocolVariables,
+  klingFrameMode?: 'single' | 'keyframes',
 ): Promise<ModelProtocolVariables> {
-  const references = videoTestReferences(scenario, input);
+  const references = videoTestReferences(scenario, input, klingFrameMode === 'keyframes');
   for (const key of ['duration', 'seedanceDuration', 'fps', 'videoFps', 'frames', 'videoFrames', 'videoResolution']) {
     if (overrides[key] !== undefined && (typeof overrides[key] !== 'number' || !Number.isFinite(overrides[key]))) {
       throw new Error('试跑的视频数值参数必须是有限数值，请检查时长、帧率、帧数和长边像素');
@@ -137,7 +145,35 @@ export async function buildVideoTestVariables(
       : references.length ? 'image-to-video' : 'text-to-video',
   }, model.videoCapability);
   // 素材与衍生参数只由当前场景及共享构造器决定，不能被 JSON 中另一种模式的旧变量覆盖。
-  return { ...overrides, ...variables };
+  return { ...overrides, ...(klingFrameMode ? klingKeyframeVariables(variables, klingFrameMode) : variables) };
+}
+
+export async function buildImageTestVariables(
+  model: ProviderModelSelection,
+  overrides: ModelProtocolVariables,
+  kling: boolean,
+  signal?: AbortSignal,
+): Promise<ModelProtocolVariables> {
+  const capability = model.imageCapability;
+  if (!capability) return overrides;
+  const n = overrides.n ?? capability.minBatchCount ?? 1;
+  if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 1) throw new Error('试跑图片张数必须是正整数');
+  const stringValue = (value: ProtocolJsonValue | undefined) => typeof value === 'string' ? value : undefined;
+  const { imageSize, aspectRatio } = resolveConfiguredImageParameters(capability, {
+    imageSize: stringValue(overrides.imageSize), aspectRatio: stringValue(overrides.aspectRatio),
+    imageQuality: stringValue(overrides.imageQuality), imageBackground: stringValue(overrides.imageBackground), count: n,
+  });
+  const prompt = stringValue(overrides.prompt) ?? '';
+  if (kling && !prompt.trim()) throw new Error('提示词不能为空');
+  assertImagePromptLength(model.name, prompt, imagePromptCharacterLimit(model.id, model.executionProfile?.preset,
+    kling ? 'kling' : undefined, capability, prompt));
+  if (!kling) return { ...overrides, n, batchCount: n, imageSize, aspectRatio };
+  const urls = overrides.imageUrls ?? [];
+  if (!Array.isArray(urls) || urls.some((url) => typeof url !== 'string')) throw new Error('试跑参考图需要使用 imageUrls 字符串数组');
+  const images = (urls as string[]).map((url) => /^data:image\//i.test(url) ? url : realMediaUrl(url));
+  assertConfiguredImageReferences(capability, images.length);
+  const inline = await resolveKlingInlineReferences(images, signal);
+  return { ...overrides, n, batchCount: n, imageSize, aspectRatio, imageUrls: inline.map(klingImageReferenceValue) };
 }
 
 /**

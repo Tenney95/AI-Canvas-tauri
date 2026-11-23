@@ -14,7 +14,7 @@ const CHARACTER_REFERENCE_USAGE: Record<PromptCharacterBinding['usage'], string>
 export function compileVideoReferencePrompt(
   input: PromptMediaReferences,
   references: readonly MediaReference[],
-  options: { target?: 'remote' | 'local'; imageLayout?: 'frames-first' | 'frame-fields' } = {},
+  options: { target?: 'remote' | 'local'; imageLayout?: 'frames-first' | 'frame-fields'; imageLabel?: (ordinal: number) => string } = {},
 ): string {
   if (!input.segments) return input.prompt;
   const urlOf = (reference: MediaReference) => options.target === 'local'
@@ -37,7 +37,8 @@ export function compileVideoReferencePrompt(
     const index = indexes[reference.kind].indexOf(urlOf(reference));
     const label = options.imageLayout === 'frame-fields' && frame(reference)
       ? reference.role === 'first_frame' ? '首帧图片' : '尾帧图片'
-      : index >= 0 ? `${reference.kind === 'image' ? '图片' : reference.kind === 'video' ? '视频' : '音频'}${index + 1}` : undefined;
+      : index >= 0 && reference.kind === 'image' && options.imageLabel ? options.imageLabel(index + 1)
+        : index >= 0 ? `${reference.kind === 'image' ? '图片' : reference.kind === 'video' ? '视频' : '音频'}${index + 1}` : undefined;
     if (!label) throw new Error('引用素材编号与视频参数不一致');
     if (!segment.character) return label;
     const binding = segment.character;

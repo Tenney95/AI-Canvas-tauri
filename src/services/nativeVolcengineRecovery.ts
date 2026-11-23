@@ -1,7 +1,7 @@
 /** 新画布媒体任务只续查原远端 ID，结果与账本由项目事务一起提交。 */
 import { useAppStore } from '../store/useAppStore';
 import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from './projectExecutionContext';
-import { claimNativeMediaRecovery, failNativeMediaTask, isNativeMediaLeaseCurrent, listNativeMediaTasks, normalizeNativeMediaProviderBase } from './indexedDb/nativeMediaTaskRepository';
+import { claimNativeMediaRecovery, failNativeMediaTask, isNativeMediaLeaseCurrent, listNativeMediaTasks, normalizeNativeMediaProviderBase, type NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
 import { pollVolcengineVideoTask } from './ai/providers/volcengineVideoQuery';
 import { persistMediaUrlToProjectData } from './fileService';
 import { APIMART_BASE_URL, GRSAI_BASE_URL, VOLCENGINE_BASE_URL } from '../constants/api';
@@ -15,7 +15,8 @@ import { queryApimartVideoResult } from './ai/apimartVideoResult';
 import { createMediaDownloadAccess } from './ai/mediaDownloadAccess';
 import { VIDEO_POLL_MAX_DURATION_MS } from './pollManager';
 import { resolveNativeProtocolConnection } from './nativeProtocolConnection';
-import { resolveNativeRecoveryProtocol } from './nativeProtocolRecovery';
+import { nativeQueryCredentialProof, resolveNativeQueryContract, resolveNativeRecoveryProtocol } from './nativeProtocolRecovery';
+import { getProviderDefinition } from './ai/providerCatalogService';
 import { resolveNativeProtocolContext } from './nativeModelProtocolTask';
 import { nativeMediaLocalOutputs } from './nativeMediaCollection';
 import { captureNativeMediaLocalResult, readNativeMediaLocalResult } from './nativeMediaLocalResult';
@@ -25,7 +26,7 @@ import { getProviderPolicy, resolveProviderCatalogId } from './ai/providerPolici
 import { assertMinimaxQueryResponse, usesMinimaxModelProtocol } from './ai/providers/minimaxModelManifest';
 import { RELAYON_VIDEO_RESULT_URL_PATHS, usesRelayonModelProtocol } from './ai/providers/relayonModelManifest';
 import { isSafeNativeProtocolTaskId } from './nativeProtocolContext';
-import { assertModelProtocolResult } from './ai/modelCapabilityValidation';
+import { assertImageOutputCount, assertModelProtocolResult } from './ai/modelCapabilityValidation';
 
 export async function inspectNativeVolcengineTask(operationId: string) {
   const context = captureLegacyCanvasContext(useAppStore.getState());
@@ -41,13 +42,27 @@ export async function inspectNativeVolcengineTask(operationId: string) {
 
 /** 切换画布或取消会立即终止查询；提交未知、结果已交付均不重新生成。 */
 export async function resumeNativeVolcengineTask(operationId: string, externalSignal?: AbortSignal,
-  options: { allowUnstartedStage?: boolean } = {}): Promise<void> {
+  options: {
+    allowUnstartedStage?: boolean;
+    expectedSubmission?: { lease: string; revision: number };
+    maxQueryDurationMs?: number;
+    beforeCanvasCommit?: (record: NativeMediaTaskRecord, relativePath: string) => void;
+  } = {}): Promise<void> {
   externalSignal?.throwIfAborted();
   const state = useAppStore.getState(), context = captureLegacyCanvasContext(state);
   if (!context || context.modelGeneration !== 1 || !context.runtimeEpoch) throw new Error('请先打开原新项目画布');
   const found = await inspectNativeVolcengineTask(operationId);
   externalSignal?.throwIfAborted();
   if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) throw new Error('原画布已切换，原媒体任务保留');
+  if (options.expectedSubmission && (found.status !== 'submitted'
+    || found.lease !== options.expectedSubmission.lease || found.revision !== options.expectedSubmission.revision)) {
+    throw new Error('原任务已由其他操作更新，请检查当前状态');
+  }
+  if (options.expectedSubmission && (found.submissionKind !== 'async' || found.recovery?.kind !== 'general-protocol'
+    || !found.recovery.credentialProof || !found.recovery.serverId || found.recovery.serverId === 'general-async-v1'
+    || found.apimartImageBatch || found.providerConfigId === 'comfyui')) {
+    throw new Error('原任务缺少可验证的查询身份');
+  }
   if (found.status === 'delivered') {
     const { projectNativeMediaMessages } = await import('./nativeMediaMessages');
     await projectNativeMediaMessages(); return;
@@ -95,34 +110,46 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
     return resumeNativeComfyTask(operationId, externalSignal);
   }
   if (!['submitted', 'reviewed'].includes(found.status) || !found.remoteTaskId) throw new Error('原任务未取得可确认的远端 ID，请先到原平台核对，勿重新提交');
-  let record = await claimNativeMediaRecovery(operationId, context, { signal: externalSignal });
+  let record = await claimNativeMediaRecovery(operationId, context, { signal: externalSignal, expectedSubmission: options.expectedSubmission });
   if (record.imageReference) {
     const { verifyNativeVideoImageReference } = await import('./nativeVideoImageReference');
     await verifyNativeVideoImageReference(context, record.nodeId, record.imageReference);
   }
   const assertCurrent = () => {
     externalSignal?.throwIfAborted();
-    if (!isProjectExpectedContextCurrent(context!, useAppStore.getState(), { checkCanvasRevision: false })) throw new Error('原画布已切换，结果已保留');
+    if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) throw new Error('原画布已切换，结果已保留');
   };
   assertCurrent();
   const provider = useAppStore.getState().config.providers[record.providerConfigId];
   if (!provider) throw new Error('原媒体连接不存在，请恢复原连接后续查');
   const generalExpected = record.recovery?.kind === 'general-protocol' || record.modelRef?.startsWith('general/') === true;
-  const general = generalExpected ? resolveNativeProtocolConnection(record) : undefined;
-  const generalProtocol = general && await resolveNativeRecoveryProtocol({
+  const catalogId = resolveProviderCatalogId(record.providerConfigId, provider);
+  const binding = record.recovery?.kind === 'general-protocol' ? record.recovery : undefined;
+  if (binding?.credentialProof && binding.credentialProof !== await nativeQueryCredentialProof(record.operationId, record.providerConfigId, provider.apiKey)) {
+    throw new Error('原账户的 API Key 已变化，请恢复原凭据后继续查询');
+  }
+  const frozenProtocol = binding?.modelId ? await resolveNativeQueryContract(
+    binding.serverId, catalogId, record.category, binding.modelId, binding.digest,
+  ) : undefined;
+  if (binding?.serverId && !frozenProtocol) throw new Error('原媒体查询合同已变化，原任务已保留');
+  const general = generalExpected && !frozenProtocol ? resolveNativeProtocolConnection(record) : undefined;
+  const generalProtocol = frozenProtocol ?? (general && await resolveNativeRecoveryProtocol({
     modelId: general.model.modelId, profile: general.model.executionProfile,
     ...(record.category === 'video' ? { catalogId: resolveProviderCatalogId(record.providerConfigId, provider) } : {}),
     protocolDigest: record.protocolDigest,
     ...(record.recovery?.kind === 'general-protocol' ? { queryDigest: record.recovery.digest } : {}),
-  });
-  if (generalExpected && (!general || !generalProtocol || general.providerConfigId !== record.providerConfigId || general.model.category !== record.category)) throw new Error('原模型或查询协议已变化，请恢复原配置后续查');
+  }));
+  if (generalExpected && !frozenProtocol && (!general || !generalProtocol || general.providerConfigId !== record.providerConfigId
+    || general.model.category !== record.category)) throw new Error('原模型或查询协议已变化，请恢复原配置后续查');
   const apiKey = provider.apiKey || '';
   assertModelProtocolApiKey(generalProtocol?.auth, apiKey);
   const isVolcengine = !generalExpected && record.providerConfigId === 'volcengine';
   const isGrsai = !generalExpected && record.providerConfigId === 'grsai';
   if (record.recovery?.kind === 'builtin-video' && (await nativeBuiltinVideoProtocolDigest(record.providerConfigId) !== record.protocolDigest
     || record.recovery.digest !== record.protocolDigest)) throw new Error('原内置视频查询合同已变化，未重新提交生成');
-  const baseUrl = general?.baseUrl || provider.baseUrl?.trim() || (isVolcengine ? VOLCENGINE_BASE_URL : isGrsai ? GRSAI_BASE_URL : APIMART_BASE_URL);
+  const baseUrl = general?.baseUrl || provider.baseUrl?.trim()
+    || (frozenProtocol ? getProviderDefinition(record.providerConfigId, provider)?.defaultBaseUrl : undefined)
+    || (isVolcengine ? VOLCENGINE_BASE_URL : isGrsai ? GRSAI_BASE_URL : APIMART_BASE_URL);
   if (isGrsai && await sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(GRSAI_H3_PROTOCOL))) !== record.protocolDigest) {
     throw new Error('原视频查询协议已变化，请核对原任务，不会自动重投');
   }
@@ -134,20 +161,29 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
   externalSignal?.addEventListener('abort', stop, { once: true });
   if (externalSignal?.aborted) controller.abort();
   let remoteFailed: 'failed' | 'cancelled' | undefined;
+  const isConnectionCurrent = () => {
+    const current = useAppStore.getState().config.providers[record.providerConfigId];
+    return current?.apiKey === provider.apiKey && current?.baseUrl === provider.baseUrl && current?.catalogId === provider.catalogId;
+  };
   const unsubscribe = useAppStore.subscribe(() => {
-    if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) controller.abort();
+    if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false }) || !isConnectionCurrent()) controller.abort();
   });
   try {
+    controller.signal.throwIfAborted();
+    if (!isConnectionCurrent()) throw new Error('查询开始前原连接配置已变化');
+    if (options.expectedSubmission && !await isNativeMediaLeaseCurrent(record)) throw new Error('原媒体租约已变化');
     const query = async (taskId: string) => generalProtocol ? await (async () => {
-      const catalogId = resolveProviderCatalogId(record.providerConfigId, provider);
-      const poll = { ...resolvePoll(baseUrl, generalProtocol.poll!, generalProtocol.auth, resolveNativeProtocolContext(generalProtocol, taskId, record.pollContext)),
-        ...(catalogId === 'relayonapi' && record.category === 'video' && usesRelayonModelProtocol(general!.model.modelId, general!.model.executionProfile)
+      const resolved = resolvePoll(baseUrl, generalProtocol.poll!, generalProtocol.auth, resolveNativeProtocolContext(generalProtocol, taskId, record.pollContext));
+      const poll = { ...resolved,
+        ...(options.maxQueryDurationMs === undefined ? {} : { maxDurationMs: Math.min(resolved.maxDurationMs ?? Infinity, options.maxQueryDurationMs) }),
+        ...(catalogId === 'relayonapi' && record.category === 'video' && general && usesRelayonModelProtocol(general.model.modelId, general.model.executionProfile)
           ? { resultUrlFallbackPaths: [...new Set(RELAYON_VIDEO_RESULT_URL_PATHS)] } : {}) };
       const result = await pollResolvedModelProtocol(poll, apiKey, controller.signal, baseUrl,
-        catalogId === 'minimax' && usesMinimaxModelProtocol(general!.model.modelId, general!.model.executionProfile) ? assertMinimaxQueryResponse : undefined,
-        getProviderPolicy(catalogId).upload === 'volcengine-tos');
+        catalogId === 'minimax' && general && usesMinimaxModelProtocol(general.model.modelId, general.model.executionProfile) ? assertMinimaxQueryResponse : undefined,
+        getProviderPolicy(catalogId).upload === 'volcengine-tos', taskId);
       assertModelProtocolResult(record.category, result);
       if (!result.urls?.length || result.urls.length > 128) throw new Error('原媒体产物集合为空或超过安全上限，原任务保留');
+      assertImageOutputCount(binding?.imageOutputCountRange, result.urls.length);
       return { urls: result.urls };
     })() : isVolcengine
       ? await pollVolcengineVideoTask({ apiKey, baseUrl, taskId, signal: controller.signal,
@@ -179,7 +215,7 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
     const results: Awaited<ReturnType<typeof query>>[] = [];
     let failedTasks = 0;
     for (const taskId of taskIds as string[]) {
-      assertCurrent(); remoteFailed = undefined;
+      controller.signal.throwIfAborted(); assertCurrent(); remoteFailed = undefined;
       try { results.push(await query(taskId)); }
       catch (error) { if (remoteFailed || error instanceof PollTaskFailedError) { failedTasks++; continue; } throw error; }
     }
@@ -219,7 +255,10 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
     if (record.origin?.deliveryMode === 'chat') {
       const { commitNativeMediaMessageDelivery } = await import('./nativeMediaDelivery');
       await commitNativeMediaMessageDelivery(record, relative, { signal: controller.signal });
-    } else await useAppStore.getState().commitNativeMediaResult(record, relative, context, controller.signal);
+    } else {
+      options.beforeCanvasCommit?.(record, relative);
+      await useAppStore.getState().commitNativeMediaResult(record, relative, context, controller.signal);
+    }
     const { projectNativeMediaMessages } = await import('./nativeMediaMessages');
     await projectNativeMediaMessages().catch(() => { /* 完成回执已耐久提交，重开原对话可再次投影。 */ });
   } catch (error) {

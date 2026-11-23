@@ -2,6 +2,7 @@
  * agentRoundExecutor — 执行 Agent 模型轮次、工具调用与结果回传。
  */
 import { RESPONSES_OUTPUT } from '../ai/responsesApiProtocol';
+import { ChatRequestBudgetError } from '../ai/chatApiProtocol';
 import { estimateTokens } from './tokenEstimate';
 /**
  * 执行 Agent 的单个模型轮次，串联上下文、流式响应、工具提案与执行结果。
@@ -1070,11 +1071,14 @@ export async function executeAgentRound({
     return { outcome: 'paused', fullText, totalToolResultChars };
   }
 
-  const contextSpec = resolveAssistantContextSpec(task.projectId, modelId);
-  const supportsTools = resolveAssistantModel(task.projectId, modelId)?.supportsTools !== false;
+  const resolvedModel = resolveAssistantModel(task.projectId, modelId);
+  const contextSpec = resolvedModel?.contextSpec;
+  const inputBudget = contextSpec ? contextSpec.contextWindow - contextSpec.outputBudget
+    : resolveAssistantContextSpec(task.projectId, modelId).inputBudget;
+  const supportsTools = resolvedModel?.supportsTools !== false;
   const tools = supportsTools ? buildAssistantFunctionTools(roundContext) : [];
   const toolGuidance = supportsTools
-    ? buildAssistantToolGuidance(tools.map((tool) => tool.function.name), roundContext.mode, contextSpec.inputBudget)
+    ? buildAssistantToolGuidance(tools.map((tool) => tool.function.name), roundContext.mode, inputBudget)
     : '当前文本模型仅提供文本或图片问答，不能调用应用工具。请直接回答，不能宣称已读取文件、操作画布或执行工具；需要操作时说明此能力限制。';
   let guidanceMessage = toolGuidanceMessages.get(messages);
   if (!guidanceMessage) {
@@ -1086,7 +1090,7 @@ export async function executeAgentRound({
   }
 
   // 每轮请求前按当前模型上限复核（工具 Observation 会持续增大上下文；模型可能中途切换）
-  if (estimateModelMessagesTokens(messages) > contextSpec.inputBudget) {
+  if (estimateModelMessagesTokens(messages) > inputBudget) {
     transitionTask(taskId, 'paused', {
       pausedReason: 'context_budget_exhausted',
       errorCode: 'CONTEXT_BUDGET_EXHAUSTED',
@@ -1110,6 +1114,7 @@ export async function executeAgentRound({
   const modelStartedAt = Date.now();
   let modelDispatch: AgentDispatchRecord | undefined;
   let modelReturned = false;
+  let requestBudgetError: ChatRequestBudgetError | undefined;
   let roundInputTokens = 0;
   let roundOutputTokens = 0;
   appendAgentEvent(taskId, 'model_round_start');
@@ -1135,6 +1140,7 @@ export async function executeAgentRound({
       messages,
       projectId: task.projectId,
       modelId,
+      resolvedModel,
       tools,
       sensitive: !!task.workbenchTarget,
       resolveVisualReferences: !task.workbenchTarget && !(task.parentTaskId && isGeneralAssistantScope(task.projectId)),
@@ -1164,6 +1170,9 @@ export async function executeAgentRound({
       },
     });
     modelReturned = true;
+  } catch (error) {
+    if (!(error instanceof ChatRequestBudgetError)) throw error;
+    requestBudgetError = error;
   } finally {
     const durationMs = Date.now() - modelStartedAt;
     addAgentTaskMetrics(taskId, {
@@ -1186,8 +1195,9 @@ export async function executeAgentRound({
       durationMs,
     });
     if (modelDispatch) await settleAgentDispatch(taskId, modelDispatch,
-      !modelReturned || completion.reason === 'canceled' ? 'unknown'
-        : streamError || completion.reason === 'error' ? 'failed' : 'succeeded');
+      requestBudgetError ? 'failed'
+        : !modelReturned || completion.reason === 'canceled' ? 'unknown'
+          : streamError || completion.reason === 'error' ? 'failed' : 'succeeded');
   }
 
   assertAgentTaskActive(taskId, signal);
@@ -1195,6 +1205,14 @@ export async function executeAgentRound({
   assertAgentProjectContext(useAppStore.getState(), contextBase, { checkRevision: false });
   if (completedRoundTask.workbenchTarget && !isWorkbenchAgentTaskInScope(useAppStore.getState(), completedRoundTask)) {
     throw new Error('模型响应期间工作台目标或会话已失效，未继续处理结果');
+  }
+  if (requestBudgetError) {
+    transitionTask(taskId, 'paused', {
+      pausedReason: 'context_budget_exhausted',
+      errorCode: requestBudgetError.code,
+    });
+    callbacks.onError?.(requestBudgetError.message);
+    return { outcome: 'paused', fullText, totalToolResultChars };
   }
   if (completion.reason === 'canceled') throw new DOMException('模型请求已取消', 'AbortError');
   if (streamError || completion.reason === 'error') throw Object.assign(new Error(streamError || '模型请求失败'), { code: streamErrorCode });
@@ -1248,7 +1266,7 @@ export async function executeAgentRound({
 
   // Measure after the assistant proposal; parallel reads reserve from the same pool.
   roundContext.skillReadBudget = createSkillReadBudget(Math.max(0,
-    contextSpec.inputBudget - estimateModelMessagesTokens(messages) - estimateTokens(JSON.stringify(tools)) - Math.max(256, Math.min(2048, Math.floor(contextSpec.inputBudget * 0.08)))));
+    inputBudget - estimateModelMessagesTokens(messages) - estimateTokens(JSON.stringify(tools)) - Math.max(256, Math.min(2048, Math.floor(inputBudget * 0.08)))));
   const results = new Map<string, ExecutedToolCall>();
   const allowedCalls: Array<{
     call: ProposedToolCall;

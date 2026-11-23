@@ -11,7 +11,7 @@ import type { AppConfig } from '../../types';
 import { getRunningHubModel } from './providers/runninghubModelManifest';
 import { getGrsaiImageCapability } from './grsaiModels';
 import { MUSE_IMAGE_CAPABILITY, MUSE_IMAGE_MODEL } from './museModels';
-import { getProviderDefinition } from './providerCatalogService';
+import { getProviderDefinition, resolveKlingModelContract } from './providerCatalogService';
 import { isCccBananaModelId } from './cccProviderGroups';
 import { comparableProtocol, modelProtocolUsesVariable, resolveModelExecutionProfile } from './modelProtocol';
 import { resolveToapisImageModelContract } from './providers/toapisModelManifest';
@@ -21,6 +21,7 @@ import { getMinimaxAudioCapability, resolveMinimaxExecutionProfile, usesMinimaxM
 import { resolveConfiguredImageBackground, resolveConfiguredImageQuality } from './modelCapabilityValidation';
 import { getImageSizePresets, resolveImageDimensions } from './modelSizeProfiles';
 import { getImageCapabilityTemplate } from './modelCapabilityTemplates';
+import { resolveEffectivePromptLimits } from './imagePromptLimits';
 
 /* ── 生图能力表 ── */
 
@@ -382,7 +383,9 @@ export function getImageCapability(model?: string): ImageCapability | undefined 
     const resolution = definition.parameters.find((field) => field.name === 'resolution');
     const ratio = definition.parameters.find((field) => ['aspectRatio', 'ratio'].includes(field.name));
     const references = definition.parameters.filter((field) => field.binding === 'image');
-    return { modelId: definition.id, resolutions: resolution?.schema.enum?.map(String) ?? [], defaultResolution: String(resolution?.defaultValue ?? ''),
+    const prompt = definition.parameters.find((field) => field.binding === 'prompt');
+    return { modelId: definition.id, promptMaxCharacters: prompt?.schema.maxLength,
+      resolutions: resolution?.schema.enum?.map(String) ?? [], defaultResolution: String(resolution?.defaultValue ?? ''),
       ratios: ratio?.schema.enum?.map(String) ?? [], defaultRatio: String(ratio?.defaultValue ?? ''), resolutionStyle: resolution ? 'K' : 'none',
       supportsBatch: true, maxBatchCount: 16, supportsImageReference: references.length > 0,
       maxImageReferences: references.length ? Math.max(...references.map((field) => field.schema.type === 'array' ? (field.schema.maxItems ?? 64) : (field.referenceIndex ?? 0) + 1)) : 0,
@@ -408,11 +411,17 @@ export function resolveImageOutputsPerJob(
   const generalModel = provider === 'general'
     ? config.generalModels?.find((item) => item.id === model.replace(/^general\//, '')) : undefined;
   const connectionId = generalModel?.providerConfigId ?? provider;
-  if (!connectionId || getProviderDefinition(connectionId, config.providers[connectionId])?.id !== 'relayonapi') return 1;
+  if (!connectionId) return 1;
+  const definition = getProviderDefinition(connectionId, config.providers[connectionId]);
   const modelId = generalModel?.modelId ?? (model.startsWith(`${connectionId}/`) ? model.slice(connectionId.length + 1) : model);
   const profile = generalModel?.executionProfile
-    ?? config.providers[connectionId]?.selectedModels?.find((item) => item.id === modelId)?.executionProfile;
-  return getRelayonImageOutputsPerJob(modelId, profile);
+    ?? config.providers[connectionId]?.selectedModels?.find((item) => item.id === modelId)?.executionProfile
+    ?? (definition?.id === 'kling' ? definition.models?.find((item) => item.id === modelId)?.executionProfile : undefined);
+  const kling = definition?.id === 'kling' ? resolveKlingModelContract(modelId, profile) : undefined;
+  if (kling?.category === 'image' && modelId === 'kling-image-4.0-series') return 10;
+  const range = kling?.imageCapability?.outputCountRange ?? generalModel?.imageCapability?.outputCountRange;
+  if (range) return range.min;
+  return definition?.id === 'relayonapi' ? getRelayonImageOutputsPerJob(modelId, profile) : 1;
 }
 
 /** 参数面板按生成入口相同的连接身份解析，兼容旧节点的原始 ID 和通用模型引用。 */
@@ -435,7 +444,7 @@ export function resolveImageParameterCapability(
   // CCC 已确认的原生 Images 合同在生成入口优先于旧连接协议，参数面板必须使用相同边界。
   const catalogStandard = definition?.id === 'cccapi' && catalogModel?.imageReferenceRequestMode === 'edits-multipart';
   const profile = catalogStandard ? undefined : generalModel?.executionProfile
-    ?? (definition?.id === 'cccapi' ? selection?.executionProfile : undefined);
+    ?? (definition?.id === 'cccapi' || definition?.id === 'kling' ? selection?.executionProfile ?? catalogModel?.executionProfile : undefined);
   if (definition?.id === 'grsai') {
     return getImageCapability(modelId.startsWith('grsai/') ? modelId : `grsai/${modelId}`);
   }
@@ -453,7 +462,8 @@ export function resolveImageParameterCapability(
       return { ...effective, resolutions: effective.resolutions ?? [], ratios: effective.ratios ?? [] };
     }
   }
-  if (generalModel) {
+  const klingContract = definition?.id === 'kling' ? resolveKlingModelContract(modelId, profile) : undefined;
+  if (generalModel && !klingContract) {
     // 自定义网关的同名模型不能继承其他厂商能力。
     if (definition?.id === 'custom-openai' || definition?.id !== 'cccapi' && profile?.preset === 'custom'
       && comparableProtocol(profile) !== comparableProtocol(catalogModel?.executionProfile)) {
@@ -464,10 +474,13 @@ export function resolveImageParameterCapability(
   }
   const fallback = definition ? getImageCapability(`${definition.id}/${modelId}`) : getImageCapability(model);
   const catalog = catalogModel?.imageCapability;
+  const verified = klingContract?.imageCapability;
   const parameterDeclaration = catalogStandard ? catalog : declared;
   const standard = !profile || profile.preset === 'openai-image' || profile.preset === 'openai-gpt-image';
   let capability = imageCapabilityForProtocol({ modelId, resolutionStyle: fallback?.resolutionStyle ?? 'none',
     ...fallback, ...catalog, ...declared,
+    ...(verified ? resolveEffectivePromptLimits(verified, declared) : {}),
+    ...(verified?.outputCountRange ? { outputCountRange: verified.outputCountRange } : {}),
     // 通用同名回退可能来自 APIMart；CCC 未声明精确像素时不得借用另一渠道的表。
     ...(definition?.id === 'cccapi' ? {
       dimensionPresets: catalogStandard ? catalog?.dimensionPresets : declared?.dimensionPresets ?? catalog?.dimensionPresets,
@@ -583,7 +596,8 @@ export function buildImageCapabilityRequest(
   const maxBatch = capability.supportsBatch === false
     ? 1
     : (capability.maxBatchCount ?? 1);
-  const requestedCount = Math.min(maxBatch, Math.max(1, Math.floor(params.count ?? 1)));
+  const minimum = capability.minBatchCount ?? 1;
+  const requestedCount = Math.min(maxBatch, Math.max(minimum, Math.floor(params.count ?? minimum)));
 
   // 分辨率未声明该档位时回退默认值；显式选择的比例不能被模型默认值覆盖。
   // 分辨率档位做大小写不敏感匹配（'2K' 与 '2k' 视为同一档），避免用户默认值被误判为不支持。

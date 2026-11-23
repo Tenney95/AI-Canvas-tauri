@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildChatApiRequest,
+  getMagpieChatBudgetOptions,
   parseChatApiResponse,
   resolveChatApiProtocol,
 } from '../../src/services/ai/chatApiProtocol';
@@ -18,6 +19,42 @@ const tools = [{
 }];
 
 describe('chat API protocol adapter', () => {
+  const baseRequest = { apiKey: 'fixture', baseUrl: 'https://magpie.example/v1', model: 'upstream/model',
+    messages: [{ role: 'user' as const, content: 'hello' }], stream: false };
+  const budget = { contextWindow: 32_000, outputBudget: 1_024, source: 'declared' as const };
+
+  it.each([
+    ['openai-compatible', '/chat/completions', 'max_completion_tokens'],
+    ['openai-responses', '/responses', 'max_output_tokens'],
+    ['anthropic-compatible', '/messages', 'max_tokens'],
+  ] as const)('下发 %s 对应的输出预算，同时保留无目录输出上限的兼容行为', (protocol, path, field) => {
+    const request = buildChatApiRequest({ ...baseRequest, protocol, ...getMagpieChatBudgetOptions(protocol, budget, true) });
+    expect(request.url).toBe(`https://magpie.example/v1${path}`);
+    expect(JSON.parse(String(request.init.body))).toHaveProperty(field, 1_024);
+    const compatible = buildChatApiRequest({ ...baseRequest, protocol,
+      ...getMagpieChatBudgetOptions(protocol, { ...budget, outputBudget: 8_000 }, false) });
+    if (protocol === 'anthropic-compatible') expect(JSON.parse(String(compatible.init.body))).toHaveProperty(field, 4096);
+    else expect(JSON.parse(String(compatible.init.body))).not.toHaveProperty(field);
+  });
+
+  it('Anthropic 未声明输出上限时，为小上下文留下可用的输入预算', () => {
+    const protocol = 'anthropic-compatible';
+    const options = getMagpieChatBudgetOptions(protocol, { ...budget, contextWindow: 4_096 }, false);
+    const request = buildChatApiRequest({ ...baseRequest, protocol, ...options });
+    expect(options.estimatedInputTokenLimit).toBe(3_072);
+    expect(JSON.parse(String(request.init.body))).toHaveProperty('max_tokens', 1_024);
+  });
+
+  it('估算最终装配请求，工具描述和图片超出剩余输入预算时均阻止请求', () => {
+    const options = getMagpieChatBudgetOptions('openai-compatible', { ...budget, contextWindow: 2_000 }, true);
+    expect(() => buildChatApiRequest({ ...baseRequest, ...options })).not.toThrow();
+    expect(() => buildChatApiRequest({ ...baseRequest, ...options, tools: [
+      { ...tools[0], function: { ...tools[0].function, description: '长'.repeat(2_000) } },
+    ] })).toThrow('超过本轮输入预算');
+    expect(() => buildChatApiRequest({ ...baseRequest, ...options, messages: [{ role: 'user', content: [
+      { type: 'image_url', image_url: { url: 'https://cdn.example/ref.jpg' } },
+    ] }] })).toThrow('超过本轮输入预算');
+  });
   it('keeps old connections on OpenAI-compatible requests', () => {
     expect(resolveChatApiProtocol(undefined)).toBe('openai-compatible');
     const request = buildChatApiRequest({

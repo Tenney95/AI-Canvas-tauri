@@ -80,6 +80,41 @@ describe('config hydration guard', () => {
     expect(fileMocks.syncAuthorizedDirectories).not.toHaveBeenCalled();
     expect(useAppStore.getState().config).toMatchObject({ baseDataDir: '/original', language: 'en-US' });
   });
+  it('Magpie 独立按连接投影目录与手动窗口，恢复自动时不会复用旧投影', () => {
+    const save = useAppStore.getState().saveProviderConfig;
+    const selected = { id: 'shared', name: 'Shared', category: 'text' as const, provider: 'magpie-a' };
+    const group = { ...selected, id: 'group/mixed' };
+    const directory = (window: number) => [selected, group].map((model) => ({
+      ...model, catalogTextLimits: { source: 'magpie' as const, contextWindow: window, maxOutputTokens: 8_000 },
+    }));
+    const config = { name: 'Magpie', catalogId: 'magpie', apiKey: 'fixture', baseUrl: 'https://magpie.example' };
+    save('magpie-a', { ...config, selectedModels: [{ ...selected, contextWindow: 96_000 }, group], catalogModels: directory(128_000) });
+    save('magpie-b', { ...config, selectedModels: [{ ...selected, provider: 'magpie-b' }], catalogModels: directory(256_000) });
+    const model = (connection: string, id: string) => useAppStore.getState().config.generalModels!
+      .find((item) => item.providerConfigId === connection && item.modelId === id)!;
+    const stableId = model('magpie-a', 'shared').id;
+    expect(model('magpie-a', 'shared')).toMatchObject({ contextWindow: 96_000, catalogMaxOutputTokens: 8_000 });
+    expect(model('magpie-a', group.id).contextWindow).toBe(32_000);
+    expect(model('magpie-b', 'shared').contextWindow).toBe(256_000);
+    expect(useAppStore.getState().config.providers['magpie-a'].baseUrl).toBe('https://magpie.example/v1');
+
+    save('magpie-a', { ...config, selectedModels: [selected, group], catalogModels: directory(128_000) });
+    expect(model('magpie-a', 'shared')).toMatchObject({ id: stableId, contextWindow: 128_000 });
+    save('magpie-a', { ...config, selectedModels: [selected, group], catalogModels: [] });
+    expect(model('magpie-a', 'shared')).toMatchObject({ id: stableId, contextWindow: 32_000 });
+    expect(model('magpie-a', 'shared').catalogMaxOutputTokens).toBeUndefined();
+  });
+  it('Magpie 的远端媒体候选不能直接保存为可调用模型', () => {
+    const save = useAppStore.getState().saveProviderConfig;
+    const candidate = { id: 'provider/video', name: 'Video', category: 'video' as const, provider: 'magpie-test' };
+    const config = { name: 'Magpie', catalogId: 'magpie', apiKey: 'fixture', baseUrl: 'https://magpie.example' };
+    expect(() => save('magpie-test', { ...config, selectedModels: [candidate], catalogModels: [candidate] }))
+      .toThrow('请先配置调用协议');
+    expect(() => save('magpie-test', { ...config,
+      selectedModels: [{ ...candidate, executionProfile: { preset: 'openai-chat' } }], catalogModels: [candidate],
+    })).toThrow('需要媒体调用协议');
+    expect(useAppStore.getState().config.providers['magpie-test']).toBeUndefined();
+  });
 
   it.each(['custom-openai', 'cccapi', 'xai', 'google', 'sora2u', 'toapis', 'libapi'])(
     '%s 的声明式模型同步保留稳定身份、连接隔离及取消勾选语义', (catalogId) => {

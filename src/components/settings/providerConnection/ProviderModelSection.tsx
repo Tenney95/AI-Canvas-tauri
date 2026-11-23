@@ -6,7 +6,7 @@
  */
 import Select from '../../shared/Select';
 import { Icon } from '@iconify/react';
-import { useCallback, useEffect, useRef, type Dispatch, type SetStateAction } from 'react';
+import { useCallback, useEffect, useId, useRef, type Dispatch, type SetStateAction } from 'react';
 import { GENERAL_MODEL_CATEGORY_LABELS } from '../../../types';
 import type {
   GeneralModelCategory,
@@ -14,12 +14,16 @@ import type {
   ProviderModelSelection,
 } from '../../../types';
 import type { ImageModelCapability, VideoModelCapability } from '../../../types/aiTypes';
-import type { ProviderDefinition } from '../../../services/ai/providerCatalogService';
-import { normalizeBaseUrl } from '../../../services/ai/providerBaseUrl';
+import { resolveKlingModelContract, type ProviderDefinition } from '../../../services/ai/providerCatalogService';
+import { resolveEffectivePromptLimits } from '../../../services/ai/imagePromptLimits';
+import { resolveConfiguredVideoCapability } from '../../../services/ai/videoModelCapabilityResolver';
+import { normalizeBaseUrl, normalizeMagpieBaseUrl } from '../../../services/ai/providerBaseUrl';
+import { isMagpieRoutingGroup, resolveMagpieContextWindow } from '../../../services/ai/providerPolicies';
 import { createSeedanceQuickAdaptTemplate } from '../../../services/ai/seedanceModelCapabilities';
 import { createH3QuickAdaptTemplate } from '../../../services/ai/h3ModelCapabilities';
 import { useT } from '../../../i18n';
 import AnimatedButton from '../../shared/AnimatedButton';
+import PopupCloseButton from '../../shared/PopupCloseButton';
 import ModelProtocolEditor from '../ModelProtocolEditor';
 import VideoCapabilityEditor from './VideoCapabilityEditor';
 import ImageCapabilityEditor from './ImageCapabilityEditor';
@@ -39,6 +43,7 @@ interface ProviderModelSectionProps {
   visibleModelCategories: Set<GeneralModelCategory>;
   catalogStatus: CatalogStatus;
   catalogMessage: string;
+  magpieCatalogIds?: ReadonlySet<string>;
   missingCredentials: boolean;
   apiKey: string;
   baseUrl: string;
@@ -80,6 +85,97 @@ interface ProviderModelSectionProps {
   onFetchModels: () => void;
 }
 
+function PromptBudgetInput({ label, value, maximum, update }: {
+  label: string; value: number; maximum: number; update: (value: number) => void;
+}) {
+  const id = useId();
+  return <div className="ui-field">
+    <label className="ui-label" htmlFor={id}>{label} (1–{maximum.toLocaleString()})</label>
+    <input id={id} key={value} className="ui-input w-full" type="number" min={1} max={maximum} step={1}
+      defaultValue={value} onBlur={({ currentTarget }) => {
+        const next = currentTarget.valueAsNumber;
+        if (!Number.isSafeInteger(next) || !currentTarget.validity.valid) {
+          currentTarget.value = String(value);
+          return;
+        }
+        if (next !== value) update(next);
+      }} />
+  </div>;
+}
+
+function KlingLengthEditor({ model, verified, onImage, onVideo, onClose }: {
+  model: ProviderModelSelection;
+  verified: ProviderModelSelection;
+  onImage: (capability: ImageModelCapability) => void;
+  onVideo: (capability: VideoModelCapability) => void;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const id = useId();
+  const video = verified.videoCapability;
+  const image = verified.imageCapability;
+  const published = video ?? image;
+  const effectiveVideo = video && resolveConfiguredVideoCapability('kling', model.id, model.executionProfile, model.videoCapability);
+  const configured = effectiveVideo ?? model.imageCapability;
+  const limits = resolveEffectivePromptLimits(published ?? {}, configured);
+  const maximum = published?.promptMaxCharacters;
+  const nonAsciiMaximum = published?.promptMaxNonAsciiCharacters;
+  const minDuration = effectiveVideo?.minDuration;
+  const maxDuration = effectiveVideo?.maxDuration;
+  const updateLimit = (promptMaxCharacters?: number, promptMaxNonAsciiCharacters?: number) => {
+    const next = resolveEffectivePromptLimits(published ?? {}, { promptMaxCharacters, promptMaxNonAsciiCharacters });
+    if (effectiveVideo) onVideo({ ...effectiveVideo, ...next });
+    else if (image) onImage({ ...image, ...model.imageCapability, ...next });
+  };
+  const updateDuration = (minDuration: number, maxDuration: number) => {
+    if (!effectiveVideo) return;
+    const next = resolveConfiguredVideoCapability('kling', model.id, model.executionProfile, {
+      ...effectiveVideo, durations: undefined, minDuration, maxDuration,
+    });
+    if (next) onVideo(next);
+  };
+  const title = t(video ? '视频参数能力' : '图片参数能力');
+  return <section aria-labelledby={`${id}-title`} className="rounded-lg border border-canvas-border p-3">
+    <div className="mb-3 flex items-center justify-between gap-3">
+      <strong id={`${id}-title`}>{model.name} · {title}</strong>
+      <PopupCloseButton ariaLabel={t('关闭')} onClick={onClose} />
+    </div>
+    <div className="grid gap-3 sm:grid-cols-2">
+      {maximum !== undefined && limits.promptMaxCharacters !== undefined ? <PromptBudgetInput label={t('提示词最多字符')}
+        value={limits.promptMaxCharacters} maximum={maximum} update={(next) => updateLimit(next, limits.promptMaxNonAsciiCharacters)} /> : null}
+      {nonAsciiMaximum !== undefined && limits.promptMaxNonAsciiCharacters !== undefined ? <PromptBudgetInput label={t('非 ASCII 提示词预算')}
+        value={limits.promptMaxNonAsciiCharacters} maximum={Math.min(nonAsciiMaximum, limits.promptMaxCharacters ?? nonAsciiMaximum)}
+        update={(next) => updateLimit(limits.promptMaxCharacters, next)} /> : null}
+      {video?.durations && minDuration !== undefined && maxDuration !== undefined ? <>
+        <div className="ui-field">
+          <label className="ui-label" htmlFor={`${id}-min`}>{t('最短生成时长（秒）')}</label>
+          <Select className="w-full" id={`${id}-min`} value={minDuration}
+            onChange={(seconds) => updateDuration(Number(seconds), maxDuration)}>
+            {video.durations.filter((seconds) => seconds <= maxDuration).map((seconds) => (
+              <option key={seconds} value={String(seconds)}>{seconds}</option>
+            ))}
+          </Select>
+        </div>
+        <div className="ui-field">
+          <label className="ui-label" htmlFor={`${id}-max`}>{t('最长时长（秒）')}</label>
+          <Select className="w-full" id={`${id}-max`} value={maxDuration}
+            onChange={(seconds) => updateDuration(minDuration, Number(seconds))}>
+            {video.durations.filter((seconds) => seconds >= minDuration).map((seconds) => (
+              <option key={seconds} value={String(seconds)}>{seconds}</option>
+            ))}
+          </Select>
+        </div>
+      </> : null}
+    </div>
+    {nonAsciiMaximum !== undefined ? <p className="ui-hint mt-2">{t('混合提示词按 ASCII/最多字符 + 非 ASCII/非 ASCII 预算 ≤ 1 校验。')}</p> : null}
+    {video?.resolutions ? <p className="ui-hint mt-2">{t('分辨率')} · {video.resolutions.join(' / ')}</p> : null}
+    <button type="button" className="provider-text-btn mt-2" onClick={() => {
+      if (video) onVideo(video);
+      else if (image) onImage(image);
+    }}>{t('恢复默认配置')}</button>
+  </section>;
+}
+
 export default function ProviderModelSection({
   definition,
   models,
@@ -93,6 +189,7 @@ export default function ProviderModelSection({
   visibleModelCategories,
   catalogStatus,
   catalogMessage,
+  magpieCatalogIds,
   missingCredentials,
   apiKey,
   baseUrl,
@@ -131,6 +228,15 @@ export default function ProviderModelSection({
   onFetchModels,
 }: ProviderModelSectionProps) {
   const t = useT();
+  const isMagpie = definition.id === 'magpie';
+  const editableProtocols = definition.id === 'custom-openai' || isMagpie;
+  const klingContracts = new Map<string, ProviderModelSelection>();
+  if (definition.id === 'kling') {
+    for (const model of selectedModels) {
+      const contract = resolveKlingModelContract(model.id, model.executionProfile);
+      if (contract?.category === model.category) klingContracts.set(model.id, contract);
+    }
+  }
   const settingsRef = useRef<HTMLDivElement>(null);
   const settingsScrollFrameRef = useRef<number | null>(null);
 
@@ -220,7 +326,7 @@ export default function ProviderModelSection({
       </div>
 
       {catalogMessage && (
-        <div className={`provider-catalog-message is-${catalogStatus}`}>
+        <div className={`provider-catalog-message is-${catalogStatus}`} role="status">
           <Icon
             icon={catalogStatus === 'error' ? 'mdi:alert-circle-outline' : 'mdi:information-outline'}
             width="14"
@@ -301,11 +407,15 @@ export default function ProviderModelSection({
                   <span className="provider-model-copy">
                     <strong>{model.name}</strong>
                     <small>{model.id}</small>
-                    {definition.id === 'custom-openai' && describeModelParameterGaps(model) ?
+                    {magpieCatalogIds && !magpieCatalogIds.has(model.id) && !model.categoryManual
+                      ? <small>{t('当前目录未列出此模型')}</small> : null}
+                    {isMagpie && model.category !== 'text' && !model.executionProfile
+                      ? <small>{t('目录候选，需配置调用协议')}</small> : null}
+                    {editableProtocols && describeModelParameterGaps(model) ?
                       <small>{t(describeModelParameterGaps(model))}</small> : null}
                   </span>
                 </label>
-                {definition.id === 'custom-openai' && selectedIds.has(model.id) ? (
+                {(editableProtocols || klingContracts.has(model.id)) && selectedIds.has(model.id) ? (
                   <>
                     {model.category === 'image' ? (
                       <AnimatedButton type="button"
@@ -384,12 +494,25 @@ export default function ProviderModelSection({
                             type="text"
                             inputMode="numeric"
                             value={model.contextWindow ?? ''}
-                            placeholder={t("留空则按模型 ID 推断")}
+                            placeholder={isMagpie ? undefined : t("留空则按模型 ID 推断")}
                             onChange={(event) => onUpdateModelContextWindow(
                               model.id,
                               event.target.value,
                             )}
                           />
+                          {isMagpie && (
+                            <small>
+                              {t('留空恢复自动。')}
+                              {' '}
+                              {t('目录窗口 {context}，输出上限 {output} token', {
+                                context: model.catalogTextLimits?.contextWindow ?? '—',
+                                output: model.catalogTextLimits?.maxOutputTokens ?? '—',
+                              })}
+                              {' '}
+                              {t('本地上下文预算 {context} token', { context: resolveMagpieContextWindow(model) ?? '—' })}
+                              {isMagpieRoutingGroup(model.id) ? ` ${t('路由组的目录值仅供参考。')}` : ''}
+                            </small>
+                          )}
                         </label>
                       </>
                     ) : null}
@@ -412,14 +535,24 @@ export default function ProviderModelSection({
           </div>
 
           <div ref={settingsRef} className="scroll-mt-3">
-            {definition.id === 'custom-openai' && imageCapabilityModel?.category === 'image'
+            {imageCapabilityModel && klingContracts.has(imageCapabilityModel.id) ? (
+              <KlingLengthEditor key={imageCapabilityModel.id} model={imageCapabilityModel} verified={klingContracts.get(imageCapabilityModel.id)!}
+                onImage={(capability) => onUpdateImageCapability(imageCapabilityModel.id, capability)}
+                onVideo={() => undefined} onClose={() => setImageCapabilityModelId(null)} />
+            ) : null}
+            {videoCapabilityModel && klingContracts.has(videoCapabilityModel.id) ? (
+              <KlingLengthEditor key={videoCapabilityModel.id} model={videoCapabilityModel} verified={klingContracts.get(videoCapabilityModel.id)!}
+                onImage={() => undefined} onVideo={(capability) => onUpdateVideoCapability(videoCapabilityModel.id, capability)}
+                onClose={() => setVideoCapabilityModelId(null)} />
+            ) : null}
+            {editableProtocols && imageCapabilityModel?.category === 'image'
               && selectedIds.has(imageCapabilityModel.id) ? (
                 <ImageCapabilityEditor key={imageCapabilityModel.id} model={imageCapabilityModel}
                   onChange={(capability) => onUpdateImageCapability(imageCapabilityModel.id, capability)}
                   onApplyTemplate={(templateId) => onApplyImageTemplate(imageCapabilityModel.id, templateId)}
                   onClose={() => setImageCapabilityModelId(null)} />
               ) : null}
-            {definition.id === 'custom-openai'
+            {editableProtocols
               && videoCapabilityModel
               && videoCapabilityModel.category === 'video'
               && selectedIds.has(videoCapabilityModel.id) ? (
@@ -444,17 +577,18 @@ export default function ProviderModelSection({
                 />
               ) : null}
 
-            {definition.id === 'custom-openai'
-              && protocolModel
+            {protocolModel && (editableProtocols || klingContracts.has(protocolModel.id))
               && selectedIds.has(protocolModel.id) ? (
                 <ModelProtocolEditor
                   key={protocolModel.id}
                   model={protocolModel}
+                  readOnlyProtocol={klingContracts.has(protocolModel.id)}
                   inheritanceLabel={protocolModel.category === 'text'
                     ? '跟随连接对话协议'
                     : undefined}
+                  catalogId={definition.id}
                   apiKey={apiKey.trim()}
-                  baseUrl={normalizeBaseUrl(baseUrl) || definition.defaultBaseUrl || ''}
+                  baseUrl={(isMagpie ? normalizeMagpieBaseUrl(baseUrl) : normalizeBaseUrl(baseUrl)) || definition.defaultBaseUrl || ''}
                   onChange={(profile) => onUpdateModelProtocol(protocolModel.id, profile)}
                   onVideoCapabilityChange={(capability) => onUpdateVideoCapability(protocolModel.id, capability)}
                   onImageReferenceRequestModeChange={(mode) => (

@@ -131,14 +131,19 @@ export function resolveModelExecutionProfile(
 }
 
 /** 规范化完整协议的稳定比较键；无可解析协议时返回 undefined。 */
-export function comparableProtocol(profile: ModelExecutionProfile | undefined): string | undefined {
+export function comparableProtocol(profile: ModelExecutionProfile | undefined, options?: { ignorePollSchedule?: boolean }): string | undefined {
   try {
     if (profile?.preset === 'plugin') return JSON.stringify({ preset: 'plugin', pluginId: profile.plugin?.pluginId, presetId: profile.plugin?.presetId });
     const protocol = resolveModelExecutionProfile(profile);
-    return protocol ? JSON.stringify(protocol, (_key, value: unknown) => (
+    if (!protocol) return undefined;
+    const comparable = options?.ignorePollSchedule && protocol.poll ? {
+      ...protocol,
+      poll: { ...protocol.poll, intervalMs: undefined, maxAttempts: undefined, maxDurationMs: undefined, retry: undefined },
+    } : protocol;
+    return JSON.stringify(comparable, (_key, value: unknown) => (
       value && typeof value === 'object' && !Array.isArray(value)
         ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right))) : value
-    )) : undefined;
+    ));
   } catch {
     return undefined;
   }
@@ -154,7 +159,7 @@ export function prepareRelayonVideoSubmission(options: SubmitModelProtocolOption
   const renderedBody = renderRequestBody(submit, options.variables);
   if (!isRecord(renderedBody)) throw new Error('万象视频上传缺少表单字段');
   const url = buildSameOriginUrl(options.baseUrl, submit, options.variables);
-  const init = buildRequestInit({ ...submit, body: undefined }, auth, options.apiKey, options.variables, options.signal, options.idempotencyKey);
+  const init = buildRequestInit(submit, auth, options.apiKey, options.variables, undefined, options.signal, options.idempotencyKey);
   const built = { protocol, url: applyQueryAuthentication(url, auth, options.apiKey), init, renderedBody };
   return { renderedBody, submit: () => submitBuiltModelProtocol(options, built) };
 }
@@ -289,6 +294,7 @@ export async function executeModelProtocol(
       options.baseUrl,
       undefined,
       options.sensitive,
+      submitted.taskId,
     ),
     taskId: submitted.taskId,
   };

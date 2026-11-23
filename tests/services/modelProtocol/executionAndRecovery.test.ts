@@ -370,6 +370,116 @@ describe('declarative model execution protocol', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('reports exhausted query attempts without waiting for Retry-After', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ message: 'slow down' }, 429, { 'Retry-After': '120' }));
+      vi.stubGlobal('fetch', fetchMock);
+      const pending = pollResolvedModelProtocol({
+        method: 'GET', url: 'https://api.example/tasks/original',
+        statusPath: 'status', successValues: ['completed'], failureValues: ['failed'], resultUrlPath: 'url',
+        intervalMs: 1000, maxAttempts: 1, retry: { maxRetries: 1 },
+      }, 'fixture', undefined, 'https://api.example');
+      const settled = vi.fn();
+      const outcome = pending.then(settled, settled);
+
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(settled).toHaveBeenCalledOnce();
+      expect(settled).toHaveBeenCalledWith(expect.objectContaining({ name: 'PollTimeoutError', message: '模型任务轮询超时' }));
+      expect(fetchMock).toHaveBeenCalledOnce();
+      await outcome;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries a hung read on the original task without replaying submission', async () => {
+    vi.useFakeTimers();
+    try {
+      let originalSignal: AbortSignal | undefined;
+      const fetchMock = vi.fn()
+        .mockImplementationOnce((_url: string, init: RequestInit) => {
+          originalSignal = init.signal as AbortSignal;
+          return new Promise<Response>((_, reject) => originalSignal!.addEventListener('abort', () => {
+            reject(originalSignal!.reason);
+          }, { once: true }));
+        })
+        .mockResolvedValueOnce(jsonResponse({ status: 'completed', url: 'https://cdn.example/recovered.png' }));
+      vi.stubGlobal('fetch', fetchMock);
+      const pending = pollResolvedModelProtocol({ method: 'GET', url: 'https://api.example/tasks/original',
+        statusPath: 'status', successValues: ['completed'], failureValues: ['failed'], resultUrlPath: 'url',
+        intervalMs: 1000, maxDurationMs: 300_000, retry: { maxRetries: 1 } }, 'fixture', undefined, 'https://api.example');
+      await vi.advanceTimersByTimeAsync(121_000);
+      await expect(pending).resolves.toMatchObject({ urls: ['https://cdn.example/recovered.png'] });
+      expect(originalSignal?.aborted).toBe(true);
+      expect(fetchMock.mock.calls.map(([url, init]) => [url, init.method])).toEqual([
+        ['https://api.example/tasks/original', 'GET'], ['https://api.example/tasks/original', 'GET'],
+      ]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('pauses instead of overlapping a query that ignores cancellation', async () => {
+    vi.useFakeTimers();
+    try {
+      let finish!: (response: Response) => void;
+      const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; }));
+      vi.stubGlobal('fetch', fetchMock);
+      const pending = pollResolvedModelProtocol({ method: 'GET', url: 'https://api.example/tasks/original',
+        statusPath: 'status', successValues: ['completed'], failureValues: ['failed'], resultUrlPath: 'url',
+        intervalMs: 1000, maxDurationMs: 300_000, retry: { maxRetries: 3 } }, 'fixture', undefined, 'https://api.example');
+      const rejected = expect(pending).rejects.toThrow('上一次任务查询尚未释放');
+      await vi.advanceTimersByTimeAsync(130_000);
+      await rejected;
+      finish(jsonResponse({ status: 'completed', url: 'https://cdn.example/late.png' }));
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetchMock).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each([
+    [{ id: 'original', status: 'aborted' }, /模型任务失败.*aborted/],
+    [{ id: 'original', status: 'unexpected' }, /原任务的有效状态/],
+    [{ id: 'other', status: 'succeeded' }, /原任务的有效状态/],
+  ] as const)('validates Replicate status and identity on existing recovery descriptions %j', async (payload, error) => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(payload));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(pollResolvedModelProtocol({ method: 'GET', url: 'https://api.replicate.com/v1/predictions/original',
+      auth: { type: 'bearer' }, statusPath: 'status', successValues: ['succeeded'], failureValues: ['failed', 'canceled'],
+      resultUrlPath: 'output', intervalMs: 1, maxAttempts: 2 }, 'fixture', undefined, 'https://api.replicate.com/v1'))
+      .rejects.toThrow(error);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('honors server Retry-After beyond the local backoff cap', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce(jsonResponse({ message: 'slow down' }, 429, { 'Retry-After': '120' }))
+        .mockResolvedValueOnce(jsonResponse({ status: 'completed', url: 'https://cdn.example/result.png' }));
+      vi.stubGlobal('fetch', fetchMock);
+      const pending = pollResolvedModelProtocol({ method: 'GET', url: 'https://api.example/tasks/original',
+        statusPath: 'status', successValues: ['completed'], failureValues: ['failed'], resultUrlPath: 'url',
+        intervalMs: 1000, maxDurationMs: 300_000, retry: { maxRetries: 1, maxDelayMs: 60_000 } },
+      'fixture', undefined, 'https://api.example');
+      await vi.advanceTimersByTimeAsync(119_999);
+      expect(fetchMock).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toMatchObject({ urls: ['https://cdn.example/result.png'] });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('does not retry validator TypeErrors as network failures', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: 'processing' }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(pollResolvedModelProtocol({ method: 'GET', url: 'https://api.example/tasks/original',
+      statusPath: 'status', successValues: ['completed'], failureValues: ['failed'], intervalMs: 1,
+    }, 'fixture', undefined, 'https://api.example', () => { throw new TypeError('business rejection'); }))
+      .rejects.toThrow('business rejection');
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it('honors Retry-After before issuing the next status query', async () => {
     vi.useFakeTimers();
     try {

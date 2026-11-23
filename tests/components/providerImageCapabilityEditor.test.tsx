@@ -7,6 +7,18 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import ImageCapabilityEditor from '../../src/components/settings/providerConnection/ImageCapabilityEditor';
 
 describe('image capability editor', () => {
+  it('shows both saved prompt budgets without changing the capability', () => {
+    const capability = { promptMaxCharacters: 50_000, promptMaxNonAsciiCharacters: 21_000 };
+    const html = renderToStaticMarkup(createElement(ImageCapabilityEditor, {
+      model: { id: 'custom-image', name: 'Custom Image', category: 'image', provider: 'custom', imageCapability: capability },
+      onChange: () => undefined, onApplyTemplate: () => undefined, onClose: () => undefined,
+    }));
+    expect(html).toMatch(/<input[^>]*aria-label="提示词最多字符"[^>]*value="50000"/);
+    expect(html).toMatch(/<input[^>]*aria-label="非 ASCII 提示词预算"[^>]*value="21000"/);
+    expect(html).toContain('ASCII/最多字符');
+    expect(capability).toEqual({ promptMaxCharacters: 50_000, promptMaxNonAsciiCharacters: 21_000 });
+  });
+
   it('keeps missing capabilities undeclared instead of selecting preset tiers', () => {
     const html = renderToStaticMarkup(createElement(ImageCapabilityEditor, {
       model: { id: 'custom-image', name: 'Custom Image', category: 'image', provider: 'custom' },

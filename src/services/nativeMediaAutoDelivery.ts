@@ -1,4 +1,4 @@
-/** 原画布就绪时优先交付本机缓存；显式入口仅可续取已确认的原 CCC 图片任务。 */
+/** 原画布就绪时优先交付本机缓存，再按持久回执续取可核验的原任务。 */
 import { useAppStore } from '../store/useAppStore';
 import type { CanvasContext } from '../types/project';
 import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
@@ -13,9 +13,17 @@ import { readNativeMediaRecoverySummary } from './nativeMediaRecoverySummary';
 
 const deliveries = new Map<string, Promise<boolean>>();
 const autoDeliveryStates = [...ACTIVE_NATIVE_MEDIA_STATES, 'failed'] as const;
-interface DeliveryQueue { repeat: boolean; nodes: Set<string> | null; allowOriginalCccTaskQuery: boolean; promise: Promise<void> }
+type BoundQuery = (record: NativeMediaTaskRecord, context: CanvasContext, signal: AbortSignal) => Promise<boolean>;
+type ShowPausedProtocol = (record: NativeMediaTaskRecord, context: CanvasContext, saving: boolean) => void;
+interface DeliveryQueue { repeat: boolean; nodes: Set<string> | null; allowOriginalCccTaskQuery: boolean; queryProtocol?: BoundQuery; promise: Promise<void> }
 const queues = new Map<string, DeliveryQueue>();
-export interface NativeMediaAutoDeliveryOptions { nodeId?: string; isNodeBusy?: (canvasId: string, nodeId: string) => boolean; allowOriginalCccTaskQuery?: boolean }
+export interface NativeMediaAutoDeliveryOptions {
+  nodeId?: string;
+  isNodeBusy?: (canvasId: string, nodeId: string) => boolean;
+  allowOriginalCccTaskQuery?: boolean;
+  queryProtocol?: BoundQuery;
+  showPausedProtocol?: ShowPausedProtocol;
+}
 function sameCanvas(record: NativeMediaTaskRecord, context: CanvasContext): boolean {
   return record.ownerProjectId === context.projectId && record.canvasId === context.canvasId && record.episodeId === context.episodeId
     && record.projectEpoch === context.projectEpoch && record.canvasEpoch === context.canvasEpoch;
@@ -28,9 +36,17 @@ function completeLocalSet(record: NativeMediaTaskRecord): boolean {
   return !!record.localResults?.length || record.submissionKind === 'sync' && !!record.localResult
     || !!record.apimartImageBatch && nativeImageBatchSettled(record.apimartImageBatch) && nativeMediaLocalOutputs(record).length > 0;
 }
+
+/** 仅由具有原凭据证明的版本化查询合同进入自动网络恢复。 */
+function hasBoundProtocolTask(record: NativeMediaTaskRecord): boolean {
+  return record.status === 'submitted' && record.submissionKind === 'async' && !!record.remoteTaskId
+    && record.recovery?.kind === 'general-protocol' && !!record.recovery.serverId && !!record.recovery.credentialProof
+    && record.recovery.serverId !== 'general-async-v1' && !record.apimartImageBatch && record.providerConfigId !== 'comfyui'
+    && record.origin?.deliveryMode !== 'chat';
+}
 /** 已停止的本机等待只投影状态；不据此改写远端结论、查询或重新提交。 */
 export async function projectNativeMediaStoppedState(operationId: string, context: CanvasContext,
-  options: Pick<NativeMediaAutoDeliveryOptions, 'isNodeBusy'> & { isCurrent?: () => boolean } = {}): Promise<boolean> {
+  options: Pick<NativeMediaAutoDeliveryOptions, 'isNodeBusy' | 'showPausedProtocol'> & { isCurrent?: () => boolean } = {}): Promise<boolean> {
   current(context);
   const record = await readAvailableNativeMediaTask(context.projectId, context.canvasId, operationId);
   current(context);
@@ -38,10 +54,14 @@ export async function projectNativeMediaStoppedState(operationId: string, contex
     || options.isNodeBusy?.(record.canvasId, record.nodeId)
     || options.isCurrent?.() === false) return false;
   const target = useAppStore.getState().nodes.find((node) => node.id === record.nodeId);
-  if (!target || target.data.status !== 'loading') return false;
+  if (!target) return false;
+  const known = record.status === 'submitted' && !!record.remoteTaskId && record.recovery?.kind === 'general-protocol'
+    && (!!options.showPausedProtocol || !hasBoundProtocolTask(record));
+  const canShowRecovery = known && hasBoundProtocolTask(record) && !!options.showPausedProtocol;
+  if (target.data.status !== 'loading' && !(canShowRecovery && target.data.status === 'idle')) return false;
   const failed = record.status === 'failed';
-  if (!failed && (!['prepared', 'outcome-unknown'].includes(record.status) || record.remoteTaskId || completeLocalSet(record))) return false;
-  if (!failed) {
+  if (!failed && !known && (!['prepared', 'outcome-unknown'].includes(record.status) || record.remoteTaskId || completeLocalSet(record))) return false;
+  if (!failed && !known) {
     const recovery = await readNativeMediaRecoverySummary(record);
     current(context);
     if (recovery.canResume || recovery.cachedOnly || recovery.resultCount || recovery.taskCount) return false;
@@ -54,10 +74,15 @@ export async function projectNativeMediaStoppedState(operationId: string, contex
     || options.isNodeBusy?.(actual.canvasId, actual.nodeId)
     || options.isCurrent?.() === false) return false;
   const state = useAppStore.getState(), node = state.nodes.find((item) => item.id === actual.nodeId);
-  if (!node || node.type !== target.type || node.data !== target.data || node.data.status !== 'loading') return false;
+  if (!node || node.type !== target.type || node.data !== target.data) return false;
+  if (canShowRecovery) {
+    options.showPausedProtocol?.(actual, context, completeLocalSet(actual));
+    return true;
+  }
   state.updateNodeDataTransient(actual.nodeId, { status: 'error',
-    error: failed ? '原媒体任务已失败，可修改后重新生成。' : '提交结果未确认，已停止等待；请先到服务商核对，原任务已保留，应用不会自动重新生成。',
-    mediaTaskState: failed ? undefined : 'submit_unknown', mediaTaskStage: undefined, videoTaskState: undefined });
+    error: failed ? '原媒体任务已失败，可修改后重新生成。' : known ? '原任务已保留，旧回执缺少可验证的查询身份，请到对应平台核对。'
+      : '提交结果未确认，已停止等待；请先到服务商核对，原任务已保留，应用不会自动重新生成。',
+    mediaTaskState: failed || known ? undefined : 'submit_unknown', mediaTaskStage: undefined, videoTaskState: undefined });
   return true;
 }
 const productFields = ['imageUrl', 'videoUrl', 'audioUrl', 'output', 'sourceUrl', 'thumbnailUrl', 'relativePath', 'filePath', 'assetId', 'artifactId', 'storageRootRef', 'mattingMask', 'annotation', 'annotationLayer'] as const;
@@ -78,9 +103,9 @@ async function protectedSuccess(record: NativeMediaTaskRecord): Promise<boolean>
   });
 }
 
-/** 默认只消费本机文件；原画布协调器可显式续取已确认的原 CCC 任务。 */
+/** 默认只消费本机文件；远端查询必须由原画布协调器明确启用。 */
 export function deliverNativeMediaCachedResult(operationId: string, context: CanvasContext, signal?: AbortSignal,
-  isNodeBusy?: (canvasId: string, nodeId: string) => boolean, allowOriginalCccTaskQuery = false): Promise<boolean> {
+  isNodeBusy?: (canvasId: string, nodeId: string) => boolean, query?: 'ccc' | 'protocol-auto'): Promise<boolean> {
   const key = `${context.projectId}/${context.canvasId}/${context.runtimeEpoch}/${operationId}`;
   const existing = deliveries.get(key); if (existing) return existing;
   const externalSignal = signal, controller = new AbortController(), abort = () => controller.abort();
@@ -122,8 +147,23 @@ export function deliverNativeMediaCachedResult(operationId: string, context: Can
       const { retainNativeBuiltinImageCachedOutputs, retainNativeBuiltinImageOriginalTaskOutputs } = await import('./nativeBuiltinImageTask');
       let retained = await retainNativeBuiltinImageCachedOutputs(record, signal);
       current(context, signal);
-      if (!retained && allowOriginalCccTaskQuery) retained = await retainNativeBuiltinImageOriginalTaskOutputs(record, signal);
+      if (!retained && query === 'ccc') retained = await retainNativeBuiltinImageOriginalTaskOutputs(record, signal);
       current(context, signal);
+      if (!retained && query === 'protocol-auto' && hasBoundProtocolTask(record)) {
+        const { resumeNativeVolcengineTask } = await import('./nativeVolcengineRecovery');
+        current(context, signal);
+        useAppStore.getState().updateNodeDataTransient(record.nodeId, { status: 'loading', error: undefined,
+          mediaTaskState: undefined, mediaTaskStage: 'querying', videoTaskState: undefined });
+        await resumeNativeVolcengineTask(operationId, signal, {
+          expectedSubmission: { lease: record.lease, revision: record.revision },
+          // 画布就绪队列串行，短查避免生成中的任务长时间占住后续本机交付。
+          maxQueryDurationMs: 15_000,
+          beforeCanvasCommit: (ready, relativePath) => {
+            committing = { artifactId: `native-media-${ready.operationId}`, relativePath, rootRef: ready.resultRootRef };
+          },
+        });
+        return true;
+      }
       if (!retained) return false; record = retained;
     }
     if (record.status !== 'submitted' || !completeLocalSet(record)) return false;
@@ -164,15 +204,20 @@ export function resumeNativeMediaLocalResults(canvasId: string, options: NativeM
   if (existing) {
     existing.repeat = true;
     existing.allowOriginalCccTaskQuery ||= options.allowOriginalCccTaskQuery === true;
+    existing.queryProtocol ??= options.queryProtocol;
     if (!options.nodeId) existing.nodes = null; else existing.nodes?.add(options.nodeId);
     return existing.promise;
   }
   const queue: DeliveryQueue = { repeat: false, nodes: options.nodeId ? new Set([options.nodeId]) : null,
-    allowOriginalCccTaskQuery: options.allowOriginalCccTaskQuery === true, promise: Promise.resolve() };
+    allowOriginalCccTaskQuery: options.allowOriginalCccTaskQuery === true, queryProtocol: options.queryProtocol, promise: Promise.resolve() };
   const controller = new AbortController();
   const unsubscribe = useAppStore.subscribe(() => { if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) controller.abort(); });
-  const projectStoppedLoading = (operationId: string, nodeId: string) => useAppStore.getState().nodes.find((node) => node.id === nodeId)?.data.status === 'loading'
-    ? projectNativeMediaStoppedState(operationId, context, options).catch(() => false) : Promise.resolve(false);
+  const attemptedProtocols = new Set<string>();
+  const projectStopped = (record: NativeMediaTaskRecord) => {
+    const status = useAppStore.getState().nodes.find((node) => node.id === record.nodeId)?.data.status;
+    return status === 'loading' || status === 'idle' && hasBoundProtocolTask(record)
+      ? projectNativeMediaStoppedState(record.operationId, context, options).catch(() => false) : Promise.resolve(false);
+  };
   queue.promise = (async () => {
     do {
       queue.repeat = false;
@@ -180,19 +225,24 @@ export function resumeNativeMediaLocalResults(canvasId: string, options: NativeM
       current(context, controller.signal);
       const records = await listNativeMediaTasks(context.projectId, { canvasId, statuses: autoDeliveryStates,
         nodeIds: nodes ?? undefined, signal: controller.signal });
-      const originalQueries: Array<{ operationId: string; nodeId: string }> = [];
+      const originalQueries: NativeMediaTaskRecord[] = [];
       for (const record of records) {
         current(context, controller.signal);
         if (!sameCanvas(record, context) || nodes && !nodes.has(record.nodeId)
           || options.isNodeBusy?.(canvasId, record.nodeId)) continue;
         if (!ACTIVE_NATIVE_MEDIA_STATES.includes(record.status)) {
-          if (record.status === 'failed') await projectStoppedLoading(record.operationId, record.nodeId);
+          if (record.status === 'failed') await projectStopped(record);
           continue;
         }
         // 优先全部本机缓存，慢的服务商查询不能挡住同画布已有结果。
         const delivered = await deliverNativeMediaCachedResult(record.operationId, context, controller.signal, options.isNodeBusy).catch(() => false);
-        if (!delivered && queue.allowOriginalCccTaskQuery && record.status === 'submitted' && record.remoteTaskId) originalQueries.push({ operationId: record.operationId, nodeId: record.nodeId });
-        else if (!delivered) await projectStoppedLoading(record.operationId, record.nodeId);
+        if (delivered) continue;
+        if (record.recovery?.kind === 'general-protocol') {
+          // 在同画布的其他查询结束前，已知任务也提供手动续查入口。
+          await projectStopped(record);
+          if (queue.queryProtocol && hasBoundProtocolTask(record) && !attemptedProtocols.has(record.operationId)) originalQueries.push(record);
+        } else if (queue.allowOriginalCccTaskQuery && record.status === 'submitted' && record.remoteTaskId) originalQueries.push(record);
+        else await projectStopped(record);
       }
       for (const [ordinal, query] of originalQueries.entries()) {
         current(context, controller.signal);
@@ -201,8 +251,12 @@ export function resumeNativeMediaLocalResults(canvasId: string, options: NativeM
           for (const remaining of originalQueries.slice(ordinal)) queue.nodes?.add(remaining.nodeId);
           break;
         }
-        await deliverNativeMediaCachedResult(query.operationId, context, controller.signal, options.isNodeBusy, true).catch(() => false);
-        await projectStoppedLoading(query.operationId, query.nodeId);
+        if (query.recovery?.kind === 'general-protocol') {
+          if (options.isNodeBusy?.(canvasId, query.nodeId)) continue;
+          attemptedProtocols.add(query.operationId);
+          await queue.queryProtocol?.(query, context, controller.signal).catch(() => false);
+        } else await deliverNativeMediaCachedResult(query.operationId, context, controller.signal, options.isNodeBusy, 'ccc').catch(() => false);
+        await projectStopped(query);
       }
     } while (queue.repeat && !controller.signal.aborted);
   })().finally(() => { unsubscribe(); controller.abort(); if (queues.get(key) === queue) queues.delete(key); });

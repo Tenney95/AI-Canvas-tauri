@@ -166,6 +166,60 @@ describe('ToAPIs 国内与国际站共用凭据', () => {
   });
 });
 
+describe('Magpie 目录快照与手动配置', () => {
+  function setupMagpie() {
+    const model: ProviderModelSelection = { id: 'm', name: 'Model', category: 'text', provider: 'magpie-user' };
+    const config = { name: 'Magpie', catalogId: 'magpie', baseUrl: 'https://magpie.example/v1', apiKey: 'fixture',
+      selectedModels: [{ ...model, contextWindow: 64_000 }],
+      catalogModels: [{ ...model, catalogTextLimits: { source: 'magpie' as const, contextWindow: 128_000 } }],
+      catalogUpdatedAt: 1,
+    };
+    props = { ...props, connectionId: 'magpie-user', initialConfig: config, providerConfigs: { 'magpie-user': config } };
+  }
+
+  it('刷新失败保留目录，收到完整空目录后保留已选模型和手动窗口', async () => {
+    setupMagpie();
+    render();
+    driver.catalog.mockRejectedValueOnce(new Error('目录暂不可用'));
+    await section().onFetchModels();
+    render();
+    expect(section().catalogStatus).toBe('error');
+    expect(section().magpieCatalogIds?.has('m')).toBe(true);
+    expect(section().selectedModels[0]).toMatchObject({
+      contextWindow: 64_000, catalogTextLimits: { contextWindow: 128_000 },
+    });
+
+    driver.catalog.mockResolvedValueOnce({ source: 'remote', models: [] });
+    await section().onFetchModels();
+    render();
+    expect(section().magpieCatalogIds?.has('m')).toBe(false);
+    expect(section().selectedModels[0]).toMatchObject({ id: 'm', contextWindow: 64_000 });
+    expect(section().selectedModels[0].catalogTextLimits).toBeUndefined();
+    await click('保存更改');
+    expect(props.onSave).toHaveBeenCalledWith('magpie-user', expect.objectContaining({
+      catalogModels: [], selectedModels: [expect.objectContaining({ id: 'm', contextWindow: 64_000 })],
+    }), undefined);
+  });
+
+  it('编辑期间修改协议可取消查询，旧查询迟到时仍保留手动值', async () => {
+    setupMagpie();
+    let complete!: (value: unknown) => void;
+    driver.catalog.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    render();
+    const pending = section().onFetchModels();
+    render();
+    form().setChatApiProtocol('openai-responses');
+    render();
+    expect(driver.catalog.mock.calls[0][0].signal.aborted).toBe(true);
+    complete({ source: 'remote', models: [{ id: 'stale', category: 'text', name: 'Stale' }] });
+    await pending;
+    render();
+    expect(section().magpieCatalogIds).toBeUndefined();
+    expect(section().models.map((model) => model.id)).toEqual(['m']);
+    expect(section().selectedModels[0]).toMatchObject({ contextWindow: 64_000 });
+  });
+});
+
 describe('厂商目录策略保持已有交互', () => {
   function fixtureModel(id: string): ProviderModelSelection {
     return { id, name: id, provider: 'fixture-connection', category: 'text', executionProfile: { preset: 'openai-chat' } };

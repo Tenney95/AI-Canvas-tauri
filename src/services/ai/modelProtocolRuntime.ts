@@ -2,7 +2,7 @@
 import { useAppStore } from '../../store/useAppStore';
 import { isCharacterImageTaskContext } from '../characterImageTaskContext';
 import type { GeneralModelCategory, GeneralModelConfig, NodeType } from '../../types';
-import type { MediaDownloadAccess, MediaProtocolUrls, MediaTaskReceipt, ProtocolJsonValue, VideoModelCapability } from '../../types/aiTypes';
+import type { ImageOutputCountRange, MediaDownloadAccess, MediaProtocolUrls, MediaTaskReceipt, ProtocolJsonValue, VideoModelCapability } from '../../types/aiTypes';
 import {
   cleanupNodePolling,
   captureVideoTaskGeneration,
@@ -16,11 +16,10 @@ import {
 } from '../pollManager';
 import {
   collectModelProtocolForEachVariables,
-  buildModelProtocolRequest,
-  prepareRelayonVideoSubmission,
   collectModelProtocolTemplatePaths,
   MODEL_PROTOCOL_MAX_FOR_EACH_ITEMS,
   pollResolvedModelProtocol,
+  prepareRelayonVideoSubmission,
   resolveModelExecutionProfile,
   submitModelProtocol,
   type ModelProtocolVariables,
@@ -31,7 +30,7 @@ import { PollTaskFailedError, isPollTimeoutError } from '../pollTask';
 import { REFERENCE_PROTOCOL_VARIABLES } from './modelProtocolVariables';
 import { readModelProtocolPathValues } from './modelProtocolResponse';
 import { readGoogleImagePartsReferenceUrls } from './imageModelTemplates';
-import { assertModelProtocolResult } from './modelCapabilityValidation';
+import { assertImageOutputCount, assertModelProtocolResult, isImageOutputCountRange } from './modelCapabilityValidation';
 import { getProviderPolicy, resolveProviderCatalogId } from './providerPolicies';
 import { getProviderDefinition } from './providerCatalogService';
 import { RELAYON_VIDEO_RESULT_URL_PATHS, usesRelayonModelProtocol, resolveRelayonVideoExecutionProfile } from './providers/relayonModelManifest';
@@ -42,9 +41,12 @@ import { createMediaDownloadAccess, sanitizeMediaResultUrls } from './mediaDownl
 import { assertMinimaxQueryResponse, assertMinimaxResponse, getMinimaxErrorCodeMessage, getMinimaxMediaAccessHint,
   resolveMinimaxBaseUrl, usesMinimaxImageModelProtocol, usesMinimaxModelProtocol } from './providers/minimaxModelManifest';
 import { ModelProtocolHttpError } from './modelProtocolHttp';
+import { resolveKlingModelContract } from './providerCatalogService';
+import { assertKlingImageResponse } from './providers/klingImageResponse';
 import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from '../projectExecutionContext';
 import { assertNativeVideoSubmissionInput, captureNativeVideoSubmissionBaseline, isNativeVideoSubmissionGuard, type NativeMediaSubmissionPreparation } from '../nativeVideoSubmission';
 import { assertNativeMediaPrepared, assertNativeMediaResultRetention, prepareNativeMediaTask, recordNativeMediaSubmission, type NativeMediaTaskRecord } from '../indexedDb/nativeMediaTaskRepository';
+import { captureNativeQueryContractId, nativeQueryCredentialProof } from '../nativeProtocolRecovery';
 import { nativeProtocolTaskDigest, nativeProtocolQueryDigest, nativeProtocolQueryPaths, captureNativeProtocolContext, isSafeNativeProtocolTaskId } from '../nativeModelProtocolTask';
 import { retainNativeMediaOutputs } from '../indexedDb/nativeMediaCollectionRepository';
 import { projectModelSourceToken } from '../projectModelComparisonMaterial';
@@ -65,6 +67,7 @@ interface RunConfiguredModelProtocolOptions {
   signal?: AbortSignal;
   /** 图片单作业固定候选数量；只影响交付恢复，不写进请求变量 n。 */
   expectedImageOutputs?: number;
+  imageOutputCountRange?: ImageOutputCountRange;
   beforeSubmit?: () => void | Promise<void>;
 }
 
@@ -422,7 +425,7 @@ export async function runConfiguredModelProtocol(
   );
   if (expansionConflicts.length > 0) throw new Error(expansionConflicts[0]);
   const configuredBaseUrl = provider.baseUrl?.trim()
-    || (options.category === 'image' ? getProviderDefinition(options.model.providerConfigId, provider)?.defaultBaseUrl : undefined)
+    || getProviderDefinition(options.model.providerConfigId, provider)?.defaultBaseUrl
     || '';
   const usesMinimaxImageProtocol = catalogId === 'minimax' && options.category === 'image'
     && usesMinimaxImageModelProtocol(options.model.modelId, profile);
@@ -444,13 +447,18 @@ export async function runConfiguredModelProtocol(
       if (!path.startsWith('submit.')) assertPrivatePoll(readModelProtocolPathValues(options.variables, path));
     }
   }
+  const range = options.imageOutputCountRange;
+  if (range && (options.category !== 'image' || !isImageOutputCountRange(range) || readBatchCount(options.variables.n) !== 1)) {
+    throw new Error('自动候选范围仅适用于单次生图作业');
+  }
   if (isCharacterImageTaskContext(options.beforeSubmit)) {
     if (options.category !== 'image') throw new Error('角色目的地只接受图片结果');
     assertReferenceMediaDeliverable(options.model.name, JSON.stringify(protocol), options.variables);
     const { executeCharacterProtocol } = await import('../characterImageTaskRecovery');
     try {
       return await executeCharacterProtocol(options.beforeSubmit, { apiKey: provider.apiKey, baseUrl, protocol,
-        variables: options.variables, expectedCount: options.expectedImageOutputs ?? 1, signal: options.signal,
+        variables: options.variables, expectedCount: options.expectedImageOutputs ?? readBatchCount(options.variables.n),
+        imageOutputCountRange: range, signal: options.signal,
         mediaDownloadAccess: createMediaDownloadAccess(options.model.providerConfigId, baseUrl, protocol.auth) });
     } catch (error) {
       throw usesVolcengineTos ? redactVolcengineError(error, provider.apiKey) : error;
@@ -458,6 +466,8 @@ export async function runConfiguredModelProtocol(
   }
   const usesMinimaxProtocol = catalogId === 'minimax'
     && usesMinimaxModelProtocol(options.model.modelId, options.model.executionProfile);
+  const usesKlingProtocol = catalogId === 'kling'
+    && resolveKlingModelContract(options.model.modelId, options.model.executionProfile)?.category === options.category;
   // 新项目的同步与异步合同都必须携带原生提交守卫，避免付费后落入旧队列。
   const projectContext = useAppStore.getState().projectExecutionContext;
   const nativeContext = captureLegacyCanvasContext(useAppStore.getState());
@@ -465,7 +475,8 @@ export async function runConfiguredModelProtocol(
   if (nativeOperation && (!nativeContext || nativeContext.modelGeneration !== 1
     || !options.nodeId || !isNativeVideoSubmissionGuard(options.beforeSubmit))) throw new Error('此原生媒体目的地尚不能安全恢复，未提交请求');
   const validateResponse = usesMinimaxProtocol
-    ? (payload: unknown) => assertMinimaxResponse(payload, options.category === 'audio') : undefined;
+    ? (payload: unknown) => assertMinimaxResponse(payload, options.category === 'audio')
+    : usesKlingProtocol ? assertKlingImageResponse : undefined;
   const mediaDownloadAccess = createMediaDownloadAccess(options.model.providerConfigId, baseUrl, protocol.auth);
   assertReferenceMediaDeliverable(options.model.name, JSON.stringify(protocol), options.variables);
 
@@ -474,8 +485,9 @@ export async function runConfiguredModelProtocol(
     && model.providerConfigId === options.model.providerConfigId);
   const expectedOutputCount = options.category === 'image' && options.expectedImageOutputs !== undefined
     ? readBatchCount(options.expectedImageOutputs) : readBatchCount(options.variables.n);
-  const fixedImageOutputs = options.category === 'image' && options.expectedImageOutputs !== undefined && expectedOutputCount > 1
+  const fixedImageOutputs = !range && options.category === 'image' && options.expectedImageOutputs !== undefined && expectedOutputCount > 1
     ? { expectedImageOutputs: expectedOutputCount } : {};
+  const imageOutputBounds = range ? { imageOutputCountRange: range } : {};
   const videoGeneration = options.category === 'video' ? captureVideoTaskGeneration(options.nodeId) : undefined;
   let receipt: MediaTaskReceipt | undefined;
   let nativeTask: NativeMediaTaskRecord | undefined, nativeRemoteId: string | undefined, nativeSent = false;
@@ -493,51 +505,60 @@ export async function runConfiguredModelProtocol(
       ...(nativeOperation && protocol.mode === 'async' ? { captureRecoveryContext: (payload: unknown) => captureNativeProtocolContext(protocol, payload, options.variables, [provider.apiKey || '']) } : {}),
       ...(getProviderPolicy(catalogId).submitIdempotency ? { idempotencyKey: crypto.randomUUID() } : {}),
     };
-    // 在记录“提交中”之前完成本地构建校验，避免将输入错误误称为提交状态未知。
-    const uploadRequest = options.relayonUpload ? prepareRelayonVideoSubmission(submitOptions) : undefined;
-    if (!uploadRequest) buildModelProtocolRequest(submitOptions);
-    if (nativeOperation) {
-      if (protocol.mode === 'async') nativeProtocolQueryPaths(protocol);
-      const scheme = 'media-input-v3' as const;
-      const originNode = useAppStore.getState().nodes.find((node) => node.id === options.nodeId);
-      if (originNode && originNode.data.type !== `ai-${options.category}` && !(options.category === 'image' && ['ai-animation', 'ai-panorama'].includes(originNode.data.type))) throw new Error('原节点与媒体类型不一致');
-      nativePreparation = await useAppStore.getState().beginNativeMediaSubmissionPreparation(nativeContext!);
-      signal?.throwIfAborted();
-      const baseline = await captureNativeVideoSubmissionBaseline(nativeContext!, options.nodeId!, undefined, scheme, { preparedReferences: true, preparation: nativePreparation });
-      nativeTask = await prepareNativeMediaTask({ context: nativeContext!, operationId: crypto.randomUUID(), nodeId: options.nodeId!,
-        providerConfigId: options.model.providerConfigId, providerBase: baseUrl,
-        modelRef: sourceModel ? `general/${options.model.id}` : `${options.model.providerConfigId}/${options.model.modelId}`,
-        recovery: { kind: 'general-protocol', modelId: options.model.modelId, digest: await nativeProtocolQueryDigest(options.model.modelId, protocol), expectedCount: expectedOutputCount },
-        protocolDigest: await nativeProtocolTaskDigest(options.model.modelId, protocol), category: options.category,
-        fingerprintScheme: scheme,
-        submissionKind: protocol.mode === 'sync' ? 'sync' : 'async',
-        requestFingerprint: options.relayonUpload && uploadRequest
-          ? await options.relayonUpload.fingerprint(uploadRequest.renderedBody)
-          : await sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(options.variables))),
-        inputFingerprint: baseline.inputFingerprint, sourceCanvasRevision: baseline.canvasRevision });
-      await assertNativeMediaPrepared(nativeTask, { preparation: nativePreparation });
-      await options.beforeSubmit?.();
-      await assertNativeVideoSubmissionInput(nativeTask, nativeContext!);
-      const latest = useAppStore.getState().config;
-      const currentModel = latest.generalModels?.find((model) => model.id === options.model.id);
-      if (latest.providers[options.model.providerConfigId] !== provider || sourceModel && currentModel !== sourceModel) throw new Error('原模型连接在提交前已变化');
-      await options.beforeSubmit?.();
-      await assertNativeVideoSubmissionInput(nativeTask, nativeContext!);
-      const finalConfig = useAppStore.getState().config;
-      if (finalConfig.providers[options.model.providerConfigId] !== provider || sourceModel && finalConfig.generalModels?.find((model) => model.id === options.model.id) !== sourceModel) throw new Error('原模型配置已变化');
-      signal?.throwIfAborted(); nativePreparation.assertCurrent(); nativeSent = true; nativePreparation.release();
-    } else if ((protocol.mode === 'async' || usesMinimaxProtocol && options.category === 'audio') && options.nodeId && projectId) {
-      receipt = savePendingTask({ nodeId: options.nodeId, projectId,
-        nodeType: NODE_TYPE_BY_CATEGORY[options.category], provider: 'general', providerConfigId: options.model.providerConfigId,
-        taskId: '', taskType: 'custom-protocol', submitted: false, videoGeneration,
-        mediaDownloadAccess,
-        batchCount: expectedOutputCount, ...fixedImageOutputs });
-    }
-    const submitted = await (uploadRequest ? uploadRequest.submit() : submitModelProtocol(submitOptions));
+    // 在请求完成构建后保存回执，同一请求体只构建一次。
+    const beforeSend = async (): Promise<void> => {
+      if (nativeOperation) {
+        if (protocol.mode === 'async') nativeProtocolQueryPaths(protocol);
+        const scheme = 'media-input-v3' as const;
+        const originNode = useAppStore.getState().nodes.find((node) => node.id === options.nodeId);
+        if (originNode && originNode.data.type !== `ai-${options.category}` && !(options.category === 'image' && ['ai-animation', 'ai-panorama'].includes(originNode.data.type))) throw new Error('原节点与媒体类型不一致');
+        nativePreparation = await useAppStore.getState().beginNativeMediaSubmissionPreparation(nativeContext!);
+        signal?.throwIfAborted();
+        const baseline = await captureNativeVideoSubmissionBaseline(nativeContext!, options.nodeId!, undefined, scheme, { preparedReferences: true, preparation: nativePreparation });
+        const queryDigest = await nativeProtocolQueryDigest(options.model.modelId, protocol);
+        const serverId = protocol.mode === 'async' ? await captureNativeQueryContractId(catalogId, options.category, options.model.modelId, queryDigest) : undefined;
+        const operationId = crypto.randomUUID();
+        const credentialProof = serverId ? await nativeQueryCredentialProof(operationId, options.model.providerConfigId, provider.apiKey) : undefined;
+        nativeTask = await prepareNativeMediaTask({ context: nativeContext!, operationId, nodeId: options.nodeId!,
+          providerConfigId: options.model.providerConfigId, providerBase: baseUrl,
+          modelRef: sourceModel ? `general/${options.model.id}` : `${options.model.providerConfigId}/${options.model.modelId}`,
+          recovery: { kind: 'general-protocol', modelId: options.model.modelId, digest: queryDigest, ...(serverId ? { serverId, credentialProof } : {}), expectedCount: expectedOutputCount, ...imageOutputBounds },
+          protocolDigest: await nativeProtocolTaskDigest(options.model.modelId, protocol), category: options.category,
+          fingerprintScheme: scheme,
+          submissionKind: protocol.mode === 'sync' ? 'sync' : 'async',
+          requestFingerprint: options.relayonUpload && uploadRequest
+            ? await options.relayonUpload.fingerprint(uploadRequest.renderedBody)
+            : await sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(options.variables))),
+          inputFingerprint: baseline.inputFingerprint, sourceCanvasRevision: baseline.canvasRevision });
+        await assertNativeMediaPrepared(nativeTask, { preparation: nativePreparation });
+        await options.beforeSubmit?.();
+        await assertNativeVideoSubmissionInput(nativeTask, nativeContext!);
+        const latest = useAppStore.getState().config;
+        const currentModel = latest.generalModels?.find((model) => model.id === options.model.id);
+        if (latest.providers[options.model.providerConfigId] !== provider || sourceModel && currentModel !== sourceModel) throw new Error('原模型连接在提交前已变化');
+        await options.beforeSubmit?.();
+        await assertNativeVideoSubmissionInput(nativeTask, nativeContext!);
+        // 进程在收到远端 ID 前退出时，已有耐久记录会阻止将原请求当作未发送。
+        nativeTask = await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease, { unknown: true });
+        const finalConfig = useAppStore.getState().config;
+        if (finalConfig.providers[options.model.providerConfigId] !== provider || sourceModel && finalConfig.generalModels?.find((model) => model.id === options.model.id) !== sourceModel) throw new Error('原模型配置已变化');
+        signal?.throwIfAborted(); nativePreparation.assertCurrent(); nativeSent = true; nativePreparation.release();
+      } else if ((protocol.mode === 'async' || usesMinimaxProtocol && options.category === 'audio') && options.nodeId && projectId) {
+        receipt = savePendingTask({ nodeId: options.nodeId, projectId,
+          nodeType: NODE_TYPE_BY_CATEGORY[options.category], provider: 'general', providerConfigId: options.model.providerConfigId,
+          taskId: '', taskType: 'custom-protocol', submitted: false, videoGeneration,
+          mediaDownloadAccess,
+          batchCount: expectedOutputCount, ...fixedImageOutputs, ...imageOutputBounds });
+      }
+    };
+    const guardedOptions = { ...submitOptions, beforeSubmit: beforeSend };
+    const uploadRequest = options.relayonUpload ? prepareRelayonVideoSubmission(guardedOptions) : undefined;
+    const submitted = await (uploadRequest ? uploadRequest.submit() : submitModelProtocol(guardedOptions));
     if (nativeTask) {
       if (nativeTask.submissionKind === 'sync') {
         assertModelProtocolResult(options.category, submitted);
         if (!submitted.urls?.length || submitted.urls.length > 128) throw new Error('同步协议产物集合为空或超过安全上限，原操作保留供核对');
+        assertImageOutputCount(range, submitted.urls.length);
         // 已付费返回的产物先保存到原持久根；当前窗口切集或取消不能把它丢弃。
         await assertNativeMediaResultRetention(nativeTask);
         nativeTask = await prepareNativeSyncDownload(nativeTask, submitted.urls, mediaDownloadAccess, provider.apiKey);
@@ -560,21 +581,23 @@ export async function runConfiguredModelProtocol(
       }
       nativeRemoteId = submitted.taskId;
       if (!nativeRemoteId || !submitted.poll) throw new Error('原调用没有返回可确认的远端任务 ID，请到平台核对');
-      await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease, { taskId: nativeRemoteId, pollContext: submitted.recoveryContext });
+      nativeTask = await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease, { taskId: nativeRemoteId, pollContext: submitted.recoveryContext });
       return await continueNativeMediaTask(nativeTask, signal);
     }
     if (submitted.urls) {
       assertModelProtocolResult(options.category, submitted);
+      assertImageOutputCount(range, submitted.urls.length);
+      const outputIdentity = range ? { expectedImageOutputs: submitted.urls.length, ...imageOutputBounds } : fixedImageOutputs;
       const resultUrls = sanitizeMediaResultUrls(submitted.urls, provider.apiKey);
       // 同步接口已交付结果，不需要也不能重新提交生成来重试本地保存。
       if (resultUrls && options.nodeId && projectId) {
         const taskId = receipt?.taskId || `result-${crypto.randomUUID()}`;
         receipt = receipt ? updatePendingTask(receipt.nodeId, { taskId, submitted: true, resultUrls,
-          mediaDownloadAccess, mediaRecoveryState: 'delivery_pending', ...fixedImageOutputs }, receipt.taskId, receipt.attemptId)
+          mediaDownloadAccess, mediaRecoveryState: 'delivery_pending', ...outputIdentity }, receipt.taskId, receipt.attemptId)
           : savePendingTask({ nodeId: options.nodeId, projectId, nodeType: NODE_TYPE_BY_CATEGORY[options.category],
             provider: 'general', providerConfigId: options.model.providerConfigId, taskType: 'custom-protocol',
             taskId, submitted: true, resultUrls, mediaDownloadAccess, videoGeneration,
-            mediaRecoveryState: 'delivery_pending', batchCount: expectedOutputCount, ...fixedImageOutputs });
+            mediaRecoveryState: 'delivery_pending', batchCount: expectedOutputCount, ...outputIdentity });
       }
       return Object.assign(submitted.urls, { mediaDownloadAccess, ...(receipt ? { taskReceipt: receipt } : {}) });
     }
@@ -598,12 +621,15 @@ export async function runConfiguredModelProtocol(
       provider.apiKey || '',
       signal,
       baseUrl,
-      validateResponse ? assertMinimaxQueryResponse : undefined,
+      usesMinimaxProtocol ? assertMinimaxQueryResponse : undefined,
       usesVolcengineTos,
+      submitted.taskId,
     );
     assertModelProtocolResult(options.category, result);
     if (!result.urls) throw new Error('媒体模型任务完成但未返回结果 URL');
-    if (receipt) updatePendingTask(receipt.nodeId, { mediaRecoveryState: 'delivery_pending' }, receipt.taskId, receipt.attemptId);
+    assertImageOutputCount(range, result.urls.length);
+    if (receipt) updatePendingTask(receipt.nodeId, { mediaRecoveryState: 'delivery_pending',
+      ...(range ? { expectedImageOutputs: result.urls.length } : {}) }, receipt.taskId, receipt.attemptId);
     // 每类媒体都在本地保存和目标回填后确认，数组携带当次身份而非读取最新节点任务。
     return Object.assign(result.urls, { mediaDownloadAccess, ...(receipt ? { taskReceipt: receipt } : {}) });
   } catch (rawError) {
@@ -616,8 +642,8 @@ export async function runConfiguredModelProtocol(
       if (!nativeRemoteId && isSafeNativeProtocolTaskId(receivedId, [provider.apiKey || ''])) nativeRemoteId = receivedId;
       const retained = await recordNativeMediaSubmission(prepared.operationId, prepared.lease, nativeRemoteId ? { taskId: nativeRemoteId }
         : !nativeSent || httpError?.definitiveFailure ? { notStarted: true } : { unknown: true }).catch(() => prepared);
-      if (retained.status === 'failed' && httpError?.definitiveFailure) {
-        throw usesMinimaxProtocol ? nativeMinimaxRejection(httpError) : error;
+      if (retained.status === 'failed' && (!nativeSent || httpError?.definitiveFailure)) {
+        throw usesMinimaxProtocol && httpError?.definitiveFailure ? nativeMinimaxRejection(httpError) : error;
       }
       throw createNativeMediaPendingError(retained, error);
     }

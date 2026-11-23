@@ -220,13 +220,16 @@ describe('RelayOn multipart 本地协议对照', () => {
     const profile = resolveRelayonVideoExecutionProfile(model.id, model.executionProfile, variables, true);
     if (!profile?.protocol) throw new Error('未找到万象视频协议');
     try {
+      const beforeSubmit = vi.fn();
       const options = { apiKey: FIXTURE_KEY, baseUrl: RELAYON_VIDEO_BASE_URL, protocol: profile.protocol,
-        variables, relayonUpload: upload, idempotencyKey: 'fixture-video-upload' };
+        variables, relayonUpload: upload, idempotencyKey: 'fixture-video-upload', beforeSubmit };
       const built = prepareRelayonVideoSubmission(options);
+      expect(beforeSubmit).not.toHaveBeenCalled();
       expect(built.renderedBody).toMatchObject({ images: variables.referenceImageUrls.map(($file, i) => ({
         $file, filename: `reference-image-${i + 1}.png`,
       })) });
       const post = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+        expect(beforeSubmit).toHaveBeenCalledOnce();
         expect(String(url)).toBe(`${RELAYON_VIDEO_BASE_URL}/videos`);
         expect(new Headers(init?.headers).get('idempotency-key')).toBe('fixture-video-upload');
         const form = init?.body as FormData;

@@ -88,6 +88,8 @@ import {
 } from './volcengineVideoModels';
 import { getDreaminaVideoCapability } from './dreaminaModels';
 import { assertVideoInputConstraints } from './videoInputValidation';
+import { resolveKlingModelContract } from './providerCatalogService';
+import { klingKeyframeVariables, orderKlingFrames, resolveKlingInlineReferences } from './providers/klingImageResponse';
 import {
   resolveCanonicalVideoRequest,
   toResolvedVideoCompatibilityValues,
@@ -298,7 +300,7 @@ async function resolveVideoReferenceInput(
   nodeId: string | undefined,
   /** 调用方直接给定的参考媒体；排在最前，保证首/尾帧角色按调用方的顺序分配 */
   explicitReferences: readonly MediaReference[] = [],
-  options: { promptFirst?: boolean; preserveDeclaredRoles?: boolean; sortKeyframes?: boolean; target?: 'remote' | 'local'; apimartModel?: string; legacyPrompt?: string; provider?: string; suppressWarning?: boolean; preferLocalMedia?: boolean } = {},
+  options: { promptFirst?: boolean; preserveDeclaredRoles?: boolean; sortKeyframes?: boolean; klingFrameMode?: 'single' | 'keyframes'; target?: 'remote' | 'local'; apimartModel?: string; legacyPrompt?: string; provider?: string; suppressWarning?: boolean; preferLocalMedia?: boolean } = {},
 ): Promise<VideoGenerationReferenceInput> {
   const cameraSettings = useAppStore.getState().nodes.find((node) => node.id === nodeId)?.data.cameraSettings;
   const promptInput = await resolvePromptWithMediaRefs(rawPrompt, { preserveBindings: true,
@@ -342,11 +344,16 @@ async function resolveVideoReferenceInput(
     ? assignVideoReferenceRoles(collectedReferences) : collectedReferences;
   // 普通 reference 图片不能被偷偷改成 first_frame；内置 Provider 也只接受用户
   // 明确指定的首/尾帧角色，连线与 @ 图片默认保持普通参考语义。
-  const references = options.preserveDeclaredRoles || options.promptFirst
+  let references = options.preserveDeclaredRoles || options.promptFirst
     ? orderedReferences.map((reference) => reference.kind === 'audio'
       ? { ...reference, role: 'reference_audio' as const }
       : reference)
     : assignVideoReferenceRoles(orderedReferences);
+  if (options.klingFrameMode === 'keyframes') {
+    const frames = references.filter((reference) => reference.kind === 'image');
+    if (frames.length) references = [...orderKlingFrames(frames).map(({ image }) => image),
+      ...references.filter((reference) => reference.kind !== 'image')];
+  }
   const imageUrls = getMediaReferenceUrls(references, 'image');
   const videoUrls = getMediaReferenceUrls(references, 'video');
   const audioUrls = getMediaReferenceUrls(references, 'audio');
@@ -356,9 +363,11 @@ async function resolveVideoReferenceInput(
   const imageLayout = explicitFrames && apimartCapability?.frameFields ? 'frame-fields'
     : explicitFrames && apimartCapability?.imageWithRoles ? 'frames-first' : undefined;
   const hasCharacterBindings = promptInput.segments?.some((segment) => typeof segment !== 'string' && segment.character);
+  const imageLabel = options.klingFrameMode === 'single' ? () => '首帧图片'
+    : options.klingFrameMode === 'keyframes' ? (index: number) => `@frame_${index}` : undefined;
   const compiledPrompt = options.legacyPrompt !== undefined && !hasCharacterBindings
     ? options.legacyPrompt
-    : compileVideoReferencePrompt(promptInput, references, { target: options.target, imageLayout });
+    : compileVideoReferencePrompt(promptInput, references, { target: options.target, imageLayout, imageLabel });
   const isFrame = (reference: MediaReference) => reference.role === 'first_frame' || reference.role === 'last_frame';
   const noteReferences = imageLayout === 'frame-fields' ? references.filter((reference) => !isFrame(reference))
     : imageLayout === 'frames-first' ? [...references.filter(isFrame), ...references.filter((reference) => !isFrame(reference))] : references;
@@ -907,12 +916,14 @@ export async function generateVideo(
     const usesRelayonProtocol = catalogId === 'relayonapi' && usesRelayonModelProtocol(gm.modelId, gm.executionProfile);
     const usesRelayonUpload = usesRelayonProtocol && isRelayonOfficialBaseUrl(connection.baseUrl);
     const usesSora2uProtocol = catalogId === 'sora2u' && usesSora2uModelProtocol(gm.modelId, gm.executionProfile);
+    const klingContract = catalogId === 'kling' ? resolveKlingModelContract(gm.modelId, gm.executionProfile) : undefined;
+    const klingFrameMode = klingContract?.videoFrameMode;
     const usesAigcsiProtocol = catalogId === 'aigc-si' && usesAigcsiModelProtocol(gm.modelId, gm.executionProfile);
     const policy = getProviderPolicy(catalogId);
     const publicUrlProvider = policy.upload || (usesRelayonProtocol && policy.referenceTransport === 'public-url')
       ? connection.providerConfigId : undefined;
     const usesLibapiProtocol = isLibapi && usesLibapiModelProtocol(gm.modelId, gm.executionProfile);
-    const videoCapability = resolveConfiguredVideoCapability(catalogId, gm.modelId, gm.executionProfile, gm.videoCapability);
+    const videoCapability = resolveConfiguredVideoCapability(catalogId, gm.modelId, gm.executionProfile, gm.videoCapability ?? klingContract?.videoCapability);
     const fileCandidate = gm.executionProfile?.preset === 'custom' && (!connection.definition || catalogId === 'custom-openai')
       ? gm.executionProfile.protocol : undefined;
     const customFiles = fileCandidate?.submit?.bodyEncoding === 'multipart' && hasProtocolMediaFileFields(fileCandidate);
@@ -920,8 +931,8 @@ export async function generateVideo(
       rawPrompt,
       params.nodeId,
       params.referenceMedia ?? [],
-      { preserveDeclaredRoles: true, sortKeyframes: usesLibapiProtocol, provider,
-        ...(policy.referenceTransport === 'request-files' || usesSora2uProtocol || customFiles ? { target: 'local', preferLocalMedia: true } : {}) },
+      { preserveDeclaredRoles: true, sortKeyframes: usesLibapiProtocol, klingFrameMode, provider,
+        ...(policy.referenceTransport === 'request-files' || usesSora2uProtocol || klingFrameMode || customFiles ? { target: 'local', preferLocalMedia: true } : {}) },
     );
     const canonicalParams = {
       ...params,
@@ -934,6 +945,9 @@ export async function generateVideo(
       references: originalReferences,
       capability: videoCapability,
     });
+    if (klingFrameMode === 'single' && preflight.references.images[0]?.role === 'last_frame') {
+      throw new Error('Kling 4.0 Flash 仅支持首帧，请将尾帧改为首帧或切换到多关键帧模型');
+    }
     if (isToapis) assertToapisVideoInput(preflight);
     if (usesLibapiProtocol) assertLibapiVideoInput(preflight);
     if (usesAigcsiProtocol) aigcsiVideoVariables(buildCanonicalVideoProtocolVariables(preflight));
@@ -985,7 +999,9 @@ export async function generateVideo(
           multipartVariables = prepared.variables;
           fileValidationUrls = prepared.validation;
         } else {
-          const remoteImageUrls = usesRelayonProtocol || usesSora2uProtocol
+          const remoteImageUrls = klingFrameMode
+            ? await resolveKlingInlineReferences(getMediaReferenceUrls(originalReferences, 'image', 'local'), signal)
+            : usesRelayonProtocol || usesSora2uProtocol
             ? referenceInput.imageUrls.some((url) => !isRemoteMediaUrl(url))
               ? await resolveImageDataUrlArray(referenceInput.imageUrls, signal, IMAGE_GENERATION_DATA_URL_BUDGET)
               : referenceInput.imageUrls
@@ -1026,6 +1042,7 @@ export async function generateVideo(
         if (signal?.aborted) throw signal.reason ?? new DOMException('请求已取消', 'AbortError');
         if (beforeSubmit) await beforeSubmit();
         if (signal?.aborted) throw signal.reason ?? new DOMException('请求已取消', 'AbortError');
+        const canonicalVariables = buildCanonicalVideoProtocolVariables(canonicalRequest);
         const urls = await runConfiguredModelProtocol({
           model: gm,
           category: 'video',
@@ -1033,12 +1050,13 @@ export async function generateVideo(
           signal,
           beforeSubmit,
           relayonUpload,
-          variables: isToapis ? toapisVideoVariables(canonicalRequest, buildCanonicalVideoProtocolVariables(canonicalRequest))
-            : usesLibapiProtocol ? libapiVideoVariables(canonicalRequest, buildCanonicalVideoProtocolVariables(canonicalRequest))
-              : usesRelayonProtocol ? relayonVideoVariables(gm.modelId, buildCanonicalVideoProtocolVariables(canonicalRequest))
-                : usesAigcsiProtocol ? aigcsiVideoVariables(buildCanonicalVideoProtocolVariables(canonicalRequest))
-                  : usesMinimaxProtocol ? minimaxVideoVariables(canonicalRequest, buildCanonicalVideoProtocolVariables(canonicalRequest))
-                  : { ...buildCanonicalVideoProtocolVariables(canonicalRequest), ...multipartVariables },
+          variables: klingFrameMode ? klingKeyframeVariables(canonicalVariables, klingFrameMode)
+            : isToapis ? toapisVideoVariables(canonicalRequest, canonicalVariables)
+            : usesLibapiProtocol ? libapiVideoVariables(canonicalRequest, canonicalVariables)
+            : usesRelayonProtocol ? relayonVideoVariables(gm.modelId, canonicalVariables)
+            : usesAigcsiProtocol ? aigcsiVideoVariables(canonicalVariables)
+            : usesMinimaxProtocol ? minimaxVideoVariables(canonicalRequest, canonicalVariables)
+            : multipartVariables ? { ...canonicalVariables, ...multipartVariables } : canonicalVariables,
         });
         const url = urls[0];
         if (!url) throw new Error('视频生成完成但未返回结果');

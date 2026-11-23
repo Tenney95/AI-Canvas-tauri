@@ -25,13 +25,14 @@ import type {
   ProviderModelSelection,
   WebSearchProviderId,
 } from '../../types';
-import type { ImageOutputFormat, ImageParameterRange, ModelExecutionProfile, NormalizedModelExecutionProtocol } from '../../types/aiTypes';
+import type { ImageModelCapability, ImageOutputFormat, ImageParameterRange, ModelExecutionProfile, NormalizedModelExecutionProtocol, VideoModelCapability } from '../../types/aiTypes';
 import { corsSafeFetch } from './httpTransport';
-import { baseUrlCandidates } from './providerBaseUrl';
-import { getProviderPolicy, resolveProviderCatalogId, type ProviderPolicy } from './providerPolicies';
+import { baseUrlCandidates, normalizeMagpieBaseUrl } from './providerBaseUrl';
+import { assertMagpieMediaSelection, getProviderPolicy, readPositiveTokenCount, resolveProviderCatalogId, type ProviderPolicy } from './providerPolicies';
 import { APIMART_OMNI_MODELS, APIMART_UPDATED_VIDEO_MODELS, isLegacyApimartOmni } from './apimartVideoModels';
 import { getChatApiHeaders, normalizeGeminiModelId, resolveChatApiProtocol } from './chatApiProtocol';
 import { XAI_BASE_URL, XAI_MODEL_MANIFEST } from './providers/xaiModelManifest';
+import { REPLICATE_BASE_URL, REPLICATE_MODEL_MANIFEST } from './providers/replicateModelManifest';
 import { GRSAI_ADDED_MODELS } from './grsaiModels';
 import { DREAMINA_IMAGE_MODELS, DREAMINA_VIDEO_MODELS } from './dreaminaModels';
 import { MUSE_BASE_URL, MUSE_MODEL_MANIFEST } from './museModels';
@@ -100,6 +101,7 @@ export interface ProviderCatalogResult {
   models: ProviderModelSelection[];
   source: 'remote' | 'local-manifest' | 'local-fallback';
   warning?: string;
+  catalogUpdatedAt?: number;
   /** 实际拉通的接口地址；与用户填的不同（如补了 /v1）时调用方应回写。 */
   resolvedBaseUrl?: string;
 }
@@ -117,6 +119,168 @@ const API_KEY_FIELD: ProviderCredentialField = {
   required: true,
   secret: true,
 };
+
+// Kling 新版 API（非旧版 model_name / AK-SK JWT 接口）。
+// https://www.klingai.com/document-api/api/image/4-0/image-generation
+export const KLING_BASE_URL = 'https://api-singapore.klingai.com';
+function klingImageProtocol(series: false | 10 | 'selected' | 'auto'): NormalizedModelExecutionProtocol {
+  return {
+    version: 2, mode: 'async', auth: { type: 'bearer' },
+    submit: { method: 'POST', path: '/image-generation/kling-4.0', pathMode: 'origin', bodyEncoding: 'json', maxBodyBytes: 65 * 1024 * 1024,
+      body: {
+        contents: [{ type: 'prompt', text: '{{prompt}}' },
+          ...Array.from({ length: 10 }, (_, index) => ({
+            $whenPresent: `{{imageUrls.${index}}}`,
+            $value: { type: 'refer_image', url: `{{imageUrls.${index}}}`, id: `image${index + 1}` },
+          }))],
+        settings: { result_type: series ? 'series' : 'single',
+          ...(series ? { series_amount: series === 'selected' ? '{{n}}' : series } : { n: '{{n}}' }),
+          resolution: '{{imageSize}}', aspect_ratio: '{{aspectRatio}}' },
+      } },
+    response: { type: 'json', taskIdPath: 'data.id', errorPath: 'message' },
+    poll: { method: 'GET', path: '/tasks', pathMode: 'origin', query: { task_ids: '{{submit.data.id}}' },
+      response: { statusPath: 'data.0.status', successValues: ['succeeded'], failureValues: ['failed'],
+        errorPath: 'data.0.message', result: { urlPath: 'data.0.outputs.*.url' } },
+      intervalMs: 5000, maxDurationMs: 7_200_000,
+      retry: { maxRetries: 5, backoff: 'exponential', maxDelayMs: 60_000, honorRetryAfter: true, retryNetworkErrors: true } },
+  };
+}
+
+export const KLING_IMAGE_MODEL_MANIFEST: readonly ProviderModelSelection[] = ([false, 10] as const).map((series): ProviderModelSelection => ({
+  id: series ? 'kling-image-4.0-series' : 'kling-image-4.0',
+  name: series ? 'Kling Image 4.0 · 10 张组图' : 'Kling Image 4.0',
+  provider: 'kling', category: 'image', inputModalities: ['text', 'image'],
+  imageReferenceRequestMode: 'generation-json-image-data-urls',
+  imageCapability: { promptMaxCharacters: 50_000, promptMaxNonAsciiCharacters: 21_000,
+    resolutions: ['2k', '4k', '8k'], defaultResolution: '2k',
+    ratios: ['16:9', '9:16', '1:1', '4:3', '3:4', '3:2', '2:3', '21:9', 'auto'], defaultRatio: 'auto',
+    supportsBatch: !series, maxBatchCount: series ? 1 : 9,
+    supportsImageReference: true, maxImageReferences: 10, supportsDataUrlReference: true },
+  executionProfile: { preset: 'custom', protocol: klingImageProtocol(series) },
+}));
+
+function klingOperation(submit: NormalizedModelExecutionProtocol['submit']): ModelExecutionProfile {
+  return { preset: 'custom', protocol: { ...klingImageProtocol(false), submit } };
+}
+
+type KlingWebpageReference = 'style_refer_image' | 'subject_refer_image';
+type KlingCatalogModel = ProviderModelSelection & {
+  acceptsProjectStyleImage?: boolean;
+  videoFrameMode?: 'single' | 'keyframes';
+};
+function klingLongImageModel(length?: 'short' | 'medium' | 'long', roles: readonly KlingWebpageReference[] = []): KlingCatalogModel {
+  const references = length ? ['refer_image', 'refer_image', 'refer_image'] : roles;
+  const minimum = length ? 1 : roles.length;
+  const webpageLabel = roles.length === 2 ? '风格图 + 主体图' : roles[0] === 'style_refer_image'
+    ? '风格图' : roles[0] === 'subject_refer_image' ? '主体图' : '纯文本';
+  const suffix = length ?? (roles.length === 2 ? 'webpage-style-subject' : roles[0] === 'style_refer_image'
+    ? 'webpage-style' : roles[0] === 'subject_refer_image' ? 'webpage-subject' : 'webpage');
+  return {
+    id: `kling-long-image-4.0-${suffix}`,
+    name: `Kling 4.0 长图 · ${length ? `电商 ${length}` : `网页设计（${webpageLabel}）`}`,
+    provider: 'kling', category: 'image', inputModalities: references.length ? ['text', 'image'] : ['text'],
+    acceptsProjectStyleImage: roles[0] === 'style_refer_image',
+    ...(references.length ? { imageReferenceRequestMode: 'generation-json-image-data-urls' as const } : {}),
+    imageCapability: { promptMaxCharacters: 166_000, promptMaxNonAsciiCharacters: 71_000,
+      resolutions: ['1k', '2k'], defaultResolution: '1k', supportsBatch: false, maxBatchCount: 1,
+      supportsImageReference: references.length > 0, minImageReferences: minimum, maxImageReferences: references.length,
+      supportsDataUrlReference: references.length > 0 },
+    executionProfile: klingOperation({ method: 'POST', pathMode: 'origin', path: '/long-image-generation/kling-4.0',
+      bodyEncoding: 'json', maxBodyBytes: 65 * 1024 * 1024,
+      body: { contents: [{ type: 'prompt', text: '{{prompt}}' }, ...references.map((type, i) => ({
+        $whenPresent: `{{imageUrls.${i}}}`, $value: { type, url: `{{imageUrls.${i}}}`, id: `image${i + 1}` },
+      }))], settings: { skill: length ? 'ecommerce' : 'webpage', ...(length ? { length } : {}), resolution: '{{imageSize}}' } },
+    }),
+  };
+}
+
+const klingVideoTextModel: ProviderModelSelection = {
+  id: 'kling-video-4.0-text', name: 'Kling Video 4.0 · 文生视频', provider: 'kling', category: 'video', inputModalities: ['text'],
+  videoCapability: { promptMaxCharacters: 26_000, promptMaxNonAsciiCharacters: 11_000, operations: ['text-to-video'],
+    resolutions: ['720p', '1080p'], defaultResolution: '1080p', ratios: ['21:9', '16:9', '9:16', '1:1', '4:3', '3:4'],
+    defaultRatio: '16:9', durations: Array.from({ length: 28 }, (_, i) => i + 3), minDuration: 3, maxDuration: 30,
+    defaultDuration: 10, maxImageReferences: 0, maxVideoReferences: 0, maxAudioReferences: 0,
+    inputConstraints: { promptMinCharacters: 1 } },
+  executionProfile: klingOperation({ method: 'POST', pathMode: 'origin', path: '/text-to-video/kling-4.0',
+    body: { prompt: '{{prompt}}', settings: { resolution: '{{resolution}}', duration: '{{duration}}', aspect_ratio: '{{aspectRatio}}' } },
+  }),
+};
+
+const klingVideoKeyframeModel: KlingCatalogModel = {
+  ...klingVideoTextModel, id: 'kling-video-4.0-keyframes', name: 'Kling Video 4.0 · 多关键帧', inputModalities: ['text', 'image'],
+  videoFrameMode: 'keyframes',
+  videoCapability: { ...klingVideoTextModel.videoCapability, operations: ['image-to-video'],
+    ratios: ['auto'], defaultRatio: 'auto', requiresReference: true, maxImageReferences: 10, allowFrameAndReferenceMix: true },
+  executionProfile: klingOperation({ method: 'POST', pathMode: 'origin', path: '/image-to-video/kling-4.0',
+    bodyEncoding: 'json', maxBodyBytes: 65 * 1024 * 1024,
+    body: { contents: [{ type: 'prompt', text: '{{prompt}}' }, ...Array.from({ length: 10 }, (_, i) => ({
+      $whenPresent: `{{imageWithRoles.${i}}}`, $value: `{{imageWithRoles.${i}}}`,
+    }))], settings: { resolution: '{{resolution}}', duration: '{{duration}}' } },
+  }),
+};
+
+// https://klingai.com/document-api/api/video/4-0-flash/text-to-video.md
+// https://klingai.com/document-api/api/video/4-0-flash/image-to-video.md
+const klingFlashVideoLimits = {
+  resolutions: ['720p'], defaultResolution: '720p',
+  durations: Array.from({ length: 18 }, (_, i) => i + 3), minDuration: 3, maxDuration: 20,
+};
+const klingFlashTextModel: KlingCatalogModel = {
+  ...klingVideoTextModel,
+  id: 'kling-video-4.0-flash-text', name: 'Kling Video 4.0 Flash · 文生视频',
+  videoCapability: { ...klingVideoTextModel.videoCapability, ...klingFlashVideoLimits },
+  executionProfile: klingOperation({ method: 'POST', pathMode: 'origin', path: '/text-to-video/kling-4.0-flash',
+    body: { prompt: '{{prompt}}', settings: { resolution: '{{resolution}}', duration: '{{duration}}', aspect_ratio: '{{aspectRatio}}' } },
+  }),
+};
+const klingFlashFirstFrameModel: KlingCatalogModel = {
+  ...klingVideoKeyframeModel,
+  id: 'kling-video-4.0-flash-first-frame', name: 'Kling Video 4.0 Flash · 首帧生视频', videoFrameMode: 'single',
+  videoCapability: { ...klingVideoKeyframeModel.videoCapability, ...klingFlashVideoLimits,
+    maxImageReferences: 1, allowFrameAndReferenceMix: false },
+  executionProfile: klingOperation({ method: 'POST', pathMode: 'origin', path: '/image-to-video/kling-4.0-flash',
+    bodyEncoding: 'json', maxBodyBytes: 65 * 1024 * 1024,
+    body: { contents: [{ type: 'prompt', text: '{{prompt}}' }, '{{imageWithRoles.0}}'],
+      settings: { resolution: '{{resolution}}', duration: '{{duration}}' } },
+  }),
+};
+
+export const KLING_VIDEO_MODEL_MANIFEST: readonly KlingCatalogModel[] = [
+  klingVideoTextModel, klingVideoKeyframeModel, klingFlashTextModel, klingFlashFirstFrameModel,
+];
+
+const KLING_SELECTED_SERIES: ProviderModelSelection = {
+  ...KLING_IMAGE_MODEL_MANIFEST[0], id: 'kling-image-4.0-series-selected', name: 'Kling Image 4.0 · 2–10 张组图',
+  imageCapability: { ...KLING_IMAGE_MODEL_MANIFEST[0].imageCapability, minBatchCount: 2, maxBatchCount: 10 },
+  executionProfile: { preset: 'custom', protocol: klingImageProtocol('selected') },
+};
+
+export const KLING_AUTO_SERIES_ID = 'kling-image-4.0-series-auto';
+export const KLING_AUTO_SERIES_OUTPUTS = Object.freeze({ min: 2, max: 10 });
+const klingAutoSeries: ProviderModelSelection = {
+  ...KLING_IMAGE_MODEL_MANIFEST[1], id: KLING_AUTO_SERIES_ID, name: 'Kling Image 4.0 · 自动组图（2–10 张）',
+  imageCapability: { ...KLING_IMAGE_MODEL_MANIFEST[1].imageCapability, outputCountRange: KLING_AUTO_SERIES_OUTPUTS },
+  executionProfile: { preset: 'custom', protocol: klingImageProtocol('auto') },
+};
+
+const KLING_MODELS: KlingCatalogModel[] = [...KLING_IMAGE_MODEL_MANIFEST, KLING_SELECTED_SERIES, klingAutoSeries, klingLongImageModel('short'),
+  klingLongImageModel('medium'), klingLongImageModel('long'), klingLongImageModel(),
+  klingLongImageModel(undefined, ['style_refer_image']), klingLongImageModel(undefined, ['subject_refer_image']),
+  klingLongImageModel(undefined, ['style_refer_image', 'subject_refer_image']), ...KLING_VIDEO_MODEL_MANIFEST];
+const klingComparison = { ignorePollSchedule: true };
+const klingContracts = new Map(KLING_MODELS.map((model) => [model.id, {
+  model, key: comparableProtocol(model.executionProfile, klingComparison),
+}]));
+
+export function resolveKlingModelContract(modelId: string, profile?: ModelExecutionProfile): KlingCatalogModel | undefined {
+  const known = klingContracts.get(modelId);
+  if (!known?.key || profile?.preset !== 'custom') return undefined;
+  return comparableProtocol(profile, klingComparison) === known.key ? known.model : undefined;
+}
+
+export function usesKlingImageProtocol(modelId: string, profile?: ModelExecutionProfile): boolean {
+  return resolveKlingModelContract(modelId, profile)?.category === 'image';
+}
 
 // CCC 的 Gemini 渠道沿用 generateContent；鉴权用中转 Key，不复用 Google 直连协议。
 // https://github.com/Wei-Shaw/sub2api/blob/main/backend/internal/server/routes/gateway.go
@@ -288,7 +452,21 @@ export const WEB_SEARCH_PROVIDER_IDS: readonly WebSearchProviderId[] = [
   'exa',
 ];
 
-const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = ([
+const BUILT_IN_PROVIDER_ENTRIES: Omit<ProviderDefinition, 'policy'>[] = [
+  {
+    id: 'kling', name: 'Kling', description: 'Kling 官方 API，支持图片、长图与视频', badgeText: 'KL',
+    authType: 'api-key', catalogAdapter: 'local-manifest', defaultBaseUrl: KLING_BASE_URL,
+    allowCustomBaseUrl: true, externalUrl: 'https://www.klingai.com/document-api/guides/get-started/overview',
+    credentials: [API_KEY_FIELD, { key: 'baseUrl', label: '接口地址', required: false, placeholder: KLING_BASE_URL }],
+    models: KLING_MODELS,
+  },
+  {
+    id: 'replicate', name: 'Replicate', description: 'Replicate 官方 Prediction API', badgeText: 'RP',
+    authType: 'api-key', catalogAdapter: 'local-manifest', defaultBaseUrl: REPLICATE_BASE_URL,
+    allowCustomBaseUrl: false, externalUrl: 'https://replicate.com/docs/reference/http',
+    connectionTestPath: '/v1/account',
+    credentials: [API_KEY_FIELD], models: REPLICATE_MODEL_MANIFEST,
+  },
   {
     id: 'workflow-api', name: '工作流 API', kind: 'workflow-api',
     description: '自定义平台、工作流路径、输入参数与结果映射', badgeText: 'WF',
@@ -536,6 +714,12 @@ const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = ([
     kind: 'web-search',
   },
   {
+    id: 'magpie', name: 'Magpie', description: '使用自己的 Magpie 网关发现已启用模型及其目录长度',
+    badgeText: 'MP', authType: 'api-key', catalogAdapter: 'openai-compatible', modelsPath: '/models',
+    allowCustomBaseUrl: true, requestQuery: { kind: 'all' },
+    credentials: [API_KEY_FIELD, { key: 'baseUrl', label: '接口地址', required: true }],
+  },
+  {
     id: 'custom-openai',
     name: '自定义接口',
     description: 'OpenAI 兼容接口；非标准接口用模型的调用协议单独声明',
@@ -549,8 +733,11 @@ const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = ([
       { key: 'baseUrl', label: '接口地址', required: true },
     ],
   },
-] satisfies Omit<ProviderDefinition, 'policy'>[]).map((definition) => ({
-  ...definition, policy: getProviderPolicy(definition.id),
+];
+
+const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = BUILT_IN_PROVIDER_ENTRIES.map((definition) => ({
+  ...definition,
+  policy: getProviderPolicy(definition.id),
 }));
 
 export function isProviderModelVisible(catalogId: string | undefined, modelId: string): boolean {
@@ -621,7 +808,7 @@ export function resolveWebSearchProviderId(
  * 分组厂商、自定义接口与工作流允许多条连接，各自使用独立的凭据身份。
  */
 export function createConnectionId(providerId: string): string {
-  if (!['custom-openai', 'workflow-api', 'cccapi', 'relayonapi'].includes(providerId)) return providerId;
+  if (!['custom-openai', 'workflow-api', 'cccapi', 'relayonapi', 'magpie'].includes(providerId)) return providerId;
   const suffix = globalThis.crypto?.randomUUID?.().slice(0, 8)
     ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
   return `${providerId === 'custom-openai' ? 'custom' : providerId}-${suffix}`;
@@ -667,6 +854,7 @@ export function resolveProviderImageModelForValidation(
       if (errors.length) throw new Error(errors[0]);
     }
   }
+  if (definition?.id === 'magpie') assertMagpieMediaSelection(model);
   if (model.category !== 'image') return model;
   if (model.imageCapability) assertImageModelCapability(model.imageCapability);
   if (definition?.id === 'cccapi' && definition.models?.some((item) => item.id === model.id
@@ -689,6 +877,7 @@ function inferModelCategory(modelId: string): GeneralModelCategory {
   const id = modelId.toLowerCase();
   if (/tts|speech|audio|music|voice|whisper|transcri/.test(id)) return 'audio';
   if (/minimax[-\s_.]?h3[-\s_.]?image/.test(id)) return 'image';
+  if (/image|seedream|imagen|flux|banana|midjourney|recraft|dall-e/.test(id) && !/video/.test(id)) return 'image';
   // 普通 minimax-h3 及其视频 Context-IR / Regeneration 变体按视频识别；
   // 中转站/自定义目录可能返回 MiniMax_H3、MiniMax H3 等写法，统一按分隔符变体识别。
   if (/video|seedance|sora|veo|kling|hailuo|wan\d|skyreels|vidu|minimax[-\s_.]?h3/.test(id)) return 'video';
@@ -711,12 +900,6 @@ function readStringArray(value: unknown): string[] | undefined {
   return items.length > 0 ? items : undefined;
 }
 
-function readNumberArray(value: unknown): number[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const items = value.filter((item): item is number => typeof item === 'number' && Number.isFinite(item));
-  return items.length > 0 ? items : undefined;
-}
-
 function readFiniteNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
@@ -727,34 +910,100 @@ function readRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+type CatalogPromptLimits = Pick<ImageModelCapability, 'promptMaxCharacters' | 'promptMaxNonAsciiCharacters'>;
+type CatalogVideoTiming = Pick<VideoModelCapability, 'durations' | 'minDuration' | 'maxDuration' | 'defaultDuration'>;
+
+function readCatalogPromptLimits(record: Record<string, unknown>): CatalogPromptLimits {
+  const maximum = readPositiveTokenCount(record.promptMaxCharacters ?? record.prompt_max_characters ?? record.max_prompt_chars);
+  const rawNonAscii = record.promptMaxNonAsciiCharacters ?? record.prompt_max_non_ascii_characters;
+  const nonAscii = readPositiveTokenCount(rawNonAscii);
+  if (maximum === undefined || (rawNonAscii !== undefined && (nonAscii === undefined || nonAscii > maximum))) return {};
+  return { promptMaxCharacters: maximum, ...(nonAscii === undefined ? {} : { promptMaxNonAsciiCharacters: nonAscii }) };
+}
+
+function isPositiveSeconds(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+function isWithinDurationRange(seconds: number, min?: number, max?: number): boolean {
+  return (min === undefined || seconds >= min) && (max === undefined || seconds <= max);
+}
+
+function readCatalogVideoTiming(record: Record<string, unknown>): CatalogVideoTiming {
+  const range = readRecord(record.duration_range ?? record.durationRange);
+  const rawMin = record.minDuration ?? record.min_duration ?? range?.min;
+  const rawMax = record.maxDuration ?? record.max_duration ?? range?.max;
+  const rawDefault = record.default_duration ?? record.defaultDuration;
+  const rawDurations = record.durations;
+  if ((rawMin !== undefined && !isPositiveSeconds(rawMin)) || (rawMax !== undefined && !isPositiveSeconds(rawMax))
+    || (rawDefault !== undefined && !isPositiveSeconds(rawDefault)) || (rawDurations !== undefined
+      && (!Array.isArray(rawDurations) || !rawDurations.length || !rawDurations.every(isPositiveSeconds)))) return {};
+  const durations = rawDurations === undefined ? undefined : [...new Set<number>(rawDurations as number[])].sort((a, b) => a - b);
+  const minDuration = rawMin ?? durations?.[0];
+  const maxDuration = rawMax ?? durations?.at(-1);
+  if ((minDuration !== undefined && maxDuration !== undefined && minDuration > maxDuration)
+    || durations?.some((seconds) => !isWithinDurationRange(seconds, minDuration, maxDuration))
+    || (rawDefault !== undefined && (!isWithinDurationRange(rawDefault, minDuration, maxDuration)
+      || (durations && !durations.includes(rawDefault))))) return {};
+  return { durations, minDuration, maxDuration, defaultDuration: rawDefault };
+}
+
+function mergeCatalogVideoTiming(remote: CatalogVideoTiming, fallback: CatalogVideoTiming): CatalogVideoTiming {
+  if (remote.durations === undefined && remote.minDuration === undefined && remote.maxDuration === undefined
+    && remote.defaultDuration === undefined) return {};
+  const minDuration = remote.minDuration ?? fallback.minDuration;
+  const maxDuration = remote.maxDuration ?? fallback.maxDuration;
+  if (minDuration !== undefined && maxDuration !== undefined && minDuration > maxDuration) return {};
+  // 只有显式的远端档位才能替换原档位。区间单独更新时按原档位收窄。
+  const durations = remote.durations ?? fallback.durations?.filter((seconds) => isWithinDurationRange(seconds, minDuration, maxDuration));
+  if (fallback.durations?.length && durations?.length === 0) return {};
+  const isSupported = (seconds: number) => isWithinDurationRange(seconds, minDuration, maxDuration)
+    && (!durations?.length || durations.includes(seconds));
+  if (remote.defaultDuration !== undefined && !isSupported(remote.defaultDuration)) return {};
+  const previousDefault = fallback.defaultDuration;
+  return { durations, minDuration, maxDuration, defaultDuration: remote.defaultDuration
+    ?? (previousDefault !== undefined && isSupported(previousDefault) ? previousDefault : undefined) };
+}
+
+function mergeCatalogPromptLimits(remote: CatalogPromptLimits, fallback: CatalogPromptLimits): CatalogPromptLimits {
+  const maximum = remote.promptMaxCharacters;
+  if (maximum === undefined) return {};
+  const nonAscii = remote.promptMaxNonAsciiCharacters ?? fallback.promptMaxNonAsciiCharacters;
+  return { promptMaxCharacters: maximum, promptMaxNonAsciiCharacters: nonAscii === undefined ? undefined : Math.min(nonAscii, maximum) };
+}
+
+function definedCatalogFields<T extends object>(value: T): Partial<T> {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as Partial<T>;
+}
+
 function parseVideoCapability(
   record: Record<string, unknown>,
   category: GeneralModelCategory,
 ): ProviderModelSelection['videoCapability'] {
   if (category !== 'video') return undefined;
-  const durations = readNumberArray(record.durations);
-  const durationRange = readRecord(record.duration_range ?? record.durationRange);
+  record = readRecord(record.videoCapability ?? record.video_capability) ?? record;
   const referenceLimits = readRecord(record.reference_limits ?? record.referenceLimits);
   const maxVideoAudioReferences = readFiniteNumber(referenceLimits?.videoAudioCombined);
   const capability: NonNullable<ProviderModelSelection['videoCapability']> = {
-    durations,
-    minDuration: readFiniteNumber(durationRange?.min) ?? (durations ? Math.min(...durations) : undefined),
-    maxDuration: readFiniteNumber(durationRange?.max) ?? (durations ? Math.max(...durations) : undefined),
-    defaultDuration: readFiniteNumber(record.default_duration ?? record.defaultDuration),
-    ratios: readStringArray(record.aspect_ratios ?? record.aspectRatios),
-    defaultRatio: typeof (record.default_aspect_ratio ?? record.defaultAspectRatio) === 'string'
-      ? String(record.default_aspect_ratio ?? record.defaultAspectRatio)
+    ...readCatalogPromptLimits(record),
+    ...readCatalogVideoTiming(record),
+    operations: readStringArray(record.operations) as NonNullable<ProviderModelSelection['videoCapability']>['operations'],
+    ratios: readStringArray(record.ratios ?? record.aspect_ratios ?? record.aspectRatios),
+    defaultRatio: typeof (record.defaultRatio ?? record.default_aspect_ratio ?? record.defaultAspectRatio) === 'string'
+      ? String(record.defaultRatio ?? record.default_aspect_ratio ?? record.defaultAspectRatio)
       : undefined,
     resolutions: readStringArray(record.resolutions),
     defaultResolution: typeof (record.default_resolution ?? record.defaultResolution) === 'string'
       ? String(record.default_resolution ?? record.defaultResolution)
       : undefined,
-    maxImageReferences: readFiniteNumber(referenceLimits?.image),
-    maxVideoReferences: readFiniteNumber(referenceLimits?.video),
-    maxAudioReferences: readFiniteNumber(referenceLimits?.audio),
+    maxImageReferences: readFiniteNumber(record.maxImageReferences ?? referenceLimits?.image),
+    maxVideoReferences: readFiniteNumber(record.maxVideoReferences ?? referenceLimits?.video),
+    maxAudioReferences: readFiniteNumber(record.maxAudioReferences ?? referenceLimits?.audio),
     ...(maxVideoAudioReferences !== undefined ? { maxVideoAudioReferences } : {}),
-    supportsStandaloneAudio: record.supports_audio === true ? true : undefined,
-    requiresReference: record.supports_text_only === false ? true : undefined,
+    supportsStandaloneAudio: typeof record.supportsStandaloneAudio === 'boolean' ? record.supportsStandaloneAudio
+      : record.supports_audio === true ? true : undefined,
+    requiresReference: typeof record.requiresReference === 'boolean' ? record.requiresReference
+      : record.supports_text_only === false ? true : undefined,
   };
   return Object.values(capability).some((value) => value !== undefined) ? capability : undefined;
 }
@@ -772,6 +1021,7 @@ function parseImageCapability(record: Record<string, unknown>, category: General
       ...(item.step !== undefined ? { step: readFiniteNumber(item.step) ?? NaN } : {}) } : undefined;
   };
   const capability: NonNullable<ProviderModelSelection['imageCapability']> = {
+    ...readCatalogPromptLimits(declared),
     outputFormats: outputFormats(declared.outputFormats ?? declared.output_formats),
     defaultOutputFormat: (declared.defaultOutputFormat ?? declared.default_output_format) as ImageOutputFormat | undefined,
     textOnlyOutputFormats: outputFormats(declared.textOnlyOutputFormats ?? declared.text_only_output_formats),
@@ -792,6 +1042,8 @@ function parseImageCapability(record: Record<string, unknown>, category: General
     defaultRatio: typeof (declared.defaultRatio ?? declared.default_aspect_ratio) === 'string'
       ? String(declared.defaultRatio ?? declared.default_aspect_ratio) : undefined,
     supportsBatch: boolean(declared.supportsBatch ?? declared.supports_batch),
+    minBatchCount: readFiniteNumber(declared.minBatchCount ?? declared.min_batch_count),
+    minImageReferences: readFiniteNumber(declared.minImageReferences ?? declared.min_image_references),
     maxBatchCount: readFiniteNumber(declared.maxBatchCount ?? declared.max_batch_count),
     supportsImageReference: boolean(declared.supportsImageReference ?? declared.supports_image_reference),
     maxImageReferences: readFiniteNumber(declared.maxImageReferences ?? limit?.image),
@@ -804,10 +1056,12 @@ function parseCatalogItem(
   item: unknown,
   providerId: string,
   protocol: ChatApiProtocol,
+  catalogId: string,
 ): ProviderModelSelection | null {
   if (typeof item === 'string') {
     const id = item.trim();
-    return id ? { id, name: id, category: inferModelCategory(id), provider: providerId } : null;
+    return id ? { id, name: id, category: catalogId === 'magpie' ? 'text' : inferModelCategory(id), provider: providerId,
+      ...(catalogId === 'magpie' ? { catalogTextLimits: undefined } : {}) } : null;
   }
   if (!item || typeof item !== 'object') return null;
 
@@ -822,16 +1076,39 @@ function parseCatalogItem(
     ? record.display_name ?? record.displayName
     : record.name ?? record.display_name ?? record.displayName;
   const name = typeof rawName === 'string' && rawName.trim() ? rawName.trim() : id;
-  const category = inferModelCategory(id);
-  const supportsImageInput = record.supports_image === true || record.supportsImage === true;
+  const isMagpie = catalogId === 'magpie';
+  const declaredCategory = isMagpie ? record.kind ?? 'text' : record.category ?? record.type ?? record.modality;
+  if (isMagpie && !['text', 'image', 'video', 'audio'].includes(String(declaredCategory))) return null;
+  const category: GeneralModelCategory = ['text', 'image', 'video', 'audio'].includes(String(declaredCategory))
+    ? declaredCategory as GeneralModelCategory : inferModelCategory(id);
+  const declaredInputs = isMagpie ? readStringArray(readRecord(record.modalities)?.input) : undefined;
+  const supportsImageInput = record.supports_image === true || record.supportsImage === true || declaredInputs?.includes('image');
+  const inputModalities = declaredInputs
+    ? declaredInputs.filter((item): item is 'text' | 'image' => item === 'text' || item === 'image')
+    : supportsImageInput ? ['text', 'image'] as const : undefined;
+  const catalogTextLimits = isMagpie && category === 'text' ? readMagpieTextLimits(record) : undefined;
   return {
     id,
     name,
     category,
     provider: providerId,
-    inputModalities: supportsImageInput ? ['text', 'image'] : undefined,
-    videoCapability: parseVideoCapability(record, category),
-    imageCapability: parseImageCapability(record, category),
+    inputModalities: inputModalities ? [...inputModalities] : undefined,
+    ...(isMagpie ? { catalogTextLimits } : {}),
+    // Magpie 目录声明模型与模态，媒体参数仍由网关操作合同或用户配置决定。
+    videoCapability: isMagpie ? undefined : parseVideoCapability(record, category),
+    imageCapability: isMagpie ? undefined : parseImageCapability(record, category),
+  };
+}
+
+function readMagpieTextLimits(record: Record<string, unknown>): ProviderModelSelection['catalogTextLimits'] {
+  const aliases = [record.context_window, record.context_length, record.max_input_tokens]
+    .filter((value) => value !== undefined);
+  const candidate = readPositiveTokenCount(aliases[0]);
+  const contextWindow = candidate !== undefined && aliases.every((value) => value === candidate) ? candidate : undefined;
+  const output = readPositiveTokenCount(record.max_output_tokens);
+  const maxOutputTokens = output !== undefined && (contextWindow === undefined || output < contextWindow) ? output : undefined;
+  return contextWindow === undefined && maxOutputTokens === undefined ? undefined : {
+    source: 'magpie', contextWindow, maxOutputTokens,
   };
 }
 
@@ -868,6 +1145,10 @@ function mergeRemoteCatalogMetadata(
   return remoteModels.map((remote) => {
     const fallback = fallbackById.get(remote.id) ?? cccFallbackById?.get(remote.id.toLowerCase());
     if (!fallback) return remote;
+    // 类别不同的目录项不能借用本地能力与执行映射。已有内置合同优先保留原类别。
+    if (remote.category !== fallback.category) {
+      return fallback.executionProfile ? { ...fallback, provider: remote.provider } : remote;
+    }
     return {
       ...fallback,
       ...remote,
@@ -876,12 +1157,22 @@ function mergeRemoteCatalogMetadata(
       executionProfile: remote.executionProfile ?? fallback.executionProfile,
       imageReferenceRequestMode: remote.imageReferenceRequestMode
         ?? fallback.imageReferenceRequestMode,
-      imageCapability: remote.imageCapability ?? fallback.imageCapability,
+      imageCapability: remote.imageCapability || fallback.imageCapability
+        ? { ...fallback.imageCapability, ...definedCatalogFields(remote.imageCapability ?? {}),
+          ...mergeCatalogPromptLimits(remote.imageCapability ?? {}, fallback.imageCapability ?? {}) }
+        : undefined,
       videoCapability: remote.videoCapability || fallback.videoCapability
-        ? { ...fallback.videoCapability, ...remote.videoCapability }
+        ? mergeCatalogVideoCapability(remote.videoCapability ?? {}, fallback.videoCapability ?? {})
         : undefined,
     };
   });
+}
+
+function mergeCatalogVideoCapability(remote: VideoModelCapability, fallback: VideoModelCapability): VideoModelCapability {
+  const { durations, minDuration, maxDuration, defaultDuration, ...metadata } = remote;
+  return { ...fallback, ...definedCatalogFields(metadata),
+    ...mergeCatalogPromptLimits(remote, fallback),
+    ...mergeCatalogVideoTiming({ durations, minDuration, maxDuration, defaultDuration }, fallback) };
 }
 
 // 这些是界面版本选择 ID；执行时仍提交主模型 + version，不能绕过当前 Key 的目录。
@@ -943,22 +1234,27 @@ async function fetchCatalogAt(
   for (const [key, value] of Object.entries(definition.requestQuery ?? {})) {
     url.searchParams.set(key, value);
   }
-  const response = await fetchCatalogResponse(
-    url.toString(),
-    config.apiKey,
-    resolveChatApiProtocol(config.chatApiProtocol),
-    signal,
-  );
+  const protocol = definition.id === 'magpie' ? 'openai-compatible' : resolveChatApiProtocol(config.chatApiProtocol);
+  const response = await fetchCatalogResponse(url.toString(), config.apiKey, protocol, signal);
   if (!response.ok) throw new Error(`模型列表拉取失败 (HTTP ${response.status})`);
 
   const payload: unknown = await response.json().catch(() => null);
+  signal?.throwIfAborted();
+  if (definition.id === 'magpie') {
+    const page = readRecord(payload);
+    if (!page || !Array.isArray(page.data) || page.has_more === true) throw new Error('模型列表拉取失败 (HTTP 200)');
+    if (page.data.length === 0) return [];
+  }
   const items = readCatalogItems(payload);
   const models = (definition.id === 'aigc-si' ? normalizeAigcsiCatalogItems(items) : items)
-    .map((item) => parseCatalogItem(item, providerId, resolveChatApiProtocol(config.chatApiProtocol)))
+    .map((item) => parseCatalogItem(item, providerId, protocol, definition.id))
     .filter((item): item is ProviderModelSelection => (
       item !== null && isProviderModelVisible(definition.id, item.id)
     ));
-  if (models.length === 0) throw new Error('模型列表拉取失败 (HTTP 200)');
+  if (models.length === 0 || (definition.id === 'magpie'
+    && (models.length !== items.length || new Set(models.map((model) => model.id)).size !== models.length))) {
+    throw new Error('模型列表拉取失败 (HTTP 200)');
+  }
   return normalizeModels(models, providerId);
 }
 
@@ -968,10 +1264,9 @@ async function fetchOpenAiCompatibleCatalog(
   config: ApiProviderConfig,
   signal?: AbortSignal,
 ): Promise<{ models: ProviderModelSelection[]; baseUrl: string }> {
-  const candidates = baseUrlCandidates(
-    config.baseUrl || definition.defaultBaseUrl,
-    resolveChatApiProtocol(config.chatApiProtocol),
-  );
+  const candidates = definition.id === 'magpie'
+    ? [normalizeMagpieBaseUrl(config.baseUrl)].filter(Boolean)
+    : baseUrlCandidates(config.baseUrl || definition.defaultBaseUrl, resolveChatApiProtocol(config.chatApiProtocol));
   if (candidates.length === 0) throw new Error('请填写接口地址');
 
   let lastError: unknown;
@@ -982,6 +1277,7 @@ async function fetchOpenAiCompatibleCatalog(
         baseUrl,
       };
     } catch (error) {
+      signal?.throwIfAborted();
       if (error instanceof DOMException && error.name === 'AbortError') throw error;
       lastError = error;
     }
@@ -1055,9 +1351,9 @@ export async function fetchProviderModelCatalog(
   }
   if (definition.catalogAdapter === 'local-manifest') {
     // 即梦与 MiniMax 使用已核实的本地合同；过期的界面 fallback 不能隐藏新型号，也不代表 Key 已验证。
-    if (definition.id === 'dreamina' || definition.id === 'minimax' || definition.id === 'muse') {
+    if (['dreamina', 'minimax', 'muse', 'kling', 'replicate'].includes(definition.id)) {
       return { models: normalizeModels([...(definition.models ?? [])], providerId), source: 'local-manifest',
-        ...(definition.id === 'minimax' ? { warning: '当前仅展示内置候选模型，未验证 API Key 或各模型权限；请使用「验证连接」检查当前密钥。' } : {}) };
+        ...(['minimax', 'kling', 'replicate'].includes(definition.id) ? { warning: '当前展示内置候选模型，未验证 API Key 或模型权限。' } : {}) };
     }
     return { models: definition.id === 'grsai'
       ? mergeRemoteCatalogMetadata(normalizedFallback, [...GRSAI_ADDED_MODELS])
@@ -1065,13 +1361,14 @@ export async function fetchProviderModelCatalog(
   }
 
   try {
-    if (['libapi', 'relayonapi', 'aigc-si'].includes(definition.id) && !config.apiKey.trim()) throw new Error('请填写 API Key');
+    if (['libapi', 'relayonapi', 'aigc-si', 'magpie'].includes(definition.id) && !config.apiKey.trim()) throw new Error('请填写 API Key');
     const { models, baseUrl } = await fetchOpenAiCompatibleCatalog(
       definition,
       providerId,
       config,
       signal,
     );
+    if (definition.id === 'magpie') return { models, source: 'remote', resolvedBaseUrl: baseUrl, catalogUpdatedAt: Date.now() };
     if (definition.id === 'libapi') {
       const matched = await matchActiveLibapiCatalog(models, baseUrl, signal);
       return {
@@ -1117,6 +1414,7 @@ export async function fetchProviderModelCatalog(
         ? { warning: '已获取当前站点目录，仅展示已适配的媒体型号及指定文本型号；尚无完整调用合同的型号暂不展示。' } : {}),
     };
   } catch (error) {
+    signal?.throwIfAborted();
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
     const warning = safeCatalogError(error);
     // CCC 分组权限由 Key 决定，不能用全站目录伪装成该 Key 的可用模型。

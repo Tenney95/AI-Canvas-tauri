@@ -187,6 +187,31 @@ const VIDEO_TEMPLATES: Partial<Record<string, VideoCapabilityTemplateId>> = {
   'minimax-h3': 'minimax-h3',
 };
 
+// 2026-11-23 复核 https://libapi.cc/v1/logical-models 公布的提示词长度。
+const PROMPT_CHARACTER_LIMITS: Partial<Record<string, number>> = {
+  'seedance-2-5': 30_000, 'seedance-2-5-special': 20_000, 'seedance-2-5-promo': 25_000,
+  'seedance-2-0-official': 30_000, 'seedance-2-0-promo': 60_000, 'seedance-2-0-special': 20_000,
+  'seedance-2-0-manju-special': 8_000, 'seedance-2-0-ecom-special': 24_400, 'seedance-2-0-9tu-special': 8_000,
+  'gpt-image-2.5-sunburst': 32_000, 'gpt-image-2.5-flare': 32_000, 'doubao-seedream-5-0-pro': 100_000,
+  'gpt-image-2': 50_000, 'gemini-3.1-flash-image': 30_000, 'gemini-3-pro-image': 30_000,
+  'doubao-seedream-5-0': 30_000, 'wan-3-0': 20_000, 'minimax-h3': 20_000, 'pixverse-c1': 5_000,
+  'omni-flash-1-1': 30_000, 'veo-4-omni': 30_000, 'veo-3.1': 30_000,
+  'grok-imagine-1-5-7tu-special': 8_000, 'grok-imagine-1.5': 4_096, 'grok-imagine-video': 4_096,
+  'kling-v3': 2_500, 'kling-3.0-turbo': 2_500, 'happyhorse-1-1': 2_500, 'viduq3': 5_000,
+  'gpt-image-2-official': 32_000, 'gpt-image-1.5-all': 32_000, 'doubao-seedream-4-5': 30_000,
+  'qwen-image-2.0': 800, 'wan2.7-image': 5_000, 'grok-imagine-image': 16_000, 'minimax-hailuo-2-3': 2_000,
+  'grok-imagine-video-special': 8_000, 'grok-imagine-1.5-special': 8_000,
+  'gemini-3.1-flash-lite-image': 30_000, 'flux-kontext': 30_000, 'gpt-image-2-c': 32_000,
+  'kling-image-o3': 2_500, 'grok-imagine-image-2.0': 20_000,
+};
+
+const UPDATED_DURATIONS: Partial<Record<string, number[]>> = {
+  'seedance-2-5': Array.from({ length: 27 }, (_, index) => index + 4),
+  'seedance-2-5-promo': Array.from({ length: 27 }, (_, index) => index + 4),
+  'seedance-2-0-promo': Array.from({ length: 12 }, (_, index) => index + 4),
+  'grok-imagine-1-5-7tu-special': [3, 4, 5, 6, 8, 10, 12, 15],
+};
+
 /** 统一内部目录名；仅接受本批实际审计过的 internal/public 两种 ID。 */
 export function resolveLibapiModelId(id: string): string | undefined {
   return SNAPSHOT_BY_ID.get(id)?.id;
@@ -241,6 +266,7 @@ function imageModel(model: LibapiModelSnapshot): ProviderModelSelection {
   const ratioField = model.params.aspect_ratio ? 'aspect_ratio' : isRatioField(size) ? 'size' : undefined;
   const resolutionField = model.params.resolution ? 'resolution' : size && !isRatioField(size) && !pixels ? 'size' : undefined;
   const capability: ImageModelCapability = {
+    promptMaxCharacters: PROMPT_CHARACTER_LIMITS[model.id],
     ...(pixels ? pixelCapability(size!) : {}),
     ...(ratioField ? { ratios: enumOf(model, ratioField), defaultRatio: stringDefault(model, ratioField) } : {}),
     ...(resolutionField ? { resolutions: enumOf(model, resolutionField), defaultResolution: stringDefault(model, resolutionField) } : {}),
@@ -269,7 +295,7 @@ function imageModel(model: LibapiModelSnapshot): ProviderModelSelection {
 
 function videoModel(model: LibapiModelSnapshot): ProviderModelSelection {
   const modes = enumOf(model, 'mode') ?? [];
-  const durations = enumOf(model, 'duration')?.map(Number).filter(Number.isFinite);
+  const durations = UPDATED_DURATIONS[model.id] ?? enumOf(model, 'duration')?.map(Number).filter(Number.isFinite);
   const supportsReference = modes.includes('reference');
   const requiresReference = !modes.includes('text-to-video');
   const video = model.params.videos;
@@ -281,6 +307,7 @@ function videoModel(model: LibapiModelSnapshot): ProviderModelSelection {
     ...(input.max_total_duration_sec !== undefined ? { totalDurationSeconds: { max: input.max_total_duration_sec } } : {}),
   } : undefined;
   const capability: VideoModelCapability = {
+    promptMaxCharacters: PROMPT_CHARACTER_LIMITS[model.id],
     operations: [...(!requiresReference ? ['text-to-video' as const] : []),
       ...(model.params.images || audio ? ['image-to-video' as const] : []),
       ...(maxVideos > 0 ? ['video-to-video' as const] : [])],
@@ -393,7 +420,8 @@ function requireSnapshot(id: string, category: LibapiModelSnapshot['type']): Lib
 }
 function canonicalEnum(model: LibapiModelSnapshot, field: string, value: ProtocolJsonValue | undefined): string | undefined {
   if (value === undefined || value === '') return undefined;
-  const options = model.params[field]?.enum;
+  const options = field === 'duration' && UPDATED_DURATIONS[model.id]
+    ? UPDATED_DURATIONS[model.id]!.map(String) : model.params[field]?.enum;
   if (!options) return typeof value === 'string' ? value : undefined;
   const matched = typeof value === 'string' ? options.find((option) => option.toLowerCase() === value.toLowerCase()) : undefined;
   if (!matched) throw new Error(`LIBAPI 模型“${model.public_id}”的 ${field} 不支持“${String(value)}”`);

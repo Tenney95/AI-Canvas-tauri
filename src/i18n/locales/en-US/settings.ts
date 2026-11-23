@@ -4,6 +4,10 @@
 import pluginAndUsageSettings from './pluginAndUsageSettings';
 
 const settings = {
+  '提示词最多字符': 'Maximum prompt characters',
+  '非 ASCII 提示词预算': 'Non-ASCII prompt budget',
+  '混合提示词按 ASCII/最多字符 + 非 ASCII/非 ASCII 预算 ≤ 1 校验。': 'Mixed prompts must satisfy ASCII / maximum characters + non-ASCII / non-ASCII budget ≤ 1.',
+  'Kling 官方 API，支持图片、长图与视频': 'Official Kling API for images, long images, and video',
   "协议插件缺少宿主能力声明，请重新安装": "The protocol plugin is missing its host capability declaration. Reinstall it.",
   "协议插件缺少注册摘要，请重新安装": "The protocol plugin is missing its registration digests. Reinstall it.",
   "原生活动版本未提供所选协议预设": "The active native revision does not provide the selected protocol preset.",
@@ -1363,6 +1367,12 @@ const settings = {
   "部分项目的素材暂受保护，其他已核验的未引用文件仍可清理。": "Some project media is protected. Other verified, unreferenced files can still be cleaned up.",
   "查看扫描提示（{count}）": "View scan notices ({count})",
   "新项目可清理已核验的未引用原件；不可变媒体、导入副本、回收站和目录元数据继续保留。": "New projects can clean up verified, unreferenced original files. Immutable media, imported copies, trash, and directory metadata are retained.",
+  "目录候选，需配置调用协议": "Catalog candidate. Configure its request protocol.",
+  "留空恢复自动。": "Leave blank to use the automatic value.",
+  "目录窗口 {context}，输出上限 {output} token": "Catalog context {context}, output limit {output} tokens",
+  "本地上下文预算 {context} token": "Local context budget: {context} tokens",
+  "路由组的目录值仅供参考。": "Routing group limits are estimates.",
+  "当前目录未列出此模型": "This model is absent from the current catalog.",
 };
 
 export default settings;

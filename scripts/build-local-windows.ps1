@@ -34,19 +34,32 @@ function Get-Sha256([string]$Path) {
     } finally { $stream.Dispose() }
 }
 
-function Invoke-BuildStep([string]$Label, [string]$Executable, [string[]]$Arguments) {
+function Invoke-BuildStep([string]$Label, [string]$Executable, [string[]]$Arguments, [switch]$CompactFrontendOutput) {
     Write-BuildMessage "`n=== $Label ==="
     # Windows PowerShell treats native stderr as ErrorRecord. Preserve the real
     # exit code while logging both streams as UTF-8, without stopping on warnings.
     $previousPreference = $ErrorActionPreference
+    $dynamicImportWarnings = 0
     try {
         $ErrorActionPreference = 'Continue'
         & $Executable @Arguments 2>&1 | ForEach-Object {
-            if ($_ -is [System.Management.Automation.ErrorRecord]) { Write-BuildMessage $_.Exception.Message }
-            else { Write-BuildMessage ([string]$_) }
+            $line = if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { [string]$_ }
+            $line = $line -replace '\x1b\[[0-?]*[ -/]*[@-~]', ''
+            if ($CompactFrontendOutput -and $line -match '^\[INEFFECTIVE_DYNAMIC_IMPORT\]') {
+                $dynamicImportWarnings++
+                $script:writer.WriteLine($line)
+            } elseif ($CompactFrontendOutput -and (
+                $line -match '^dist/.+\s+\d[\d,.]*\s+kB(?:\s|$)' -or
+                ($dynamicImportWarnings -gt 0 -and [string]::IsNullOrWhiteSpace($line))
+            )) {
+                $script:writer.WriteLine($line)
+            } else { Write-BuildMessage $line }
         }
         $stepExit = $LASTEXITCODE
     } finally { $ErrorActionPreference = $previousPreference }
+    if ($dynamicImportWarnings) {
+        Write-BuildMessage "$dynamicImportWarnings ineffective dynamic imports reported by Vite. See build.log for the module list."
+    }
     if ($stepExit -ne 0) { throw "$Label failed (exit $stepExit). See build.log." }
 }
 
@@ -110,8 +123,21 @@ try {
     Invoke-BuildStep 'Node.js' $node @('--version')
     Invoke-BuildStep 'Rust compiler' $rustc @('--version')
     Invoke-BuildStep 'Cargo' $cargo @('--version')
-    if (!(Test-Path -LiteralPath (Join-Path $projectRoot 'node_modules\@tauri-apps\cli\tauri.js'))) {
-        Invoke-BuildStep 'Install locked npm dependencies' $npm @('ci')
+    $cli = Join-Path $projectRoot 'node_modules\@tauri-apps\cli\tauri.js'
+    $npmLockHash = Get-Sha256 (Join-Path $projectRoot 'package-lock.json')
+    $npmLockStamp = Join-Path $projectRoot 'node_modules\.ai-canvas-package-lock.sha256'
+    $npmLockMatches = (Test-Path -LiteralPath $npmLockStamp -PathType Leaf) -and
+        ([IO.File]::ReadAllText($npmLockStamp, $utf8) -eq $npmLockHash)
+    # The CLI can still be present after the working tree adds build dependencies.
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $npm ls --depth=0 --include=dev --silent 2>&1 | Out-Null
+        $npmDependenciesReady = $LASTEXITCODE -eq 0
+    } finally { $ErrorActionPreference = $previousPreference }
+    if (!$npmLockMatches -or !$npmDependenciesReady -or !(Test-Path -LiteralPath $cli -PathType Leaf)) {
+        Invoke-BuildStep 'Install locked npm dependencies' $npm @('ci', '--include=dev')
+        [IO.File]::WriteAllText($npmLockStamp, $npmLockHash, $utf8)
     }
 
     # Use a temporary merge config instead of modifying the checked-in signing,
@@ -131,10 +157,9 @@ try {
         foreach ($child in @('examples', 'deps')) { [IO.Directory]::CreateDirectory((Join-Path $directory $child)) | Out-Null }
     }
     $started = [DateTime]::UtcNow
-    $cli = Join-Path $projectRoot 'node_modules\@tauri-apps\cli\tauri.js'
     Invoke-BuildStep 'Build frontend, MCP adapter and Rust application' $node @(
         $cli, 'build', '--target', $target, '--no-bundle', '--ci', '--no-sign', '--config', $localConfig, '--', '--locked'
-    )
+    ) -CompactFrontendOutput
 
     # DirectML is a runtime dependency of the default Windows ONNX build. Map it
     # explicitly beside the installed EXE so both Cargo layouts bundle it.
@@ -175,8 +200,17 @@ try {
     $sourceHead = $null
     $sourceDirty = $null
     if (Get-Command git.exe -ErrorAction SilentlyContinue) {
-        $sourceHead = (& git.exe rev-parse HEAD 2>$null | Out-String).Trim()
-        $sourceDirty = [bool](& git.exe status --porcelain --untracked-files=normal 2>$null)
+        $previousPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $head = & git.exe rev-parse --verify HEAD 2>$null
+            if ($LASTEXITCODE -eq 0) { $sourceHead = $head }
+            $status = & git.exe status --porcelain --untracked-files=normal 2>$null
+            if ($LASTEXITCODE -eq 0) { $sourceDirty = [bool]$status }
+        } finally { $ErrorActionPreference = $previousPreference }
+        if ($null -eq $sourceHead -or $null -eq $sourceDirty) {
+            Write-BuildMessage 'Warning: Git source metadata is unavailable.'
+        }
     }
     $metadata = @{ version = $package.version; kind = 'local-unsigned'; target = $target; builtAtUtc = [DateTime]::UtcNow.ToString('o'); sourceHead = $sourceHead; workingTreeDirty = $sourceDirty; runtime = @{ file = 'DirectML.dll'; sha256 = $runtimeHash }; artifacts = $artifacts }
     [IO.File]::WriteAllText((Join-Path $outputDirectory 'build-info.json'), ($metadata | ConvertTo-Json -Depth 5), $utf8)

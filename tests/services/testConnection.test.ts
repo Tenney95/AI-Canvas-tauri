@@ -408,6 +408,16 @@ describe('provider connection tests', () => {
     );
   });
 
+  it('validates Replicate at the authenticated account endpoint without creating a prediction', async () => {
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(new Response(JSON.stringify({ username: 'fixture' })));
+    await expect(testProviderConnection('replicate', 'test-token')).resolves.toMatchObject({
+      success: true, baseUrl: 'https://api.replicate.com/v1',
+    });
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith('https://api.replicate.com/v1/account', {
+      method: 'GET', headers: { Authorization: 'Bearer test-token' },
+    });
+  });
+
   it('rejects old Sora2U connection probes before falling back to a model-list request', async () => {
     await expect(testProviderConnection('sora2u', 'sk_sora_secret', 'https://sora2u.com')).resolves.toMatchObject({
       success: false,
