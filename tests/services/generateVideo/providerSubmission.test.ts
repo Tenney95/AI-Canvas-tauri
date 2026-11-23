@@ -13,7 +13,7 @@ import { resolveVideoSubmissionControls } from '../../../src/services/ai/videoRe
 import { RELAYON_MODEL_MANIFEST } from '../../../src/services/ai/providers/relayonModelManifest';
 import { MINIMAX_BASE_URL, MINIMAX_MODEL_MANIFEST } from '../../../src/services/ai/providers/minimaxModelManifest';
 import { getPendingTasksForProject, removePendingTask } from '../../../src/services/pollManager';
-import type { MediaReference } from '../../../src/types/aiTypes';
+import type { MediaReference, ProtocolJsonValue } from '../../../src/types/aiTypes';
 import { setupVideoFixture } from './videoFixture';
 
 const comfyMocks = vi.hoisted(() => ({
@@ -25,6 +25,107 @@ vi.mock('../../../src/services/comfyWorkflowService', () => ({
 }));
 
 setupVideoFixture(comfyMocks.executeVideo);
+
+describe('自定义视频协议的参考文件直传', () => {
+  const firstImage = 'https://media.example/first.png';
+  const secondImage = 'asset://localhost/second.png';
+  const video = 'asset://localhost/clip.mp4';
+  const audio = 'asset://localhost/voice.mp3';
+  const references: MediaReference[] = [
+    { kind: 'image', role: 'reference', origin: 'connection', url: firstImage },
+    { kind: 'image', role: 'reference', origin: 'connection', url: secondImage },
+    { kind: 'video', role: 'reference', origin: 'connection', url: video },
+    { kind: 'audio', role: 'reference_audio', origin: 'connection', url: audio },
+  ];
+  const files = {
+    artwork: { $file: '{{referenceImageUrls}}' }, clip: { $file: '{{referenceVideoUrls.0}}' },
+    soundtrack: { $file: '{{referenceAudioUrls.0}}' },
+  };
+
+  function configure(fields: Record<string, ProtocolJsonValue>) {
+    useAppStore.getState().saveProviderConfig('custom-video-files', {
+      name: '自定义视频', catalogId: 'custom-openai', baseUrl: 'https://gateway.example/v1', apiKey: 'custom-fixture',
+      selectedModels: [{
+        id: 'studio-video', name: 'Studio', category: 'video', provider: 'custom-openai',
+        videoCapability: { operations: ['video-to-video'], maxImageReferences: 2, maxVideoReferences: 1, maxAudioReferences: 1 },
+        executionProfile: { preset: 'custom', protocol: {
+          version: 2, mode: 'sync',
+          submit: { method: 'POST', path: '/studio/render', bodyEncoding: 'multipart', body: { prompt: '{{prompt}}', ...fields } },
+          response: { type: 'json', result: { urlPath: 'delivery.movie' } },
+        } },
+      }],
+    });
+    const model = useAppStore.getState().config.generalModels!.find((item) => item.providerConfigId === 'custom-video-files')!;
+    return { provider: 'general', model: `general/${model.id}`, prompt: '沿用参考素材', referenceMedia: references };
+  }
+
+  it.each([false, true])('保留自定义字段和文件顺序，同图另作 URL：%s', async (includeImageUrl) => {
+    const params = configure(includeImageUrl ? { ...files, poster_url: '{{referenceImageUrls.0}}' } : files);
+    const images = vi.spyOn(imageUtils, 'resolveImageDataUrlArray').mockImplementation(async (urls) =>
+      urls.map((url) => {
+        expect([firstImage, secondImage]).toContain(url);
+        return `data:image/png;base64,${btoa(url === firstImage ? 'first' : 'second')}`;
+      }));
+    const read = vi.spyOn(fileService, 'readFileToDataUrl').mockImplementation(async (url) => {
+      if (url === video) return 'data:video/mp4;base64,Y2xpcA==';
+      if (url === audio) return 'data:audio/mpeg;base64,dm9pY2U=';
+      throw new Error('读取了未选择的文件');
+    });
+    const publicImages = vi.spyOn(imageUtils, 'resolveImageUrlArray').mockImplementation(async (urls) => {
+      expect(urls.every((url) => includeImageUrl && url === firstImage)).toBe(true);
+      return urls;
+    });
+    const media = vi.spyOn(uploadService, 'resolveMediaReferenceUrl').mockImplementation(async (url) => {
+      expect(includeImageUrl && url === firstImage).toBe(true);
+      return url;
+    });
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ delivery: { movie: 'https://cdn.example/movie.mp4' } })));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await expect(generateVideo(params)).resolves.toMatchObject({ url: 'https://cdn.example/movie.mp4' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [endpoint, init] = fetchMock.mock.calls[0];
+      expect(endpoint).toBe('https://gateway.example/v1/studio/render');
+      expect(init.method).toBe('POST');
+      expect(new Headers(init.headers).get('Authorization')).toBe('Bearer custom-fixture');
+      expect(new Headers(init.headers).get('Content-Type')).toMatch(/^multipart\/form-data; boundary=/);
+      const form = await new Response(init.body, { headers: init.headers }).formData();
+      expect(await Promise.all(form.getAll('artwork').map((file) => (file as File).text()))).toEqual(['first', 'second']);
+      expect(await (form.get('clip') as File).text()).toBe('clip');
+      expect(await (form.get('soundtrack') as File).text()).toBe('voice');
+      expect(form.get('poster_url')).toBe(includeImageUrl ? firstImage : null);
+    } finally { images.mockRestore(); read.mockRestore(); publicImages.mockRestore(); media.mockRestore(); }
+  });
+
+  it('参考图读取失败时停止，尚未提交生成', async () => {
+    const params = configure(files);
+    const images = vi.spyOn(imageUtils, 'resolveImageDataUrlArray').mockRejectedValue(new Error('参考图读取失败'));
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await expect(generateVideo(params)).rejects.toThrow('参考图读取失败');
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally { images.mockRestore(); }
+  });
+
+  it('协议只接收视频时，请求中同时选的图片和音频在素材读取或上传前报告', async () => {
+    const params = configure({ clip: files.clip });
+    const images = vi.spyOn(imageUtils, 'resolveImageDataUrlArray');
+    const read = vi.spyOn(fileService, 'readFileToDataUrl');
+    const publicImages = vi.spyOn(imageUtils, 'resolveImageUrlArray');
+    const media = vi.spyOn(uploadService, 'resolveMediaReferenceUrl');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await expect(generateVideo(params)).rejects.toThrow(/没有完整接收/);
+      expect(images).not.toHaveBeenCalled();
+      expect(read).not.toHaveBeenCalled();
+      expect(publicImages).not.toHaveBeenCalled();
+      expect(media).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally { images.mockRestore(); read.mockRestore(); publicImages.mockRestore(); media.mockRestore(); }
+  });
+});
 
 describe('MiniMax 官方视频素材与任务交付', () => {
   function configureMinimaxVideo(customized = false) {

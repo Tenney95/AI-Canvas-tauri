@@ -39,6 +39,8 @@ import { retainCompletedMediaResults, runConfiguredModelProtocol } from './model
 import { createMediaDownloadAccess } from './mediaDownloadAccess';
 import { mediaProviderRegistry } from './mediaProviderRegistry';
 import { executeModelProtocol, modelProtocolUsesVariable, resolveModelExecutionProfile } from './modelProtocol';
+import { hasProtocolMediaFileFields, prepareProtocolMediaFileRequest } from './modelProtocolMediaFiles';
+import type { ModelProtocolVariables } from './modelProtocolTypes';
 import { assertConfiguredImageReferences, assertModelCapabilityProtocol, resolveConfiguredImageParameters, resolveConfiguredImageBackground, resolveConfiguredImageQuality } from './modelCapabilityValidation';
 import { getProviderDefinition, resolveCccGeminiImageExecutionProfile } from './providerCatalogService';
 import { getProviderPolicy } from './providerPolicies';
@@ -83,6 +85,32 @@ function hasReferenceImageFile(value: unknown): boolean {
     return true;
   }
   return Object.values(value).some(hasReferenceImageFile);
+}
+
+async function prepareCustomImageFileVariables(
+  protocol: NormalizedModelExecutionProtocol,
+  variables: ModelProtocolVariables,
+  sources: string[],
+  connectionId: string,
+  signal?: AbortSignal,
+): Promise<ModelProtocolVariables> {
+  // 本地图片可由连接图床生成 HTTPS 链接；纯 HTTP 的旧地址沿用 imageUrls，不占 referenceUrls 的位置。
+  const urlCandidates = sources.filter((url) => !isRemoteMediaUrl(url) || /^https:\/\//i.test(url));
+  const prepared = await prepareProtocolMediaFileRequest(protocol, {
+    ...variables, referenceUrls: urlCandidates.length ? urlCandidates : undefined,
+  }, { signal });
+  const ordinary = sources.filter((url) => !prepared.fileOnlySources.has(url));
+  const resolved = await resolveImageUrlArray(ordinary, connectionId, signal);
+  const resolvedUrls = new Map(ordinary.map((url, index) => [url, resolved[index]]));
+  const imageUrls = sources.map((url) => resolvedUrls.get(url) ?? url);
+  const referenceUrls = urlCandidates.flatMap((url) => {
+    const resolvedUrl = resolvedUrls.get(url);
+    // 仅文件字段用到的素材保留原位置，让后续 URL 的下标和条件判断与准备时一致。
+    if (resolvedUrl === undefined) return [url];
+    return /^https:\/\//i.test(resolvedUrl) && isRemoteMediaUrl(resolvedUrl) ? [resolvedUrl] : [];
+  });
+  return { ...prepared.variables, imageUrls, inlineReferences: undefined,
+    referenceUrls: referenceUrls.length ? referenceUrls : undefined };
 }
 
 export async function generateImage(
@@ -456,7 +484,8 @@ async function runImageBatch(
     && imageReferenceRequestMode === 'edits-multipart';
   const usesCustomImageFiles = customProtocol?.submit.bodyEncoding === 'multipart'
     && hasReferenceImageFile(customProtocol.submit.body);
-
+  const customFileProtocol = generalModel && !params.workflowId && (!providerDefinition || providerDefinition.id === 'custom-openai')
+    && customProtocol && hasProtocolMediaFileFields(customProtocol) ? customProtocol : undefined;
 
   const selectedWorkflow = params.workflowId ? useAppStore.getState().workflows.find((item) => item.id === params.workflowId) : undefined;
   const isComfyWorkflow = Boolean(params.workflowId && (!selectedWorkflow?.adapterType || selectedWorkflow.adapterType === 'comfyui'));
@@ -606,9 +635,10 @@ async function runImageBatch(
       allImageUrls = await resolveImageDataUrlArray(allImageUrls, signal, SORA2U_IMAGE_REFERENCE_BUDGET);
     }
   } else allImageUrls = usesVolcengineTos ? await resolveImageUrlArray(allImageUrls, connectionId, signal)
-    : provider === 'runninghub' || usesImageMultipart ? allImageUrls : usesImageDataUrls || usesCustomImageFiles
+    : provider === 'runninghub' || usesImageMultipart || (customFileProtocol && !usesImageDataUrls) ? allImageUrls
+    : usesImageDataUrls || usesCustomImageFiles
     ? await resolveImageDataUrlArray(allImageUrls, signal, usesRelayonImageFiles ? RELAYON_FILE_IMAGE_BUDGET
-      : usesGoogleImageParts || usesCustomInlineReferences || characterWorkbench || referencesUseRequestFiles && usesCustomImageFiles ? IMAGE_GENERATION_DATA_URL_BUDGET : undefined)
+      : customFileProtocol || usesGoogleImageParts || usesCustomInlineReferences || characterWorkbench || referencesUseRequestFiles && usesCustomImageFiles ? IMAGE_GENERATION_DATA_URL_BUDGET : undefined)
     : await resolveImageUrlArray(allImageUrls, connectionId, signal);
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
 
@@ -754,7 +784,10 @@ async function runImageBatch(
         ...(usesRelayonProtocol ? { useRelayonImageApi: true } : {}),
         variables: usesLibapiProtocol ? libapiImageVariables(modelName, variables)
           : usesRelayonProtocol ? relayonImageVariables(modelName, variables)
-            : usesSora2uProtocol ? sora2uImageVariables(variables) : variables,
+            : usesSora2uProtocol ? sora2uImageVariables(variables)
+              : customFileProtocol && !usesImageDataUrls
+                ? await prepareCustomImageFileVariables(customFileProtocol, variables, allImageUrls, connectionId, signal)
+                : variables,
       });
       const results = (outputsPerJob > 1 ? urls : urls.slice(0, requestedCount)).map((url) => ({ url, ...dimensions,
         ...(urls.taskReceipt ? { taskReceipt: urls.taskReceipt } : {}),

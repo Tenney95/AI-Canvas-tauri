@@ -457,17 +457,17 @@ function parseCurlRequests(source: string): ParsedRequest[] {
       const key = entry[3].slice(0, separator);
       const value = entry[3].slice(separator + 1);
       if (BLOCKED_LITERAL_KEYS.has(key)) throw new Error('multipart 示例包含不安全字段名');
+      const previous = formBody[key];
+      const previousIsFile = isRecord(previous) && Object.hasOwn(previous, '$file');
       if (entry[1] !== '--form-string' && /^[<@]/.test(value)) {
-        const normalized = normalizedKey(key);
-        if (!value.startsWith('@') || ![...IMAGE_ARRAY_FIELDS, ...IMAGE_SINGLE_FIELDS].includes(normalized)) {
+        if (!value.startsWith('@') || isCredentialKey(key)) {
           throw new Error('multipart 示例包含无法自动映射的文件字段，请在自定义协议中手动配置 $file');
         }
-        // 只记录文件字段语义，不保留或读取文档里的本地路径。
-        const repeated = Object.hasOwn(formBody, key);
-        formBody[key] = { $file: key.endsWith('[]') || repeated || IMAGE_ARRAY_FIELDS.includes(normalized)
-          ? '{{imageUrls}}' : '{{imageUrls.0}}' };
+        if (previous !== undefined && !previousIsFile) throw new Error('multipart 示例不能在同一字段混用文件和普通文本');
+        // 只记下字段接收单个还是多份文件。等确定模型类别后，再区分首尾帧和普通参考素材。
+        formBody[key] = { $file: key.endsWith('[]') || previousIsFile };
       } else {
-        const previous = formBody[key];
+        if (previousIsFile) throw new Error('multipart 示例不能在同一字段混用文件和普通文本');
         formBody[key] = previous === undefined ? value
           : Array.isArray(previous) ? [...previous, value] : [previous, value];
       }
@@ -695,6 +695,32 @@ function normalizedKey(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+function curlFileTemplate(field: string, multiple: boolean, category: GeneralModelCategory): string {
+  if (category === 'image' && field === 'file') field = 'image';
+  if (category === 'video') {
+    // 文件表单常省略 url 后缀，普通参考图要避开首尾帧。
+    if (['image', 'images', 'referenceimage', 'referenceimageurl'].includes(field)) {
+      return multiple || field === 'images' ? '{{referenceImageUrls}}' : '{{referenceImageUrls.0}}';
+    }
+    if (field === 'referenceaudio' || field === 'referenceaudiourl') {
+      return multiple ? '{{referenceAudioUrls}}' : '{{referenceAudioUrls.0}}';
+    }
+    if (field === 'video' || field === 'referencevideo' || field === 'audio') field += 'url';
+  }
+  // 旧示例有时只有通用路径，类别还没识别出来，明确的图片字段仍沿用原有映射。
+  const template = resolveProtocolFieldTemplate(field, multiple ? [] : '', category === 'video' ? 'video' : 'image');
+  if (multiple && template === '{{referenceVideoUrl}}') return '{{referenceVideoUrls}}';
+  if (multiple && template === '{{audioUrl}}') return '{{audioUrls}}';
+  if (multiple && (template === '{{firstImage}}' || template === '{{lastImage}}')) {
+    throw new Error('multipart 示例的首帧或尾帧字段只能映射一张图片');
+  }
+  if (template
+    && /^\{\{(?:imageUrls(?:\.0)?|firstImage|lastImage|referenceImageUrls|videoUrls|referenceVideoUrls?|audioUrls?|referenceAudioUrls)\}\}$/.test(template)) {
+    return template;
+  }
+  throw new Error('multipart 示例包含无法自动映射的文件字段，请在自定义协议中手动配置 $file');
+}
+
 function mapBodyValue(
   key: string,
   value: ProtocolJsonValue,
@@ -703,6 +729,7 @@ function mapBodyValue(
 ): ProtocolJsonValue {
   const normalized = normalizedKey(key);
   if (isRecord(value) && Object.hasOwn(value, '$file')) {
+    if (typeof value.$file === 'boolean') return { $file: curlFileTemplate(normalized, value.$file, category) };
     const fileTemplate = typeof value.$file === 'string' && /^\{\{imageUrls(?:\.\d+)?\}\}$/.test(value.$file)
       ? value.$file
       : resolveProtocolFieldTemplate(normalized, Array.isArray(value.$file) ? [] : '', category);
@@ -992,6 +1019,8 @@ function inferCategory(request: ParsedRequest, response: ProtocolJsonValue | und
   if (/\bvideos?\b|video[_-]generation/.test(path) || bodyKeys.some((key) => ['numframes', 'framerate', 'videoduration'].includes(key))) return 'video';
   if (/\b(?:audio|speech|music|transcriptions?)\b/.test(path) || bodyKeys.some((key) => ['voice', 'audiovoice', 'audioformat'].includes(key))) return 'audio';
   if (/\b(?:images?|image-generation)\b/.test(path) || responseUrls.some((leaf) => /\.(?:png|jpe?g|webp)(?:\?|$)/i.test(String(leaf.value)))) return 'image';
+  if (request.bodyEncoding === 'multipart'
+    && responseUrls.some((leaf) => /\.(?:mp4|webm|mov)(?:\?|$)/i.test(String(leaf.value)))) return 'video';
   return 'text';
 }
 

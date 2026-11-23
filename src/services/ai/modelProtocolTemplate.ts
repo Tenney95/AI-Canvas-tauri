@@ -18,8 +18,17 @@ import {
   isRecord,
 } from './modelProtocolShared';
 
+/** 只在准备当前请求时传递文件内容；协议模板不能引用这个键。 */
+export const PREPARED_MULTIPART_FILES = '$multipartFiles';
+
 function resolveContextPath(context: Record<string, unknown>, path: string): unknown {
   return readModelProtocolPathValues(context, path)[0];
+}
+
+function isMissingTemplateValue(value: ProtocolJsonValue | typeof OMIT_TEMPLATE_VALUE): boolean {
+  return value === OMIT_TEMPLATE_VALUE || value === null
+    || (typeof value === 'string' && !value.trim())
+    || (Array.isArray(value) && value.length === 0);
 }
 
 export function renderTemplateString(
@@ -89,6 +98,7 @@ export function renderTemplate(
   options: {
     conditionalDirectives?: boolean;
     arrayItem?: boolean;
+    multipart?: 'body' | 'field' | 'item';
   } = {},
 ): ProtocolJsonValue | typeof OMIT_TEMPLATE_VALUE {
   if (typeof value === 'string') return renderTemplateString(value, context);
@@ -100,6 +110,7 @@ export function renderTemplate(
       const rendered = renderTemplate(item, context, {
         conditionalDirectives: options.conditionalDirectives,
         arrayItem: true,
+        multipart: options.multipart === 'field' ? 'item' : undefined,
       });
       return rendered === OMIT_TEMPLATE_VALUE ? [] : [rendered];
     });
@@ -113,19 +124,29 @@ export function renderTemplate(
         throw new Error('调用协议条件项只能用于请求体数组元素');
       }
       const condition = renderTemplateString(String(value[WHEN_PRESENT_KEY]), context);
-      const isMissing = condition === OMIT_TEMPLATE_VALUE
-        || condition === null
-        || (typeof condition === 'string' && !condition.trim())
-        || (Array.isArray(condition) && condition.length === 0);
-      if (isMissing) return OMIT_TEMPLATE_VALUE;
+      if (isMissingTemplateValue(condition)) return OMIT_TEMPLATE_VALUE;
       return renderTemplate(value[CONDITIONAL_VALUE_KEY], context, {
         conditionalDirectives: true,
+        multipart: options.multipart,
       });
+    }
+    let fileValue: ProtocolJsonValue | typeof OMIT_TEMPLATE_VALUE | undefined;
+    if ((options.multipart === 'field' || options.multipart === 'item') && typeof value.$file === 'string') {
+      const path = FULL_TEMPLATE_RE.exec(value.$file)?.[1];
+      if (path) {
+        const files = context[PREPARED_MULTIPART_FILES];
+        fileValue = isRecord(files) && Object.hasOwn(files, path)
+          ? (files[path] as ProtocolJsonValue | undefined) ?? OMIT_TEMPLATE_VALUE
+          : renderTemplateString(value.$file, context);
+        // 没选这个参考文件时，连同文件名一起略过，避免把剩下的元数据当作文本字段提交。
+        if (isMissingTemplateValue(fileValue)) return OMIT_TEMPLATE_VALUE;
+      }
     }
     const entries: Array<[string, ProtocolJsonValue]> = [];
     for (const [key, item] of Object.entries(value)) {
-      const rendered = renderTemplate(item, context, {
+      const rendered = key === '$file' && fileValue !== undefined ? fileValue : renderTemplate(item, context, {
         conditionalDirectives: options.conditionalDirectives,
+        multipart: options.multipart === 'body' ? 'field' : undefined,
       });
       if (rendered !== OMIT_TEMPLATE_VALUE) entries.push([key, rendered]);
     }

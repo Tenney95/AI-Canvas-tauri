@@ -44,6 +44,25 @@ export const CATEGORY_VARIABLES: Record<GeneralModelCategory, string[]> = {
   audio: getCategoryProtocolVariables('audio'),
 };
 
+export const MULTIPART_FILE_FIELDS: Record<'image' | 'video', Record<string, string>> = {
+  image: {
+    image: 'imageUrls.0',
+    'image[]': 'imageUrls',
+    file: 'imageUrls.0',
+    reference_image: 'imageUrls.0',
+  },
+  video: {
+    first_frame: 'firstImage',
+    last_frame: 'lastImage',
+    image: 'referenceImageUrls.0',
+    images: 'referenceImageUrls',
+    video: 'referenceVideoUrls.0',
+    videos: 'referenceVideoUrls',
+    audio: 'referenceAudioUrls.0',
+    audios: 'referenceAudioUrls',
+  },
+};
+
 export function getAvailableChoices(category: GeneralModelCategory, current: ProtocolChoice): ProtocolChoice[] {
   if (category === 'text') return ['legacy', 'openai-chat', 'openai-responses', 'anthropic-chat', 'gemini-chat', 'custom'];
   if (category === 'image') return ['legacy', 'gpt-image-gateway-json', 'openai-gpt-image',
@@ -192,14 +211,14 @@ export function createProtocolFormActions({
     setFormRevision((current) => current + 1);
   };
 
-  const insertMultipartFile = (fieldName: string) => {
+  const insertMultipartFile = (fieldName: string, variable = 'imageUrls.0') => {
     if (!fieldName) return;
     if (!allowFormTransform()) return;
     updateProtocol((draft) => {
       const body = isJsonObject(draft.submit.body) ? draft.submit.body : {};
       body[fieldName] = {
-        $file: '{{imageUrls.0}}',
-        filename: 'reference.png',
+        $file: `{{${variable}}}`,
+        ...(variable.startsWith('imageUrls') ? { filename: 'reference.png' } : {}),
       };
       draft.submit.bodyEncoding = 'multipart';
       draft.submit.body = body;

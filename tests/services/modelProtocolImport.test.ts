@@ -39,11 +39,67 @@ describe('model protocol document import', () => {
     expect(body).toContain('world');
   });
 
-  it('rejects file fields whose semantics cannot be inferred', () => {
+  it('keeps frame roles and repeated media fields when importing a video multipart request', () => {
+    const result = analyzeModelProtocolExamples({
+      submitRequest: `curl https://gateway.example/v1/render
+        -F 'model=custom-video'
+        -F 'prompt=animate'
+        -F 'first_frame=@/private/start.png'
+        -F 'last_image=@/private/end.png'
+        -F 'reference_images[]=@/private/other.png'
+        -F 'video=@/private/first.mp4'
+        --form 'video=@/private/second.mp4'
+        -F 'audio=@/private/voice.wav;type=audio/wav'
+        --form-string 'note=@literal'`,
+      submitResponse: '{"video_url":"https://cdn.example/result.mp4"}',
+    });
+    expect(result.category).toBe('video');
+    expect(result.imageReferenceRequestMode).toBeUndefined();
+    expect(result.protocol?.submit).toMatchObject({
+      path: '/render', bodyEncoding: 'multipart', body: {
+        first_frame: { $file: '{{firstImage}}' },
+        last_image: { $file: '{{lastImage}}' },
+        'reference_images[]': { $file: '{{referenceImageUrls}}' },
+        video: { $file: '{{referenceVideoUrls}}' },
+        audio: { $file: '{{audioUrl}}' },
+        note: '@literal',
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain('/private/');
+    const request = buildModelProtocolRequest({
+      baseUrl: result.baseUrl!, protocol: result.protocol!, apiKey: '',
+      variables: {
+        model: 'custom-video', prompt: 'animate', firstImage: 'data:image/png;base64,MQ==',
+        lastImage: 'data:image/png;base64,Mg==', referenceImageUrls: ['data:image/png;base64,Mw=='],
+        referenceVideoUrls: ['data:video/mp4;base64,Zmlyc3Q=', 'data:video/mp4;base64,c2Vjb25k'],
+        audioUrl: 'data:audio/wav;base64,YXVkaW8=',
+      },
+    });
+    const body = new TextDecoder().decode(request.init.body as ArrayBuffer);
+    const videos = body.split('name="video"; filename=');
+    expect(videos).toHaveLength(3);
+    expect(videos[1]).toContain('\r\n\r\nfirst\r\n');
+    expect(videos[2]).toContain('\r\n\r\nsecond\r\n');
+    expect(body).toContain('Content-Type: audio/wav\r\n\r\naudio\r\n');
+  });
+
+  it.each(['mask', 'prompt'])('rejects unsupported file field %s', (field) => {
     expect(() => analyzeModelProtocolExamples({
-      submitRequest: "curl https://gateway.example/images/edit -F 'mask=@/private/mask.png'",
+      submitRequest: `curl https://gateway.example/images/edit -F '${field}=@/private/mask.png'`,
       submitResponse: '{"url":"https://cdn.example/result.png"}',
     })).toThrow('无法自动映射');
+  });
+
+  it.each([
+    ["-F 'video=@/private/video.mp4' --form-string 'video=@literal'", '混用'],
+    ["--form-string 'video=@literal' -F 'video=@/private/video.mp4'", '混用'],
+    ["-F 'first_frame=@/private/one.png' -F 'first_frame=@/private/two.png'", '一张图片'],
+    ["-F 'audio=</private/input.txt'", '无法自动映射'],
+  ])('rejects ambiguous file fields and file-to-text substitutions', (form, message) => {
+    expect(() => analyzeModelProtocolExamples({
+      submitRequest: `curl https://gateway.example/videos ${form}`,
+      submitResponse: '{"url":"https://cdn.example/result.mp4"}',
+    })).toThrow(message);
   });
 
   it('does not silently drop unquoted multipart arguments', () => {

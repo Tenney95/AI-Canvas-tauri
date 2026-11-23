@@ -953,6 +953,38 @@ describe('共享参考图压缩的实际请求边界', () => {
     expect(encode).not.toHaveBeenCalled();
   });
 
+  it('自定义图片请求按序直传本地和远程文件，同一张图也能在普通字段里保留原链接', async () => {
+    const endpoint = 'https://custom.example/v1/mixed';
+    const remote = 'https://cdn.example/second.png';
+    const protocol = {
+      version: 2 as const, mode: 'sync' as const,
+      submit: { method: 'POST' as const, path: '/mixed', bodyEncoding: 'multipart' as const, body: {
+        'image[]': { $file: '{{imageUrls}}', filename: 'reference.png' },
+        source_url: '{{referenceUrls.1}}',
+      } }, response: { type: 'json' as const, result: { urlPath: 'url' } },
+    };
+    useAppStore.setState((state) => ({ config: { ...state.config,
+      providers: { custom: { name: '自定义', catalogId: 'custom-openai', apiKey: 'test-key', baseUrl: 'https://custom.example/v1',
+        imageHosting: { enabled: true, uploadUrl: 'https://unused-host.example/upload', fileField: 'file', responseUrlPath: 'url', auth: 'none' } } },
+      generalModels: [{ id: 'mixed', modelId: 'mixed', name: '混合参考', category: 'image', providerConfigId: 'custom',
+        executionProfile: { preset: 'custom', protocol } }],
+    } }));
+    localFetch.mockResolvedValue(new Response(png(1, 0)));
+    mocks.transport.mockImplementation(async (url) => {
+      if (url === remote) return new Response(png(2, 0));
+      if (url === endpoint) return json({ url: 'https://cdn.example/result.png' });
+      throw new Error('意外的上传或生成地址');
+    });
+    await generateImagesBatch({ provider: 'general', model: 'general/mixed', prompt: '两张参考图',
+      image_urls: ['asset://localhost/first.png', remote] }, 1);
+    expect(mocks.transport.mock.calls.map(([url]) => url)).toEqual([remote, endpoint]);
+    const init = mocks.transport.mock.calls[1][1] as RequestInit;
+    const form = await new Response(init.body, { headers: init.headers }).formData();
+    expect(form.get('source_url')).toBe(remote);
+    const files = form.getAll('image[]') as File[];
+    expect(await Promise.all(files.map(imageMarker))).toEqual([1, 2]);
+  });
+
   it.each(['grsai', 'custom-json', 'custom-multipart'])('%s 生成入口发送压缩图并保留自定义路径和顺序', async (route) => {
     const multipart = route === 'custom-multipart';
     const protocol = {

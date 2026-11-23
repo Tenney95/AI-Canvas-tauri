@@ -28,6 +28,7 @@ import { executeComfyUIVideoGenerate } from '../comfyWorkflowService';
 import type { BaseNodeData } from '../../types';
 import type {
   AIVideoGenParams,
+  NormalizedModelExecutionProtocol,
   MediaReference,
   MediaReferenceRole,
   VideoReferenceItem,
@@ -52,6 +53,8 @@ import { getApimartSeedanceCapability, type ApimartSeedanceCapability } from './
 import { pollVolcengineVideoTask } from './providers/volcengineVideoQuery';
 import { redactVolcengineError } from './providers/volcengineError';
 import { runConfiguredModelProtocol } from './modelProtocolRuntime';
+import { hasProtocolMediaFileFields, prepareProtocolMediaFileRequest } from './modelProtocolMediaFiles';
+import { PREPARED_MULTIPART_FILES } from './modelProtocolTemplate';
 import {
   normalizeFrames8n1,
   resolveModelExecutionProfile,
@@ -227,6 +230,52 @@ async function resolveGeneralProtocolMediaUrls(
       mode: publicUrlProvider ? 'publicUrl' : 'dataUrl', provider: publicUrlProvider ?? inlineProvider, kind, signal, dataUrlBudget: budget,
     });
   }, signal);
+}
+
+async function prepareCustomVideoFiles(
+  protocol: NormalizedModelExecutionProtocol,
+  preflight: CanonicalVideoRequest,
+  connectionId: string,
+  dataUrlBudget: MediaDataUrlBudget,
+  signal?: AbortSignal,
+) {
+  const inputs = buildCanonicalVideoProtocolVariables(preflight);
+  // 普通协议把本地图片上传为 URL，本地音视频内联。先按同样的顺序分配别名，避免跳过文件后索引前移。
+  const ordered = [...preflight.references.images, ...preflight.references.videos, ...preflight.references.audios];
+  const urlSources = ordered.filter((ref) => ref.kind === 'image' || isRemoteMediaUrl(getMediaReferenceUrl(ref)));
+  const inlineSources = ordered.filter((ref) => ref.kind !== 'image' && !isRemoteMediaUrl(getMediaReferenceUrl(ref)));
+  const prepared = await prepareProtocolMediaFileRequest(protocol, {
+    ...inputs, referenceUrls: urlSources.map((ref) => ref.url), inlineReferences: inlineSources.map((ref) => ref.url),
+  }, { signal, budget: dataUrlBudget });
+  const ordinaryUrls = new Map<string, string>();
+  const references = await mapSequentially(preflight.references.all, async (ref) => {
+    let url = ref.url;
+    if (!prepared.fileOnlySources.has(url)) {
+      const source = getMediaReferenceUrl(ref);
+      const inline = ref.kind !== 'image' && !isRemoteMediaUrl(source) ? prepared.filesBySource.get(ref.url) : undefined;
+      url = ordinaryUrls.get(ref.url) ?? inline ?? await resolveMediaReferenceUrl(source, {
+        kind: ref.kind, provider: connectionId, mode: ref.kind === 'image' ? 'publicUrl' : 'dataUrl',
+        signal, dataUrlBudget,
+      });
+      ordinaryUrls.set(ref.url, url);
+    }
+    return { ...ref, url, sourceUrl: url };
+  }, signal);
+  const values = (refs: MediaReference[]) => refs.length ? refs.map((ref) => ordinaryUrls.get(ref.url) ?? ref.url) : undefined;
+  const variables: ModelProtocolVariables = {
+    referenceUrls: values(urlSources), inlineReferences: values(inlineSources),
+    [PREPARED_MULTIPART_FILES]: prepared.variables[PREPARED_MULTIPART_FILES],
+  };
+  const validationUrls = (refs: MediaReference[]) => refs.map((ref) =>
+    prepared.filesBySource.get(ref.url) ?? ordinaryUrls.get(ref.url) ?? ref.url);
+  return {
+    references, variables,
+    validation: {
+      imageUrls: validationUrls(preflight.references.images),
+      videoUrls: validationUrls(preflight.references.videos),
+      audioUrls: validationUrls(preflight.references.audios),
+    },
+  };
 }
 
 function replaceReferenceUrls(
@@ -861,12 +910,15 @@ export async function generateVideo(
       ? connection.providerConfigId : undefined;
     const usesLibapiProtocol = isLibapi && usesLibapiModelProtocol(gm.modelId, gm.executionProfile);
     const videoCapability = resolveConfiguredVideoCapability(catalogId, gm.modelId, gm.executionProfile, gm.videoCapability);
+    const fileCandidate = gm.executionProfile?.preset === 'custom' && (!connection.definition || catalogId === 'custom-openai')
+      ? gm.executionProfile.protocol : undefined;
+    const customFiles = fileCandidate?.submit?.bodyEncoding === 'multipart' && hasProtocolMediaFileFields(fileCandidate);
     const referenceInput = await resolveVideoReferenceInput(
       rawPrompt,
       params.nodeId,
       params.referenceMedia ?? [],
       { preserveDeclaredRoles: true, sortKeyframes: usesLibapiProtocol, provider,
-        ...(policy.referenceTransport === 'request-files' || usesSora2uProtocol ? { target: 'local', preferLocalMedia: true } : {}) },
+        ...(policy.referenceTransport === 'request-files' || usesSora2uProtocol || customFiles ? { target: 'local', preferLocalMedia: true } : {}) },
     );
     const canonicalParams = {
       ...params,
@@ -907,24 +959,35 @@ export async function generateVideo(
       // 私有文件 ID 无法由浏览器探测；在官方上传之前校验原素材，后续只替换传输地址。
       await assertVideoInputConstraints(referenceInput, videoCapability, gm.name, { signal });
     }
-    if (resolveModelExecutionProfile(gm.executionProfile)) {
+    const protocol = resolveModelExecutionProfile(gm.executionProfile);
+    if (protocol) {
       const dataUrlBudget = createMediaDataUrlBudget('本次视频模型参考媒体');
-      const remoteImageUrls = usesRelayonProtocol || usesSora2uProtocol
-        ? referenceInput.imageUrls.some((url) => !isRemoteMediaUrl(url))
-          ? await resolveImageDataUrlArray(referenceInput.imageUrls, signal, IMAGE_GENERATION_DATA_URL_BUDGET)
-          : referenceInput.imageUrls
-        : await resolveImageUrlsSequentially(referenceInput.imageUrls, connection.providerConfigId, signal);
-      const videoUrls = await resolveGeneralProtocolMediaUrls(
-        originalReferences, 'video', dataUrlBudget, signal, publicUrlProvider, usesRelayonProtocol ? connection.providerConfigId : undefined,
-      );
-      const audioUrls = await resolveGeneralProtocolMediaUrls(
-        originalReferences, 'audio', dataUrlBudget, signal, publicUrlProvider, usesRelayonProtocol ? connection.providerConfigId : undefined,
-      );
-      const remoteReferences = replaceReferenceUrls(originalReferences, {
-        image: remoteImageUrls,
-        video: videoUrls,
-        audio: audioUrls,
-      });
+      let remoteReferences: MediaReference[];
+      let multipartVariables: ModelProtocolVariables | undefined;
+      let fileValidationUrls: Pick<VideoGenerationReferenceInput, 'imageUrls' | 'videoUrls' | 'audioUrls'> | undefined;
+      if (customFiles) {
+        const prepared = await prepareCustomVideoFiles(protocol, preflight, connection.providerConfigId, dataUrlBudget, signal);
+        remoteReferences = prepared.references;
+        multipartVariables = prepared.variables;
+        fileValidationUrls = prepared.validation;
+      } else {
+        const remoteImageUrls = usesRelayonProtocol || usesSora2uProtocol
+          ? referenceInput.imageUrls.some((url) => !isRemoteMediaUrl(url))
+            ? await resolveImageDataUrlArray(referenceInput.imageUrls, signal, IMAGE_GENERATION_DATA_URL_BUDGET)
+            : referenceInput.imageUrls
+          : await resolveImageUrlsSequentially(referenceInput.imageUrls, connection.providerConfigId, signal);
+        const videoUrls = await resolveGeneralProtocolMediaUrls(
+          originalReferences, 'video', dataUrlBudget, signal, publicUrlProvider, usesRelayonProtocol ? connection.providerConfigId : undefined,
+        );
+        const audioUrls = await resolveGeneralProtocolMediaUrls(
+          originalReferences, 'audio', dataUrlBudget, signal, publicUrlProvider, usesRelayonProtocol ? connection.providerConfigId : undefined,
+        );
+        remoteReferences = replaceReferenceUrls(originalReferences, {
+          image: remoteImageUrls,
+          video: videoUrls,
+          audio: audioUrls,
+        });
+      }
       if (usesRelayonProtocol && remoteReferences.some((reference) => !/^https:\/\//i.test(reference.url)
         && !reference.url.toLowerCase().startsWith(`data:${reference.kind}/`))) {
         throw new Error('万象视频参考素材必须是可访问的 HTTPS 地址或对应类型的本地文件；不会回退到图床');
@@ -943,7 +1006,8 @@ export async function generateVideo(
         audioUrls: compatibility.audioUrls,
       };
       if (policy.upload !== 'minimax') {
-        await assertVideoInputConstraints(resolvedReferenceInput, videoCapability, gm.name, { signal });
+        const validationInput = fileValidationUrls ? { ...resolvedReferenceInput, ...fileValidationUrls } : resolvedReferenceInput;
+        await assertVideoInputConstraints(validationInput, videoCapability, gm.name, { signal });
       }
       if (signal?.aborted) throw signal.reason ?? new DOMException('请求已取消', 'AbortError');
       if (beforeSubmit) await beforeSubmit();
@@ -959,7 +1023,7 @@ export async function generateVideo(
             : usesRelayonProtocol ? relayonVideoVariables(gm.modelId, buildCanonicalVideoProtocolVariables(canonicalRequest))
               : usesAigcsiProtocol ? aigcsiVideoVariables(buildCanonicalVideoProtocolVariables(canonicalRequest))
                 : usesMinimaxProtocol ? minimaxVideoVariables(canonicalRequest, buildCanonicalVideoProtocolVariables(canonicalRequest))
-                : buildCanonicalVideoProtocolVariables(canonicalRequest),
+                : { ...buildCanonicalVideoProtocolVariables(canonicalRequest), ...multipartVariables },
       });
       const url = urls[0];
       if (!url) throw new Error('视频生成完成但未返回结果');

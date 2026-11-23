@@ -22,6 +22,8 @@ import {
 import type { useT } from '../../../i18n';
 import { buildGoogleImageParts, resolveImageTemplateDimensions } from '../../../services/ai/imageModelTemplates';
 import { resolveConfiguredImageOutput } from '../../../services/ai/imageOutputParameters';
+import { prepareProtocolMediaFileRequest } from '../../../services/ai/modelProtocolMediaFiles';
+import { PREPARED_MULTIPART_FILES } from '../../../services/ai/modelProtocolTemplate';
 import {
   buildChatApiRequest,
   isNativeTextProtocolPreset,
@@ -274,6 +276,7 @@ export function useProtocolTrial({
     try {
       const parsed = JSON.parse(testVariablesJson) as ProtocolJsonValue;
       if (!isJsonObject(parsed)) throw new Error('试跑变量必须是 JSON 对象');
+      delete parsed[PREPARED_MULTIPART_FILES];
       assertRealProtocolTestVariables(parsed);
       variables = workflowMode ? parsed : { ...parsed, model: model.id };
     } catch (parseError) {
@@ -319,8 +322,14 @@ export function useProtocolTrial({
         if (!workflowMode && model.category === 'video') {
           variables = await buildVideoTestVariables(model, testScenario, testReferences, variables);
         }
+        const { protocol: submitProtocol, variables: submitVariables } = !workflowMode && preset === 'custom' && currentProtocol.submit.bodyEncoding === 'multipart'
+          && (model.category === 'image' || model.category === 'video')
+          ? await prepareProtocolMediaFileRequest(currentProtocol, variables, { signal: controller.signal, trial: true })
+          : { protocol: currentProtocol, variables };
         if (controller.signal.aborted) return;
-        result = await startProtocolTestSession({ identity: sessionIdentity, category: model.category, apiKey, protocol: currentProtocol, variables });
+        result = await startProtocolTestSession({
+          identity: sessionIdentity, category: model.category, apiKey, protocol: submitProtocol, variables: submitVariables,
+        });
       }
       if (controller.signal.aborted) return;
       assertModelProtocolResult(model.category, result);

@@ -43,7 +43,7 @@ import { useAppStore } from '../../store/useAppStore';
 import type { InstalledPlugin, PluginModelProtocolReference } from '../../types/plugin';
 import { listPluginProtocolPresets, type PluginProtocolPresetEntry } from '../../services/plugins/pluginProtocolPresetService';
 import {
-  CATEGORY_VARIABLES, PRESET_LABELS, createProtocolFormActions, getAvailableChoices, isJsonObject,
+  CATEGORY_VARIABLES, MULTIPART_FILE_FIELDS, PRESET_LABELS, createProtocolFormActions, getAvailableChoices, isJsonObject,
   parseDraft, protocolDraftErrors, serializeJson,
 } from './modelProtocol/protocolFormMappings';
 import { createPreviewVariables, useProtocolTrial } from './modelProtocol/useProtocolTrial';
@@ -388,7 +388,7 @@ export default function ModelProtocolEditor({
   ).catch(() => false);
 
   const allowFormTransform = () => {
-    if (!invalidFormFieldsRef.current.size) return true;
+    if (!invalidFormFieldsRef.current.size && !(view === 'json' && unsyncedDraft)) return true;
     setNavigationError(t('请先修正当前草稿再切换视图，未完成的内容已保留。'));
     editorRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus({ preventScroll: true });
     return false;
@@ -483,6 +483,8 @@ export default function ModelProtocolEditor({
   };
   const showReferenceRequest = model.category === 'image' && !workflowMode
     && (preset === 'openai-image' || preset === 'legacy');
+  const fileFields = !workflowMode && (model.category === 'image' || model.category === 'video')
+    ? MULTIPART_FILE_FIELDS[model.category] : undefined;
 
   return (
     <section ref={editorRef} className="provider-protocol-editor is-small" aria-label={t('{name} 调用协议', { name: model.name })}>
@@ -544,6 +546,19 @@ export default function ModelProtocolEditor({
       {preset === 'custom' ? (
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-canvas-text-secondary">
           <span>{t('按文档配置 → 预览请求与响应 → 试跑验证')}</span>
+          {fileFields && <label className="provider-protocol-field">
+            <span>{t('插入文件字段')} (Multipart)</span>
+            <Select fixedMenu value="" aria-label={t('插入文件字段')}
+              disabled={unsyncedDraft || (protocol.submit.body !== undefined && !isJsonObject(protocol.submit.body))}
+              onChange={(field) => {
+                if (Object.hasOwn(fileFields, field)) formActions().insertMultipartFile(field, fileFields[field]);
+              }}>
+              <option value="">{t('选择字段')}</option>
+              {Object.entries(fileFields).map(([field, variable]) => (
+                <option key={field} value={field}>{field}: {variable}</option>
+              ))}
+            </Select>
+          </label>}
           <div className="flex items-center gap-2">
             <span role="status" className="text-xs text-canvas-text-secondary">
               {copyStatus === 'success' ? t('已复制') : copyStatus === 'error' ? t('复制失败，请重试') : ''}
@@ -565,6 +580,7 @@ export default function ModelProtocolEditor({
                   '- 仅使用下列当前类别可用的变量；保留双花括号模板，不要替换成示例值。',
                   '- 多参考素材的 $forEach 仅用于 JSON body 数组元素，格式为 {"$forEach":"{{referenceImageUrls}}","$value":{"image_url":{"url":"{{referenceImageUrls}}"}}}；字段形状必须以厂商文档为准。根变量仅允许 referenceImageUrls/referenceVideoUrls/referenceAudioUrls，并且必须属于下列可用变量。',
                   '- 可选数组元素使用 {"$whenPresent":"{{imageUrls.0}}","$value":{...}}；条件必须是完整变量模板，禁止表达式或动态键。',
+                  ...(fileFields ? ['- 接口要求随请求上传参考文件时，submit.bodyEncoding 选 multipart。请求体文件字段使用 {"$file":"{{变量}}"}，数组变量按顺序重复同名文件字段，字段名按厂商文档填写。'] : []),
                   `- 异步任务通过 response.taskIdPath 提取任务 ID，在 poll 中使用 {{${submitTaskIdVariable}}}，不要写死任务编号。`,
                   `- 异步完成后另行读取二进制时，在 poll.response.result 中配置 download: {"method":"GET","path":"/按厂商文档填写/{{${submitTaskIdVariable}}}/content"} 和 mimeType；不能同时配置 urlPath/textPath/base64Path/fetchUrl。`,
                   '',
@@ -806,7 +822,7 @@ export default function ModelProtocolEditor({
                   </Select>
                 </label>
               ) : null}
-              {model.category === 'image' && protocol.submit.bodyEncoding === 'multipart' ? (
+              {workflowMode && model.category === 'image' && protocol.submit.bodyEncoding === 'multipart' ? (
                 <label className="provider-protocol-field">
                   <span>{t('插入文件字段')}</span>
                   <Select fixedMenu value="" onChange={(selectedOptionValue) => formActions().insertMultipartFile(selectedOptionValue)}>

@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 interface HookScope { values: unknown[]; index: number }
 const driver = vi.hoisted(() => ({
   scope: null as HookScope | null, execute: vi.fn(), copy: vi.fn(),
+  prepareFiles: vi.fn(),
   confirm: vi.fn(),
   layoutEffects: [] as Array<() => void>,
   effects: [] as Array<() => void>,
@@ -46,6 +47,9 @@ vi.mock('../../src/services/ai/modelProtocolTestSession', async (original) => ({
   ...await original<typeof import('../../src/services/ai/modelProtocolTestSession')>(),
   startProtocolTestSession: (...args: unknown[]) => driver.execute(...args),
 }));
+vi.mock('../../src/services/ai/modelProtocolMediaFiles', () => ({
+  prepareProtocolMediaFileRequest: (...args: unknown[]) => driver.prepareFiles(...args),
+}));
 vi.mock('../../src/services/confirmDialog', () => ({ confirmAction: (...args: unknown[]) => driver.confirm(...args) }));
 vi.mock('../../src/services/clipboardService', () => ({ copyText: (...args: unknown[]) => driver.copy(...args) }));
 vi.mock('../../src/store/useAppStore', async (original) => {
@@ -59,6 +63,7 @@ vi.mock('../../src/services/plugins/pluginProtocolPresetService', async (origina
 import ModelProtocolEditor from '../../src/components/settings/ModelProtocolEditor';
 import { useAppStore } from '../../src/store/useAppStore';
 import { getDefaultCustomProtocol, parseModelExecutionProtocol, previewModelProtocolRequest } from '../../src/services/ai/modelProtocol';
+import { PREPARED_MULTIPART_FILES } from '../../src/services/ai/modelProtocolTemplate';
 
 type Element = ReactElement<Record<string, unknown> & { children?: unknown }>;
 type Props = ComponentProps<typeof ModelProtocolEditor>;
@@ -87,6 +92,13 @@ function button(label: string) {
 function protocolField() {
   return find((element) => element.type === 'textarea' && String(element.props['aria-describedby']).endsWith('-help'));
 }
+function fileFieldPicker() {
+  return find((element) => element.props['aria-label'] === '插入文件字段');
+}
+function insertFileField(field: string) {
+  (fileFieldPicker().props.onChange as (value: string) => void)(field);
+  render();
+}
 function change(element: Element, value: string) {
   const target = { value, selectionStart: value.length, selectionEnd: value.length };
   (element.props.onChange as (event: unknown) => void)({ target, currentTarget: target });
@@ -108,6 +120,7 @@ async function click(element: Element) {
 beforeEach(() => {
   driver.scope = { values: [], index: 0 };
   driver.execute.mockReset().mockResolvedValue({ urls: ['https://cdn.example/result.png'] });
+  driver.prepareFiles.mockReset().mockImplementation(async (protocol, variables) => ({ protocol, variables }));
   driver.copy.mockReset().mockResolvedValue(true);
   driver.confirm.mockReset().mockResolvedValue(true);
   driver.catalog.mockReset().mockResolvedValue([]);
@@ -121,6 +134,68 @@ beforeEach(() => {
 });
 
 describe('model protocol editor interactions', () => {
+  it('adds single or repeated image file fields in the image JSON editor and preserves an unfinished draft', () => {
+    render();
+    const protocol = getDefaultCustomProtocol('image');
+    protocol.submit.path = '/custom-edit';
+    protocol.submit.body = { prompt: '{{prompt}}', vendor_option: 'keep' };
+    change(protocolField(), JSON.stringify(protocol));
+    insertFileField('image');
+    expect(JSON.parse(protocolField().props.value as string).submit).toMatchObject({
+      path: '/custom-edit', bodyEncoding: 'multipart', body: { image: { $file: '{{imageUrls.0}}' }, vendor_option: 'keep' },
+    });
+    insertFileField('image[]');
+    expect(JSON.parse(protocolField().props.value as string).submit.body['image[]']).toMatchObject({ $file: '{{imageUrls}}' });
+    change(protocolField(), '{unfinished');
+    expect(fileFieldPicker().props.disabled).toBe(true);
+    insertFileField('file');
+    expect(protocolField().props.value).toBe('{unfinished');
+    expect(driver.execute).not.toHaveBeenCalled();
+  });
+
+  it('maps keyframes and image, video and audio references in the video JSON and form editors', async () => {
+    props.model.category = 'video';
+    const protocol = getDefaultCustomProtocol('video');
+    protocol.submit.path = '/custom-videos';
+    protocol.poll!.path = '/custom-videos/{{submit.task_id}}';
+    props.model.executionProfile = { preset: 'custom', protocol };
+    render();
+    insertFileField('first_frame');
+    insertFileField('last_frame');
+    await click(find((element) => element.props.role === 'tab' && element.props.children === '表单'));
+    for (const field of ['images', 'video', 'audios']) insertFileField(field);
+    const saved = vi.mocked(props.onChange).mock.calls.at(-1)![0]!;
+    expect(saved.protocol).toMatchObject({
+      submit: { path: protocol.submit.path, bodyEncoding: 'multipart', body: {
+        first_frame: { $file: '{{firstImage}}' }, last_frame: { $file: '{{lastImage}}' },
+        images: { $file: '{{referenceImageUrls}}' }, video: { $file: '{{referenceVideoUrls.0}}' },
+        audios: { $file: '{{referenceAudioUrls}}' },
+      } },
+      poll: protocol.poll,
+    });
+    expect(driver.execute).not.toHaveBeenCalled();
+  });
+
+  it('prepares multipart trial files only at submission and keeps the configured connection identity', async () => {
+    render();
+    insertFileField('image');
+    const protocol = JSON.parse(protocolField().props.value as string);
+    const prepared = { protocol, variables: { [PREPARED_MULTIPART_FILES]: { 'imageUrls.0': 'data:image/jpeg;base64,dGVzdA==' } } };
+    driver.prepareFiles.mockResolvedValue({ ...prepared, filesBySource: new Map(), fileOnlySources: new Set() });
+    expect(driver.prepareFiles).not.toHaveBeenCalled();
+    await click(button('试跑'));
+    expect(driver.prepareFiles).toHaveBeenCalledWith(protocol, expect.objectContaining({ model: props.model.id }),
+      { signal: expect.any(AbortSignal), trial: true });
+    expect(driver.execute).toHaveBeenCalledWith({
+      identity: { scopeId: props.model.provider, modelId: props.model.id, baseUrl: props.baseUrl },
+      category: 'image', apiKey: props.apiKey, ...prepared,
+    });
+    driver.execute.mockClear();
+    driver.prepareFiles.mockRejectedValue(new Error('试跑素材无效'));
+    await click(button('试跑'));
+    expect(driver.execute).not.toHaveBeenCalled();
+  });
+
   it('shows plugin identities, saves a stable reference, and refreshes to unavailable after lifecycle changes', async () => {
     props.model = { id: 'model', name: 'model', provider: 'p', category: 'text' };
     const first = { pluginId: 'example.responses', presetId: 'responses', name: 'OpenAI Responses', pluginName: 'Responses', available: true };
@@ -307,7 +382,8 @@ describe('model protocol editor interactions', () => {
     change(protocolField(), JSON.stringify(protocol));
     const sample = find((element) => element.type === 'textarea'
       && String(element.props.value).includes('A cinematic product shot'));
-    change(sample, JSON.stringify({ model: 'image-model', prompt: 'my trial', n: 2 }));
+    change(sample, JSON.stringify({ model: 'image-model', prompt: 'my trial', n: 2,
+      [PREPARED_MULTIPART_FILES]: { 'imageUrls.0': 'data:image/png;base64,Zm9yZ2Vk' } }));
     expect(button('试跑').props.disabled).toBe(false);
     await click(button('试跑'));
     expect(driver.execute).toHaveBeenCalledOnce();

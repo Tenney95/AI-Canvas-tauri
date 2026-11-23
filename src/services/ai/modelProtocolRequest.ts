@@ -103,7 +103,10 @@ export function renderRequestBody(
   context: Record<string, unknown>,
 ): ProtocolJsonValue | undefined {
   if (request.body === undefined) return undefined;
-  const rendered = renderTemplate(request.body, context, { conditionalDirectives: true });
+  const rendered = renderTemplate(request.body, context, {
+    conditionalDirectives: true,
+    multipart: request.bodyEncoding === 'multipart' ? 'body' : undefined,
+  });
   return rendered === OMIT_TEMPLATE_VALUE ? undefined : rendered;
 }
 
