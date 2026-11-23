@@ -26,6 +26,19 @@ function video(id: string, references: MediaReference[] = []) {
 }
 
 describe('LIBAPI 已审计的内置合同', () => {
+  it('保留渠道提示词最大值和已公开的连续时长，不修改其调用协议', () => {
+    expect(model('gt-image-2').imageCapability?.promptMaxCharacters).toBe(50_000);
+    expect(model('doubao-seedream-5-0-pro').imageCapability?.promptMaxCharacters).toBe(100_000);
+    expect(model('kling-image-o3').imageCapability?.promptMaxCharacters).toBe(2_500);
+    for (const id of ['seedance-2-5', 'seedance-2-5-promo']) {
+      expect(model(id).videoCapability?.durations).toEqual(Array.from({ length: 27 }, (_, index) => index + 4));
+      expect(model(id).videoCapability?.promptMaxCharacters).toBeGreaterThan(0);
+      const request = resolveCanonicalVideoRequest({ model: id, provider: 'general', prompt: 'camera', seedanceDuration: 17 },
+        { capability: model(id).videoCapability });
+      expect(() => assertLibapiVideoInput(request)).not.toThrow();
+      expect(libapiVideoVariables(request, {}).durationText).toBe('17');
+    }
+  });
   it('仅注册普通生成型号，不将退役、超分、声纹、转写或数字人列入生成目录', () => {
     expect(LIBAPI_MODEL_MANIFEST.filter((item) => item.category === 'text').map((item) => item.id).sort()).toEqual([
       'cl-opus-5-5', 'deepseek-v4.1-flash', 'gk-4.7', 'glm-5.3-flash',
@@ -82,7 +95,7 @@ describe('LIBAPI 已审计的内置合同', () => {
     const standard = model('seedance-2-5').videoCapability!;
     expect(standard).toMatchObject({ resolutions: ['480p', '720p', '1080p'], defaultResolution: '480p',
       ratios: ['16:9', '9:16', '21:9', '3:4', '1:1', '4:3'],
-      durations: [4, 5, 6, 8, 10, 12, 15, 20, 25, 29, 30], defaultDuration: 5,
+      durations: Array.from({ length: 27 }, (_, index) => index + 4), defaultDuration: 5,
       inputModeCapabilities: { keyframe: { requiresRatio: false } },
       supportsStandaloneAudio: true, maxImageReferences: 30, maxVideoReferences: 10, maxAudioReferences: 10 });
     const perTask = model('seedance-2-5-special').videoCapability!;

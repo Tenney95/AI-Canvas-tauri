@@ -112,9 +112,30 @@ function sora2uBeforeInlineImageTransport() {
   });
 }
 
+// 只还原本次确认的长度字段，旧快照继续检测模型、请求协议和其他能力的漂移。
+function libapiBeforeLengthUpdate() {
+  const seedance25 = [4, 5, 6, 8, 10, 12, 15, 20, 25, 29, 30];
+  const oldDurations: Partial<Record<string, number[]>> = {
+    'seedance-2-5': seedance25,
+    'seedance-2-5-promo': seedance25,
+    'seedance-2-0-promo': [4, 5, 6, 7, 8, 9, 10, 12, 15],
+    'gk-imagine-1-5-7tu-special': [3, 5, 6, 8, 10, 12, 15],
+  };
+  return LIBAPI_MODEL_MANIFEST.map((entry) => {
+    const model = structuredClone(entry);
+    if (model.imageCapability) delete model.imageCapability.promptMaxCharacters;
+    if (model.videoCapability) {
+      delete model.videoCapability.promptMaxCharacters;
+      const durations = oldDurations[model.id];
+      if (durations) model.videoCapability.durations = durations;
+    }
+    return model;
+  });
+}
+
 const PUBLIC_CONTRACTS = {
   toapis: TOAPIS_MODEL_MANIFEST,
-  libapi: LIBAPI_MODEL_MANIFEST,
+  libapi: libapiBeforeLengthUpdate(),
   relayon: relayonBeforeDocumentCorrection(),
   aigcsi: AIGCSI_MODEL_MANIFEST,
   sora2u: sora2uBeforeInlineImageTransport(),
