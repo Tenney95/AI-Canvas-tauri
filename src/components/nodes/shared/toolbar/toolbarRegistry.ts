@@ -40,6 +40,7 @@ export const TEXT_BUTTONS: ToolbarButtonDef[] = [
   { key: 'copy',           label: '复制',        icon: 'mdi:content-copy',             defaultZone: '常用' },
   { key: 'clearEmptyLines',label: '清除空行',    icon: 'mdi:format-line-spacing',       defaultZone: '常用' },
   { key: 'showPrompt',     label: '查看提示词',  icon: 'mdi:message-text-outline',      defaultZone: '常用' },
+  { key: 'reversePrompt',  label: '反推提示词',  icon: 'mdi:text-search',                defaultZone: '常用' },
   { key: 'fullscreen',     label: '全屏显示',    icon: 'mdi:fullscreen',                defaultZone: '常用' },
   createMoreButton('常用'),
 ];

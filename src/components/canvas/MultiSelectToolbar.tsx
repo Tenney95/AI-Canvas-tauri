@@ -55,6 +55,13 @@ interface DistributionMode {
   selectionKey: string;
 }
 
+function getReverseImageUrl(node: RFNode<BaseNodeData>): string | undefined {
+  const type = node.type ?? node.data.type;
+  return type === 'ai-image' || type === 'source-image'
+    ? node.data.imageUrl?.trim() || node.data.thumbnailUrl?.trim() || undefined
+    : undefined;
+}
+
 const getSelectionKey = (ids: string[]) => [...ids].sort().join('\u0000');
 
 const NODE_MOVE_DURATION_MS = 200;
@@ -161,12 +168,13 @@ function MultiSelectToolbar() {
   const toolbar = useMemo(() => {
     if (selectedCount < 2) return null;
     const nodeMap = new Map(nodes.map((node) => [node.id, node]));
-    let count = 0, isGrouped = false;
+    let count = 0, isGrouped = false, canReverse = true;
     let minX = Infinity, minY = Infinity, maxX = -Infinity;
     for (const id of new Set(selectedNodeIds)) {
       const node = nodeMap.get(id);
       if (!node) continue;
       count++;
+      if (canReverse && !getReverseImageUrl(node)) canReverse = false;
       if (node.parentId != null || node.type === 'group') isGrouped = true;
       const b = getNodeBounds(node, nodeMap);
       if (b.x < minX) minX = b.x;
@@ -174,7 +182,11 @@ function MultiSelectToolbar() {
       if (b.right > maxX) maxX = b.right;
     }
     if (count < 2) return null;
-    return { position: flowToScreenPosition({ x: (minX + maxX) / 2, y: minY }), isGrouped };
+    return {
+      position: flowToScreenPosition({ x: (minX + maxX) / 2, y: minY }),
+      isGrouped,
+      canReverse: canReverse && count === selectedCount,
+    };
   }, [selectedNodeIds, nodes, flowToScreenPosition, selectedCount]);
 
   // ── Alignment ──
@@ -281,6 +293,24 @@ function MultiSelectToolbar() {
     useAppStore.getState().groupSelectedNodes();
   }, []);
 
+  const handleReverseImages = useCallback(() => {
+    const store = useAppStore.getState();
+    const ids = new Set(store.selectedNodeIds);
+    if (ids.size < 2 || store.reversePromptRequest) return;
+    const sources = [];
+    for (const node of store.nodes) {
+      if (!ids.has(node.id)) continue;
+      const imageUrl = getReverseImageUrl(node);
+      if (!imageUrl) return;
+      sources.push({
+        sourceNodeId: node.id,
+        imageUrl,
+        label: node.data.label?.trim() || node.data.fileName?.trim() || t('图片'),
+      });
+    }
+    if (sources.length === ids.size) store.setReversePromptRequest({ kind: 'images', sources });
+  }, [t]);
+
   // ── Copy selected nodes to internal clipboard ──
   const handleCopyNodes = useCallback(() => {
     if (copySelectedNodes()) {
@@ -289,7 +319,7 @@ function MultiSelectToolbar() {
   }, [copySelectedNodes, t]);
 
   if (!toolbar) return null;
-  const { position, isGrouped } = toolbar;
+  const { position, isGrouped, canReverse } = toolbar;
 
   return (
     <>
@@ -311,6 +341,17 @@ function MultiSelectToolbar() {
       >
         <Icon icon="material-symbols:play-arrow-rounded" width={20} height={20} />
       </AnimatedButton>
+
+      {canReverse && (
+        <AnimatedButton
+          data-tooltip={t('反推提示词')}
+          aria-label={t('反推提示词')}
+          onClick={handleReverseImages}
+          className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover"
+        >
+          <Icon icon="mdi:text-search" width={16} height={16} />
+        </AnimatedButton>
+      )}
 
       <div className="mx-1 w-px h-[18px] bg-canvas-border" />
 

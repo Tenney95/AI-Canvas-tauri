@@ -749,6 +749,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   }, [data.filePath, t]);
 
   const handleCaptureFrame = useCallback(async (position: CaptureFramePosition = 'current') => {
+    if (pendingVideoOperations.current.size) return;
     const store = useAppStore.getState();
     const video = videoRef.current ?? activateCompactVideo();
     const frameLabel = t(CAPTURE_FRAME_LABELS[position]);
@@ -912,14 +913,24 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
 
   const handleReversePrompt = useCallback(async () => {
     const store = useAppStore.getState();
+    if (store.reversePromptRequest || pendingVideoOperations.current.size) return;
+    const videoUrl = data.videoUrl;
+    if (!videoUrl || getCanvasNodeById(store.nodes, id)?.data.videoUrl !== videoUrl) {
+      store.showToast(t('没有可反推的视频'), 'error');
+      return;
+    }
     const video = videoRef.current ?? activateCompactVideo();
-    if (!video || !data.videoUrl) {
+    if (!video) {
       store.showToast(t('没有可反推的视频'), 'error');
       return;
     }
     const controller = new AbortController();
     const derivation = registerCanvasDerivation(store, id, { onCancel: () => controller.abort() });
     if (!derivation) return;
+    const isSourceCurrent = (state: ReturnType<typeof useAppStore.getState>) => (
+      !controller.signal.aborted && isCanvasDerivationFresh(derivation, state)
+      && getCanvasNodeById(state.nodes, id)?.data.videoUrl === videoUrl
+    );
     pendingVideoOperations.current.add(controller);
     setIsReversingPrompt(true);
     let restoreTime = video.currentTime;
@@ -932,24 +943,26 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         : [video.currentTime];
       const frames: string[] = [];
       for (const time of times) {
-        if (controller.signal.aborted || !isCanvasDerivationFresh(derivation, useAppStore.getState())) return;
+        if (!isSourceCurrent(useAppStore.getState())) return;
         frames.push((await captureFrameAtTime(video, time)).dataUrl);
       }
-      if (controller.signal.aborted || !isCanvasDerivationFresh(derivation, useAppStore.getState())) return;
-      useAppStore.getState().setReversePromptRequest({
+      const current = useAppStore.getState();
+      if (!isSourceCurrent(current) || current.reversePromptRequest) return;
+      current.setReversePromptRequest({
         sourceNodeId: id,
         kind: 'video',
+        videoUrl,
         imageUrls: frames,
       });
     } catch (error) {
-      if (controller.signal.aborted || !isCanvasDerivationFresh(derivation, useAppStore.getState())) return;
+      if (!isSourceCurrent(useAppStore.getState())) return;
       const message = isTaintedCanvasError(error)
         ? t('远程视频受跨域限制，请先把视频本地化后再反推')
         : error instanceof Error ? error.message : t('读取视频帧失败');
       useAppStore.getState().showToast(message, 'error');
     } finally {
       // 三帧一次性取完再复位，中间来回跳会让 seek 互相打架
-      if (!controller.signal.aborted) restoreVideoTime(video, restoreTime);
+      if (isSourceCurrent(useAppStore.getState())) restoreVideoTime(video, restoreTime);
       pendingVideoOperations.current.delete(controller);
       completeCanvasDerivation(derivation);
       setIsReversingPrompt(false);

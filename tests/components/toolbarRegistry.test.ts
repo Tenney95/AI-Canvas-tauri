@@ -156,7 +156,7 @@ describe('toolbar layout migration', () => {
     const registry = getButtonRegistry('ai-text');
     const hidden = getHiddenDefaultToolbarButtons(registry, new Set(['copy', 'more']));
     expect(hidden.map((button) => button.key)).toEqual([
-      'clearEmptyLines', 'showPrompt', 'fullscreen',
+      'clearEmptyLines', 'showPrompt', 'reversePrompt', 'fullscreen',
     ]);
   });
 

@@ -53,6 +53,15 @@ function TextNodeToolbar({ nodeId, data, onCopy, onClearEmptyLines, onShowPrompt
     [data.output, onClearEmptyLines],
   );
 
+  const handleReversePrompt = (event: React.MouseEvent) => {
+    event.stopPropagation();
+    const store = useAppStore.getState();
+    if (store.selectedNodeIds.length !== 1 || store.selectedNodeIds[0] !== nodeId || store.reversePromptRequest) return;
+    const source = store.nodes.find((node) => node.id === nodeId);
+    const text = source?.data.output?.trim() || source?.data.prompt?.trim();
+    if (text) store.setReversePromptRequest({ kind: 'text', sourceNodeId: nodeId, text });
+  };
+
   const handlePresetClick = useCallback(
     (key: string) => (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -65,11 +74,15 @@ function TextNodeToolbar({ nodeId, data, onCopy, onClearEmptyLines, onShowPrompt
     copy: handleCopy,
     clearEmptyLines: handleClearEmptyLines,
     showPrompt: (e) => { e.stopPropagation(); onShowPrompt(); },
+    reversePrompt: handleReversePrompt,
     fullscreen: (e) => { e.stopPropagation(); onFullscreen(); },
   };
-  const hiddenDefaultButtons = getHiddenDefaultToolbarButtons(registry, edit.activeButtonKeys);
+  const canReverse = Boolean(data.output?.trim() || data.prompt?.trim());
+  const hiddenDefaultButtons = getHiddenDefaultToolbarButtons(registry, edit.activeButtonKeys)
+    .filter((button) => button.key !== 'reversePrompt' || canReverse);
 
   const renderActionButton = (key: string) => {
+    if (key === 'reversePrompt' && !canReverse) return null;
     const pluginButton = pluginToolbar.renderButton(key);
     if (pluginButton) return pluginButton;
     const def = registry.find((button) => button.key === key);
@@ -100,8 +113,8 @@ function TextNodeToolbar({ nodeId, data, onCopy, onClearEmptyLines, onShowPrompt
       <AnimatedButton
         key={key}
         className={`ftb-btn icon-only${isPreset ? ' act-preset' : ''} rounded-[6px]`}
-        data-tooltip={resolvedDef.label}
-        aria-label={resolvedDef.label}
+        data-tooltip={key === 'reversePrompt' ? t(resolvedDef.label) : resolvedDef.label}
+        aria-label={key === 'reversePrompt' ? t(resolvedDef.label) : resolvedDef.label}
         onClick={clickHandler}
       >
         <Icon icon={resolvedDef.icon} width={12} height={12} />
