@@ -40,6 +40,8 @@ export default defineConfig({
     },
   },
   build: {
+    // 桌面端直接使用打包后的本地资源，省去逐个计算 gzip 体积。
+    reportCompressedSize: false,
     // 插件自定义界面是第二个入口：它跑在主窗口内的 sandboxed iframe 中。
     rollupOptions: {
       input: {
