@@ -27,6 +27,21 @@ interface TimelineRow extends HistoryOperationLabel {
   index: number;
 }
 
+// 已提交的快照不可变，标签只由相邻快照和当前翻译决定。
+const committedLabels = new WeakMap<HistorySnapshotLike, {
+  next: HistorySnapshotLike;
+  translate: ReturnType<typeof useT>;
+  label: HistoryOperationLabel;
+}>();
+
+function describeCommitted(previous: HistorySnapshotLike, next: HistorySnapshotLike, translate: ReturnType<typeof useT>) {
+  const cached = committedLabels.get(previous);
+  if (cached?.next === next && cached.translate === translate) return cached.label;
+  const label = describeCanvasChange(previous, next, translate);
+  committedLabels.set(previous, { next, translate, label });
+  return label;
+}
+
 export default function HistoryTimelinePanel({ nodesDragging }: { nodesDragging: boolean }) {
   const t = useT();
   const [expanded, setExpanded] = useState(true);
@@ -64,25 +79,14 @@ export default function HistoryTimelinePanel({ nodesDragging }: { nodesDragging:
   const canUndo = historyIndex >= 0 && history.length > 0;
   const canRedo = historyIndex < history.length - 1;
 
-  // 快照不可变。同一对快照只比一次，换语言时重新生成标题。
-  const describeCommitted = useMemo(() => {
-    const labels = new WeakMap<HistorySnapshotLike, { next: HistorySnapshotLike; label: HistoryOperationLabel }>();
-    return (previous: HistorySnapshotLike, next: HistorySnapshotLike) => {
-      const cached = labels.get(previous);
-      if (cached?.next === next) return cached.label;
-      const label = describeCanvasChange(previous, next, t);
-      labels.set(previous, { next, label });
-      return label;
-    };
-  }, [t]);
   const committedRows = useMemo<TimelineRow[]>(() => {
     if (!showRows) return [];
     const rows: TimelineRow[] = [];
     for (let index = 1; index < history.length; index += 1) {
-      rows.push({ ...describeCommitted(history[index - 1], history[index]), index: index - 1 });
+      rows.push({ ...describeCommitted(history[index - 1], history[index], t), index: index - 1 });
     }
     return rows;
-  }, [showRows, history, describeCommitted]);
+  }, [showRows, history, t]);
 
   const latestRow = useMemo<TimelineRow | null>(() => {
     if (!trackLive || !live) return null;
