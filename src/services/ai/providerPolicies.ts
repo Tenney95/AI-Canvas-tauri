@@ -41,6 +41,7 @@ const POLICY_OVERRIDES: Record<string, PolicyOverrides> = {
   volcengine: { upload: 'volcengine-tos' },
   'custom-openai': { syncGeneralModels: true },
   xai: { syncGeneralModels: true },
+  replicate: { syncGeneralModels: true, publicUploadFallback: 'deny' },
   google: { syncGeneralModels: true },
   kling: { syncGeneralModels: true, referenceTransport: 'request-files', publicUploadFallback: 'deny' },
   minimax: { syncGeneralModels: true, upload: 'minimax',

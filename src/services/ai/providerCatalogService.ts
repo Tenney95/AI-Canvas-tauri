@@ -32,6 +32,7 @@ import { getProviderPolicy, readPositiveTokenCount, resolveProviderCatalogId, ty
 import { APIMART_OMNI_MODELS, APIMART_UPDATED_VIDEO_MODELS, isLegacyApimartOmni } from './apimartVideoModels';
 import { getChatApiHeaders, normalizeGeminiModelId, resolveChatApiProtocol } from './chatApiProtocol';
 import { XAI_BASE_URL, XAI_MODEL_MANIFEST } from './providers/xaiModelManifest';
+import { REPLICATE_BASE_URL, REPLICATE_MODEL_MANIFEST } from './providers/replicateModelManifest';
 import { GRSAI_ADDED_MODELS } from './grsaiModels';
 import { DREAMINA_IMAGE_MODELS, DREAMINA_VIDEO_MODELS } from './dreaminaModels';
 import { MUSE_BASE_URL, MUSE_MODEL_MANIFEST } from './museModels';
@@ -457,6 +458,13 @@ const BUILT_IN_PROVIDER_ENTRIES: Omit<ProviderDefinition, 'policy'>[] = [
     allowCustomBaseUrl: true, externalUrl: 'https://www.klingai.com/document-api/guides/get-started/overview',
     credentials: [API_KEY_FIELD, { key: 'baseUrl', label: '接口地址', required: false, placeholder: KLING_BASE_URL }],
     models: KLING_MODELS,
+  },
+  {
+    id: 'replicate', name: 'Replicate', description: 'Replicate 官方 Prediction API', badgeText: 'RP',
+    authType: 'api-key', catalogAdapter: 'local-manifest', defaultBaseUrl: REPLICATE_BASE_URL,
+    allowCustomBaseUrl: false, externalUrl: 'https://replicate.com/docs/reference/http',
+    connectionTestPath: '/v1/account',
+    credentials: [API_KEY_FIELD], models: REPLICATE_MODEL_MANIFEST,
   },
   {
     id: 'workflow-api', name: '工作流 API', kind: 'workflow-api',
@@ -1302,9 +1310,9 @@ export async function fetchProviderModelCatalog(
   }
   if (definition.catalogAdapter === 'local-manifest') {
     // 即梦与 MiniMax 使用已核实的本地合同；过期的界面 fallback 不能隐藏新型号，也不代表 Key 已验证。
-    if (['dreamina', 'minimax', 'muse', 'kling'].includes(definition.id)) {
+    if (['dreamina', 'minimax', 'muse', 'kling', 'replicate'].includes(definition.id)) {
       return { models: normalizeModels([...(definition.models ?? [])], providerId), source: 'local-manifest',
-        ...(['minimax', 'kling'].includes(definition.id) ? { warning: '当前展示内置候选模型，未验证 API Key 或模型权限。' } : {}) };
+        ...(['minimax', 'kling', 'replicate'].includes(definition.id) ? { warning: '当前展示内置候选模型，未验证 API Key 或模型权限。' } : {}) };
     }
     return { models: definition.id === 'grsai'
       ? mergeRemoteCatalogMetadata(normalizedFallback, [...GRSAI_ADDED_MODELS])

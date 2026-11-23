@@ -437,6 +437,20 @@ describe('declarative model execution protocol', () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it.each([
+    [{ id: 'original', status: 'aborted' }, /模型任务失败.*aborted/],
+    [{ id: 'original', status: 'unexpected' }, /原任务的有效状态/],
+    [{ id: 'other', status: 'succeeded' }, /原任务的有效状态/],
+  ] as const)('validates Replicate status and identity on existing recovery descriptions %j', async (payload, error) => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(payload));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(pollResolvedModelProtocol({ method: 'GET', url: 'https://api.replicate.com/v1/predictions/original',
+      auth: { type: 'bearer' }, statusPath: 'status', successValues: ['succeeded'], failureValues: ['failed', 'canceled'],
+      resultUrlPath: 'output', intervalMs: 1, maxAttempts: 2 }, 'fixture', undefined, 'https://api.replicate.com/v1'))
+      .rejects.toThrow(error);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it('honors server Retry-After beyond the local backoff cap', async () => {
     vi.useFakeTimers();
     try {

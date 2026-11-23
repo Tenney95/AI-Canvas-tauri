@@ -2,6 +2,7 @@
 import type { ModelExecutionProfile, NormalizedModelExecutionProtocol } from '../types/aiTypes';
 import { resolveModelExecutionProfile } from './ai/modelProtocol';
 import { getRelayonVideoRecoveryProfiles } from './ai/providers/relayonModelManifest';
+import { replicatePredictionProtocolV1 } from './ai/providers/replicateModelManifest';
 import type { MediaKind } from '../types/media';
 import { nativeProtocolTaskDigest, nativeProtocolQueryDigest } from './nativeModelProtocolTask';
 import { sha256BytesHex } from './mediaDataUrl';
@@ -30,9 +31,14 @@ const xaiV1 = queryOnly({ type: 'bearer' }, 'request_id', {
   retry: { httpStatuses: [408, 429, 500, 502, 503, 504], maxRetries: 5, backoff: 'exponential', maxDelayMs: 60_000,
     honorRetryAfter: true, retryNetworkErrors: true },
 });
+const replicateV1 = (outputPath: 'output' | 'output.*') => queryOnly({ type: 'bearer' }, 'id',
+  replicatePredictionProtocolV1('vendor/recovery-only', {}, outputPath).poll!);
+
 const QUERY_CONTRACTS = ([
   { id: 'kling-tasks-v1', catalogId: 'kling', categories: ['image', 'video'], protocol: klingV1 },
   { id: 'xai-video-v1', catalogId: 'xai', categories: ['video'], protocol: xaiV1 },
+  { id: 'replicate-image-v1', catalogId: 'replicate', categories: ['image'], protocol: replicateV1('output.*') },
+  { id: 'replicate-video-v1', catalogId: 'replicate', categories: ['video'], protocol: replicateV1('output') },
 ] satisfies Array<{ id: string; catalogId: string; categories: MediaKind[]; protocol: NormalizedModelExecutionProtocol }>)
   .map((contract) => ({
     ...contract, categories: contract.categories as readonly MediaKind[],

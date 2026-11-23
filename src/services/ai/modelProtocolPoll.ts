@@ -40,6 +40,7 @@ import {
 } from './modelProtocolShared';
 import type { ExecuteModelProtocolResult } from './modelProtocolTypes';
 import { validateAuthentication } from './modelProtocolValidation';
+import { isReplicatePredictionStatus, replicatePredictionIdFromPoll } from './providers/replicateModelManifest';
 import { getKlingImageQueryTaskId, selectKlingImageQueryTask } from './providers/klingImageResponse';
 import { redactVolcengineError } from './providers/volcengineError';
 
@@ -212,6 +213,12 @@ async function pollResolvedModelProtocolRequest(
   if (klingTaskId && expectedTaskId !== undefined && klingTaskId !== expectedTaskId) {
     throw new Error('Kling 查询地址与原任务回执的 ID 不一致，请核对原任务');
   }
+  const predictionId = replicatePredictionIdFromPoll(poll);
+  if (predictionId && expectedTaskId !== undefined && predictionId !== expectedTaskId) {
+    throw new Error('Replicate 查询地址与原任务 ID 不一致');
+  }
+  // 旧回执仍能识别 Replicate 新增的终态，无需改写已保存的合同。
+  if (predictionId) failureValues.add('aborted');
   const retry = resolvePollRetryConfig(poll.retry);
   const retryHttpStatuses = new Set(retry.httpStatuses);
   let consecutiveErrors = 0;
@@ -241,6 +248,9 @@ async function pollResolvedModelProtocolRequest(
       queryMayRetry = false;
       try {
         if (klingTaskId) payload = selectKlingImageQueryTask(payload, klingTaskId) as ProtocolJsonValue;
+        if (predictionId && (!isRecord(payload) || payload.id !== predictionId || !isReplicatePredictionStatus(payload.status))) {
+          throw new Error('Replicate 未返回原任务的有效状态，请继续查询原任务');
+        }
         validateResponse?.(payload);
       } catch (error) {
         throw redactModelProtocolError(error, apiKey);

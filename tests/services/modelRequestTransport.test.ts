@@ -40,11 +40,39 @@ import {
   clearProjectTasks, getNativeMediaNodeRecovery, getPendingTasksForProject, resumeMediaNodeTask,
   resumeNativeMediaFromNode, resumeNativeMediaLocalDelivery, resumePendingTasks,
 } from '../../src/services/pollManager';
+import { REPLICATE_BASE_URL, REPLICATE_MODEL_MANIFEST } from '../../src/services/ai/providers/replicateModelManifest';
 import { resolveModelExecutionProfile } from '../../src/services/ai/modelProtocol';
 import type { CharacterImageTaskRecovery } from '../../src/types/media';
 import type { CanvasContext } from '../../src/types/project';
 import { jsonResponse, setupTransportFixture } from './modelRequestTransport/transportFixture';
 setupTransportFixture(transportMocks.corsSafeFetch);
+
+describe('Replicate 官方 Prediction 通用执行入口', () => {
+  it.each(REPLICATE_MODEL_MANIFEST)('$id 根据模型能力构建请求并只查询提交返回的 ID', async (model) => {
+    const key = 'replicate-fixture';
+    useAppStore.getState().saveProviderConfig('replicate-test', { name: 'Replicate', catalogId: 'replicate',
+      apiKey: key, selectedModels: [model] });
+    const general = useAppStore.getState().config.generalModels!.find((item) => item.providerConfigId === 'replicate-test')!;
+    const out = model.category === 'image'
+      ? ['https://replicate.delivery/a.png', 'https://replicate.delivery/b.png'] : 'https://replicate.delivery/clip.mp4';
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ id: 'original', status: 'starting' }))
+      .mockResolvedValueOnce(jsonResponse({ id: 'original', status: 'succeeded', output: out }));
+    const params = { model: 'general/' + general.id, provider: 'general', prompt: 'a landscape' };
+    if (model.category === 'image') {
+      const result = await generateImagesBatch({ ...params, aspectRatio: '21:9' }, 2);
+      expect(result.results.map((item) => item.url)).toEqual(out);
+    } else {
+      const result = await generateVideo({ ...params, seedanceDuration: 6, seedanceRatio: '16:9', seedanceResolution: '720p' });
+      expect(result.url).toBe(out);
+    }
+    const [submit, poll] = transportMocks.corsSafeFetch.mock.calls;
+    expect(submit[0]).toBe(REPLICATE_BASE_URL + '/models/' + model.id + '/predictions');
+    expect(poll[0]).toBe(REPLICATE_BASE_URL + '/predictions/original');
+    expect(new Headers(submit[1].headers).get('Authorization')).toBe('Bearer ' + key);
+    expect(JSON.parse(String(submit[1].body)).input).toMatchObject(model.category === 'image'
+      ? { num_outputs: 2, aspect_ratio: '21:9' } : { duration: 6, resolution: '720p' });
+  });
+});
 
 describe('Kling 官方视频统一入口', () => {
   function configureFlash(mode: 'text' | 'first-frame', override = false) {
@@ -287,7 +315,7 @@ describe('Kling 官方图片统一入口', () => {
       const operation = 'character-kling-op';
       const recovery: CharacterImageTaskRecovery = { version: 1, kind: 'protocol', connectionId: 'official',
         modelRef: params.model, providerBase: KLING_BASE_URL, configurationDigest: 'a'.repeat(64), expectedCount: 1,
-        query: { modelId: selected.modelId, serverId: change === 'category' ? 'xai-video-v1' : 'kling-tasks-v1',
+        query: { modelId: selected.modelId, serverId: change === 'category' ? 'replicate-video-v1' : 'kling-tasks-v1',
           digest: change === 'digest' ? 'b'.repeat(64) : await nativeProtocolQueryDigest(selected.modelId, protocol),
           credentialProof: await nativeQueryCredentialProof(operation, 'official', config.providers.official.apiKey) },
         tasks: [{ taskId: 'original-role', recoveryContext: { submit: { data: { id: 'original-role' } } } }] };
@@ -333,7 +361,7 @@ describe('Kling 官方图片统一入口', () => {
         inputFingerprint: await sha256BytesHex(new TextEncoder().encode(input)), requestFingerprint: 'b'.repeat(64), protocolDigest: 'c'.repeat(64),
         fingerprintScheme: 'media-input-v3', submissionKind: 'async', sourceCanvasRevision: canvas.revision,
         recovery: { kind: 'general-protocol', modelId: selected.modelId,
-          serverId: change === 'category' ? 'xai-video-v1' : 'kling-tasks-v1',
+          serverId: change === 'category' ? 'replicate-video-v1' : 'kling-tasks-v1',
           digest: change === 'digest' ? 'b'.repeat(64) : await nativeProtocolQueryDigest(selected.modelId, protocol),
           ...(change === 'legacy' ? {} : { credentialProof: await nativeQueryCredentialProof(operationId, 'official', config.providers.official.apiKey) }) } });
       await recordNativeMediaSubmission(operationId, receipt.lease, { unknown: true });
