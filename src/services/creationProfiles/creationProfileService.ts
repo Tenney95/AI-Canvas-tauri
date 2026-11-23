@@ -31,12 +31,19 @@ export function assertCreationProfileSnapshot(snapshot: CreationProfileSnapshot 
   }
 }
 
-/** 独立窗口只展示名称/ID/版本；完整组合配置始终留在主窗口。 */
-export function creationProfileOptions(): CreationProfileOption[] {
-  return (useAppStore.getState().config.creationProfiles ?? []).flatMap((raw) => {
+let cachedProfiles: CreationProfile[] | undefined;
+let cachedOptions: CreationProfileOption[] = [];
+
+/** 配置目录变化时才重建展示选项，任务执行仍会单独核验组合配置。 */
+export function creationProfileOptions(config = useAppStore.getState().config): CreationProfileOption[] {
+  const profiles = config.creationProfiles;
+  if (profiles === cachedProfiles) return cachedOptions;
+  cachedOptions = (profiles ?? []).flatMap((raw) => {
     try { const profile = parseCreationProfile(raw); return [{ id: profile.id, name: profile.name, version: profile.version }]; }
     catch { return []; }
   });
+  cachedProfiles = profiles;
+  return cachedOptions;
 }
 
 export async function previewCreationProfileOption(option: CreationProfileOption, projectId: string): Promise<CreationProfilePreview> {
@@ -88,9 +95,12 @@ export async function previewCreationProfile(value: unknown, projectId: string):
   return { profile, selection, issues: [...new Map(issues.map((issue) => [JSON.stringify(issue), issue])).values()], changes };
 }
 
-export function findCreationProfile(selection: CreationProfileSelection | undefined): CreationProfile | undefined {
+export function findCreationProfile(
+  selection: CreationProfileSelection | undefined,
+  config = useAppStore.getState().config,
+): CreationProfile | undefined {
   if (!selection) return undefined;
-  const raw = useAppStore.getState().config.creationProfiles?.find((entry) => entry.id === selection.id && entry.version === selection.version);
+  const raw = config.creationProfiles?.find((entry) => entry.id === selection.id && entry.version === selection.version);
   if (!raw) throw new Error('选定组合包已移除或升级，请重新选择');
   return parseCreationProfile(raw);
 }
@@ -117,10 +127,14 @@ export async function captureCreationProfile(selection: CreationProfileSelection
     ...(raw.toolAllowlist ? { toolAllowlist: [...raw.toolAllowlist] } : {}) } };
 }
 
-export function resolveCreationTeamProfile(selection: CreationProfileSelection | undefined, override?: AgentTeamProfile): AgentTeamProfile {
+export function resolveCreationTeamProfile(
+  selection: CreationProfileSelection | undefined,
+  override?: AgentTeamProfile,
+  config = useAppStore.getState().config,
+): AgentTeamProfile {
   return normalizeTeamProfile(selection
-    ? override ?? findCreationProfile(selection)?.teamProfile ?? useAppStore.getState().config.agentTeamProfile
-    : useAppStore.getState().config.agentTeamProfile);
+    ? override ?? findCreationProfile(selection, config)?.teamProfile ?? config.agentTeamProfile
+    : config.agentTeamProfile);
 }
 
 export async function saveCreationProfile(value: unknown): Promise<CreationProfile> {

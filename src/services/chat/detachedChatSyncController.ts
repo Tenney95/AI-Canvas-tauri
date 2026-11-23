@@ -129,6 +129,7 @@ interface DetachedSnapshotSource {
   dramaAssets: AppState['dramaAssets'];
   userSkills: AppState['userSkills'];
   agentPackageSkills: AppState['agentPackageSkills'];
+  agentPackages: AppState['agentPackages'];
   chatComposerLiveDraft: string;
   chatComposerDrafts: AppState['chatComposerDrafts'];
   chatImageDrafts: AppState['chatImageDrafts'];
@@ -307,6 +308,48 @@ let cachedDraftImages: string[] = [];
 let cachedConversations: ChatConversation[] | undefined;
 let cachedConversationScopeKey: string | undefined;
 let cachedScopedConversations: ChatConversation[] = [];
+let cachedSkillPicker: (Pick<AppState, 'userSkills' | 'agentPackageSkills' | 'agentPackages'> & {
+  options: ChatStateSnapshot['skillOptions'];
+}) | undefined;
+
+function detachedSkillOptions({ userSkills, agentPackageSkills }: AppState) {
+  // 包的安装状态可能先于技能目录刷新，停用后就要从选项里移除。
+  const { agentPackages } = useAppStore.getState();
+  if (cachedSkillPicker
+    && cachedSkillPicker.userSkills === userSkills
+    && cachedSkillPicker.agentPackageSkills === agentPackageSkills
+    && cachedSkillPicker.agentPackages === agentPackages) {
+    return cachedSkillPicker.options;
+  }
+  const options = projectSkillPickerOptions(userSkills, agentPackageSkills);
+  cachedSkillPicker = { userSkills, agentPackageSkills, agentPackages, options };
+  return options;
+}
+
+type TeamDisplayInputs = Pick<AppState['config'], 'agentTeamProfile' | 'creationProfiles'>
+  & Pick<ChatConversation, 'creationProfile' | 'teamProfileOverride'>;
+let cachedTeamDisplay: (TeamDisplayInputs & { value: ChatStateSnapshot['agentTeamProfile'] }) | undefined;
+
+function detachedTeamProfile(config: AppState['config'], conversation?: ChatConversation) {
+  const { agentTeamProfile, creationProfiles } = config;
+  const creationProfile = conversation?.creationProfile;
+  const teamProfileOverride = conversation?.teamProfileOverride;
+  if (cachedTeamDisplay
+    && cachedTeamDisplay.agentTeamProfile === agentTeamProfile
+    && cachedTeamDisplay.creationProfiles === creationProfiles
+    && cachedTeamDisplay.creationProfile === creationProfile
+    && cachedTeamDisplay.teamProfileOverride === teamProfileOverride) {
+    return cachedTeamDisplay.value;
+  }
+
+  let value = agentTeamProfile ? normalizeTeamProfile(agentTeamProfile) : undefined;
+  if (creationProfile || teamProfileOverride) {
+    try { value = resolveCreationTeamProfile(creationProfile, teamProfileOverride, config); }
+    catch { /* 失效组合包由任务启动预检拒绝；展示仍保留可用配置。 */ }
+  }
+  cachedTeamDisplay = { agentTeamProfile, creationProfiles, creationProfile, teamProfileOverride, value };
+  return value;
+}
 
 function conversationImageFileNames(messages: ChatMessage[], conversationId: string | null): string[] {
   if (messages === cachedImageMessages && conversationId === cachedImageConversation) return cachedConversationImages;
@@ -340,11 +383,6 @@ export function buildDetachedChatSnapshot(state: AppState): ChatStateSnapshot {
   const activeConversationId = conversations.some((conversation) => conversation.id === state.activeConversationId)
     ? state.activeConversationId : null;
   const selectedConversation = conversations.find((conversation) => conversation.id === activeConversationId);
-  let effectiveTeamProfile = state.config.agentTeamProfile ? normalizeTeamProfile(state.config.agentTeamProfile) : undefined;
-  if (selectedConversation?.creationProfile || selectedConversation?.teamProfileOverride) {
-    try { effectiveTeamProfile = resolveCreationTeamProfile(selectedConversation.creationProfile, selectedConversation.teamProfileOverride); }
-    catch { /* 失效组合包由任务启动预检拒绝；展示仍保留可用配置。 */ }
-  }
   const composerDraft = activeConversationId ? state.chatComposerDrafts[activeConversationId] ?? ''
     : state.activeConversationId ? '' : state.chatComposerLiveDraft;
   const imageDrafts = activeConversationId ? state.chatImageDrafts[activeConversationId] ?? [] : [];
@@ -376,8 +414,8 @@ export function buildDetachedChatSnapshot(state: AppState): ChatStateSnapshot {
       modelProject?.settings,
       state.config.assistantModelId,
     )[0],
-    agentTeamProfile: effectiveTeamProfile,
-    creationProfiles: creationProfileOptions(),
+    agentTeamProfile: detachedTeamProfile(state.config, selectedConversation),
+    creationProfiles: creationProfileOptions(state.config),
     externalAgents: readExternalAgentCatalog(),
     assistantImageModelId: state.config.assistantImageModelId,
     assistantVideoModelId: state.config.assistantVideoModelId,
@@ -388,7 +426,7 @@ export function buildDetachedChatSnapshot(state: AppState): ChatStateSnapshot {
     imagePreviewUrls: getChatImagePreviews(chatScopeId, imageFileNames),
     nodes: projectChatNodes(state.nodes),
     dramaAssets: state.dramaAssets,
-    skillOptions: projectSkillPickerOptions(state.userSkills, state.agentPackageSkills),
+    skillOptions: detachedSkillOptions(state),
     mcpClientOptions: getMcpClientOptions(state.config.mcpClientConnections ?? []),
     composerDraft,
     composerDrafts: state.chatComposerDrafts,
@@ -419,6 +457,7 @@ function detachedSnapshotSourceChanged(
     || current.dramaAssets !== previous.dramaAssets
     || current.userSkills !== previous.userSkills
     || current.agentPackageSkills !== previous.agentPackageSkills
+    || current.agentPackages !== previous.agentPackages
     || current.chatComposerLiveDraft !== previous.chatComposerLiveDraft
     || current.chatComposerDrafts !== previous.chatComposerDrafts
     || current.chatImageDrafts !== previous.chatImageDrafts

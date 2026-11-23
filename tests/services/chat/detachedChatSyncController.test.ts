@@ -499,12 +499,23 @@ describe('detached chat sync controller', () => {
   });
 
   it('projects profile options and previews without exposing full configuration', async () => {
-    useAppStore.setState((state) => ({ config: { ...state.config, creationProfiles: [{ schemaVersion: 1, id: 'writing', version: '1.0.0', name: 'Writing',
-      pluginRefs: [], agentPackageRefs: [], skillRefs: [], contextPolicyRef: 'project-default', toolAllowlist: ['web_search'] }] } }));
-    const snapshot = buildDetachedChatSnapshot(useAppStore.getState());
+    useAppStore.setState((state) => ({
+      conversations: state.conversations.map((conversation) => ({ ...conversation,
+        creationProfile: { id: 'writing', version: '1.0.0', sha256: 'a'.repeat(64) } })),
+      config: { ...state.config, creationProfiles: [{ schemaVersion: 1, id: 'writing', version: '1.0.0', name: 'Writing',
+        pluginRefs: [], agentPackageRefs: [], skillRefs: [], contextPolicyRef: 'project-default', toolAllowlist: ['web_search'] }] },
+    }));
+    const state = useAppStore.getState();
+    const snapshot = buildDetachedChatSnapshot(state);
     expect(snapshot.creationProfiles).toEqual([{ id: 'writing', version: '1.0.0', name: 'Writing' }]);
+    const next = buildDetachedChatSnapshot({ ...state, messages: [...state.messages] });
+    expect(next.creationProfiles).toBe(snapshot.creationProfiles);
+    expect(snapshot.agentTeamProfile).toBeDefined();
+    expect(next.agentTeamProfile).toBe(snapshot.agentTeamProfile);
     const preview = await executeManagedChatOperation({ kind: 'preview_creation_profile', profile: snapshot.creationProfiles![0] }, 'project-1', 'conversation-1') as { profile: unknown };
     expect(preview.profile).toEqual({ id: 'writing', version: '1.0.0', name: 'Writing' });
+    useAppStore.setState((current) => ({ config: { ...current.config, creationProfiles: [] } }));
+    expect(buildDetachedChatSnapshot(useAppStore.getState()).creationProfiles).toEqual([]);
   });
   it('rejects stale scopes and non-whitelisted managed fields before actions', async () => {
     await expect(executeManagedChatOperation({ kind: 'refresh_external_agents' }, 'other-project', 'conversation-1')).rejects.toThrow('项目已变化');
@@ -1196,6 +1207,10 @@ describe('detached chat sync controller', () => {
 
     const snapshot = buildDetachedChatSnapshot(useAppStore.getState());
     expect(snapshot.composerDraft).toBe('内嵌浮窗里没发出去的草稿');
+    const state = useAppStore.getState();
+    expect(buildDetachedChatSnapshot({ ...state, messages: [...state.messages] }).skillOptions).toBe(snapshot.skillOptions);
+    expect(buildDetachedChatSnapshot({ ...state, agentPackageSkills: [] }).skillOptions.map((option) => option.id))
+      .toEqual(['skill-1']);
     // 独立窗口只同步可选择元数据；用户与智能体 Skill 正文都留在主窗口。
     expect(snapshot.skillOptions).toEqual([
       {
@@ -1251,8 +1266,8 @@ describe('detached chat sync controller', () => {
     await controller.start();
     await vi.waitFor(() => expect(emitSync).toHaveBeenCalledTimes(1));
 
-    // 智能体停用后运行时目录会移除包内 Skill，独立窗口应收到精简删除补丁。
-    useAppStore.setState({ agentPackageSkills: [] });
+    // 安装记录已经停用，运行时技能列表还没刷新，独立窗口也要立即移除该项。
+    useAppStore.setState((current) => ({ agentPackages: current.agentPackages.map((item) => ({ ...item, enabled: false })) }));
     await vi.waitFor(() => expect(emitSync).toHaveBeenCalledTimes(2));
     const skillRemoval = emitSync.mock.calls[1][0];
     expect(skillRemoval.type).toBe('patch');
