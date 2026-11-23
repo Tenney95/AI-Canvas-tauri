@@ -352,19 +352,23 @@ async function readProjectTrashEntries(root: string): Promise<UndoTrashEntry[]> 
 }
 
 /** 加载持久化画布时先恢复仍被其引用的原件，再解析素材索引和预览。 */
-export async function recoverUndoTrashReferences(root: string, references: ReadonlySet<string>, groupNames: readonly string[],
-  assertCurrent?: () => void): Promise<void> {
+export async function recoverUndoTrashReferences(
+  root: string,
+  collectReferences: () => Promise<{ references: ReadonlySet<string>; groupNames: readonly string[] }>,
+  assertCurrent?: () => void,
+): Promise<void> {
   if (!isTauriEnv()) return;
   await waitForPendingNodeFileDeletions();
   const entries = await readProjectTrashEntries(root);
   if (!entries.length) return;
-  const paths = new Set(references);
+  assertCurrent?.();
+  const { references, groupNames } = await collectReferences();
   const folders = new Set<string>();
   for (const name of groupNames) {
     const folder = sanitizeFolderName(name);
     if (folder && !folder.startsWith('.')) folders.add(trashPathKey(joinPath(root, folder)));
   }
-  const referenced = entries.filter((entry) => folders.has(trashPathKey(entry.originalPath)) || usesTrashPath(entry.originalPath, paths));
+  const referenced = entries.filter((entry) => folders.has(trashPathKey(entry.originalPath)) || usesTrashPath(entry.originalPath, references));
   // 先还原父目录，避免单文件还原时创建目录，导致整组原件无法复位。
   referenced.sort((a, b) => a.originalPath.length - b.originalPath.length || newestStagedFirst(a, b));
   for (const entry of referenced) {

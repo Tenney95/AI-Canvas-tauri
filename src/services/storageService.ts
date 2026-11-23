@@ -1186,7 +1186,7 @@ export async function loadProjectsList(): Promise<ProjectSummaryData[]> {
   }
 }
 
-async function recoverStagedProjectMedia(record: ProjectSaveData, root: string, assertCurrent?: () => void): Promise<void> {
+async function collectProjectTrashReferences(record: ProjectSaveData, root: string) {
   const references = new Set<string>();
   const add = (value: string) => {
     const path = localMediaUrlToPath(value) ?? value;
@@ -1226,7 +1226,7 @@ async function recoverStagedProjectMedia(record: ProjectSaveData, root: string, 
     }
   }
   const groupNames = Array.isArray(record.groups) ? record.groups.flatMap((group) => typeof group?.name === 'string' ? [group.name] : []) : [];
-  await recoverUndoTrashReferences(root, references, groupNames, assertCurrent);
+  return { references, groupNames };
 }
 
 interface ProjectRestoreOptions {
@@ -1243,7 +1243,9 @@ export async function restoreProjectRecord(persistedRecord: ProjectSaveData, opt
       try {
         options.assertCurrent?.();
         const root = await getProjectDataDir(id);
-        if (root) await recoverStagedProjectMedia(persistedRecord, root, options.assertCurrent);
+        if (root) {
+          await recoverUndoTrashReferences(root, () => collectProjectTrashReferences(persistedRecord, root), options.assertCurrent);
+        }
       } catch {
         console.warn('[项目加载] 节点暂存记录暂不可用，已保留暂存文件');
       }

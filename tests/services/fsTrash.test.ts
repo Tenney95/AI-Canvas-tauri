@@ -340,6 +340,12 @@ describe('删除节点文件的项目归属校验', () => {
     expect(fsMocks.rename).toHaveBeenCalledTimes(1);
   });
 
+  it('项目没有暂存记录时跳过画布引用收集', async () => {
+    const collect = vi.fn(async () => ({ references: new Set<string>(), groupNames: [] }));
+    await recoverUndoTrashReferences('D:/data/empty-recovery-fixture', collect);
+    expect(collect).not.toHaveBeenCalled();
+  });
+
   it('原项目保存前中断时，按已提交的暂存记录恢复仍引用的原件', async () => {
     const root = 'D:/data/recovery-fixture';
     projectDirMock.get.mockResolvedValue(root);
@@ -355,9 +361,16 @@ describe('删除节点文件的项目归属校验', () => {
       files.add(to);
     });
 
-    await deleteNodeFiles([{ filePath: original }, { filePath: unused }], undefined, 'project-b');
-    await recoverUndoTrashReferences(root, new Set([original]), ['分组']);
+    const deletion = deleteNodeFiles([{ filePath: original }, { filePath: unused }], undefined, 'project-b');
+    const collect = vi.fn(async () => {
+      expect(files.has(original)).toBe(false);
+      expect(files.has(unused)).toBe(false);
+      return { references: new Set([original]), groupNames: ['分组'] };
+    });
+    await recoverUndoTrashReferences(root, collect);
+    await deletion;
 
+    expect(collect).toHaveBeenCalledOnce();
     expect(files.has(original)).toBe(true);
     expect(files.has(unused)).toBe(false);
     expect(await readUndoTrashEntries(`${root}/.trash`)).toEqual([expect.objectContaining({ originalPath: unused })]);
