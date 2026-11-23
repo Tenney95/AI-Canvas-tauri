@@ -29,6 +29,9 @@ import { getGenerationNodeType } from '../../../utils/nodeGeneration';
 import { getModelPreferenceType, saveModelPreference, saveWorkflowModelPreference } from '../../../services/modelPreferenceService';
 import { isTauriEnv } from '../../../services/fs/core';
 
+const EMPTY_WORKFLOWS: WorkflowDefinition[] = [];
+const EMPTY_GENERAL_MODELS: GeneralModelConfig[] = [];
+
 interface ModelSelectorProps {
   nodeType: NodeType;
   disabled?: boolean;
@@ -82,7 +85,7 @@ export default function ModelSelector({
   onWorkflowSelect,
   groups = defaultModelGroups,
   configuredGroupsOverride,
-  workflows = [],
+  workflows = EMPTY_WORKFLOWS,
   generalModelsOverride,
   groupAvailability,
   defaultExpandedGroupIds = [],
@@ -101,9 +104,8 @@ export default function ModelSelector({
   // 读取配置 — 判断哪些 provider 有 API Key
   const config = useAppStore((s) => s.config);
   const configProviders = config.providers;
-  const configuredGeneralModels = config.generalModels || [];
   const dreaminaLoggedIn = !!config.dreaminaAuth?.loggedIn;
-  const generalModels = generalModelsOverride ?? configuredGeneralModels;
+  const generalModels = generalModelsOverride ?? config.generalModels ?? EMPTY_GENERAL_MODELS;
 
   const configuredGroups = useMemo(
     () => configuredGroupsOverride ?? getConfiguredModelGroups(config, modelNodeType, groups, {
@@ -123,16 +125,14 @@ export default function ModelSelector({
     },
   ), [config, generalModels, modelNodeType, t]);
 
-  /** 合并默认分组与通用模型分组 */
-  const allGroups = useMemo(() => {
-    return [...configuredGroups, ...generalModelGroups];
-  }, [configuredGroups, generalModelGroups]);
+  // 触发按钮和菜单共用同一份目录，全景图和动画节点也按各自映射的模型类型筛选。
+  const filteredGroups = useMemo(() => [...configuredGroups, ...generalModelGroups]
+    .map((group) => ({ ...group, models: group.models.filter((model) => model.nodeTypes.includes(modelNodeType)) }))
+    .filter((group) => group.models.length > 0), [configuredGroups, generalModelGroups, modelNodeType]);
 
   // 所有分组默认收起，仅展开 defaultExpandedGroupIds 显式指定的分组。
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
-    const ids = allGroups
-      .map((g) => ({ ...g, models: g.models.filter((m) => m.nodeTypes.includes(modelNodeType)) }))
-      .filter((g) => g.models.length > 0)
+    const ids = filteredGroups
       .map((g) => g.id)
       .filter((id) => !defaultExpandedGroupIds.includes(id));
     return new Set(ids);
@@ -233,15 +233,6 @@ export default function ModelSelector({
     return () => window.removeEventListener('keydown', handler, true);
   }, [open, disabled]);
 
-  // 筛选当前节点类型下可用的模型分组
-  // 全景图和动画节点只复用生图模型，不复用图片节点的参数 UI
-  const filteredGroups = allGroups
-    .map((g) => ({
-      ...g,
-      models: g.models.filter((m) => m.nodeTypes.includes(modelNodeType)),
-    }))
-    .filter((g) => g.models.length > 0);
-
   // 只展示调用方真实绑定；历史偏好在 UI 新建时写入，旧节点和临时表单不做隐式回填。
   const effectiveModel = selectedModel || undefined;
 
@@ -287,17 +278,17 @@ export default function ModelSelector({
   );
 
   // 与生成时一致：未绑定或服务器已删除时回落默认地址；云端工作流不检测 ComfyUI。
-  const workflowUrls = useMemo(() => new Map(matchingWorkflows
+  const menuOpen = open && !disabled;
+  const menuWorkflows = menuOpen && onWorkflowSelect ? matchingWorkflows : EMPTY_WORKFLOWS;
+  const workflowUrls = useMemo(() => new Map(menuWorkflows
     .filter((workflow) => !workflow.adapterType || workflow.adapterType === 'comfyui')
     .map((workflow) => {
       const bound = config.comfyServers?.find((server) => server.id === workflow.serverId)?.url;
       const normalize = (url?: string) => (url ?? '').trim().replace(/\/+$/, '');
       return [workflow.id, normalize(bound) || normalize(config.comfyUIUrl)];
-    })), [matchingWorkflows, config.comfyServers, config.comfyUIUrl]);
-  const probeUrlsKey = JSON.stringify([...new Set(workflowUrls.values())].filter(Boolean).sort());
-  const canSelectWorkflow = !!onWorkflowSelect;
+    })), [menuWorkflows, config.comfyServers, config.comfyUIUrl]);
+  const probeUrlsKey = useMemo(() => JSON.stringify([...new Set(workflowUrls.values())].filter(Boolean).sort()), [workflowUrls]);
   useEffect(() => {
-    if (!open || !canSelectWorkflow) return;
     const urls = JSON.parse(probeUrlsKey) as string[];
     if (urls.length === 0) return;
     const controller = new AbortController();
@@ -316,8 +307,8 @@ export default function ModelSelector({
       controller.abort();
       clearTimeout(timer);
     };
-  }, [open, canSelectWorkflow, probeUrlsKey]);
-  const visibleWorkflows = matchingWorkflows.filter((workflow) => {
+  }, [probeUrlsKey]);
+  const visibleWorkflows = menuWorkflows.filter((workflow) => {
     const url = workflowUrls.get(workflow.id);
     return url === undefined || availableComfyUrls[url] === true;
   });
@@ -369,7 +360,7 @@ export default function ModelSelector({
 
   // 业务目录、凭据可用性与模型偏好留在宿主，公用菜单只接收展示条目。
   const workflowGroupId = '__workflows';
-  const menuGroups: ModelPickerGroup[] = filteredGroups.map((group) => ({
+  const menuGroups: ModelPickerGroup[] = menuOpen ? filteredGroups.map((group) => ({
     id: group.id,
     label: group.name,
     description: group.description,
@@ -379,8 +370,8 @@ export default function ModelSelector({
       ? t('请在桌面应用的设置中连接 Muse 并完成网页登录')
       : t('请先在设置中配置 {name} API Key', { name: group.name }),
     items: group.models.map((model) => ({ value: model.value, label: model.label, description: model.description })),
-  }));
-  if (onWorkflowSelect && visibleWorkflows.length > 0) {
+  })) : [];
+  if (visibleWorkflows.length > 0) {
     menuGroups.push({
       id: workflowGroupId,
       label: t('工作流'),
@@ -395,8 +386,8 @@ export default function ModelSelector({
   }
   let emptyText: string | undefined;
   let emptyAction: ModelMenuProps['emptyAction'];
-  if (menuHost && menuGroups.length === 0) {
-    const hasLocalWorkflows = canSelectWorkflow && workflowUrls.size > 0;
+  if (menuOpen && menuGroups.length === 0) {
+    const hasLocalWorkflows = workflowUrls.size > 0;
     const checking = hasLocalWorkflows && [...workflowUrls.values()].some((url) => url && availableComfyUrls[url] === undefined);
     if (checking) {
       emptyText = t('正在检查 ComfyUI 工作流连接…');
@@ -421,10 +412,6 @@ export default function ModelSelector({
       }
     }
   }
-  const expandedGroupIds = [
-    ...filteredGroups.filter((group) => !collapsedGroups.has(group.id)).map((group) => group.id),
-    ...(!workflowsCollapsed ? [workflowGroupId] : []),
-  ];
   const selectMenuItem = (value: string) => {
     if (disabled) return;
     const group = filteredGroups.find((candidate) => candidate.models.some((model) => model.value === value));
@@ -531,7 +518,7 @@ export default function ModelSelector({
       {workflowEditorTarget === undefined ? workflowEditButton
         : workflowEditorTarget && workflowEditButton && createPortal(workflowEditButton, workflowEditorTarget)}
 
-      {open && !disabled && createPortal(
+      {menuOpen && createPortal(
         <div
           ref={dropdownRef}
           className="ui-model-menu__surface nowheel nodrag nopan"
@@ -547,7 +534,10 @@ export default function ModelSelector({
               setMenuHost(null);
               ref.current?.querySelector<HTMLButtonElement>('.model-selector-trigger')?.focus({ preventScroll: true });
             }}
-            expandedGroupIds={expandedGroupIds}
+            expandedGroupIds={[
+              ...filteredGroups.filter((group) => !collapsedGroups.has(group.id)).map((group) => group.id),
+              ...(!workflowsCollapsed ? [workflowGroupId] : []),
+            ]}
             onGroupToggle={(groupId) => {
               if (groupId === workflowGroupId) setWorkflowsCollapsed((collapsed) => !collapsed);
               else toggleGroup(groupId);
