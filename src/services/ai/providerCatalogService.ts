@@ -101,6 +101,7 @@ export interface ProviderCatalogResult {
   models: ProviderModelSelection[];
   source: 'remote' | 'local-manifest' | 'local-fallback';
   warning?: string;
+  catalogUpdatedAt?: number;
   /** 实际拉通的接口地址；与用户填的不同（如补了 /v1）时调用方应回写。 */
   resolvedBaseUrl?: string;
 }
@@ -1367,7 +1368,7 @@ export async function fetchProviderModelCatalog(
       config,
       signal,
     );
-    if (definition.id === 'magpie') return { models, source: 'remote', resolvedBaseUrl: baseUrl };
+    if (definition.id === 'magpie') return { models, source: 'remote', resolvedBaseUrl: baseUrl, catalogUpdatedAt: Date.now() };
     if (definition.id === 'libapi') {
       const matched = await matchActiveLibapiCatalog(models, baseUrl, signal);
       return {

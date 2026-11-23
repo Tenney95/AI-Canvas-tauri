@@ -492,7 +492,7 @@ export default function ProviderConnectionDialog({
       const checkedIds = selectedIdsRef.current;
       const retainedMissing = refresh === 'replace-unselected' && [...checkedIds].some((id) => !remoteIds.has(id));
       const keepModel = (id: string) => remoteIds.has(id) || (refresh === 'replace-unselected' && checkedIds.has(id));
-      if (definition.id === 'magpie') setMagpieSnapshot({ models: result.models, updatedAt: Date.now() });
+      if (definition.id === 'magpie') setMagpieSnapshot({ models: result.models, updatedAt: result.catalogUpdatedAt });
       setModels((current) => mergeModels(
         definition.id === 'magpie'
           ? current.map((model) => remoteIds.has(model.id) ? model : { ...model, catalogTextLimits: undefined })
