@@ -1,4 +1,4 @@
-import { IDBFactory } from 'fake-indexeddb';
+import { IDBCursor, IDBFactory, IDBKeyRange, IDBObjectStore } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NativeProjectAggregate } from '../../src/services/indexedDb/nativeProjectRepository';
 
@@ -22,6 +22,7 @@ let database: IDBDatabase;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  vi.stubGlobal('IDBKeyRange', IDBKeyRange);
   const factory = new IDBFactory();
   database = await new Promise<IDBDatabase>((resolve, reject) => {
     const request = factory.open('routing-test', 1);
@@ -38,7 +39,7 @@ beforeEach(async () => {
   mocks.readNativeProjectIdentityCatalog.mockResolvedValue({ entries: [directory], unavailableIds: new Set<string>() });
   mocks.readNativeProject.mockResolvedValue(native);
 });
-afterEach(() => database.close());
+afterEach(() => { database.close(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 async function occupy(id: string, deleted = false): Promise<void> {
   await new Promise<void>((resolve, reject) => {
@@ -106,6 +107,29 @@ describe('新旧项目只读路由', () => {
     expect(mocks.readNativeProjectIdentityCatalog).toHaveBeenCalledOnce();
     expect(mocks.getProjectById).not.toHaveBeenCalled();
     expect(mocks.readNativeProject).not.toHaveBeenCalled();
+  });
+
+  it('少量候选只跳查对应旧键和墓碑，区间中大量无关记录不会逐条读取', async () => {
+    const transaction = database.transaction(['projects', 'metadata'], 'readwrite');
+    const projects = transaction.objectStore('projects'), metadata = transaction.objectStore('metadata');
+    for (let i = 0; i < 200; i++) {
+      projects.put({ id: `b-${i}` });
+      metadata.put({ id: `project-deleted:n-${i}` });
+    }
+    projects.put({ id: 'm-target' });
+    metadata.put({ id: 'project-deleted:z-target' });
+    await new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve(); transaction.onabort = () => reject(transaction.error);
+    });
+
+    const open = vi.spyOn(IDBObjectStore.prototype, 'openKeyCursor');
+    const advance = vi.spyOn(IDBCursor.prototype, 'continue');
+    const ids = ['z-target', 'a-target', 'm-target', 'm-target'];
+    await expect(readOccupiedProjectIds(ids)).resolves.toEqual(new Set(['m-target', 'z-target']));
+    expect(open).toHaveBeenCalledTimes(2);
+    const candidates = new Set(ids.flatMap((id) => [id, `project-deleted:${id}`]));
+    expect(advance.mock.calls.length).toBeLessThanOrEqual(new Set(ids).size * 2);
+    expect(advance.mock.calls.every(([key]) => typeof key === 'string' && candidates.has(key))).toBe(true);
   });
 
   it('旧项目即使使用类似新项目的 ID 也按旧仓储真实存在性判断', async () => {

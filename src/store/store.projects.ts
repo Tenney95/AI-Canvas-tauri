@@ -120,7 +120,9 @@ function nativeBinding(project: CanvasProject | undefined): NativeProjectViewIte
   return (project as NativeProjectViewItem | undefined)?.nativeView;
 }
 
-async function loadProjectCatalog(): Promise<{ projects: CanvasProject[]; native: NativeCatalog[] }> {
+async function loadProjectCatalog(): Promise<{ projects: CanvasProject[]; native: NativeCatalog[] }>;
+async function loadProjectCatalog(nativeProjectId: string): Promise<NativeCatalog | undefined>;
+async function loadProjectCatalog(nativeProjectId?: string) {
   const sequence = ++catalogRequests.latest;
   let catalog: ProjectCatalogEntry[];
   try { catalog = await listProjectCatalog({ isolateInvalidNativeProjects: true }); }
@@ -138,7 +140,8 @@ async function loadProjectCatalog(): Promise<{ projects: CanvasProject[]; native
       const ids = [entry.project.id, ...entry.episodeIds, ...entry.canvasIds];
       ids.forEach((id) => nativeKnownIds.add(id));
       fileService.registerNativeProjectFolders(ids.map((id) => ({ id, projectId: entry.project.id })));
-      projects.push(...projectNativeCatalogEntry(entry));
+      // 切画布只用目标作品；全库身份和素材目录仍在这里核对，展示数据等打开时再建。
+      if (nativeProjectId === undefined) projects.push(...projectNativeCatalogEntry(entry));
     }
   } catch (error) {
     if (sequence === catalogRequests.latest) await fileService.syncNativeAssetSearchRoots([]).catch(() => undefined);
@@ -146,6 +149,7 @@ async function loadProjectCatalog(): Promise<{ projects: CanvasProject[]; native
   }
   try { if (sequence === catalogRequests.latest) await fileService.syncNativeAssetSearchRoots(native.map((entry) => entry.project.id)); }
   catch { console.warn('[项目资产] 新项目搜索目录同步失败，搜索不可用'); }
+  if (nativeProjectId !== undefined) return native.find((entry) => entry.project.id === nativeProjectId);
   return { projects: projects.sort((a, b) => b.updatedAt - a.updatedAt), native };
 }
 

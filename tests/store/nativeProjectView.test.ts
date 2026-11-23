@@ -20,6 +20,7 @@ import { videoInputFingerprintMaterial } from '../../src/services/videoBatchPlan
 import type { ProjectCatalogEntry } from '../../src/services/projectModelRouter';
 import type { EpisodeRecord, ProjectRecord } from '../../src/types/project';
 import { hydrateNativeProjectView, nativeEpisodeDisplayNumbers, projectNativeCatalogEntry } from '../../src/store/nativeProjectView';
+import { registerNativeProjectFolders, syncNativeAssetSearchRoots } from '../../src/services/fileService';
 import { listEpisodes, projectMemoryOwnerId, resolveOpenTargetId, seriesOwnerId } from '../../src/store/store.utils';
 import { nativeMediaInputMaterial } from '../../src/services/nativeMediaInput';
 import { retainNativeMediaOutputs } from '../../src/services/indexedDb/nativeMediaCollectionRepository';
@@ -223,6 +224,21 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
       }), [TRANSFER]);
     } finally { database.close(); }
   }
+
+  it('换集只构建目标作品的列表，同时重新核对其他作品的素材目录', async () => {
+    const { store } = await fixture();
+    const other = await createNativeProject({ name: '其他作品' });
+    const projectList = vi.spyOn(await import('../../src/store/nativeProjectView'), 'projectNativeCatalogEntry');
+    vi.mocked(registerNativeProjectFolders).mockClear();
+    vi.mocked(syncNativeAssetSearchRoots).mockClear();
+
+    await expect(store.getState().switchProject(canvasB)).resolves.toBe(canvasB);
+    expect(new Set(projectList.mock.calls.map(([entry]) => entry.project.id))).toEqual(new Set([projectId]));
+    expect(registerNativeProjectFolders).toHaveBeenCalledWith(expect.arrayContaining([
+      { id: other.project.id, projectId: other.project.id },
+    ]));
+    expect(syncNativeAssetSearchRoots).toHaveBeenCalledWith(expect.arrayContaining([projectId, other.project.id]));
+  });
 
   it('重开待收尾作品时进入只读，干净画布可以切换且不会发起保存', async () => {
     const initial = await createNativeProject({ projectId, canvasId: canvasA, name: '待收尾' });

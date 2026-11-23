@@ -487,9 +487,8 @@ export function createProjectNavigationActions(
 
         const native = nativeBinding(project);
         if (native) {
-          const catalog = await loadProjectCatalog();
+          const entry = await loadProjectCatalog(native.projectId);
           if (!isLatestSwitch()) return;
-          const entry = catalog.native.find((item) => item.project.id === native.projectId);
           if (!entry) throw new Error('新项目已不存在');
           const openedId = await activateNativeProject(set, get, entry, id, assertCanReplaceSource);
           rememberActiveProject(openedId);

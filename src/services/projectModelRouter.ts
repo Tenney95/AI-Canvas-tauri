@@ -40,19 +40,34 @@ async function readNativeCatalog(isolateInvalidProjects: boolean) {
   return catalog;
 }
 
-/** 摘要可能缺行；单个只读事务只取旧项目键和删除墓碑，不加载旧画布正文。 */
+function collectOccupiedKeys(store: IDBObjectStore, ids: readonly string[], prefix: string, occupied: Set<string>): void {
+  const range = IDBKeyRange.bound(prefix + ids[0], prefix + ids[ids.length - 1]);
+  const request = store.openKeyCursor(range);
+  let index = 0;
+  request.onsuccess = () => {
+    const cursor = request.result;
+    if (!cursor) return;
+    // 两端都是字符串，区间内也只会出现字符串键；游标落到空档后直接跳向下个候选。
+    const id = (cursor.key as string).slice(prefix.length);
+    while (index < ids.length && ids[index] < id) index++;
+    if (ids[index] === id) {
+      occupied.add(id);
+      index++;
+    }
+    if (index < ids.length) cursor.continue(prefix + ids[index]);
+  };
+}
+
+/** 摘要可能缺行；在同一个只读事务里查旧主键和删除墓碑，不加载旧画布正文。 */
 async function occupiedLegacyIds(ids: readonly string[]): Promise<Set<string>> {
   if (!ids.length) return new Set();
+  const sorted = [...new Set(ids)].sort();
   const database = await openDB();
   return new Promise((resolve, reject) => {
     const transaction = database.transaction([STORE_PROJECTS, STORE_METADATA], 'readonly');
     const store = transaction.objectStore(STORE_PROJECTS), metadata = transaction.objectStore(STORE_METADATA), occupied = new Set<string>();
-    for (const id of ids) {
-      const request = store.getKey(id);
-      request.onsuccess = () => { if (request.result !== undefined) occupied.add(id); };
-      const tombstone = metadata.getKey(`project-deleted:${id}`);
-      tombstone.onsuccess = () => { if (tombstone.result !== undefined) occupied.add(id); };
-    }
+    collectOccupiedKeys(store, sorted, '', occupied);
+    collectOccupiedKeys(metadata, sorted, 'project-deleted:', occupied);
     transaction.oncomplete = () => resolve(occupied);
     transaction.onabort = transaction.onerror = () => reject(transaction.error ?? new Error('无法核对旧项目身份'));
   });
