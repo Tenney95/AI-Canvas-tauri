@@ -8,7 +8,7 @@ import { Icon } from '@iconify/react';
 import type { AssetFileEntry } from '../../services/fileService';
 import { isTauriEnv } from '../../services/fileService';
 import type { HistoryRecord } from '../../services/indexedDbService';
-import { getAllAssetMeta, getAssetMetaById, putAssetMeta, deleteAssetMeta } from '../../services/indexedDbService';
+import { getAssetMetaById, putAssetMeta, deleteAssetMeta } from '../../services/indexedDbService';
 import { describeAssetImageHistory, loadAssetImageDetails, resolvePromptImageReferences } from '../../services/assetImageDetails';
 import { useAppStore } from '../../store/useAppStore';
 import type { AssetImageLoadedDetails, AssetImageReferenceView, AssetImageTagReplacement } from '../../types/assetImage';
@@ -124,10 +124,10 @@ export default function AssetImagePreview({ files: sourceFiles, initialPath, pro
   useEffect(() => {
     if (!file) { if (!renameBusyRef.current) onClose(); return; }
     const controller = new AbortController();
-    void Promise.all([loadAssetImageDetails(file, projectId, controller.signal), getAllAssetMeta()]).then(([result, metas]) => {
+    void Promise.all([loadAssetImageDetails(file, projectId, controller.signal), getAssetMetaById(file.assetId ?? file.path)]).then(([result, meta]) => {
       if (!controller.signal.aborted) {
         setMetadata({ key: queryKey, history: result.history, saved: result, error: false });
-        setSavedTags({ key: queryKey, tags: metas.find((meta) => meta.assetId === (file.assetId ?? file.path))?.tags ?? file.tags ?? [] });
+        setSavedTags({ key: queryKey, tags: meta?.tags ?? file.tags ?? [] });
       }
     }).catch(() => {
       if (!controller.signal.aborted) setMetadata({ key: queryKey, history: null, saved: null, error: true });

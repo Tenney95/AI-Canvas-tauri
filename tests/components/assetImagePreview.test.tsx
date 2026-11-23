@@ -78,7 +78,7 @@ vi.mock('../../src/services/ai/reversePrompt', () => ({
 }));
 vi.mock('../../src/services/indexedDbService', async (original) => ({
   ...await original<typeof import('../../src/services/indexedDbService')>(),
-  getAllAssetMeta: async () => [], getAssetMetaById: driver.meta,
+  getAssetMetaById: driver.meta,
   putAssetMeta: driver.putMeta, deleteAssetMeta: driver.deleteMeta,
 }));
 vi.mock('../../src/components/shared/ModalOverlay', () => ({ default: 'preview-modal' }));
@@ -124,7 +124,7 @@ async function transactionalSaveFixture() {
   const assetId = crypto.randomUUID();
   const digest = 'a'.repeat(64);
   driver.load.mockResolvedValue({ history: history(), identity: { assetId, digest, bytes: 1000 }, record: null, references: [], warning: null, contentChanged: false });
-  driver.meta.mockImplementation(db.getAssetMetaById);
+  driver.meta.mockImplementation((id: string) => id === assetId ? db.getAssetMetaById(id) : Promise.resolve(undefined));
   driver.save.mockImplementation(async (_file, edit, options) => {
     const record = { id: `asset-image:${assetId}:${digest}`, assetId, contentDigest: digest, fileName: files[0].name,
       prompt: edit.prompt, references: edit.references, revision: 1, updatedAt: Date.now() };
@@ -161,6 +161,19 @@ describe('asset image fullscreen preview', () => {
     render();
     expect(elements(tree).some((element) => element.props.className === 'asset-image-preview-backdrop')).toBe(false);
     expect(find((element) => element.type === 'zoomable-image').props.src).toBe(files[0].assetUrl);
+  });
+
+  it('按当前图片的 ID 或旧路径读取标签，保留明确清空的标签', async () => {
+    input.files = [{ ...files[0], assetId: 'asset-1', tags: ['过期标签'] }, { ...files[1], tags: ['列表标签'] }];
+    driver.meta.mockResolvedValueOnce({ tags: [] }).mockResolvedValueOnce(undefined);
+    const hasTag = (tag: string) => elements(tree).some((element) => element.type === 'span'
+      && Array.isArray(element.props.children) && element.props.children.includes(tag));
+    render(); await settle();
+    expect(driver.meta).toHaveBeenCalledExactlyOnceWith('asset-1');
+    expect(hasTag('过期标签')).toBe(false);
+    click(button('下一张图片')); render(); await settle();
+    expect(driver.meta.mock.calls).toEqual([['asset-1'], [files[1].path]]);
+    expect(hasTag('列表标签')).toBe(true);
   });
 
   it('persists both generated fields through the real IndexedDB transaction without a manual save', async () => {
@@ -214,14 +227,14 @@ describe('asset image fullscreen preview', () => {
 
   it('uses the tag baseline from before generation for the atomic replacement', async () => {
     const baseline = { tags: ['旧标签'], updatedAt: 123 };
-    driver.meta.mockResolvedValueOnce(baseline);
+    driver.meta.mockResolvedValueOnce(undefined).mockResolvedValueOnce(baseline);
     driver.reverse.mockImplementationOnce(async () => {
       expect(driver.meta).toHaveBeenCalledWith('asset-image');
       return { prompt: '反推结果', tags: ['新标签'] };
     });
     render(); await settle(); click(button('反推提示词和标签')); render(); click(button('开始反推')); await settle();
     expect(driver.save.mock.calls[0][1].tagReplacement).toEqual({ tags: ['新标签'], expected: baseline });
-    expect(driver.meta).toHaveBeenCalledOnce();
+    expect(driver.meta.mock.calls).toEqual([[files[0].path], ['asset-image']]);
   });
 
   it('preserves pending reference edits when the generated prompt and tags are automatically saved', async () => {

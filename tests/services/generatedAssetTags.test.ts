@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   identifyAsset: vi.fn(),
-  getAllAssetMeta: vi.fn(),
+  getAssetMetaById: vi.fn(),
   putAssetMeta: vi.fn(),
 }));
 
@@ -14,7 +14,7 @@ vi.mock('../../src/services/fs/assetIndex', () => ({
 }));
 
 vi.mock('../../src/services/indexedDbService', () => ({
-  getAllAssetMeta: mocks.getAllAssetMeta,
+  getAssetMetaById: mocks.getAssetMetaById,
   putAssetMeta: mocks.putAssetMeta,
 }));
 
@@ -47,7 +47,7 @@ describe('tagGeneratedProjectAsset', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.identifyAsset.mockResolvedValue({ assetId: 'asset-1' });
-    mocks.getAllAssetMeta.mockResolvedValue([]);
+    mocks.getAssetMetaById.mockResolvedValue(undefined);
     mocks.putAssetMeta.mockResolvedValue(undefined);
   });
 
@@ -59,6 +59,7 @@ describe('tagGeneratedProjectAsset', () => {
     });
 
     expect(tagged).toBe(true);
+    expect(mocks.getAssetMetaById).toHaveBeenCalledExactlyOnceWith('asset-1');
     expect(mocks.identifyAsset).toHaveBeenCalledWith(
       'D:/project/data/generated.png',
       { projectId: 'project-1', source: 'project' },
@@ -71,11 +72,11 @@ describe('tagGeneratedProjectAsset', () => {
   });
 
   it('does not overwrite an asset that already has tags', async () => {
-    mocks.getAllAssetMeta.mockResolvedValue([{
+    mocks.getAssetMetaById.mockResolvedValue({
       assetId: 'asset-1',
       tags: ['手动标签'],
       updatedAt: 1,
-    }]);
+    });
 
     const tagged = await tagGeneratedProjectAsset({
       filePath: 'D:/project/data/generated.png',

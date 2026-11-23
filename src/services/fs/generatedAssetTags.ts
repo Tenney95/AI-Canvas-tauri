@@ -1,7 +1,7 @@
 /**
  * 从生成提示词提取有限标签并写入项目资产索引，供资产库筛选和检索使用。
  */
-import { getAllAssetMeta, putAssetMeta } from '../indexedDbService';
+import { getAssetMetaById, putAssetMeta } from '../indexedDbService';
 import { identifyAsset } from './assetIndex';
 
 const MAX_GENERATED_TAGS = 6;
@@ -126,7 +126,7 @@ export async function tagGeneratedProjectAsset({
   if (tags.length === 0) return false;
 
   const identity = await identifyAsset(filePath, { projectId, source: 'project' });
-  const existing = (await getAllAssetMeta()).find((meta) => meta.assetId === identity.assetId);
+  const existing = await getAssetMetaById(identity.assetId);
   if (existing?.tags?.length) return false;
 
   await putAssetMeta({
