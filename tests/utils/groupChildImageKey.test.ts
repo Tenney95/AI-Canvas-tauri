@@ -54,6 +54,36 @@ describe('分组封面共享索引', () => {
     expect(iterate).toHaveBeenCalledOnce();
   });
 
+  it('移动、选中或改名后沿用全部分组的封面字符串', () => {
+    const a = node('a', 'g1', 'full', 'thumb');
+    const b = node('b', 'g2', 'other');
+    const nodes = [a, b];
+    const before = [getGroupChildImageKey(nodes, 'g1'), getGroupChildImageKey(nodes, 'g2')];
+    const updated = [{ ...a, position: { x: 15, y: 30 }, selected: true },
+      { ...b, data: { ...b.data, label: 'new label' } }];
+    const stringify = vi.spyOn(JSON, 'stringify');
+    try {
+      const after = [getGroupChildImageKey(updated, 'g1'), getGroupChildImageKey(updated, 'g2')];
+      expect(stringify).not.toHaveBeenCalled();
+      expect(after).toEqual(before);
+    } finally {
+      stringify.mockRestore();
+    }
+  });
+
+  it('同一组成员换序或切到同 ID 的另一张画布时更新封面', () => {
+    const a = node('a', 'g', 'full-a', 'thumb-a');
+    const b = node('b', 'g', 'full-b');
+    const nodes = [a, b];
+    const original = covers(nodes, 'g');
+    expect(covers([b, a], 'g')).toEqual([...original].reverse());
+    const nextCanvas = [{ ...b, type: 'source-video' }, node('a', 'g', 'new-full')];
+    expect(covers(nextCanvas, 'g')).toEqual([
+      { id: 'b', kind: 'video' }, { id: 'a', kind: 'image', url: 'new-full' },
+    ]);
+    expect(covers(nodes, 'g')).toEqual(original);
+  });
+
   it('节点数组变化后更新图片、归组与删除，切换项目不保留旧封面', () => {
     const original = [node('a', 'g1', 'one'), node('b', 'g2', 'two')];
     expect(covers(original, 'g1')).toEqual([{ id: 'a', kind: 'image', url: 'one' }]);
