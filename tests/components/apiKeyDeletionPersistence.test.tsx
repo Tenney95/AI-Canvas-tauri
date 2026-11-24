@@ -14,6 +14,7 @@ const driver = vi.hoisted(() => ({
   listProjects: vi.fn(), loadProject: vi.fn(), saveProject: vi.fn(),
   saveCurrentProject: vi.fn(), toast: vi.fn(),
   native: false, secrets: new Map<string, string>(), invoke: vi.fn(),
+  failSecretWriteFor: null as string | null,
   exportJson: vi.fn(), readJson: vi.fn(),
 }));
 // 执行真实按钮事件和 Store / IndexedDB；不挂载余额查询及其他窗口副作用。
@@ -125,12 +126,17 @@ async function clickDelete() {
 beforeEach(async () => {
   driver.slots = [];
   driver.native = false; driver.secrets.clear();
+  driver.failSecretWriteFor = null;
   driver.invoke.mockReset().mockImplementation(async (command: string, args: { key: string; value?: string; fingerprintOnly?: boolean; expected?: { fingerprint?: string } }) => {
     if (command === 'secret_store_available') return true;
     const current = driver.secrets.get(args.key) ?? null;
     const fingerprint = current === null ? null : createHash('sha256').update(current).digest('hex');
     if (command === 'secret_get') return args.fingerprintOnly ? fingerprint : current;
-    if (command === 'secret_set') { driver.secrets.set(args.key, args.value!); return; }
+    if (command === 'secret_set') {
+      if (args.key === driver.failSecretWriteFor) throw { code: 'unavailable' };
+      driver.secrets.set(args.key, args.value!);
+      return;
+    }
     if (command === 'secret_delete') {
       if (current !== null && args.expected?.fingerprint && args.expected.fingerprint !== fingerprint) throw { code: 'conflict' };
       driver.secrets.delete(args.key); return;
@@ -320,6 +326,96 @@ describe('API Key 连接删除持久化', () => {
     expect(fresh.getState().config.providers).not.toHaveProperty('custom-1');
     expect(fresh.getState().config.generalModels?.map((model) => model.id)).toEqual(['kept-model']);
   });
+});
+
+it('从自定义接口卡片打开独立的新建草稿，取消后保留原连接', () => {
+  driver.state().setProviderConfig('custom-1', {
+    apiKey: 'copy-key-fixture',
+    selectedModels: [{ id: 'fixture-model', name: 'Fixture', category: 'text', provider: 'custom-1' }],
+  });
+  const providers = driver.state().config.providers;
+  const source = providers['custom-1'];
+  const copyButton = find(render(), (element) => element.props['aria-label'] === '创建副本 · 待删除连接')!;
+  (copyButton.props.onClick as () => void)();
+  const dialog = () => find(render(), (element) => 'onSaveCccGroups' in element.props)!.props;
+  const draft = dialog().initialConfig as typeof source;
+  expect(dialog()).toMatchObject({ isOpen: true, connectionId: undefined });
+  expect(draft).toMatchObject({ name: '待删除连接 Copy', apiKey: source.apiKey, baseUrl: source.baseUrl });
+  expect(draft.selectedModels).toEqual(source.selectedModels);
+  expect(draft.selectedModels![0]).not.toBe(source.selectedModels![0]);
+  expect(draft).not.toHaveProperty('apiKeyRef');
+  (dialog().onClose as () => void)();
+  expect(dialog()).toMatchObject({ isOpen: false, initialConfig: undefined });
+  expect(driver.state().config.providers).toBe(providers);
+});
+
+it('副本保存失败可重试，重载和删除副本均保留原连接凭据', async () => {
+  driver.native = true;
+  const sourceId = 'custom-1';
+  const copyId = 'custom-copy-test';
+  const key = 'copy-key-fixture';
+  const sourceModel = { id: 'fixture-model', name: 'Fixture', category: 'text' as const, provider: sourceId };
+  driver.state().saveProviderConfig(sourceId, {
+    ...driver.state().config.providers[sourceId], apiKey: key, selectedModels: [sourceModel],
+  });
+  await driver.state().saveConfig({ silent: true });
+  const originalModels = driver.state().config.generalModels;
+
+  const copyButton = find(render(), (element) => element.props['aria-label'] === '创建副本 · 待删除连接')!;
+  (copyButton.props.onClick as () => void)();
+  const dialog = () => find(render(), (element) => 'onSaveCccGroups' in element.props)!.props;
+  const draft = dialog().initialConfig as AppState['config']['providers'][string];
+  const saveCopy = () => (dialog().onSave as (id: string, config: typeof draft) => Promise<void>)(copyId, {
+    ...draft, selectedModels: [{ ...sourceModel, provider: copyId }],
+  });
+
+  driver.failSecretWriteFor = `provider/${copyId}`;
+  const failedSave = saveCopy();
+  driver.state().updateConfig({ language: 'en-US' });
+  const simultaneousSave = driver.state().saveConfig({ silent: true });
+  await expect(failedSave).rejects.toThrow('设置保存失败');
+  await expect(simultaneousSave).resolves.toBeUndefined();
+  expect(dialog().isOpen).toBe(true);
+  expect(driver.state().config.providers[copyId]).toBeUndefined();
+  expect(driver.state().config.generalModels).toEqual(originalModels);
+  const savedAfterFailure = await loadConfigFromDb() as AppState['config'];
+  expect(savedAfterFailure.language).toBe('en-US');
+  expect(savedAfterFailure.providers[copyId]).toBeUndefined();
+
+  driver.failSecretWriteFor = null;
+  await saveCopy();
+  expect(dialog().isOpen).toBe(false);
+  const fresh = configStore();
+  await fresh.getState().loadConfig();
+  const { providers, generalModels } = fresh.getState().config;
+  expect(providers[sourceId]).toMatchObject({ apiKey: key, apiKeyRef: `secret:provider/${sourceId}` });
+  expect(providers[copyId]).toMatchObject({ name: '待删除连接 Copy', apiKey: key, apiKeyRef: `secret:provider/${copyId}` });
+  const sourceModelId = generalModels!.find((model) => model.providerConfigId === sourceId)!.id;
+  const copyModel = generalModels!.find((model) => model.providerConfigId === copyId);
+  expect(copyModel).toMatchObject({ modelId: sourceModel.id });
+  expect(copyModel!.id).not.toBe(sourceModelId);
+  expect(JSON.stringify(await loadConfigFromDb())).not.toContain(key);
+
+  const replacement = 'replacement-key-fixture';
+  driver.state().setProviderKey(copyId, replacement);
+  await driver.state().saveConfig({ silent: true });
+  expect(driver.secrets.get(`provider/${copyId}`)).toBe(replacement);
+  expect(driver.secrets.get(`provider/${sourceId}`)).toBe(key);
+
+  const copyCard = () => find(render(), (element) => element.props.className === 'provider-connection-card'
+    && !!find(element.props.children, (child) => child.props.children === '待删除连接 Copy'))!;
+  const deleteButton = find(copyCard(), (element) => element.props['data-tooltip'] === '删除连接')!;
+  (deleteButton.props.onClick as () => void)();
+  const confirm = find(copyCard(), (element) => element.props['aria-label'] === '确认删除')!;
+  driver.toast.mockClear();
+  (confirm.props.onClick as () => void)();
+  await vi.waitFor(() => expect(driver.toast).toHaveBeenCalledWith('连接已删除', 'success'));
+  await fresh.getState().loadConfig();
+  expect(fresh.getState().config.providers[copyId]).toBeUndefined();
+  expect(fresh.getState().config.providers[sourceId].apiKey).toBe(key);
+  expect(fresh.getState().config.generalModels!.find((model) => model.providerConfigId === sourceId)?.id).toBe(sourceModelId);
+  expect(driver.secrets.has(`provider/${copyId}`)).toBe(false);
+  expect(driver.secrets.get(`provider/${sourceId}`)).toBe(key);
 });
 
 describe('自定义连接 JSON 文件入口', () => {

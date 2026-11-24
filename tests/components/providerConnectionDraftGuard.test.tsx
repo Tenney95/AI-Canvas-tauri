@@ -406,6 +406,28 @@ describe('自定义图床复用表单', () => {
   });
 });
 
+it('副本沿用源模型协议和 Key，直接添加时为所有模型换用新的连接 ID', async () => {
+  const source = props.initialConfig!;
+  const [model] = source.selectedModels!;
+  driver.scope = { values: [], index: 0 };
+  props = { ...props, connectionId: undefined, initialModelId: undefined, initialConfig: {
+    ...source, name: `${source.name} Copy`, chatApiProtocol: 'openai-responses',
+    selectedModels: [{ ...model, executionProfile: { preset: 'openai-responses' } }],
+    catalogModels: [model],
+  }, providerConfigs: { 'custom-user': { ...source, chatApiProtocol: 'openai-responses' } } };
+  render();
+  expect(form()).toMatchObject({ editing: false, apiKey: source.apiKey, baseUrl: source.baseUrl, duplicateConnectionName: '' });
+  expect(button('添加厂商').props.disabled).toBe(false);
+  click('添加厂商');
+  await settle();
+  const [id, saved] = vi.mocked(props.onSave).mock.calls[0];
+  expect(id).toMatch(/^custom-/);
+  expect(id).not.toBe('custom-user');
+  const copiedModel = { ...model, provider: id, executionProfile: { preset: 'openai-responses' } };
+  expect(saved).toMatchObject({ name: `${source.name} Copy`, apiKey: source.apiKey, baseUrl: source.baseUrl,
+    chatApiProtocol: 'openai-responses', selectedModels: [copiedModel], catalogModels: [copiedModel] });
+});
+
 describe('自定义连接未完成草稿保护', () => {
   it('套用内置上传格式后保存普通配置，沿用 Key 不额外保存密钥', async () => {
     const config = structuredClone(IMAGE_HOSTING_TEMPLATES.find((item) => item.id === 'toapis')!.config);

@@ -129,6 +129,7 @@ export default function ProviderConnectionDialog({
 }) {
   const t = useT();
   const editing = !!connectionId && !!initialConfig;
+  const creatingCopy = !connectionId && initialConfig?.catalogId === 'custom-openai';
   const initialDefinitionId = initialConfig?.catalogId || connectionId || '';
   const initialDefinition = getProviderDefinition(initialDefinitionId, initialConfig);
   // Preserve settings saved by the short-lived connection-default UI as explicit
@@ -185,11 +186,13 @@ export default function ProviderConnectionDialog({
     () => {
       const options = { preferIncomingConfiguration: initialDefinition?.policy.catalog.refresh === 'replace-unselected' };
       const catalog = mergeModels(initialLocalModels, initialCatalogModels, options);
+      // 副本以保存的启用模型为准，避免旧目录中的参数或协议覆盖它们。
+      const copiedSelections = creatingCopy ? new Map(initialSelectedModels.map((model) => [model.id, model])) : undefined;
       // Kling 的目录保留官方默认值，已启用模型保存用户收紧的限制。
       return mergeModels(catalog, initialSelectedModels, {
         preferIncomingConfiguration: options.preferIncomingConfiguration || initialDefinition?.id === 'kling',
       })
-        .map((model) => applyKnownVideoTemplateDefaults(model, initialBaseUrl));
+        .map((model) => copiedSelections?.get(model.id) ?? applyKnownVideoTemplateDefaults(model, initialBaseUrl));
     },
   );
   const [magpieSnapshot, setMagpieSnapshot] = useState(() => initialDefinition?.id === 'magpie' && initialConfig?.catalogModels !== undefined
@@ -295,7 +298,7 @@ export default function ProviderConnectionDialog({
   );
 
   /**
-   * 新建自定义连接时，若接口地址和对话协议都与已有连接重合，多半是忘了自己加过。
+   * 新建自定义连接时提示重复的接口地址和协议。创建副本时沿用原地址和协议是预期操作。
    * Agent 那条路会按 Base URL + 协议并进已有连接，手动添加不便直接改写用户填的模型清单，
    * 所以只提示，由用户决定是新建还是回去编辑。
    */
@@ -303,13 +306,15 @@ export default function ProviderConnectionDialog({
     if (editing || definition?.id !== 'custom-openai') return '';
     const target = normalizeBaseUrl(baseUrl, chatApiProtocol);
     if (!target) return '';
+    if (creatingCopy && target === normalizeBaseUrl(initialConfig.baseUrl, chatApiProtocol)
+      && chatApiProtocol === resolveChatApiProtocol(initialConfig.chatApiProtocol)) return '';
     const match = Object.values(providerConfigs).find((item) => (
       item.catalogId === 'custom-openai'
       && resolveChatApiProtocol(item.chatApiProtocol) === chatApiProtocol
       && normalizeBaseUrl(item.baseUrl, chatApiProtocol) === target
     ));
     return match?.name?.trim() || '';
-  }, [baseUrl, chatApiProtocol, definition, editing, providerConfigs]);
+  }, [baseUrl, chatApiProtocol, creatingCopy, definition, editing, initialConfig, providerConfigs]);
 
   const missingCredentials = useMemo(() => {
     if (!definition) return true;
