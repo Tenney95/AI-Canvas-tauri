@@ -100,6 +100,7 @@ const workflow: Record<string, string> = {
   "保存后展开工作流卡片设置默认输入，或在提示词中 @ 指定输入节点。": "After saving, expand the workflow card to choose default inputs, or @mention an input node in the prompt.",
   "展开输入节点，点击徽章设置默认节点（★）；也可在提示词中 @ 指定输入。旧工作流保留原映射，设置默认节点后启用节点绑定。": "Expand the inputs and click a badge to choose a default (★), or @mention an input in the prompt. Existing workflows keep their mappings until a default node is selected.",
   "ComfyUI 工作流参数": "ComfyUI workflow parameters",
+  "预计生成尺寸 {width} × {height}": "Estimated generation size {width} × {height}",
   "ComfyUI 节点 ID": "ComfyUI node ID",
   "请先配置或启动此工作流的 ComfyUI 服务": "Configure or start the ComfyUI server for this workflow first.",
   "读取工作流参数失败": "Failed to load workflow parameters",

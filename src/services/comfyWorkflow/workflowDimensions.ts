@@ -1,5 +1,6 @@
-import type { ComfyInputSpec } from '../../types/comfyWorkflow';
+import type { ComfyInputSpec, ComfyWorkflowParameter } from '../../types/comfyWorkflow';
 import { mapImageDimensions, mapVideoDimensions } from '../aiDimensions';
+import { comfyWorkflowParameterKey } from '../comfyWorkflowParameters';
 
 type ComfyNodeInputSpecs = Record<string, ComfyInputSpec>;
 
@@ -224,6 +225,55 @@ function parseRatioValue(label: string): number | undefined {
   const width = Number(match[1]);
   const height = Number(match[2]);
   return width > 0 && height > 0 ? width / height : undefined;
+}
+
+/** 用 H3 实际连接的原版选择器估算生成尺寸，任意第三方图不猜。 */
+export function estimateComfyH3VideoSize(
+  graph: Record<string, Record<string, unknown>>,
+  fields: readonly ComfyWorkflowParameter[],
+  overrides: Record<string, string>,
+): { width: number; height: number } | undefined {
+  const h3Nodes = Object.values(graph).filter((node) =>
+    node?.class_type === 'MiniMaxH3ImageToVideo' || node?.class_type === 'MiniMaxH3ReferenceToVideo');
+  if (h3Nodes.length !== 1) return undefined;
+  const inputs = h3Nodes[0].inputs as Record<string, unknown> | undefined;
+  const widthLink = inputs?.width;
+  const heightLink = inputs?.height;
+  if (!isComfyConnection(widthLink) || !isComfyConnection(heightLink)
+    || widthLink[0] !== heightLink[0] || widthLink[1] !== 0 || heightLink[1] !== 1) return undefined;
+  const nodeId = widthLink[0];
+  const selector = graph[nodeId];
+  if (selector?.class_type !== 'ResolutionSelector') return undefined;
+  const selectorInputs = selector.inputs as Record<string, unknown> | undefined;
+  const readInput = (fieldName: string) => {
+    const raw = overrides[comfyWorkflowParameterKey({ nodeId, fieldName })];
+    if (raw === undefined) return selectorInputs?.[fieldName];
+    const field = fields.find((item) => item.nodeId === nodeId && item.fieldName === fieldName);
+    if (!field || field.type === 'boolean' || !raw.trim()) return undefined;
+    const value = field.type === 'string' ? raw : Number(raw);
+    if (typeof value === 'number' && (!Number.isFinite(value)
+      || (field.type === 'integer' && !Number.isSafeInteger(value))
+      || (field.min !== undefined && value < field.min) || (field.max !== undefined && value > field.max))) return undefined;
+    return field.options && !field.options.includes(value) ? undefined : value;
+  };
+  const ratioLabel = readInput('aspect_ratio');
+  const megapixels = readInput('megapixels');
+  const multiple = readInput('multiple');
+  const ratio = typeof ratioLabel === 'string' && Object.values(RESOLUTION_SELECTOR_RATIOS).includes(ratioLabel)
+    ? parseRatioValue(ratioLabel) : undefined;
+  if (!ratio || typeof megapixels !== 'number' || !Number.isFinite(megapixels) || megapixels <= 0
+    || typeof multiple !== 'number' || !Number.isSafeInteger(multiple) || multiple <= 0) return undefined;
+
+  const pixels = megapixels * 1024 * 1024;
+  // 原版节点用 Python round。恰好在两档中间时，取偶数的那档。
+  const align = (size: number) => {
+    const steps = size / multiple;
+    const lower = Math.floor(steps);
+    return (steps - lower === 0.5 && lower % 2 === 0 ? lower : Math.round(steps)) * multiple;
+  };
+  const width = align(Math.sqrt(pixels * ratio));
+  const height = align(Math.sqrt(pixels / ratio));
+  return [width, height].every((value) => Number.isSafeInteger(value) && value > 0) ? { width, height } : undefined;
 }
 
 function parsePresetDimensions(label: string): { width: number; height: number } | undefined {

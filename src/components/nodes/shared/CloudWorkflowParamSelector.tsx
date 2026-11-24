@@ -19,7 +19,7 @@ import type { ComfyVideoParameterFields } from './VideoParamSelector';
 import { comfyBaseUrlFor } from '../../../services/comfyServers';
 import { fetchNodeInputSpecs } from '../../../services/comfyWorkflowService';
 import { comfyWorkflowParameterKey, loadComfyWorkflowParameters, splitComfyWorkflowInputs } from '../../../services/comfyWorkflowParameters';
-import { injectVideoParamsIntoWorkflow } from '../../../services/comfyWorkflow/workflowDimensions';
+import { estimateComfyH3VideoSize, injectVideoParamsIntoWorkflow } from '../../../services/comfyWorkflow/workflowDimensions';
 import { resolveVideoSubmissionControls, type VideoSubmissionControlParams } from '../../../services/ai/videoRequestResolver';
 
 interface CloudWorkflowParamSelectorProps {
@@ -122,16 +122,16 @@ export default function CloudWorkflowParamSelector({ workflow, values = {}, onCh
   const embeddedVideo = local && Boolean(videoParameters);
   const triggerLabel = (!embeddedVideo && summary) || (local && !currentLocal ? t('参数') : t('参数 · {count} 项', { count: fields.length }));
   const { videoResolution, videoFps, videoFrames, seedanceRatio, seedanceDuration } = videoParameters?.controls ?? {};
-  const localVideoFields = useMemo(() => {
+  const localVideo = useMemo(() => {
     if (!open || !embeddedVideo || !currentLocal) return;
     const groups: Record<CloudWorkflowParameterSemantic, ComfyWorkflowParameter[]> = { ratio: [], resolution: [], duration: [], other: [] };
     for (const field of localState.fields) groups[getComfyVideoParameterSemantic(field)].push(field);
-    if (!localState.specs || ![groups.ratio, groups.resolution, groups.duration].some((group) => group.length)) return groups;
+    if (!localState.specs || ![groups.ratio, groups.resolution, groups.duration].some((group) => group.length)) return { groups };
 
     const controls = resolveVideoSubmissionControls({ provider: 'comfyui', workflowId: workflow.id,
       videoResolution, videoFps, videoFrames, seedanceRatio, seedanceDuration });
     if (controls.videoResolution === undefined || controls.videoFps === undefined
-      || controls.videoFrames === undefined || controls.seedanceDuration === undefined) return groups;
+      || controls.videoFrames === undefined || controls.seedanceDuration === undefined) return { groups };
 
     // 老节点可能存着通用尺寸和时长。用提交时的注入规则在副本上算出顶部字段的当前值。
     const graph = JSON.parse(workflow.fileContent) as Record<string, Record<string, unknown>>;
@@ -144,9 +144,11 @@ export default function CloudWorkflowParamSelector({ workflow, values = {}, onCh
         return typeof value === 'string' || typeof value === 'number' ? { ...field, defaultValue: value } : field;
       });
     }
-    return groups;
+    return { groups, size: estimateComfyH3VideoSize(graph, localState.fields, values) };
   }, [open, embeddedVideo, currentLocal, localState, workflow.id, workflow.fileContent,
-    videoResolution, videoFps, videoFrames, seedanceRatio, seedanceDuration]);
+    videoResolution, videoFps, videoFrames, seedanceRatio, seedanceDuration, values]);
+  const localVideoFields = localVideo?.groups;
+  const previewSize = localVideo?.size;
   const renderLocalFields = (parameters: ComfyWorkflowParameter[] | undefined) => parameters?.length
     ? <ComfyWorkflowParameterFields parameters={parameters} values={values} onChange={changeParameters} disabled={disabled} /> : null;
   const localHint = local && <p className="ui-hint mb-3">{t('显示工作流原值；此处修改的字段优先于通用尺寸设置。默认正文和参考素材仍使用对话框内容。')}</p>;
@@ -255,6 +257,7 @@ export default function CloudWorkflowParamSelector({ workflow, values = {}, onCh
         {localLoading && <p className="ui-hint flex items-center gap-2" role="status"><span className="ui-spinner" />{t('正在读取 ComfyUI 参数声明…')}</p>}
         {localError && <div className="ui-alert ui-alert--danger flex-wrap" role="alert"><span>{localError}</span>
           <button type="button" className="ui-btn ui-btn--sm" onClick={() => setReload((value) => value + 1)}>{t('重试')}</button></div>}
+        {previewSize && <p className="ui-hint mb-2 tabular-nums" role="status">{t('预计生成尺寸 {width} × {height}', previewSize)}</p>}
         {localVideoFields && videoParameters?.render({
           ratio: renderLocalFields(localVideoFields.ratio),
           resolution: renderLocalFields(localVideoFields.resolution),

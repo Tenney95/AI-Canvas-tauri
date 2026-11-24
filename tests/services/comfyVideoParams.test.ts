@@ -39,6 +39,22 @@ vi.mock('../../src/services/comfyProgress', () => ({
 }));
 
 import { executeComfyUIVideoGenerate } from '../../src/services/comfyWorkflowService';
+import { estimateComfyH3VideoSize, injectVideoParamsIntoWorkflow } from '../../src/services/comfyWorkflow/workflowDimensions';
+
+describe('H3 参数尺寸预览', () => {
+  it.each([[480, 288, 480], [832, 480, 864]])('长边 %i 显示工作流对齐后的尺寸', (longSide, width, height) => {
+    const graph = {
+      '1': { class_type: 'ResolutionSelector', inputs: { aspect_ratio: '1:1 (Square)', megapixels: 0.4, multiple: 32 } },
+      '2': { class_type: 'MiniMaxH3ImageToVideo', inputs: { width: ['1', 0], height: ['1', 1] } },
+    };
+    injectVideoParamsIntoWorkflow(graph, longSide, '9:16', 24, 121, 5);
+    expect(estimateComfyH3VideoSize(graph, [], {})).toEqual({ width, height });
+    expect(estimateComfyH3VideoSize(graph, [{ nodeId: '1', fieldName: 'megapixels', classType: 'ResolutionSelector',
+      label: '百万像素', type: 'number', defaultValue: 0.4, min: 0.1, max: 16 }],
+    { 'comfy-param::1::megapixels': '0.25' })).toEqual({ width: 384, height: 672 });
+    expect(estimateComfyH3VideoSize(graph, [], { 'comfy-param::1::multiple': '64' })).toBeUndefined();
+  });
+});
 
 /** 提示词节点 + Wan 风格 latent 节点（width/height/length）+ 合成节点（frame_rate） */
 function registerWorkflow() {
