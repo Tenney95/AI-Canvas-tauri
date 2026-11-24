@@ -187,6 +187,19 @@ describe('AI 应用复制与恢复', () => {
     expect(state().showToast).toHaveBeenLastCalledWith(AI_APP_COPY_MESSAGE, 'error');
   });
 
+  it.each(['app', 'other'])('右键删除 %s 时按菜单实际选区删除节点', async (targetId) => {
+    const nodes = [aiAppNode(), node('selected'), node('other')];
+    state().setNodes(nodes);
+    state().setSelectedNodeIds(['app', 'selected']);
+    const target = nodes.find((item) => item.id === targetId)!;
+    useNodeContextMenu().openMenu({ preventDefault() {}, stopPropagation() {}, clientX: 0, clientY: 0 } as React.MouseEvent, target);
+    driver.stateIndex = 0;
+    useNodeContextMenu().handleDelete();
+    await Promise.resolve();
+    expect(state().nodes.map(({ id }) => id)).toEqual(targetId === 'app' ? ['other'] : ['app', 'selected']);
+    expect(state().history).toHaveLength(1);
+  });
+
   it('项目恢复允许现有应用，撤销与重做能还原定义版本和保存结果', async () => {
     const app = aiAppNode();
     state().setNodes([app]);

@@ -5,7 +5,8 @@ import { useAppStore, type AppState } from '../store/useAppStore';
 import { resolveGenerationNodeData } from './nodeGeneration';
 import { resolveGenerationSelection } from '../services/generationInput';
 import { runBatchTasks } from '../services/ai/batchUtils';
-import { registerCanvasImport, isCanvasDerivationFresh, completeCanvasDerivation } from '../services/canvasDerivationGuard';
+import { registerCanvasImport, isCanvasDerivationFresh, isCanvasDerivationTargetCurrent, completeCanvasDerivation } from '../services/canvasDerivationGuard';
+import { isProjectExpectedContextCurrent } from '../services/projectExecutionContext';
 import { configValuesEqual } from '../services/configPatch';
 import { getCanvasNodeById } from './canvasRenderProjection';
 
@@ -144,14 +145,16 @@ export async function batchExecuteNodes(
   const selectedIds = new Set(nodeIds);
   let executable = nodes.filter((node) => isExecutableNode(node, selectedIds, initial));
   let preparationSkipped = 0;
-  if (initial.projectExecutionContext?.modelGeneration === 1) {
+  const nativeContext = initial.projectExecutionContext?.modelGeneration === 1 ? initial.projectExecutionContext : undefined;
+  if (nativeContext) {
     const revision = initial.getCurrentRevision(), originalContext = queueContext(initial);
+    const isPreparationCurrent = (state: AppState) => state.getCurrentRevision() === revision && queueContext(state) === originalContext
+      && isProjectExpectedContextCurrent(nativeContext, state, { checkCanvasRevision: false });
     const expected = new Map(executable.map((node) => [node.id, node]));
     const invalid = new Set<string>();
     for (const queued of executable) {
       const current = useAppStore.getState();
-      if (current.currentProjectId !== ctx.currentProjectId || current.getCurrentRevision() !== revision
-        || queueContext(current) !== originalContext) return { ok: 0, fail: 0, skipped: executable.length };
+      if (!isPreparationCurrent(current)) return { ok: 0, fail: 0, skipped: executable.length };
       for (const [id, snapshot] of expected) {
         if (getCanvasNodeById(current.nodes, id)?.data !== snapshot.data) invalid.add(id);
       }
@@ -172,8 +175,7 @@ export async function batchExecuteNodes(
       } catch { invalid.add(queued.id); }
     }
     initial = useAppStore.getState();
-    if (initial.currentProjectId !== ctx.currentProjectId || initial.getCurrentRevision() !== revision
-      || queueContext(initial) !== originalContext) return { ok: 0, fail: 0, skipped: executable.length };
+    if (!isPreparationCurrent(initial)) return { ok: 0, fail: 0, skipped: executable.length };
     for (const [id, snapshot] of expected) {
       if (getCanvasNodeById(initial.nodes, id)?.data !== snapshot.data) invalid.add(id);
     }
@@ -192,7 +194,25 @@ export async function batchExecuteNodes(
   const toRun = executable.map((node) => isWorkflow(node) ? workflows[workflowIndex++] : node);
   if (toRun.length === 0) return { ok: 0, fail: 0, skipped: preparationSkipped };
   ctx.commitToHistory();
-  const guard = registerCanvasImport(initial);
+  let cancelled = false;
+  const cancelQueue = () => { cancelled = true; };
+  let guard = registerCanvasImport(initial, cancelQueue);
+  const delivered = new Set<string>();
+  let acceptedDeliveries = 0;
+  const active = new Set<Promise<unknown>>();
+  const onNativeResultCommitted = (operationId: string, revision: number) => {
+    const current = useAppStore.getState();
+    if (!guard || cancelled || revision <= guard.baseRevision || revision !== current.getCurrentRevision()
+      || !isCanvasDerivationTargetCurrent(guard, current)) return;
+    delivered.add(operationId);
+    // 并发结果可能先后落盘，等回执数与修订增量对得上再继续。
+    if (revision - guard.baseRevision !== delivered.size - acceptedDeliveries) return;
+    const next = registerCanvasImport(current, cancelQueue);
+    if (!next) return;
+    completeCanvasDerivation(guard);
+    guard = next;
+    acceptedDeliveries = delivered.size;
+  };
   const context = queueContext(initial);
 
   // 仅在调度图添加串行约束，不修改画布连线。复用现有依赖排序，避免
@@ -229,7 +249,12 @@ export async function batchExecuteNodes(
   try {
     const { executeGeneration } = await import('../services/generationService');
     const runNode = async (queued: Node<BaseNodeData>) => {
-      const current = useAppStore.getState();
+      let current = useAppStore.getState();
+      while (nativeContext && active.size && guard && !cancelled && !isCanvasDerivationFresh(guard, current)
+        && isCanvasDerivationTargetCurrent(guard, current)) {
+        await Promise.race([...active].map((task) => task.catch(() => undefined)));
+        current = useAppStore.getState();
+      }
       const node = getCanvasNodeById(current.nodes, queued.id);
       if (!guard || !isCanvasDerivationFresh(guard, current) || !node || node.type !== queued.type
         || node.data !== queued.data || node.data.status === 'loading' || queueContext(current) !== context
@@ -237,12 +262,14 @@ export async function batchExecuteNodes(
         skipped++;
         return;
       }
+      const task = executeGeneration(node.id, undefined, undefined, undefined, undefined,
+        { history: 'transient', silent: true, ...(nativeContext ? { onNativeResultCommitted } : {}) });
+      if (nativeContext) active.add(task);
       try {
-        const result = await executeGeneration(node.id, undefined, undefined, undefined, undefined,
-          { history: 'transient', silent: true });
+        const result = await task;
         if (result.success) ok++;
         else fail++;
-      } catch { fail++; }
+      } catch { fail++; } finally { active.delete(task); }
     };
     // 依赖链占一个 worker，其余独立节点共用同一并发上限，不重试付费请求。
     const jobs = [

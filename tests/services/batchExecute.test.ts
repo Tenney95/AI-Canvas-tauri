@@ -170,6 +170,57 @@ beforeEach(() => {
 });
 
 describe('batchExecuteNodes', () => {
+  it.each(['回填', '额外修订', '重开画布'])('新结构批量按原任务回执处理%s后的后继节点', async (change) => {
+    const nodes = [createNode('first'), createNode('next')];
+    const edges = [{ id: 'link', source: 'first', target: 'next' }];
+    const ctx = createContext();
+    const canvas = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'first-open',
+      projectId: 'owner', projectEpoch: 1, canvasId: 'default', episodeId: null, canvasEpoch: 1, canvasRevision: 0 } as const;
+    mocks.nativeContext = canvas;
+    mocks.generateImagesBatch.mockImplementation(async ({ nodeId }: { nodeId: string }, _count: number, _signal: unknown, guard: () => Promise<void>) => {
+      await guard();
+      const operationId = `operation-${nodeId}`;
+      ctx.updateNodeDataTransient(nodeId, { status: 'success', artifactId: `native-media-${operationId}` });
+      mocks.liveState.revision += change === '额外修订' ? 2 : 1;
+      mocks.nativeContext = { ...canvas, canvasRevision: mocks.liveState.revision,
+        runtimeEpoch: change === '重开画布' ? 'reopened' : canvas.runtimeEpoch };
+      throw Object.assign(new Error('原结果已回填'), { name: 'NativeMediaTaskDelivered', nativeOperationId: operationId });
+    });
+
+    const runsBoth = change === '回填';
+    expect(await batchExecuteNodes(['first', 'next'], nodes, edges, ctx)).toEqual({ ok: runsBoth ? 2 : 1, fail: 0, skipped: runsBoth ? 0 : 1 });
+    expect(mocks.generateImagesBatch.mock.calls.map(([params]) => params.nodeId)).toEqual(runsBoth ? ['first', 'next'] : ['first']);
+  });
+
+  it('并发结果先后落盘后，等待两个回执再启动后继节点', async () => {
+    const nodes = [createNode('first'), createNode('next'), createNode('independent')];
+    const ctx = createContext();
+    const canvas = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'native-batch',
+      projectId: 'owner', projectEpoch: 1, canvasId: 'default', episodeId: null, canvasEpoch: 1, canvasRevision: 0 } as const;
+    mocks.nativeContext = canvas;
+    const replies = new Map([['first', deferred<void>()], ['independent', deferred<void>()]]);
+    const commit = (nodeId: string) => {
+      ctx.updateNodeDataTransient(nodeId, { status: 'success', artifactId: `native-media-operation-${nodeId}` });
+      mocks.nativeContext = { ...canvas, canvasRevision: ++mocks.liveState.revision };
+    };
+    mocks.generateImagesBatch.mockImplementation(async ({ nodeId }: { nodeId: string }, _count: number, _signal: unknown, guard: () => Promise<void>) => {
+      await guard();
+      const reply = replies.get(nodeId);
+      if (reply) await reply.promise;
+      else commit(nodeId);
+      throw Object.assign(new Error('原结果已回填'), { name: 'NativeMediaTaskDelivered', nativeOperationId: `operation-${nodeId}` });
+    });
+
+    const batch = batchExecuteNodes(['first', 'next', 'independent'], nodes, [{ id: 'link', source: 'first', target: 'next' }], ctx);
+    await vi.waitFor(() => expect(mocks.generateImagesBatch).toHaveBeenCalledTimes(2));
+    commit('first');
+    commit('independent');
+    replies.get('first')!.resolve();
+    replies.get('independent')!.resolve();
+    await expect(batch).resolves.toEqual({ ok: 3, fail: 0, skipped: 0 });
+    expect(mocks.generateImagesBatch.mock.calls.map(([params]) => params.nodeId)).toEqual(['first', 'independent', 'next']);
+  });
+
   it.each(['self', 'mutual'] as const)('native %s references normalize before queue identities freeze without skipping later selected sources', async (graph) => {
     const references = [{ id: 'ref', kind: 'frame' as const, role: 'reference' as const, url: 'asset://localhost/project/ref.png' }];
     const nodes = [createNode('a', 'ai-image', { videoReferences: references }), createNode('b', 'ai-image', { videoReferences: references })];
