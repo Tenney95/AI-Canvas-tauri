@@ -4,14 +4,17 @@
 import { useAppStore } from '../../../store/useAppStore';
 import { isTauriEnv } from '../../fs/core';
 import { comfyBaseUrlFor } from '../../comfyServers';
+import { fetchNodeInputSpecs } from '../../comfyWorkflowService';
+import { comfyWorkflowParameterKey, loadComfyWorkflowParameters } from '../../comfyWorkflowParameters';
 import { isRunningHubWorkflow, isCloudWorkflow, mediaProviderConfigId, workflowExecution } from '../../workflowExecutionService';
 import { AUTODL_H3_WORKFLOW, validateWorkflowApiManifest, resolveWorkflowApiInputValues } from '../../workflowApi/autodlWorkflowManifest';
 import { completeWorkflowApiNodeTask, workflowApiConnection } from '../../workflowApi/workflowApiAdapter';
 import { getRunningHubModel, parseRunningHubModelParameter } from '../../ai/providers/runninghubModelManifest';
-import { resolveImageParameterCapability } from '../../ai/mediaModelCapabilities';
+import { DREAMINA_IMAGE_RATIOS, getDreaminaImageModel } from '../../ai/dreaminaModels';
+import { getImageCapability, resolveImageParameterCapability, type ImageCapability } from '../../ai/mediaModelCapabilities';
 import { assertSafeMediaParameterStrings } from '../../ai/modelCapabilityValidation';
 import type { ImageOutputParameters } from '../../../types/aiTypes';
-import { pickImageOutputParameters, resolveConfiguredImageOutput } from '../../ai/imageOutputParameters';
+import { pickImageOutputParameters, resolveConfiguredImageOutput, resolveImageOutputCapability } from '../../ai/imageOutputParameters';
 import { resolveVideoModelCapability } from '../../ai/videoModelCapabilityResolver';
 import { resolveRunningHubParameters, runningHubParameterKey } from '../../runninghubWorkflowService';
 import { completeRunningHubNodeTask } from '../../ai/providers/runninghubWorkflow';
@@ -76,35 +79,103 @@ interface GenerateMediaInput extends Pick<MediaGenerationIntent, 'audioVoice' | 
 const MEDIA_PROMPT_DISPLAY_LIMIT = 1_000;
 const AUDIO_FORMATS = ['mp3', 'wav', 'opus', 'aac', 'flac', 'pcm'];
 const LEGACY_AUDIO_VOICES = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
+const COMFY_IMAGE_DIMENSION_FIELDS = new Set(['width', 'height']);
 
 function hasAudioSettings(input: GenerateMediaInput): boolean {
   return [input.audioVoice, input.audioFormat, input.audioSpeed, input.musicTitle, input.musicLyrics]
     .some((value) => value !== undefined);
 }
 
-/** MCP 在创建占位节点前检查用户值及将要继承的图片默认值。 */
-function assertSafeMediaToolParameters(input: GenerateMediaInput, projectId: string): void {
+type MediaToolDimensions = Pick<GenerateMediaInput, 'aspectRatio' | 'resolution'>;
+
+function resolveMediaToolImageCapability(
+  modelRef: string,
+  provider: string,
+  config: Parameters<typeof resolveImageParameterCapability>[2],
+): ImageCapability | undefined {
+  const dreamina = provider === 'dreamina' ? getDreaminaImageModel(modelRef) : undefined;
+  if (dreamina) {
+    return {
+      modelId: dreamina.version, resolutionStyle: 'K', resolutions: [...dreamina.resolutions],
+      ratios: [...DREAMINA_IMAGE_RATIOS], supportsImageReference: dreamina.supportsImageReference,
+    };
+  }
+  const capability = resolveImageParameterCapability(modelRef, provider, config);
+  const apimart = provider === 'apimart' ? getImageCapability(modelRef) : undefined;
+  if (!capability || !apimart) return capability ?? apimart;
+  // 直连 APIMart 的尺寸以实际适配器目录为准，其余设置继续用当前模型声明。
+  const { resolutions, defaultResolution, ratios, defaultRatio, dimensionPresets } = apimart;
+  return { ...capability, resolutions, defaultResolution, ratios, defaultRatio, dimensionPresets };
+}
+
+function selectImageDimension(
+  requested: string | undefined,
+  projectValue: string | undefined,
+  preferred: string,
+  allowed: readonly string[] | undefined,
+  modelDefault: string | undefined,
+  label: string,
+): string | undefined {
+  const normalize = (value: string) => /^(自适应|adaptive)$/i.test(value) ? 'auto' : value.toLowerCase();
+  const match = (value: string | undefined) => value && allowed?.find((candidate) => normalize(candidate) === normalize(value));
+  if (requested !== undefined) {
+    const supported = match(requested);
+    if (!supported) throw new Error(`所选模型未声明或不支持该图片${label}，请先查看可用参数`);
+    return supported;
+  }
+  return match(projectValue) || match(preferred) || match(modelDefault) || allowed?.[0];
+}
+
+/** 只把模型明确支持的档位锁进工具输入。 */
+function resolveMediaToolDimensions(input: GenerateMediaInput, projectId: string): MediaToolDimensions {
   assertSafeMediaParameterStrings(input);
-  if (input.kind !== 'image') return;
+  const supplied = { resolution: input.resolution, aspectRatio: input.aspectRatio };
+  if (input.kind !== 'image') return supplied;
   const store = useAppStore.getState();
   const settings = store.projects.find((project) => project.id === projectId)?.settings?.generation;
   const option = input.modelRef ? findMediaModelOption(input.modelRef, store.config.generalModels ?? [], store.config, store.workflows) : undefined;
   const capability = option && !option.workflowId && option.provider !== 'runninghub'
-    ? resolveImageParameterCapability(option.value, option.provider, store.config) : undefined;
-  if (option) resolveConfiguredImageOutput(capability, input);
+    ? resolveMediaToolImageCapability(option.value, option.provider, store.config) : undefined;
+  const output = option ? resolveConfiguredImageOutput(capability, input) : undefined;
   assertSafeMediaParameterStrings({
-    resolution: settings?.imageSize || undefined,
-    aspectRatio: settings?.imageAspectRatio || undefined,
+    resolution: input.resolution ?? (settings?.imageSize || undefined),
+    aspectRatio: input.aspectRatio ?? (settings?.imageAspectRatio || undefined),
     imageQuality: input.imageQuality ?? capability?.defaultQuality,
     imageBackground: input.imageBackground ?? capability?.defaultBackground,
   });
+  if (!option || option.mediaKind !== 'image') return supplied;
+  if (option.provider === 'comfyui') {
+    if (input.aspectRatio !== undefined || input.resolution !== undefined) {
+      throw new Error('ComfyUI 图片尺寸取决于工作流，请用 media_workflow_parameters 查询可写宽高，再通过 workflowInputs 设置');
+    }
+    if (input.workflowInputs?.some(({ fieldName, value }) => !COMFY_IMAGE_DIMENSION_FIELDS.has(fieldName)
+      || !/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)))) {
+      throw new Error('ComfyUI 图片尺寸只接受工作流声明的 width 和 height 整数');
+    }
+    return supplied;
+  }
+  if (['runninghub', 'runninghubwf', 'workflow-api'].includes(option.provider)) {
+    if (input.aspectRatio !== undefined || input.resolution !== undefined) {
+      throw new Error('所选图片模型或工作流使用专属尺寸参数，请通过 modelParameters 或 workflowInputs 设置');
+    }
+    return supplied;
+  }
+  const dimensions = resolveImageOutputCapability(capability, output?.imageOutputFormat);
+  const resolved = {
+    resolution: selectImageDimension(input.resolution, settings?.imageSize, '2K',
+      dimensions?.resolutions, dimensions?.defaultResolution, '分辨率'),
+    aspectRatio: selectImageDimension(input.aspectRatio, settings?.imageAspectRatio, '9:16',
+      dimensions?.ratios, dimensions?.defaultRatio, '比例'),
+  };
+  assertSafeMediaParameterStrings(resolved);
+  return resolved;
 }
 
 function resolveMediaToolInput(
   input: GenerateMediaInput,
   context: { projectId: string; mode: string },
 ): GenerateMediaInput {
-  assertSafeMediaToolParameters(input, context.projectId);
+  assertSafeMediaParameterStrings(input);
   const store = useAppStore.getState();
   const projectSettings = store.projects.find(
     (project) => project.id === context.projectId,
@@ -129,7 +200,19 @@ function resolveMediaToolInput(
     ...input,
     ...(modelRef ? { modelRef } : {}),
   };
-  assertSafeMediaToolParameters(resolved, context.projectId);
+  if (input.kind === 'image') {
+    // 协作审批会重新校验用户实际选的模型，先保留尺寸原值。
+    if (context.mode !== 'autonomous') {
+      resolveMediaToolDimensions({ ...input, modelRef: undefined }, context.projectId);
+      return resolved;
+    }
+    const { aspectRatio, resolution } = resolveMediaToolDimensions(resolved, context.projectId);
+    return {
+      ...resolved,
+      ...(aspectRatio !== undefined ? { aspectRatio } : {}),
+      ...(resolution !== undefined ? { resolution } : {}),
+    };
+  }
   if (input.kind !== 'video') return resolved;
   const selectedModel = modelRef
     ? findMediaModelOption(
@@ -149,7 +232,7 @@ function resolveMediaToolInput(
     resolution: input.resolution ?? projectSettings?.generation?.videoResolution,
     duration: input.duration ?? projectSettings?.generation?.videoDuration,
   };
-  assertSafeMediaToolParameters(withProjectDefaults, context.projectId);
+  assertSafeMediaParameterStrings(withProjectDefaults);
   return withProjectDefaults;
 }
 
@@ -197,24 +280,28 @@ function buildMediaInputDisplay(input: GenerateMediaInput): AgentToolDisplaySnap
     },
     { label: '提示词', value: input.prompt.trim().slice(0, MEDIA_PROMPT_DISPLAY_LIMIT) },
   ];
-  if (input.kind === 'video') {
+  if (input.kind !== 'audio') {
+    const { aspectRatio, resolution } = input;
+    const defaultLabel = input.kind === 'image' ? '项目或模型默认' : '模型默认';
     fields.push(
       {
         label: '画面比例',
-        value: input.aspectRatio || '模型默认',
-        source: input.aspectRatio ? 'resolved' : 'model_default',
+        value: aspectRatio || defaultLabel,
+        source: aspectRatio ? 'resolved' : 'model_default',
       },
       {
         label: '分辨率',
-        value: input.resolution || '模型默认',
-        source: input.resolution ? 'resolved' : 'model_default',
-      },
-      {
-        label: '时长',
-        value: input.duration !== undefined ? input.duration < 0 ? '自动' : `${input.duration} 秒` : '模型默认',
-        source: input.duration !== undefined ? 'resolved' : 'model_default',
+        value: resolution || defaultLabel,
+        source: resolution ? 'resolved' : 'model_default',
       },
     );
+  }
+  if (input.kind === 'video') {
+    fields.push({
+      label: '时长',
+      value: input.duration !== undefined ? input.duration < 0 ? '自动' : `${input.duration} 秒` : '模型默认',
+      source: input.duration !== undefined ? 'resolved' : 'model_default',
+    });
     if (input.videoFps !== undefined) fields.push({ label: '帧率', value: `${input.videoFps} FPS` });
     if (input.generateAudio !== undefined) fields.push({ label: '生成音轨', value: input.generateAudio ? '开启' : '关闭' });
   }
@@ -394,7 +481,7 @@ export function registerMediaAgentTools(): Array<() => void> {
         if (!option || option.workflowId || !['image', 'video'].includes(option.mediaKind)) {
           return { status: 'error', summary: '未找到可用的图片或视频模型', modelContent: '请先启用模型；工作流使用 media_workflow_parameters', errorCode: 'MEDIA_MODEL_NOT_FOUND' };
         }
-        const image = option.mediaKind === 'image' ? resolveImageParameterCapability(option.value, option.provider, store.config) : undefined;
+        const image = option.mediaKind === 'image' ? resolveMediaToolImageCapability(option.value, option.provider, store.config) : undefined;
         const video = option.mediaKind === 'video' ? resolveVideoModelCapability(option.value, store.config) : undefined;
         const capability = image ? {
           resolutions: image.resolutions, defaultResolution: image.defaultResolution,
@@ -417,14 +504,36 @@ export function registerMediaAgentTools(): Array<() => void> {
       },
     }),
     registerAgentTool<{ modelRef: string }>({
-      id: 'media_workflow_parameters', title: '读取云工作流参数', effect: 'read',
-      description: '读取已保存云工作流的输出类型、参数名称、默认值与素材映射，供 media_generate 使用。',
+      id: 'media_workflow_parameters', title: '读取工作流参数', effect: 'read',
+      description: '读取已保存云工作流的参数定义，或本地 ComfyUI 图片工作流声明的可写宽高，供 media_generate 使用。',
       inputSchema: { type: 'object', required: ['modelRef'], additionalProperties: false, properties: { modelRef: { type: 'string', minLength: 1, maxLength: 240 } } },
       authorize: (context) => ({ allowed: context.projectId === useAppStore.getState().currentProjectId, reason: '只能读取当前项目可用的工作流' }),
-      execute: async (_context, input) => {
+      execute: async (context, input) => {
         const store = useAppStore.getState();
         const option = findMediaModelOption(input.modelRef, store.config.generalModels ?? [], store.config, store.workflows);
         const workflow = store.workflows.find((item) => item.id === option?.workflowId);
+        if (workflow && option?.provider === 'comfyui' && option.mediaKind === 'image') {
+          try {
+            const baseUrl = comfyBaseUrlFor(workflow.id);
+            if (!baseUrl) throw new Error('未配置 ComfyUI 服务地址');
+            const fields = await loadComfyWorkflowParameters(workflow,
+              (classType) => fetchNodeInputSpecs(baseUrl, classType, false, context.signal));
+            const parameters = fields.filter((field) => COMFY_IMAGE_DIMENSION_FIELDS.has(field.fieldName)
+              && typeof field.defaultValue === 'number')
+              .map(({ nodeId, fieldName, type, defaultValue, min, max, step, options }) => ({
+                nodeId, fieldName, type, defaultValue, min, max, step, options,
+              }));
+            return { status: 'success', summary: '已读取 ComfyUI 图片尺寸参数', modelContent: JSON.stringify({
+              workflowId: workflow.id, outputType: 'image', parameters,
+              usage: parameters.length
+                ? '通过 workflowInputs 设置列出的节点宽高，值为整数字符串。'
+                : '此工作流没有对 MCP 开放的宽高字段，请省略尺寸参数。',
+            }) };
+          } catch {
+            context.signal.throwIfAborted();
+            return { status: 'error', summary: '无法读取 ComfyUI 图片尺寸参数', modelContent: '请检查绑定的 ComfyUI 服务和工作流节点声明', errorCode: 'COMFY_IMAGE_PARAMETERS_UNAVAILABLE' };
+          }
+        }
         if (workflow?.adapterType === 'workflow-api') {
           validateWorkflowApiManifest(workflow.workflowApi);
           if (workflow.workflowApi.version === 2) return { status: 'success', summary: `已读取 ${workflow.name} 的参数`, modelContent: JSON.stringify({
@@ -457,7 +566,8 @@ export function registerMediaAgentTools(): Array<() => void> {
         '若项目已设置该类型默认模型则直接使用；自主模式开启自动路由后，可依据模型能力与用户自定义说明选择。',
         '图片 prompt 可以原样包含用户提供的 @{nodeId:label} 或 @asset{path} 引用，',
         '运行时会自动解析为参考图输入；无需先读取节点原 prompt，也不要要求用户重新描述图片。',
-        '图片可按模型能力传入 imageQuality、imageBackground（空字符串表示接口默认）；视频可传 aspectRatio、resolution、duration、videoFps、generateAudio。自动时长只允许该模型声明的负数值。',
+        '图片和视频可按模型能力传入 aspectRatio、resolution。图片省略时优先使用当前项目设置，其次使用模型支持的 2K、9:16。图片质量和背景另用 imageQuality、imageBackground（空字符串表示接口默认）。视频还可传 duration、videoFps、generateAudio。',
+        'RunningHub 图片模型和云工作流用 modelParameters 或 workflowInputs。已保存的 ComfyUI 图片工作流通过 media_workflow_parameters 读取可写宽高，再用 workflowInputs 指定。自动时长只允许模型声明的负数。',
         '自定义 API 省略视频参数时由模型 capability / 接口默认值决定，内置模型与工作流才锁定项目默认值。',
         '音频可显式传 audioVoice、audioFormat、audioSpeed，音乐可传 musicTitle 和 musicLyrics；音色使用所选模型公布的真实 ID，省略时沿用模型默认。RunningHub 与工作流仍使用各自参数。',
         '协作模式由 Policy 请求确认，自主模式直接执行。deliveryMode 控制结果显示在对话、画布或两者。',
@@ -483,7 +593,7 @@ export function registerMediaAgentTools(): Array<() => void> {
             } },
           },
           workflowInputs: {
-            type: 'array', maxItems: 200, description: 'RunningHub 参数覆盖；先用 media_workflow_parameters 读取参数定义，数字和布尔值以字符串传入并由本地恢复类型。',
+            type: 'array', maxItems: 200, description: '工作流参数覆盖；先用 media_workflow_parameters 读取字段，数字和布尔值以字符串传入。',
             items: { type: 'object', required: ['nodeId', 'fieldName', 'value'], additionalProperties: false, properties: {
               nodeId: { type: 'string', minLength: 1, maxLength: 120 }, fieldName: { type: 'string', minLength: 1, maxLength: 160 }, value: { type: 'string', maxLength: 12000 },
             } },
@@ -507,13 +617,13 @@ export function registerMediaAgentTools(): Array<() => void> {
             type: 'string',
             minLength: 1,
             maxLength: 64,
-            description: '视频画面比例；用户明确指定时传入，合法值由所选模型 capability 校验。',
+            description: '图片或视频的宽高比，例如 9:16；以所选模型支持的参数为准。',
           },
           resolution: {
             type: 'string',
             minLength: 1,
             maxLength: 64,
-            description: '视频分辨率档位；用户明确指定时传入，合法值由所选模型 capability 校验。',
+            description: '图片或视频的分辨率档位，例如 2K 或 720p；以所选模型支持的参数为准。',
           },
           duration: {
             type: 'number',
@@ -532,8 +642,8 @@ export function registerMediaAgentTools(): Array<() => void> {
           const supported = !!option && supportsNativeMediaProtocol(input.kind, option.provider, option.workflowId, store.workflows);
           if (!supported || generalModel && generalModel.category !== input.kind) return { allowed: false, reason: '此模型尚未接入新项目原回执续查，未提交生成' };
         }
-        try { assertSafeMediaToolParameters(input, context.projectId); } catch {
-          return { allowed: false, reason: '媒体参数格式无效，请使用所选模型声明的参数值' };
+        try { resolveMediaToolDimensions(input, context.projectId); } catch {
+          return { allowed: false, reason: '媒体参数无效，请先读取所选模型或工作流的参数定义' };
         }
         if (hasAudioSettings(input) && input.kind !== 'audio') {
           return { allowed: false, reason: '音频参数只能用于音频生成' };
@@ -652,12 +762,10 @@ export function registerMediaAgentTools(): Array<() => void> {
             reason: '音频生成必须说明用途是音乐还是语音',
           };
         }
-        if (
-          input.kind !== 'video'
-          && (input.aspectRatio !== undefined || input.resolution !== undefined || input.duration !== undefined)
-        ) {
-          return { allowed: false, reason: '比例、分辨率和时长参数只适用于视频生成' };
+        if (input.kind === 'audio' && (input.aspectRatio !== undefined || input.resolution !== undefined)) {
+          return { allowed: false, reason: '比例和分辨率只适用于图片和视频生成' };
         }
+        if (input.kind !== 'video' && input.duration !== undefined) return { allowed: false, reason: '时长参数只适用于视频生成' };
         return { allowed: true };
       },
       summarizeInput: (input) => {
@@ -680,8 +788,9 @@ export function registerMediaAgentTools(): Array<() => void> {
       buildInputDisplay: buildMediaInputDisplay,
       execute: async (context, input): Promise<AgentToolExecutionResult> => {
         const store = useAppStore.getState();
-        try { assertSafeMediaToolParameters(input, context.projectId); } catch {
-          return { status: 'error', summary: '媒体参数格式无效', modelContent: '请使用所选模型声明的参数值', errorCode: 'MEDIA_PARAMETER_INVALID' };
+        let dimensions: MediaToolDimensions;
+        try { dimensions = resolveMediaToolDimensions(input, context.projectId); } catch {
+          return { status: 'error', summary: '媒体参数无效', modelContent: '请使用所选模型声明的参数值', errorCode: 'MEDIA_PARAMETER_INVALID' };
         }
         if (!input.modelRef) {
           return {
@@ -719,6 +828,8 @@ export function registerMediaAgentTools(): Array<() => void> {
           return { status: 'error', summary: '此消息已有媒体产物，请从新消息发起生成', modelContent: '原产物保留，未提交新的生成请求。', errorCode: 'AGENT_MEDIA_SLOT_OCCUPIED' };
         }
 
+        const localComfyImage = input.kind === 'image' && input.modelRef.startsWith('comfyui/');
+        const workflowInputKey = localComfyImage ? comfyWorkflowParameterKey : runningHubParameterKey;
         const intent: MediaGenerationIntent = {
           kind: input.kind,
           prompt: input.prompt,
@@ -730,8 +841,7 @@ export function registerMediaAgentTools(): Array<() => void> {
           audioSpeed: input.audioSpeed,
           musicTitle: input.musicTitle,
           musicLyrics: input.musicLyrics,
-          aspectRatio: input.aspectRatio,
-          resolution: input.resolution,
+          ...dimensions,
           duration: input.duration,
           imageQuality: input.imageQuality,
           imageBackground: input.imageBackground,
@@ -739,7 +849,7 @@ export function registerMediaAgentTools(): Array<() => void> {
           videoFps: input.videoFps,
           generateAudio: input.generateAudio,
           runninghubModelParameters: input.modelParameters ? Object.fromEntries(input.modelParameters.map((field) => [field.name, field.value])) : undefined,
-          workflowInputs: input.workflowInputs ? Object.fromEntries(input.workflowInputs.map((field) => [runningHubParameterKey(field), field.value])) : undefined,
+          workflowInputs: input.workflowInputs ? Object.fromEntries(input.workflowInputs.map((field) => [workflowInputKey(field), field.value])) : undefined,
         };
         const needsCanvas = input.deliveryMode === 'canvas' || input.deliveryMode === 'both';
         const tracksOperation = Boolean(store.agentTasks?.some((task) => task.id === context.taskId && task.mcpOperation));
@@ -783,6 +893,7 @@ export function registerMediaAgentTools(): Array<() => void> {
             const cloud = current.workflows?.find((workflow) => isCloudWorkflow(workflow) && workflowExecution(workflow).model === input.modelRef);
             if (!cloud && input.modelRef && getRunningHubModel(input.modelRef)) current.updateNodeDataTransient(targetNodeId, { provider: 'runninghub', model: input.modelRef, runninghubModelParameters: intent.runninghubModelParameters });
             if (cloud) current.updateNodeDataTransient(targetNodeId, { ...workflowExecution(cloud), workflowInputs: intent.workflowInputs });
+            if (localComfyImage && intent.workflowInputs) current.updateNodeDataTransient(targetNodeId, { workflowInputs: intent.workflowInputs });
             placeholderLifecycle = registerMediaPlaceholderLifecycle(targetNodeId);
             const placeholder = useAppStore.getState().nodes.find((node) => node.id === targetNodeId);
             placeholderGenerationInput = placeholder && generationInputSnapshot(placeholder.data,

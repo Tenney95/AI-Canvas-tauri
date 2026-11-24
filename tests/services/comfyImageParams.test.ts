@@ -31,6 +31,7 @@ vi.mock('../../src/services/nodeReferenceService', () => ({
 }));
 
 import { executeComfyUIGenerate, fetchNodeInputSpecs } from '../../src/services/comfyWorkflowService';
+import { comfyWorkflowParameterKey } from '../../src/services/comfyWorkflowParameters';
 
 function jsonResponse(body: unknown) {
   return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
@@ -116,6 +117,24 @@ describe('ComfyUI 图片尺寸参数注入', () => {
 
     expect(submittedWorkflow().latent.inputs).toMatchObject({ width: 3640, height: 2048 });
     expect(result).toMatchObject({ width: 3640, height: 2048 });
+  });
+
+  it('提交显式覆盖的宽高，并拒绝不存在的尺寸输入', async () => {
+    registerNodes({ latent: { class_type: 'EmptyLatentImage', inputs: { width: 512, height: 512 } } });
+    const pixels = ['INT', { min: 16, max: 8192, step: 8 }];
+    objectInfoByClass.EmptyLatentImage = objectInfo('EmptyLatentImage', { width: pixels, height: pixels });
+    const sizeKey = (nodeId: string, fieldName: string) => comfyWorkflowParameterKey({ nodeId, fieldName });
+
+    await expect(executeComfyUIGenerate({ ...baseParams, workflowInputs: { [sizeKey('missing', 'width')]: '1152' } }))
+      .rejects.toThrow('工作流参数已失效或不允许覆盖');
+    expect(mocks.corsSafeFetch.mock.calls.some(([url]) => String(url).endsWith('/prompt'))).toBe(false);
+
+    await executeComfyUIGenerate({ ...baseParams, imageSize: '2K', aspectRatio: '1:1', workflowInputs: {
+      [sizeKey('latent', 'width')]: '1152', [sizeKey('latent', 'height')]: '2048',
+    } });
+    expect(submittedWorkflow().latent.inputs).toMatchObject({ width: 1152, height: 2048 });
+    expect(JSON.parse(String(mocks.storeState.workflows[0].fileContent)).latent.inputs)
+      .toEqual({ width: 512, height: 512 });
   });
 
   it('按真实 CatPixel ratio_preset schema 切换比例并回报固定 preset 像素', async () => {

@@ -76,6 +76,10 @@ SDK 入口先加载 `mcpSdkCsp.ts`，复用 SDK 必需且已锁定的 Zod，配�
 
 媒体参数随 MCP 节点创建一起写入：图片支持 `aspectRatio`、`imageSize`、`batchCount`；视频支持 `aspectRatio`、`videoLongSide`（本地工作流长边像素，如 832）、`videoResolution`（API 画质档位，如 720p）、`videoDuration`（分镜小数秒向上取整）；旧调用传数字字符串 `videoResolution: "832"` 时兼容写入长边像素，而不再错误写成 API 档位。音频支持 `audioPurpose`、音色/格式/语速、描述式语音的声音类型/节奏/秒数，以及音乐标题、歌词、BPM、时长与自动歌词开关。三类均可传已配置的 `model` ID；未传的字段才使用项目/模型默认值。`canvas_update_nodes` 对同类字段可更新，`canvas_query(detail=true)` 返回安全的参数摘要；字段传给错误的节点类型或模型 ID 未配置时，在整批写入前拒绝。参考音频通过节点引用/工作流 IO 传入，Qwen 等工作流专属参数仍由工作流配置控制。ComfyUI H3 的帧率由工作流内部 24fps 公式固定，不把通用 `videoFps` 伪装成可独立生效的 MCP 控件。
 
+`media_generate` 直接生图可传 `resolution` 和 `aspectRatio`。省略时优先使用模型支持的项目设置，其次使用模型支持的 `2K` 和 `9:16`。普通模型用 `media_model_parameters` 查询可用值。未声明的尺寸保留原生成行为，显式传入则在创建占位和提交前拒绝。固定尺寸和 GIF／SVG 的比例按模型及输出格式的能力处理。方舟 Seedream 4.0、4.5、5.0 Lite 的固定比例按[方舟尺寸表](https://docs.volcengine.com/docs/ark/image-generation-tutorial?lang=zh)传 `size`，例如 `2K / 9:16` 发 `1600x2848`。RunningHub 图片模型和云工作流分别使用 `modelParameters` 和 `workflowInputs`。
+
+已保存的本地 ComfyUI 图片工作流通过 `media_workflow_parameters` 查询可写的 `width`、`height`，再以 `workflowInputs` 指定相应节点、字段及整数字符串。查不到宽高时可以省略尺寸运行该图。ComfyUI 的 [`/prompt`](https://docs.comfy.org/development/comfyui-server/comms_routes) 接收节点图，此入口会拒绝通用分辨率和比例字段。
+
 `canvas_update_nodes` 的 `label` 同步已有 `fileName` 显示别名，修复媒体标题仍显示上传临时文件名的问题；只改变显示名称，不重命名磁盘文件、不改变媒体路径。混合节点批量改名只提交一次历史快照；现有历史系统只撤销结构变化，不撤销名称或提示词，回退名称需再次更新。`canvas_query(detail=true)` 的 `displayLabel` 返回文件名别名优先的标题，供客户端核对可见名称；`label` 保持内部名称字段。
 
 MCP 设置中的「工具发现方式」默认按需加载，对应可选配置 `mcpToolExposure: "compact"`；旧配置缺少该字段时同样使用按需模式。初始仍只注册三个入口，`tools_search` 的说明先列出当前环境工具的全量简介，再按需读取参数。`"full"` 除当前可用业务工具外也保留三个固定入口，避免客户端缓存启动页列表后无法重新发现画布能力。两种传输共用此设置。升级或切换后需要在客户端刷新工具列表或重新连接，已有对话的上下文不会自动清除。

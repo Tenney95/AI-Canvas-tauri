@@ -12,6 +12,7 @@ import {
 } from '../../../src/services/chat/toolRegistry';
 import { getPendingTasksForProject, registerMediaNodeOperation, savePendingTask } from '../../../src/services/pollManager';
 import * as generationRuntime from '../../../src/services/ai/generationRuntime';
+import * as comfyWorkflow from '../../../src/services/comfyWorkflowService';
 import * as operationProgress from '../../../src/services/mcp/mcpOperationService';
 import { DEFAULT_AGENT_TASK_BUDGET, type AgentTask } from '../../../src/types/agent';
 import type { ImageModelCapability, ModelExecutionProfile } from '../../../src/types/aiTypes';
@@ -563,6 +564,167 @@ describe('media_generate display parameters', () => {
     } }));
   }
 
+  it.each([
+    { name: '未设置默认值', settings: {}, request: {}, resolution: '2K', aspectRatio: '9:16' },
+    { name: '沿用项目方图设置', settings: { imageAspectRatio: '1:1' }, request: {}, resolution: '2K', aspectRatio: '1:1' },
+    { name: '显式值覆盖项目设置', settings: { imageSize: '2K', imageAspectRatio: '1:1' },
+      request: { resolution: '1k', aspectRatio: '9:16' }, resolution: '1K', aspectRatio: '9:16' },
+  ])('MCP 图片尺寸贯通工具详情和生成请求（$name）', async ({ settings, request, resolution, aspectRatio }) => {
+    configureVisualModels();
+    const mcp = { ...context, conversationId: 'mcp-control-project-1', mode: 'autonomous' as const, mcpSessionId: 'test-bridge' };
+    useAppStore.setState((state) => ({
+      config: { ...state.config, generalModels: state.config.generalModels!.map((model) => model.id !== 'image-custom' ? model
+        : { ...model, imageCapability: { resolutions: ['1K', '2K'], ratios: ['1:1', '9:16'] } }) },
+      projects: state.projects.map((project) => ({ ...project, settings: { ...project.settings,
+        generation: { ...project.settings?.generation, ...settings } } })),
+      messages: [{ id: 'image-message', conversationId: mcp.conversationId, role: 'assistant', content: '',
+        timestamp: 1, status: 'executing', agentTaskId: mcp.taskId }],
+    }));
+    const generate = vi.spyOn(generationRuntime, 'runMediaGeneration').mockResolvedValue({ id: 'image-artifact', kind: 'image',
+      deliveryMode: 'chat', url: 'https://cdn.example/result', sourceUrl: 'https://cdn.example/result',
+      persistence: 'skipped', prompt: '山谷', modelId: 'general/image-custom', provider: 'general', createdAt: 1 });
+    const input = { kind: 'image', modelRef: 'general/image-custom', prompt: '山谷', deliveryMode: 'chat', ...request };
+    const prepared = prepareAgentToolCall({ callId: 'image-dimensions', toolId: 'media_generate', input }, mcp);
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    const tool = prepared.prepared.definition;
+    const resolvedInput = prepared.prepared.input;
+    expect(tool.authorize?.(mcp, resolvedInput).allowed).toBe(true);
+    expect(tool.buildInputDisplay?.(resolvedInput, mcp)?.fields).toEqual(expect.arrayContaining([
+      { label: '画面比例', value: aspectRatio, source: 'resolved' },
+      { label: '分辨率', value: resolution, source: 'resolved' },
+    ]));
+    useAppStore.setState((state) => ({ projects: state.projects.map((project) => ({ ...project,
+      settings: { ...project.settings, generation: { ...project.settings?.generation,
+        imageSize: resolution === '1K' ? '2K' : '1K', imageAspectRatio: aspectRatio === '1:1' ? '9:16' : '1:1' } },
+    })) }));
+    await tool.execute({ ...mcp, signal: new AbortController().signal }, resolvedInput);
+    expect(generate).toHaveBeenCalledWith(expect.objectContaining({ resolution, aspectRatio }), mcp.projectId,
+      expect.any(AbortSignal), undefined, expect.objectContaining({ messageId: 'image-message' }));
+  });
+
+  it('直连 APIMart 以实际适配器校验图片分辨率，无效值不会回退或创建占位', async () => {
+    const mcp = { ...context, conversationId: 'mcp-control-project-1', mode: 'autonomous' as const, mcpSessionId: 'test-bridge' };
+    useAppStore.setState((state) => ({ config: { ...state.config, providers: { ...state.config.providers,
+      apimart: { name: 'APIMart', apiKey: 'fixture', selectedModels: [{ id: 'gpt-image-2', name: 'GPT Image 2',
+        category: 'image', provider: 'apimart', imageCapability: { resolutions: ['1536x1024'], ratios: ['3:2'] } }] },
+    } }, messages: [{ id: 'image-message', conversationId: mcp.conversationId, role: 'assistant', content: '',
+      timestamp: 1, status: 'executing', agentTaskId: mcp.taskId }] }));
+    const generate = vi.spyOn(generationRuntime, 'runMediaGeneration').mockRejectedValue(new Error('不应提交生成'));
+    const input = { kind: 'image', modelRef: 'apimart/gpt-image-2', prompt: '山谷', deliveryMode: 'canvas',
+      resolution: '1536x1024', aspectRatio: '3:2' };
+    expect(prepareAgentToolCall({ callId: 'unsupported-resolution', toolId: 'media_generate', input }, mcp))
+      .toMatchObject({ ok: false, result: { summary: expect.stringContaining('图片分辨率') } });
+    const tool = getAgentTool('media_generate')!;
+    expect(tool.authorize?.(mcp, input).allowed).toBe(false);
+    expect(await tool.execute({ ...mcp, signal: new AbortController().signal }, input))
+      .toMatchObject({ status: 'error', errorCode: 'MEDIA_PARAMETER_INVALID' });
+    expect(generate).not.toHaveBeenCalled();
+    expect(useAppStore.getState().nodes.map(({ id }) => id)).toEqual(['n1']);
+  });
+
+  it.each([
+    { name: '缺少能力定义', imageCapability: undefined },
+    { name: '未提供可选值', imageCapability: { resolutions: [], ratios: [] } },
+  ])('MCP 不为未声明可选尺寸的模型选尺寸（$name）', async ({ imageCapability }) => {
+    configureVisualModels();
+    const mcp = { ...context, mode: 'autonomous' as const, mcpSessionId: 'test-bridge', signal: new AbortController().signal };
+    useAppStore.setState((state) => ({ config: { ...state.config,
+      providers: { ...state.config.providers, custom: { ...state.config.providers.custom, catalogId: undefined } },
+      generalModels: state.config.generalModels!.map((model) => model.id === 'image-custom' ? { ...model, imageCapability } : model),
+    }, messages: [{ id: 'image-message', conversationId: mcp.conversationId, role: 'assistant', content: '',
+      timestamp: 1, status: 'executing', agentTaskId: mcp.taskId }] }));
+    const generate = vi.spyOn(generationRuntime, 'runMediaGeneration').mockResolvedValue({ id: 'image-artifact', kind: 'image',
+      deliveryMode: 'chat', url: 'https://cdn.example/result', sourceUrl: 'https://cdn.example/result', persistence: 'skipped',
+      prompt: '山谷', modelId: 'general/image-custom', provider: 'general', createdAt: 1 });
+    const input = { kind: 'image', modelRef: 'general/image-custom', prompt: '山谷', deliveryMode: 'chat' };
+    const prepared = prepareAgentToolCall({ callId: 'undeclared-image-size', toolId: 'media_generate', input }, mcp);
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    expect(prepared.prepared.input).not.toHaveProperty('resolution');
+    expect(prepared.prepared.input).not.toHaveProperty('aspectRatio');
+    expect((await prepared.prepared.definition.execute(mcp, prepared.prepared.input)).status).toBe('success');
+    expect(generate.mock.calls[0]?.[0]).toMatchObject({ resolution: undefined, aspectRatio: undefined });
+  });
+
+  function configureLocalImageWorkflow() {
+    useAppStore.setState((state) => ({
+      config: { ...state.config, comfyUIUrl: 'http://127.0.0.1:8188' },
+      workflows: [{ id: 'local-image', name: '本地图像工作流', category: 'ai-image', fileName: 'local.json', createdAt: 1,
+        fileContent: JSON.stringify({
+          '1': { class_type: 'EmptyLatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
+          '2': { class_type: 'ImageScale', inputs: { width: 768, height: ['1', 0] } },
+          '3': { class_type: 'ImageScale', inputs: { width: 512, height: 512 } },
+        }) }],
+      projects: state.projects.map((project) => ({ ...project, settings: { ...project.settings,
+        generation: { ...project.settings?.generation, imageSize: '1K', imageAspectRatio: '1:1' },
+      } })),
+      messages: [{ id: 'comfy-image-message', conversationId: context.conversationId, role: 'assistant', content: '',
+        timestamp: 1, status: 'executing', agentTaskId: context.taskId }],
+    }));
+    return { ...context, mode: 'autonomous' as const, mcpSessionId: 'test-bridge', signal: new AbortController().signal };
+  }
+
+  it('MCP 只发现 ComfyUI 图中有声明且可写的数值宽高', async () => {
+    const mcp = configureLocalImageWorkflow();
+    const fetchSpecs = vi.spyOn(comfyWorkflow, 'fetchNodeInputSpecs').mockImplementation(async (_url, classType) => (
+      classType === 'EmptyLatentImage'
+        ? { width: { type: 'INT', min: 16, max: 4096, step: 8 }, height: { type: 'INT' }, batch_size: { type: 'INT' } }
+        : { height: { type: 'INT' } }
+    ));
+    const tool = getAgentTool('media_workflow_parameters')!;
+    expect(tool.effect).toBe('read');
+    const result = await tool.execute(mcp, { modelRef: 'comfyui/local-image' });
+    expect(result.status).toBe('success');
+    expect(JSON.parse(result.modelContent)).toMatchObject({ workflowId: 'local-image', outputType: 'image', parameters: [
+      { nodeId: '1', fieldName: 'width', type: 'integer', defaultValue: 1024, min: 16, max: 4096, step: 8 },
+      { nodeId: '1', fieldName: 'height', type: 'integer', defaultValue: 1024 },
+      { nodeId: '3', fieldName: 'height', type: 'integer', defaultValue: 512 },
+    ] });
+    expect(fetchSpecs).toHaveBeenCalledWith('http://127.0.0.1:8188', 'EmptyLatentImage', false, mcp.signal);
+    expect(fetchSpecs).toHaveBeenCalledWith('http://127.0.0.1:8188', 'ImageScale', false, mcp.signal);
+  });
+
+  it.each([
+    { aspectRatio: '9:16' },
+    { resolution: '2K' },
+  ])('MCP 对 ComfyUI 图片工作流在生成前拒绝通用尺寸 %j', async (dimensions) => {
+    const mcp = configureLocalImageWorkflow();
+    const input = { kind: 'image', modelRef: 'comfyui/local-image', prompt: '山谷', deliveryMode: 'canvas', ...dimensions };
+    const generate = vi.spyOn(generationRuntime, 'runMediaGeneration').mockRejectedValue(new Error('不应提交生成'));
+    expect(prepareAgentToolCall({ callId: 'comfy-generic-dimensions', toolId: 'media_generate', input }, mcp))
+      .toMatchObject({ ok: false, result: { summary: expect.stringContaining('workflowInputs') } });
+    const tool = getAgentTool('media_generate')!;
+    expect(tool.authorize?.(mcp, input).allowed).toBe(false);
+    expect(await tool.execute(mcp, input)).toMatchObject({ status: 'error', errorCode: 'MEDIA_PARAMETER_INVALID' });
+    expect(generate).not.toHaveBeenCalled();
+    expect(useAppStore.getState().nodes.map(({ id }) => id)).toEqual(['n1']);
+  });
+
+  it.each([false, true])('MCP ComfyUI 图片保留工作流尺寸或传入指定宽高（覆盖 %s）', async (overrideDimensions) => {
+    const mcp = configureLocalImageWorkflow();
+    const workflowInputs = overrideDimensions ? [
+      { nodeId: '1', fieldName: 'width', value: '1152' },
+      { nodeId: '1', fieldName: 'height', value: '2048' },
+    ] : undefined;
+    const modelRef = 'comfyui/local-image';
+    const generate = vi.spyOn(generationRuntime, 'runMediaGeneration').mockResolvedValue({ id: 'comfy-image-artifact', kind: 'image',
+      deliveryMode: 'chat', url: 'https://cdn.example/result', sourceUrl: 'https://cdn.example/result', persistence: 'skipped',
+      prompt: '山谷', modelId: modelRef, provider: 'comfyui', createdAt: 1 });
+    const input = { kind: 'image', modelRef, prompt: '山谷', deliveryMode: 'chat', ...(workflowInputs ? { workflowInputs } : {}) };
+    const prepared = prepareAgentToolCall({ callId: 'comfy-workflow-dimensions', toolId: 'media_generate', input }, mcp);
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    const { definition, input: resolvedInput } = prepared.prepared;
+    expect(definition.authorize?.(mcp, resolvedInput).allowed).toBe(true);
+    expect(resolvedInput).not.toHaveProperty('resolution');
+    expect(resolvedInput).not.toHaveProperty('aspectRatio');
+    expect((await definition.execute(mcp, resolvedInput)).status).toBe('success');
+    expect(generate.mock.calls[0]?.[0]).toMatchObject({ modelRef, resolution: undefined, aspectRatio: undefined,
+      workflowInputs: overrideDimensions ? { 'comfy-param::1::width': '1152', 'comfy-param::1::height': '2048' } : undefined,
+    });
+  });
+
   it('发现并传递模型声明的 GIF 参数，显式 false 保留且未声明模型拒绝格式', async () => {
     configureVisualModels();
     useAppStore.setState((state) => ({ config: { ...state.config, generalModels: state.config.generalModels!.map((model) =>
@@ -572,7 +734,8 @@ describe('media_generate display parameters', () => {
             quality: '{{imageQuality}}', background: '{{imageBackground}}', output_format: '{{imageOutputFormat}}',
             frame_count: '{{imageFrameCount}}', frame_duration_ms: '{{imageFrameDurationMs}}', transparent: '{{imageTransparent}}' } },
           response: { type: 'json', result: { urlPath: 'data.*.url' } } } } satisfies ModelExecutionProfile,
-        imageCapability: { ...model.imageCapability,
+        imageCapability: { ...model.imageCapability, ratios: ['1:1', '9:16'],
+        dimensionPresets: { '2K': { '1:1': [2048, 2048], '9:16': [1152, 2048] } },
         outputFormats: ['png', 'gif', 'svg'], defaultOutputFormat: 'png',
         squareOnlyOutputFormats: ['gif', 'svg'], textOnlyOutputFormats: ['gif', 'svg'],
         gifFrameCount: { min: 2, max: 16, default: 9 }, gifFrameDurationMs: { min: 20, max: 655350, step: 10, default: 200 },
@@ -588,13 +751,15 @@ describe('media_generate display parameters', () => {
       persistence: 'skipped', prompt: '山谷', modelId: 'general/image-custom', provider: 'general', createdAt: 1 });
     const input = { kind: 'image', prompt: '山谷', modelRef: 'general/image-custom', deliveryMode: 'chat',
       imageOutputFormat: 'gif', imageFrameCount: 8, imageFrameDurationMs: 300, imageTransparent: false };
+    const tool = getAgentTool('media_generate')!;
+    expect(tool.authorize?.(context, { ...input, aspectRatio: '9:16' }).allowed).toBe(false);
     const prepared = prepareAgentToolCall({ callId: 'gif', toolId: 'media_generate', input }, context);
     expect(prepared.ok).toBe(true); if (!prepared.ok) return;
-    await getAgentTool('media_generate')!.execute({ ...context, signal: new AbortController().signal }, prepared.prepared.input);
-    expect(generate).toHaveBeenCalledWith(expect.objectContaining(input), context.projectId, expect.any(AbortSignal),
+    await tool.execute({ ...context, signal: new AbortController().signal }, prepared.prepared.input);
+    expect(generate).toHaveBeenCalledWith(expect.objectContaining({ ...input, resolution: '2K', aspectRatio: '1:1' }), context.projectId, expect.any(AbortSignal),
       undefined, expect.objectContaining({ messageId: 'gif-message' }));
     configureVisualModels();
-    expect(getAgentTool('media_generate')!.authorize?.(context, input).allowed).toBe(false);
+    expect(tool.authorize?.(context, input).allowed).toBe(false);
   });
 
   it('普通模型能力发现只返回声明的参数，不返回连接地址、协议或 Key', async () => {

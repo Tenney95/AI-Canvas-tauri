@@ -21,6 +21,26 @@ import { isCharacterImageTaskContext } from '../../characterImageTaskContext';
 import { throwIfDefinitiveModelResponseFailure } from '../modelProtocolHttp';
 import { redactVolcengineError } from './volcengineError';
 
+// 方舟教程中的 4.0／4.5／5.0 Lite 档位各自对齐总像素，不能按固定短边换算。
+// https://docs.volcengine.com/docs/ark/image-generation-tutorial?lang=zh
+const LEGACY_SEEDREAM_PIXEL_SIZES: Record<string, Record<string, readonly [number, number]>> = {
+  '1K': { '1:1': [1024, 1024], '4:3': [1152, 864], '16:9': [1280, 720], '3:2': [1248, 832], '21:9': [1512, 648] },
+  '2K': { '1:1': [2048, 2048], '4:3': [2304, 1728], '16:9': [2848, 1600], '3:2': [2496, 1664], '21:9': [3136, 1344] },
+  '3K': { '1:1': [3072, 3072], '4:3': [3456, 2592], '16:9': [4096, 2304], '3:2': [3744, 2496], '21:9': [4704, 2016] },
+  '4K': { '1:1': [4096, 4096], '4:3': [4704, 3520], '16:9': [5504, 3040], '3:2': [4992, 3328], '21:9': [6240, 2656] },
+};
+
+function legacySeedreamPixelSize(tier: string, ratio: string): readonly [number, number] | undefined {
+  const row = LEGACY_SEEDREAM_PIXEL_SIZES[tier];
+  const parts = /^(\d+):(\d+)$/.exec(ratio);
+  if (!row || !parts) return undefined;
+  const direct = row[ratio];
+  if (direct) return direct;
+  const [, width, height] = parts;
+  const portrait = row[`${height}:${width}`];
+  return portrait && [portrait[1], portrait[0]];
+}
+
 export interface VolcengineImageParams {
   apiKey: string;
   baseUrl: string;
@@ -47,16 +67,18 @@ export async function generateVolcengineImage(
   const seedreamSize = normalizeSeedreamSize(modelName, imageSize);
   const apiUrl = baseUrl.replace(/\/+$/, '') + '/images/generations';
 
-  // Seedream 5.0 Pro / Flash 固定比例使用官方像素表；自适应只传分辨率档位。
-  // 不能把 2K 当短边直接换算，否则 16:9 会超过方舟的总像素上限。
   const capability = getImageCapability(modelName);
   const singleImageOnly = capability?.supportsBatch === false;
-  const adaptiveRatio = aspectRatio === '自适应' || aspectRatio === 'auto';
-  const preset = adaptiveRatio ? undefined : capability?.dimensionPresets?.[seedreamSize]?.[aspectRatio];
+  const legacySeedream = ['doubao-seedream-4.0', 'doubao-seedream-4.5', 'doubao-seedream-5-0-lite'].includes(capability?.modelId ?? '');
+  const adaptiveRatio = ['自适应', 'auto', 'adaptive'].includes(aspectRatio);
+  const ratioForLayout = adaptiveRatio ? '1:1' : aspectRatio;
+  const preset = capability?.dimensionPresets?.[seedreamSize]?.[ratioForLayout]
+    ?? (legacySeedream ? legacySeedreamPixelSize(seedreamSize, ratioForLayout) : undefined);
   const dimensions = preset
     ? { width: preset[0], height: preset[1] }
-    : mapImageDimensions(seedreamSize, adaptiveRatio ? '1:1' : aspectRatio);
-  const requestSize = singleImageOnly && !adaptiveRatio
+    : mapImageDimensions(seedreamSize, ratioForLayout);
+  // 固定画幅用像素值。自适应保留档位，让方舟根据提示词决定输出宽高。
+  const requestSize = !adaptiveRatio && (preset || singleImageOnly)
     ? `${dimensions.width}x${dimensions.height}`
     : seedreamSize;
 

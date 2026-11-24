@@ -101,6 +101,38 @@ describe('Volcengine Seedream image requests', () => {
     expect(body).not.toHaveProperty('n');
   });
 
+  it.each([
+    ['doubao-seedream-4-0-250828', '1K', '9:16', 720, 1280],
+    ['doubao-seedream-4-0-250828', '2K', '9:16', 1600, 2848],
+    ['doubao-seedream-4-0-250828', '4K', '9:16', 3040, 5504],
+    ['doubao-seedream-4-5-251128', '2K', '9:16', 1600, 2848],
+    ['doubao-seedream-4-5-251128', '4K', '9:16', 3040, 5504],
+    ['doubao-seedream-5-0-lite-260128', '2K', '9:16', 1600, 2848],
+    ['doubao-seedream-5-0-lite-260128', '3K', '9:16', 2304, 4096],
+    ['doubao-seedream-5-0-lite-260128', '4K', '9:16', 3040, 5504],
+    ['doubao-seedream-5-0-lite-260128', '2K', '1:1', 2048, 2048],
+  ] as const)('sends and records the official pixel size for %s at %s %s', async (model, imageSize, aspectRatio, width, height) => {
+    await expect(generateVolcengineImagesBatch({ ...baseParams, model: `volcengine/${model}`, imageSize, aspectRatio }, 1))
+      .resolves.toMatchObject({ requestedCount: 1, failedCount: 0, results: [{ width, height }] });
+
+    const size = `${width}x${height}`;
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0]?.[1].body));
+    expect(body).toMatchObject({ model, size, sequential_image_generation: 'disabled', stream: false });
+    expect(body).not.toHaveProperty('n');
+    expect(billingMocks.createBillingRun).toHaveBeenCalledWith(expect.objectContaining({
+      details: expect.objectContaining({ imageSize: size, aspectRatio, width, height }),
+    }));
+  });
+
+  it.each(['auto', 'adaptive', '自适应'])('keeps the Seedream 5.0 Lite resolution tier for %s', async (aspectRatio) => {
+    await expect(generateVolcengineImage({ ...baseParams, model: 'volcengine/doubao-seedream-5-0-lite-260128',
+      imageSize: '3K', aspectRatio })).resolves.toMatchObject({ width: 3072, height: 3072 });
+
+    const body = JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0]?.[1].body));
+    expect(body).toMatchObject({ size: '3K', sequential_image_generation: 'disabled', stream: false });
+  });
+
   it('keeps a single request rejection and HTTP metadata instead of reporting a batch failure', async () => {
     transportMocks.corsSafeFetch.mockResolvedValue(new Response(JSON.stringify({
       error: { code: 'InvalidParameter', message: 'The parameter size is invalid.' },
