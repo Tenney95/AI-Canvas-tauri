@@ -826,19 +826,19 @@ export async function putAssetIndexes(
               }
               if (options.repairMissingProjectLocation) {
                 if (current?.source !== 'project' || current.projectId !== record.projectId || current.path !== record.path
-                  || next.path !== record.path || next.rootPath !== record.rootPath || next.relativePath !== record.relativePath) {
+                  || current.size !== record.size || !Object.is(current.mtimeMs, record.mtimeMs)
+                  || next.path !== record.path || next.rootPath !== record.rootPath || next.relativePath !== record.relativePath
+                  || (current.rootPath !== undefined && current.rootPath !== record.rootPath)
+                  || (current.relativePath !== undefined && current.relativePath !== record.relativePath)) {
                   identityChanged = true;
                   tx.abort();
                 } else if (current.rootPath === record.rootPath && current.relativePath === record.relativePath) {
                   saved[position] = current;
-                } else if (current.rootPath === undefined && current.relativePath === undefined) {
-                  // 扫描期间，摘要或使用记录可能已经更新，只补缺失的定位字段。
+                } else {
+                  // 保留事务中读到的摘要和使用记录，只补缺失的定位字段。
                   const repaired = { ...current, rootPath: record.rootPath, relativePath: record.relativePath };
                   store.put(repaired);
                   saved[position] = repaired;
-                } else {
-                  identityChanged = true;
-                  tx.abort();
                 }
                 return;
               }

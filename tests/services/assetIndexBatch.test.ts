@@ -63,6 +63,35 @@ describe('项目素材的跨平台相对路径', () => {
       rootPath: 'D:', relativePath: 'Project/Image.PNG',
     });
   });
+
+  it('首次按路径登记原生项目文件时使用绑定主根，刷新已有素材时复用定位', async () => {
+    const core = await import('../../src/services/fs/core');
+    vi.spyOn(core, 'getNativeProjectOwner').mockReturnValue('project');
+    const getRoot = vi.spyOn(core, 'getProjectDataDir').mockResolvedValue('D:/Project');
+    const { identifyAsset } = await import('../../src/services/fs/assetIndex');
+    const db = await import('../../src/services/indexedDbService');
+    const options = { projectId: 'canvas', source: 'project' as const };
+    const path = 'd:/project/Image.PNG';
+
+    const saved = await identifyAsset(path, options);
+    expect(await db.getAssetIndexById(saved.assetId)).toMatchObject({
+      rootPath: 'D:/Project', relativePath: 'Image.PNG', projectId: 'canvas',
+    });
+    expect(await identifyAsset(path, options)).toEqual(saved);
+    expect(getRoot).toHaveBeenCalledExactlyOnceWith('canvas');
+  });
+
+  it.each(['D:/Project/roots/r2-test/image.png', 'D:/ProjectCopy/image.png', 'D:/Project/../image.png'])(
+    '不把子根或主根外的文件登记为主根内相对路径（%s）', async (path) => {
+      const core = await import('../../src/services/fs/core');
+      vi.spyOn(core, 'getNativeProjectOwner').mockReturnValue('project');
+      vi.spyOn(core, 'getProjectDataDir').mockResolvedValue('D:/Project');
+      const { identifyAsset } = await import('../../src/services/fs/assetIndex');
+      const result = await identifyAsset(path, { source: 'project', projectId: 'project' });
+      expect(result.rootPath).toBeUndefined();
+      expect(result.relativePath).toBeUndefined();
+    },
+  );
 });
 
 describe('asset index batch persistence', () => {

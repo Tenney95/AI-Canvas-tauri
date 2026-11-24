@@ -11,7 +11,8 @@ import {
   putAssetIndexes,
   type AssetIndexRecord,
 } from '../indexedDbService';
-import { stripVerbatimPrefix } from './core';
+import { safeExchangePath } from '../projectExchangeDomain';
+import { getNativeProjectOwner, getProjectDataDir, stripVerbatimPrefix } from './core';
 
 export type AssetSource = AssetIndexRecord['source'];
 
@@ -62,6 +63,20 @@ function assetRecord(path: string, options: IdentifyAssetOptions, size: number, 
     ...(existing?.contentDigest && existing.size === size && existing.mtimeMs === mtimeMs ? { contentDigest: existing.contentDigest } : {}),
     status: 'online', updatedAt: Date.now(),
   };
+}
+
+async function inferNewProjectAssetRoot(path: string, projectId: string): Promise<string | undefined> {
+  if (!getNativeProjectOwner(projectId)) return undefined;
+  const root = await getProjectDataDir(projectId);
+  if (!root) return undefined;
+  const relative = getRelativeAssetPath(path, root);
+  // 子根需要调用方传入其根。原生项目主根中的绑定标记不属于素材。
+  if (!relative || /^(?:roots(?:\/|$)|\.ai-canvas-native-project\.json$)/i.test(relative)) return undefined;
+  try {
+    return safeExchangePath(relative) === relative ? root : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** 只批量刷新精确路径已存在的身份；新文件仍逐个识别并落盘，避免重复接管丢失身份。 */
@@ -134,7 +149,12 @@ export async function identifyAsset(path: string, options: IdentifyAssetOptions)
     }
   }
 
-  const [record] = await putAssetIndexes([assetRecord(normalizedPath, options, size, mtimeMs, existing)], {
+  // 路径式登记（如生成标签）首次写入时补上已绑定主根。已有身份继续沿用自己的定位。
+  const inferredRoot = !existing && !options.assetId && !options.rootPath && options.source === 'project' && options.projectId
+    ? await inferNewProjectAssetRoot(normalizedPath, options.projectId)
+    : undefined;
+  const index = assetRecord(normalizedPath, inferredRoot ? { ...options, rootPath: inferredRoot } : options, size, mtimeMs, existing);
+  const [record] = await putAssetIndexes([index], {
     skipUnchanged: true, migrateLegacyTags: true, preserveProjectOwnership: true,
   });
   return record;
