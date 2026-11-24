@@ -25,7 +25,8 @@ vi.mock('../../src/services/comfyPolling', async (original) => ({
 import { createNativeProject, readNativeProjectCapture, saveNativeProjectView } from '../../src/services/indexedDb/nativeProjectRepository';
 import { claimNativeMediaRecovery, prepareNativeMediaTask, listNativeMediaTasks } from '../../src/services/indexedDb/nativeMediaTaskRepository';
 import { bindNativeMediaOrigin } from '../../src/services/nativeMediaOrigin';
-import { createNativeWorkflowReceipt, readNativeWorkflowReceipt, beginNativeWorkflowSubmission, retainNativeWorkflowSubmission, retainNativeWorkflowTaskOutputs } from '../../src/services/nativeWorkflowRepository';
+import { createNativeWorkflowReceipt, readNativeWorkflowReceipt, beginNativeWorkflowSubmission, retainNativeWorkflowSubmission,
+  retainNativeWorkflowTaskOutputs, DYNAMIC_COMFY_WORKFLOW_MODEL_REF, isNativeWorkflowReceiptFor, validateNativeWorkflowReceipt } from '../../src/services/nativeWorkflowRepository';
 import { nativeWorkflowDigest, nativeComfyOutputFiles, submitNativeWorkflowTask, resumeNativeWorkflowTask, isNativeWorkflowExecution } from '../../src/services/nativeWorkflowTasks';
 import { registerNativeVideoSubmissionGuard } from '../../src/services/nativeVideoSubmissionGuard';
 
@@ -73,6 +74,37 @@ it('正常提交后自动查询全部候选并交付原对话，不要求再点�
   const record = (await listNativeMediaTasks(context.projectId))[0];
   expect(record).toMatchObject({ status: 'delivered', remoteTaskId: 'original-prompt', origin: { messageId: 'original-message' } });
   expect(record.localResults).toEqual([output('a'), output('b')]);
+});
+it.each([undefined, 'default'])('动态 ComfyUI 续查绑定原服务器 %s，恢复时只取首个同类产物', async (serverId) => {
+  const { context, nodeId } = await fixture();
+  const otherBase = 'http://127.0.0.1:8189';
+  const config = { providers: {}, comfyUIUrl: serverId ? otherBase : base,
+    comfyServers: serverId ? [{ id: serverId, name: '指定服务器', url: base }] : [] };
+  driver.state = { ...driver.state, workflows: [], config };
+  driver.query.mockRejectedValueOnce(new Error('首次查询断开'));
+  const requestMaterial = { prompt: { sample: '不落盘的临时工作流' } };
+  const descriptor = { dynamic: true as const, adapter: 'comfyui' as const, connectionId: 'comfyui', providerBase: base,
+    category: 'image' as const, serverId, digest: await nativeWorkflowDigest(requestMaterial) };
+  const submit = vi.fn(async () => ({ taskId: 'original-dynamic-prompt' }));
+  await expect(submitNativeWorkflowTask({ nodeId, descriptor, requestMaterial, beforeSubmit: () => {}, submit }))
+    .rejects.toMatchObject({ name: 'NativeMediaTaskPending' });
+  const [record] = await listNativeMediaTasks(context.projectId);
+  const receipt = (await readNativeWorkflowReceipt(record.operationId))!;
+  expect(record).toMatchObject({ status: 'submitted', modelRef: DYNAMIC_COMFY_WORKFLOW_MODEL_REF, remoteTaskId: 'original-dynamic-prompt' });
+  expect(receipt.descriptor).toEqual(descriptor);
+  expect(JSON.stringify([record, receipt])).not.toContain('不落盘的临时工作流');
+  expect(isNativeWorkflowReceiptFor(receipt, { ...record, modelRef: 'workflow/saved' })).toBe(false);
+  expect(() => validateNativeWorkflowReceipt({ ...receipt, descriptor: { ...descriptor, workflowId: 'saved' } })).toThrow();
+
+  driver.state = { ...driver.state, projectExecutionContext: { ...context, runtimeEpoch: 'restarted-runtime' },
+    config: serverId ? { ...config, comfyUIUrl: base, comfyServers: [] } : { ...config, comfyUIUrl: otherBase } };
+  await expect(resumeNativeWorkflowTask(record.operationId)).rejects.toThrow();
+  expect(driver.query).toHaveBeenCalledTimes(1);
+  driver.state.config = config;
+  await resumeNativeWorkflowTask(record.operationId);
+  expect(driver.query).toHaveBeenLastCalledWith(base, 'original-dynamic-prompt', expect.any(String), expect.any(Function), expect.any(AbortSignal));
+  expect((await listNativeMediaTasks(context.projectId))[0]).toMatchObject({ status: 'delivered', localResults: [output('a')] });
+  expect(submit).toHaveBeenCalledOnce();
 });
 it('新项目 ComfyUI 视频在落盘前切换保存中，保存失败且 history 清空仍可续取原视频', async () => {
   const { context, descriptor } = await fixture();

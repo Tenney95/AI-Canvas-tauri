@@ -492,6 +492,7 @@ async function callMcpTool(
         transitionTask: transitionAgentTask,
         waitForApproval: waitForAgentApproval,
         policyMode: MCP_EXECUTION_MODE,
+        mcpSessionId: request.sessionId,
         ...(expectedProjectId !== undefined || operationIdentity ? {
           expectedContext: { projectId: expectedProjectId ?? operationIdentity!.projectId, baseRevision: expectedRevision },
         } : {}),

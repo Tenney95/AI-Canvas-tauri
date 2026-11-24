@@ -56,6 +56,37 @@ function keyedTask() {
 }
 
 describe('keyed canvas_run_nodes progress', () => {
+  it('records a pending native result as unconfirmed', async () => {
+    const progress = keyedTask();
+    generate.mockResolvedValueOnce({ success: false, recovery: { state: 'delivery_pending', nativeOperationId: 'native-1' } });
+    const result = await getAgentTool('canvas_run_nodes')!.execute(context(new AbortController().signal), { nodeIds: ['first'] });
+    const items = [{ nodeId: 'first', status: 'unknown', errorCode: 'CANVAS_NODE_RESULT_UNCONFIRMED' }];
+    expect(JSON.parse(result.modelContent).items).toEqual(items);
+    expect(progress).toHaveBeenLastCalledWith('mcp-task', expect.objectContaining({ items }));
+  });
+
+  it('stops a native run when the same canvas reopens with another runtime epoch', async () => {
+    keyedTask();
+    const nativeContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'first-open',
+      projectId: 'owner', projectEpoch: 1, canvasId: 'p', episodeId: null, canvasEpoch: 1, canvasRevision: 0 } as const;
+    useAppStore.setState({ projectExecutionContext: nativeContext,
+      normalizeNativeMediaGenerationInputs: vi.fn(async () => ({ targetPatch: {}, nodePatches: new Map() })) });
+    generate.mockImplementationOnce(async (_nodeId, _prompt, _postProcess, _data, lease) => {
+      useAppStore.setState({ projectExecutionContext: { ...nativeContext, runtimeEpoch: 'reopened' } });
+      expect(() => lease!.assertFresh()).toThrow('已变化');
+      return { success: false };
+    });
+
+    const result = await getAgentTool('canvas_run_nodes')!.execute(context(new AbortController().signal), { nodeIds: ['first', 'second'] });
+    const payload = JSON.parse(result.modelContent);
+    expect(result).toMatchObject({ status: 'error', errorCode: 'CANVAS_RUN_INTERRUPTED' });
+    expect(payload.items).toEqual([
+      { nodeId: 'first', status: 'unknown', errorCode: 'CANVAS_NODE_RESULT_UNCONFIRMED' }, { nodeId: 'second', status: 'not_started' },
+    ]);
+    expect(payload).not.toHaveProperty('revision');
+    expect(generate).toHaveBeenCalledOnce();
+  });
+
   it('retains completed, interrupted and unstarted nodes after cancellation without submitting the rest', async () => {
     const progress = keyedTask();
     useAppStore.setState((state) => ({ nodes: [...state.nodes, node('third')] }));

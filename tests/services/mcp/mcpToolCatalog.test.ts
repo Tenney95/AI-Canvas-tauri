@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   clearAgentToolRegistryForTests,
   getAgentTool,
+  prepareAgentToolCall,
   registerAgentTool,
   type AgentToolContext,
   type AgentToolDefinition,
@@ -25,6 +26,9 @@ import {
   MCP_SETTINGS_CONVERSATION_ID,
   MCP_SETTINGS_SCOPE_ID,
 } from '../../../src/services/mcp/mcpSettingsScope';
+import { registerCanvasAgentTools } from '../../../src/services/chat/tools/canvasTools';
+import { registerComfyAgentTools } from '../../../src/services/chat/tools/comfyTools';
+import { useAppStore } from '../../../src/store/useAppStore';
 
 const context: Omit<AgentToolContext, 'signal'> = {
   taskId: 'catalog-task', projectId: 'project-1', conversationId: 'mcp-control-project-1', mode: 'autonomous',
@@ -72,6 +76,39 @@ beforeEach(() => {
 });
 
 describe('MCP tool catalog', () => {
+  it('discovers and prepares both run tools for the matching native MCP canvas', () => {
+    clearAgentToolRegistryForTests();
+    registerCanvasAgentTools();
+    registerComfyAgentTools();
+    const projectScope = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'native-run',
+      projectId: 'owner', projectEpoch: 1, canvasId: context.projectId, episodeId: null, canvasEpoch: 1, canvasRevision: 0 } as const;
+    const mcp = { ...context, projectScope };
+    const assistant = { ...mcp, conversationId: 'assistant-chat' };
+    const otherCanvas = { ...mcp, projectScope: { ...projectScope, canvasId: 'other-canvas' } };
+    const calls = [
+      { callId: 'run-nodes', toolId: 'canvas_run_nodes', input: { nodeIds: ['image-node'] } },
+      { callId: 'run-workflow', toolId: 'comfyui_execute_workflow',
+        input: { validationId: 'validation', prompt: '一张图片', deliveryMode: 'canvas' } },
+    ];
+    const names = calls.map((call) => call.toolId);
+    const { config } = useAppStore.getState();
+
+    try {
+      useAppStore.setState({ config: { ...config, comfyUIUrl: 'http://127.0.0.1:8188' } });
+      expect(describeMcpToolCatalog(mcp, { names }).tools.map((tool) => tool.name)).toEqual(names);
+      for (const call of calls) {
+        expect(searchMcpToolCatalog(mcp, { query: call.toolId }).tools[0]?.name).toBe(call.toolId);
+        expect(prepareAgentToolCall(call, mcp).ok).toBe(true);
+        expect(prepareAgentToolCall(call, assistant).ok).toBe(false);
+        expect(prepareAgentToolCall(call, otherCanvas).ok).toBe(false);
+      }
+      useAppStore.setState({ config: { ...config, comfyUIUrl: '', comfyServers: [] } });
+      expect(() => describeMcpToolCatalog(mcp, { names: ['comfyui_execute_workflow'] })).toThrow('不可用');
+    } finally {
+      useAppStore.setState({ config });
+    }
+  });
+
   it('lists every environment tool introduction without schemas or first-page truncation', () => {
     const ids = ['canvas_query', 'canvas_align', 'media_generate'];
     for (let i = 0; i < 12; i += 1) {

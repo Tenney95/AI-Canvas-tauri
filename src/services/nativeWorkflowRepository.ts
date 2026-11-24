@@ -11,9 +11,10 @@ import { validateNativeProtocolContext } from './nativeProtocolContext';
 import { sanitizeComfyOutputFile, type ComfyOutputFile } from './comfyOutputs';
 
 export type NativeWorkflowAdapter = 'runninghub-workflow' | 'runninghub-model' | 'workflow-api' | 'comfyui' | 'muse-webview';
+export const DYNAMIC_COMFY_WORKFLOW_MODEL_REF = 'comfyui/dynamic-workflow';
 export interface NativeWorkflowDescriptor {
   adapter: NativeWorkflowAdapter; connectionId: string; providerBase: string; category: MediaKind; digest: string;
-  workflowId?: string; modelId?: string; serverId?: string; outputNodeIds?: string[];
+  workflowId?: string; modelId?: string; serverId?: string; outputNodeIds?: string[]; dynamic?: true;
 }
 export interface NativeWorkflowTask {
   taskId: string; state: 'submitted' | 'failed' | 'completed'; outputs?: NativeMediaLocalOutput[];
@@ -47,13 +48,16 @@ export function validateNativeWorkflowReceipt(value: NativeWorkflowReceipt): Nat
     || !bounded(value.ownerProjectId) || !bounded(value.canvasId) || !bounded(value.nodeId) || !Number.isSafeInteger(value.revision) || value.revision < 0
     || !Number.isSafeInteger(value.projectEpoch) || value.projectEpoch < 0 || !Number.isSafeInteger(value.canvasEpoch) || value.canvasEpoch < 0
     || !(value.episodeId === null || bounded(value.episodeId)) || value.uncertainAcknowledged !== undefined && value.uncertainAcknowledged !== true
-    || !fields(descriptor, ['adapter', 'connectionId', 'providerBase', 'category', 'digest', 'workflowId', 'modelId', 'serverId', 'outputNodeIds'])
+    || !fields(descriptor, ['adapter', 'connectionId', 'providerBase', 'category', 'digest', 'workflowId', 'modelId', 'serverId', 'outputNodeIds', 'dynamic'])
     || !['runninghub-workflow', 'runninghub-model', 'workflow-api', 'comfyui', 'muse-webview'].includes(descriptor.adapter)
     || !bounded(descriptor.connectionId) || normalizeNativeMediaProviderBase(descriptor.providerBase) !== descriptor.providerBase
     || !['image', 'video', 'audio'].includes(descriptor.category) || !/^[a-f0-9]{64}$/.test(descriptor.digest)
     || [descriptor.workflowId, descriptor.modelId, descriptor.serverId].some((item) => item !== undefined && !bounded(item))
     || descriptor.outputNodeIds !== undefined && (!Array.isArray(descriptor.outputNodeIds) || descriptor.outputNodeIds.length > 128 || descriptor.outputNodeIds.some((item) => !bounded(item)))
     || !Array.isArray(value.submissions) || !value.submissions.length || value.submissions.length > 32 || !Array.isArray(value.tasks) || value.tasks.length > 128) return fail();
+  if (descriptor.dynamic !== undefined && (descriptor.dynamic !== true || descriptor.adapter !== 'comfyui' || descriptor.connectionId !== 'comfyui'
+    || descriptor.workflowId !== undefined || descriptor.modelId !== undefined || descriptor.outputNodeIds !== undefined || value.submissions.length !== 1
+    || value.tasks.length > 1 || value.syncOutputs !== undefined)) return fail();
   const ids = new Set<string>(), taskIds: string[] = [];
   for (const slot of value.submissions) {
     if (!fields(slot, ['id', 'state', 'taskIds']) || !UUID.test(slot.id) || ids.has(slot.id) || !['prepared', 'unknown', 'submitted', 'completed', 'failed', 'not-started'].includes(slot.state)
@@ -66,15 +70,23 @@ export function validateNativeWorkflowReceipt(value: NativeWorkflowReceipt): Nat
   let comfyFileCount = 0;
   for (const task of value.tasks) {
     if (task.comfyOutputFiles === undefined) continue;
-    if (descriptor.adapter !== 'comfyui' || task.state === 'failed' || !Array.isArray(task.comfyOutputFiles) || !task.comfyOutputFiles.length) return fail();
+    if (descriptor.adapter !== 'comfyui' || task.state === 'failed' || !Array.isArray(task.comfyOutputFiles) || !task.comfyOutputFiles.length
+      || descriptor.dynamic && task.comfyOutputFiles.length !== 1) return fail();
     comfyFileCount += task.comfyOutputFiles.length;
     if (comfyFileCount > 128) return fail();
     for (const file of task.comfyOutputFiles) {
       if (!fields(file, ['filename', 'subfolder', 'type']) || !configValuesEqual(file, sanitizeComfyOutputFile(file))) return fail();
     }
   }
-  for (const task of value.tasks) if (task.state === 'completed') validateNativeMediaLocalOutputs(task.outputs!);
-  for (const task of value.tasks) if (task.recoveryContext) validateNativeProtocolContext(task.recoveryContext);
+  for (const task of value.tasks) if (task.state === 'completed') {
+    const outputs = task.outputs!;
+    validateNativeMediaLocalOutputs(outputs);
+    if (descriptor.dynamic && (outputs.length !== 1 || outputs[0].category !== descriptor.category)) return fail();
+  }
+  for (const task of value.tasks) if (task.recoveryContext !== undefined) {
+    if (descriptor.dynamic) return fail();
+    if (task.recoveryContext) validateNativeProtocolContext(task.recoveryContext);
+  }
   if (value.syncOutputs) validateNativeMediaLocalOutputs(value.syncOutputs);
   if (value.lateTaskIds !== undefined && (!Array.isArray(value.lateTaskIds) || value.lateTaskIds.length > 128 || value.lateTaskIds.some((item) =>
     !fields(item, ['submissionId', 'taskId']) || !UUID.test(item.submissionId) || !bounded(item.taskId)
@@ -88,7 +100,9 @@ export function isNativeWorkflowReceiptFor(receipt: NativeWorkflowReceipt, main:
     && receipt.nodeId === main.nodeId && receipt.descriptor.digest === main.recovery?.digest && main.recovery?.kind === 'workflow'
     && receipt.descriptor.connectionId === main.providerConfigId && receipt.descriptor.providerBase === main.providerBase
     && receipt.descriptor.category === main.category && receipt.descriptor.workflowId === main.recovery.workflowId
-    && receipt.descriptor.modelId === main.recovery.modelId && receipt.descriptor.serverId === main.recovery.serverId;
+    && receipt.descriptor.modelId === main.recovery.modelId && receipt.descriptor.serverId === main.recovery.serverId
+    && (receipt.descriptor.dynamic === true) === (main.modelRef === DYNAMIC_COMFY_WORKFLOW_MODEL_REF)
+    && (!receipt.descriptor.dynamic || main.submissionKind === 'async' && main.protocolDigest === receipt.descriptor.digest);
 }
 export async function createNativeWorkflowReceipt(main: NativeMediaTaskRecord, descriptor: NativeWorkflowDescriptor, count: number,
   options: NativeProjectOptions = {}): Promise<NativeWorkflowReceipt> {

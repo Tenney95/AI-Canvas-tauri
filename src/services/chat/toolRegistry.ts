@@ -33,6 +33,8 @@ export interface AgentToolContext {
   executionContext?: import('../../types/project').ProjectExpectedContext;
   projectScope?: import('../../types/project').ProjectExpectedContext;
   conversationId: string;
+  /** 由本机 MCP 控制桥提供，只在本次工具调用中使用。 */
+  mcpSessionId?: string;
   mode: AgentMode;
   /** 任务级工具上限；缺省表示不额外限制，空数组表示无工具。 */
   toolAllowlist?: string[];

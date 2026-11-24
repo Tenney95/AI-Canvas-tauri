@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const comfyFetchMock = vi.hoisted(() => vi.fn());
 const pollComfyHistoryMock = vi.hoisted(() => vi.fn());
+const submitNativeWorkflowMock = vi.hoisted(() => vi.fn<typeof import('../../src/services/nativeWorkflowTasks').submitNativeWorkflowTask>());
 
 vi.mock('../../src/services/comfyPolling', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/services/comfyPolling')>(),
@@ -16,12 +17,17 @@ vi.mock('../../src/services/fileService', () => ({
   persistMediaUrlToProjectData: vi.fn(),
   saveWorkflow: vi.fn(),
 }));
+vi.mock('../../src/services/nativeWorkflowTasks', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/services/nativeWorkflowTasks')>(),
+  submitNativeWorkflowTask: submitNativeWorkflowMock,
+}));
 
 import { useAppStore } from '../../src/store/useAppStore';
 import {
   clearComfyAgentCachesForTests,
   discoverComfyUI,
   executeValidatedComfyUIWorkflow,
+  executeValidatedNativeComfyUIWorkflow,
   getComfyWorkflowSaveOfferSummary,
   getValidatedComfyWorkflowSummary,
   saveCompletedComfyUIWorkflow,
@@ -78,6 +84,7 @@ beforeEach(() => {
   clearComfyAgentCachesForTests();
   comfyFetchMock.mockReset();
   pollComfyHistoryMock.mockReset();
+  submitNativeWorkflowMock.mockReset();
 });
 
 describe('ComfyUI assistant server selection', () => {
@@ -200,6 +207,37 @@ describe('ComfyUI assistant server selection', () => {
     const saved = await saveCompletedComfyUIWorkflow({ ...executionArgs, saveOfferId: result.saveOffer.saveOfferId, name: '远程工作流' });
     expect(useAppStore.getState().workflows.find((item) => item.id === saved.id)?.serverId).toBe('video-server');
     expect(comfyBaseUrlFor(saved.id)).toBe(remoteUrl);
+  });
+
+  it('uses one native submission across MCP requests and rejects another bridge or canvas opening', async () => {
+    const canvas = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'first-open',
+      projectId: 'owner', projectEpoch: 1, canvasId: validationArgs.projectId, episodeId: null, canvasEpoch: 1, canvasRevision: 0 } as const;
+    useAppStore.setState({ currentProjectId: canvas.canvasId, projectLoadStatus: 'ready', projectExecutionContext: canvas });
+    const mcp = { sessionId: 'bridge', canvas };
+    const { validationId } = await validateComfyUIWorkflow({ ...validationArgs, workflow: workflow(), mcp });
+    const args = { ...executionArgs, taskId: 'next-request', validationId, mcp,
+      prepare: vi.fn(async () => ({ nodeId: 'node-1', signal: new AbortController().signal, beforeSubmit: () => undefined })) };
+
+    await expect(executeValidatedNativeComfyUIWorkflow({ ...args, mcp: { ...mcp, sessionId: 'other-bridge' } })).rejects.toThrow('校验已失效');
+    const reopened = { ...canvas, runtimeEpoch: 'reopened' };
+    useAppStore.setState({ projectExecutionContext: reopened });
+    expect(getValidatedComfyWorkflowSummary(validationId, args.taskId, args.projectId, { ...mcp, canvas: reopened })).toBeNull();
+    expect(args.prepare).not.toHaveBeenCalled();
+    useAppStore.setState({ projectExecutionContext: canvas });
+
+    const received = vi.fn(async (_taskId: string) => undefined);
+    submitNativeWorkflowMock.mockImplementationOnce(async (input) => {
+      await input.submit(0, input.signal, received);
+      throw Object.assign(new Error('delivered'), { name: 'NativeMediaTaskDelivered', nativeOperationId: 'original-operation' });
+    });
+    const original = executeValidatedNativeComfyUIWorkflow(args);
+    await expect(executeValidatedNativeComfyUIWorkflow(args)).rejects.toThrow('校验已失效');
+    await expect(original).resolves.toMatchObject({ operationId: 'original-operation', saveOffer: { serverId: 'video-server' } });
+    expect(submitNativeWorkflowMock).toHaveBeenCalledWith(expect.objectContaining({ descriptor: expect.objectContaining({
+      adapter: 'comfyui', dynamic: true, serverId: 'video-server', providerBase: remoteUrl,
+    }) }));
+    expect(received).toHaveBeenCalledExactlyOnceWith('remote-task');
+    expect(comfyFetchMock.mock.calls.filter(([url]) => url.endsWith('/prompt'))).toHaveLength(1);
   });
 
   it.each(['断线', '网关超时', '回执缺少任务 ID'])('提交后%s，原校验凭证不能再次入队', async (failure) => {

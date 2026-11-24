@@ -10,7 +10,7 @@ import { captureNativeVideoSubmissionBaseline, assertNativeVideoSubmissionInput,
 import { nativeWorkflowDigest } from './nativeWorkflowExecution';
 import { createNativeWorkflowReceipt, beginNativeWorkflowSubmission, retainNativeWorkflowSubmission, sealNativeWorkflowSubmissions,
   isNativeWorkflowReceiptFor, readNativeWorkflowReceipt, retainNativeWorkflowTaskOutputs, retainNativeWorkflowSyncOutputs,
-  nativeWorkflowSummary,
+  nativeWorkflowSummary, DYNAMIC_COMFY_WORKFLOW_MODEL_REF,
   type NativeWorkflowDescriptor, type NativeWorkflowReceipt, type NativeWorkflowTask } from './nativeWorkflowRepository';
 import { retainNativeMediaOutputs } from './indexedDb/nativeMediaCollectionRepository';
 import { nativeMediaLocalOutputs } from './nativeMediaCollection';
@@ -20,7 +20,7 @@ import { PollTaskFailedError } from './pollTask';
 import { getHttpResponseError } from './ai/httpUtils';
 import { createMediaDownloadAccess } from './ai/mediaDownloadAccess';
 import { isSafeNativeProtocolTaskId, validateNativeProtocolContext } from './nativeProtocolContext';
-import { COMFY_AUDIO_OUTPUT_KINDS, findComfyOutputFiles, buildComfyFileUrl, type ComfyOutputFile, type ComfyOutputs } from './comfyOutputs';
+import { COMFY_AUDIO_OUTPUT_KINDS, findComfyOutputFile, findComfyOutputFiles, buildComfyFileUrl, type ComfyOutputFile, type ComfyOutputs } from './comfyOutputs';
 import { maybeAutoReleaseComfyMemory } from './comfyMemory';
 import { withComfyQueryTimeout } from './comfyQuery';
 import { ComfyExecutionFailedError } from './comfyPolling';
@@ -138,6 +138,7 @@ export async function submitNativeWorkflowTask(input: {
   const context = captureLegacyCanvasContext(useAppStore.getState());
   if (!context || context.modelGeneration !== 1 || !input.nodeId || !isNativeVideoSubmissionGuard(input.beforeSubmit)) throw new Error('工作流缺少原生画布提交守卫，未提交生成');
   const descriptor = structuredClone(input.descriptor), count = input.count ?? 1;
+  if (descriptor.dynamic && (count !== 1 || input.synchronous)) throw new Error('动态 ComfyUI 工作流只支持单次异步提交');
   descriptor.providerBase = normalizeNativeMediaProviderBase(descriptor.providerBase);
   await assertWorkflowContract(descriptor);
   await input.beforeSubmit?.(); input.signal?.throwIfAborted();
@@ -146,7 +147,8 @@ export async function submitNativeWorkflowTask(input: {
   const baseline = await captureNativeVideoSubmissionBaseline(context, input.nodeId, undefined, 'media-input-v3', { preparedReferences: true, preparation });
   let record = await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: input.nodeId,
     providerConfigId: descriptor.connectionId, providerBase: descriptor.providerBase, category: descriptor.category,
-    submissionKind: input.synchronous ? 'sync' : 'async', fingerprintScheme: 'media-input-v3', modelRef: `workflow/${descriptor.workflowId ?? descriptor.modelId ?? descriptor.adapter}`,
+    submissionKind: input.synchronous ? 'sync' : 'async', fingerprintScheme: 'media-input-v3',
+    modelRef: descriptor.dynamic ? DYNAMIC_COMFY_WORKFLOW_MODEL_REF : `workflow/${descriptor.workflowId ?? descriptor.modelId ?? descriptor.adapter}`,
     protocolDigest: descriptor.digest, requestFingerprint: await nativeWorkflowDigest(input.requestMaterial), inputFingerprint: baseline.inputFingerprint,
     sourceCanvasRevision: baseline.canvasRevision, recovery: { kind: 'workflow', workflowId: descriptor.workflowId,
       modelId: descriptor.modelId, serverId: descriptor.serverId, digest: descriptor.digest, expectedCount: count } });
@@ -217,6 +219,15 @@ export async function submitNativeWorkflowTask(input: {
 }
 
 export async function assertWorkflowContract(descriptor: NativeWorkflowDescriptor): Promise<void> {
+  if (descriptor.dynamic) {
+    if (descriptor.adapter !== 'comfyui' || descriptor.connectionId !== 'comfyui' || descriptor.workflowId !== undefined
+      || descriptor.modelId !== undefined || descriptor.outputNodeIds !== undefined) throw new Error('动态 ComfyUI 工作流合同无效');
+    const { resolveComfyServerSelection } = await import('./comfyServers');
+    // 动态工作流提交后只按原服务器和任务 ID 续查，无需保存生成请求。
+    const { baseUrl } = resolveComfyServerSelection(descriptor.serverId);
+    if (normalizeNativeMediaProviderBase(baseUrl) !== descriptor.providerBase) throw new Error('原 ComfyUI 服务器地址已变化，原任务保留');
+    return;
+  }
   const state = useAppStore.getState(), workflow = descriptor.workflowId ? state.workflows.find((item) => item.id === descriptor.workflowId) : undefined;
   if (descriptor.adapter === 'muse-webview') {
     const { MUSE_BASE_URL, MUSE_IMAGE_MODEL, MUSE_VIDEO_MODEL } = await import('./ai/museModels');
@@ -263,14 +274,21 @@ export async function queryNativeWorkflowOriginal(descriptor: NativeWorkflowDesc
   }
   const workflow = descriptor.workflowId ? state.workflows.find((item) => item.id === descriptor.workflowId) : undefined;
   if (descriptor.adapter === 'comfyui') {
-    const { comfyBaseUrlFor } = await import('./comfyServers');
-    if (!workflow || descriptor.digest !== await nativeWorkflowDigest(['comfyui-native-media-v1', workflow.id, workflow.fileContent, workflow.serverId, descriptor.category])
-      || normalizeNativeMediaProviderBase(comfyBaseUrlFor(workflow.id)) !== descriptor.providerBase) throw new Error('原 ComfyUI 工作流或服务已变化，原任务保留');
+    if (descriptor.dynamic) await assertWorkflowContract(descriptor);
+    else {
+      const { comfyBaseUrlFor } = await import('./comfyServers');
+      if (!workflow || descriptor.digest !== await nativeWorkflowDigest(['comfyui-native-media-v1', workflow.id, workflow.fileContent, workflow.serverId, descriptor.category])
+        || normalizeNativeMediaProviderBase(comfyBaseUrlFor(workflow.id)) !== descriptor.providerBase) throw new Error('原 ComfyUI 工作流或服务已变化，原任务保留');
+    }
     let files = task.comfyOutputFiles;
     if (!files) {
       const { pollComfyHistory } = await import('./comfyPolling');
-      files = await pollComfyHistory(descriptor.providerBase, task.taskId, '原 ComfyUI 任务尚未取回',
-        (outputs) => nativeComfyOutputFiles(outputs, descriptor.category), signal);
+      files = await pollComfyHistory(descriptor.providerBase, task.taskId, '原 ComfyUI 任务尚未取回', (outputs) => {
+        if (!descriptor.dynamic) return nativeComfyOutputFiles(outputs, descriptor.category);
+        const kinds = descriptor.category === 'audio' ? COMFY_AUDIO_OUTPUT_KINDS : [descriptor.category];
+        const first = findComfyOutputFile(outputs, kinds);
+        return first ? [first] : null;
+      }, signal);
       await retainComfyFiles?.(files);
     }
     return files.map((file) => ({ url: buildComfyFileUrl(descriptor.providerBase, file), kind: descriptor.category }));
@@ -332,6 +350,9 @@ export async function resumeNativeWorkflowTask(operationId: string, externalSign
   let record = await currentRecord(context.projectId, operationId), receipt = await readNativeWorkflowReceipt(operationId);
   externalSignal?.throwIfAborted();
   if (!receipt || !isNativeWorkflowTask(record) || record.canvasId !== context.canvasId) throw new Error('原工作流不属于当前画布');
+  if ((receipt.descriptor.dynamic || record.modelRef === DYNAMIC_COMFY_WORKFLOW_MODEL_REF) && !isNativeWorkflowReceiptFor(receipt, record)) {
+    throw new Error('原动态 ComfyUI 回执身份不一致，已保留原任务');
+  }
   if (record.status === 'delivered') { const { projectNativeMediaMessages } = await import('./nativeMediaMessages'); await projectNativeMediaMessages(); return; }
   if (!record.localResults) {
     ({ record, receipt } = await sealNativeWorkflowSubmissions(record, context, { signal: externalSignal }));

@@ -14,6 +14,7 @@ import { executeGeneration, type GenerationLease } from '../../generationService
 import { getPendingTasksForProject } from '../../pollManager';
 import { recordMcpOperationProgress } from '../../mcp/mcpOperationService';
 import { getProjectModelKind, parseProjectModelRef, PROJECT_IMAGE_SIZES } from '../../projectSettingsService';
+import { isProjectExpectedContextCurrent } from '../../projectExecutionContext';
 import { generationInputSnapshot, getCanvasNodeHash, matchesCanvasNodeSnapshot } from '../canvasNodeVersion';
 import { validateAgentToolInput } from '../agentToolSchemas';
 import { registerAgentTool, type AgentToolExecutionResult } from '../toolRegistry';
@@ -875,7 +876,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
       description: [
         `按节点自身的提示词、模型和连线输入运行生成，一次最多 ${MAX_RUN_NODES} 个节点，串行执行。`,
         '这是真实的付费模型调用；Plan 模式拒绝，B 协作模式由 Policy 请求确认，C 自主模式与 MCP 会话直接执行。只想改参数不生成时用 canvas_update_nodes。',
-        '正在生成中的节点会被跳过。',
+        '正在生成中的节点会被跳过。新结构画布可通过 MCP 运行，调用时可带 operationKey 保留逐项回执。',
       ].join(''),
       inputSchema: {
         type: 'object',
@@ -903,6 +904,9 @@ export function registerCanvasAgentTools(): Array<() => void> {
           return { status: 'error', summary: message, modelContent: message };
         }
         const initial = useAppStore.getState();
+        const nativeContext = initial.projectExecutionContext?.modelGeneration === 1 ? initial.projectExecutionContext : undefined;
+        const isTargetCanvas = (state: typeof initial) => state.currentProjectId === context.projectId
+          && (!nativeContext || isProjectExpectedContextCurrent(nativeContext, state, { checkCanvasRevision: false }));
         const settings = initial.projects.find((project) => project.id === context.projectId)?.settings;
         const inputData = new Map(initial.nodes.filter((node) => targetIds.includes(node.id)).map((node) => [node.id, node.data]));
         const inputs = new Map(initial.nodes.filter((node) => targetIds.includes(node.id))
@@ -922,11 +926,11 @@ export function registerCanvasAgentTools(): Array<() => void> {
             && !['paused', 'stopped', 'failed', 'completed'].includes(task.status))) throw new Error('MCP 操作任务已停止或移除');
         };
         try {
-          if (initial.projectExecutionContext?.modelGeneration === 1) {
+          if (nativeContext) {
             const baseRevision = initial.getCurrentRevision();
             const assertPreparing = () => {
               const live = useAppStore.getState();
-              if (context.signal.aborted || live.currentProjectId !== context.projectId || live.getCurrentRevision() !== baseRevision) {
+              if (context.signal.aborted || !isTargetCanvas(live) || live.getCurrentRevision() !== baseRevision) {
                 throw new Error('项目或运行输入已变化，未提交生成');
               }
               assertCanvasRevision(context);
@@ -1008,7 +1012,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
               const current = useAppStore.getState();
               const live = current.nodes.find((candidate) => candidate.id === nodeId);
               const currentSettings = current.projects.find((project) => project.id === context.projectId)?.settings;
-              if (current.currentProjectId !== context.projectId || !live
+              if (!isTargetCanvas(current) || !live
                 || generationInputSnapshot(live.data, currentSettings) !== inputs.get(nodeId)) {
                 leaseInvalidated = true;
                 throw new Error('项目或节点生成输入已变化，请重新查询后运行');
@@ -1025,8 +1029,10 @@ export function registerCanvasAgentTools(): Array<() => void> {
             const result = await executeGeneration(nodeId, undefined, undefined, undefined, lease);
             if (tracksOperation) {
               // 已交付的结果先登记本项目revision；不能被随后的journal等待或取消漏记。
-              if (useAppStore.getState().currentProjectId === context.projectId) operationRevision = useAppStore.getState().incrementRevision();
-              const unconfirmed = !result.success && (leaseInvalidated || context.signal.aborted || useAppStore.getState().currentProjectId !== context.projectId
+              const current = useAppStore.getState();
+              const sameCanvas = isTargetCanvas(current);
+              if (sameCanvas) operationRevision = current.incrementRevision();
+              const unconfirmed = !result.success && (result.recovery !== undefined || leaseInvalidated || context.signal.aborted || !sameCanvas
                 || getPendingTasksForProject(context.projectId).some((task) => task.nodeId === nodeId));
               updateItem(nodeId, result.success ? 'succeeded' : unconfirmed ? 'unknown' : 'failed',
                 result.success ? undefined : unconfirmed ? 'CANVAS_NODE_RESULT_UNCONFIRMED' : 'CANVAS_NODE_GENERATION_FAILED');
@@ -1037,7 +1043,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
             }
             if (context.signal.aborted) throw new DOMException('请求已取消', 'AbortError');
             // 生成期间用户可能切走项目，后续节点不能再往这张画布写
-            if (useAppStore.getState().currentProjectId !== context.projectId) {
+            if (!isTargetCanvas(useAppStore.getState())) {
               if (tracksOperation) throw new Error('生成期间项目已切换');
               results.push({ nodeId, status: 'aborted', message: '生成期间项目已切换' });
               break;

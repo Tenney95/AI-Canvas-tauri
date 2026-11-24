@@ -776,19 +776,22 @@ describe('MCP versioned execution context', () => {
     expect(useAppStore.getState().agentTasks).toHaveLength(0);
   });
 
-  it('returns a reusable context from a read and preserves its value across another physical connection', async () => {
-    registerDispatchProbe({ effect: 'read' });
+  it('returns a reusable canvas context independent of the transient bridge instance', async () => {
+    const read = registerDispatchProbe({ effect: 'read' });
     const result = await mcpCall('mcp_dispatch_probe', { value: 'read' }, 'typed:read');
+    expect(read).toHaveBeenCalledWith(expect.objectContaining({ mcpSessionId: 'catalog-session' }), { value: 'read' });
     const block = result.content.find((item) => item.type === 'text' && item.text.includes('expectedContext'));
     if (!block || block.type !== 'text') throw new Error('Missing reusable context');
     const { expectedContext } = JSON.parse(block.text);
     const execute = registerDispatchProbe({ id: 'mcp_typed_write' });
-    const written = await handleMcpBridgeRequest({ sessionId: 'second-physical-connection', requestId: 'typed:write', method: 'tools/call',
+    const written = await handleMcpBridgeRequest({ sessionId: 'second-bridge-instance', requestId: 'typed:write', method: 'tools/call',
       params: { name: 'tools_call', arguments: { schemaVersion: 2, name: 'mcp_typed_write', arguments: { value: 'write' }, expectedContext } } }) as McpToolCallResult;
     expect(written.isError).toBe(false);
     expect(execute).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ mcpSessionId: 'second-bridge-instance' }), { value: 'write' });
     const task = useAppStore.getState().agentTasks.find((item) => item.goal.includes('分发测试') && item.executionContext);
     expect(task).toMatchObject({ projectId: 'project-mcp', conversationId: 'mcp-control-project-mcp', executionContext: expectedContext });
+    expect(task).not.toHaveProperty('mcpSessionId');
   });
 
   it('blocks a target epoch change during asynchronous operation identification without claiming a new key', async () => {

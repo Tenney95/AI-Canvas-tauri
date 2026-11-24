@@ -35,6 +35,8 @@ export interface RegisteredAgentToolCallOptions {
   ) => Promise<AgentApprovalResolution>;
   /** 仅供可信本地编排层覆盖 Policy 模式；工具输入无法设置该值。 */
   policyMode?: AgentMode;
+  /** 只接受本机 MCP 控制桥提供的会话 ID，不从工具参数读取。 */
+  mcpSessionId?: string;
   /** 外部编排器上次读取的前置条件，不能在动态加载期间改成当前新版本。 */
   expectedContext?: Pick<AgentToolContext, 'projectId' | 'baseRevision' | 'executionContext'>;
   onApprovalRequired?: (step: AgentStep) => void;
@@ -61,6 +63,7 @@ export async function executeRegisteredAgentToolCall({
   transitionTask,
   waitForApproval,
   policyMode,
+  mcpSessionId,
   expectedContext,
   onApprovalRequired,
 }: RegisteredAgentToolCallOptions): Promise<ExecutedToolCall> {
@@ -90,6 +93,7 @@ export async function executeRegisteredAgentToolCall({
     taskId,
     projectId: initialTask.projectId,
     conversationId: initialTask.conversationId,
+    ...(mcpSessionId !== undefined ? { mcpSessionId } : {}),
     mode: readCurrentMode(),
     toolAllowlist: initialTask.toolAllowlist,
     executionContext: suppliedContext?.executionContext ?? initialTask.executionContext,

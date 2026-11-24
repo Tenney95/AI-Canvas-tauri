@@ -8,6 +8,8 @@ import type { AgentToolContext } from '../../../src/services/chat/toolRegistry';
 const discoverMock = vi.hoisted(() => vi.fn());
 const validateMock = vi.hoisted(() => vi.fn());
 const executeMock = vi.hoisted(() => vi.fn());
+const executeNativeMock = vi.hoisted(() => vi.fn<typeof import('../../../src/services/comfyAgentService').executeValidatedNativeComfyUIWorkflow>());
+const persistNativeOriginMock = vi.hoisted(() => vi.fn());
 const summaryMock = vi.hoisted(() => vi.fn());
 const saveOfferSummaryMock = vi.hoisted(() => vi.fn());
 const saveWorkflowMock = vi.hoisted(() => vi.fn());
@@ -16,10 +18,13 @@ vi.mock('../../../src/services/comfyAgentService', () => ({
   discoverComfyUI: discoverMock,
   validateComfyUIWorkflow: validateMock,
   executeValidatedComfyUIWorkflow: executeMock,
+  executeValidatedNativeComfyUIWorkflow: executeNativeMock,
   getValidatedComfyWorkflowSummary: summaryMock,
   getComfyWorkflowSaveOfferSummary: saveOfferSummaryMock,
   saveCompletedComfyUIWorkflow: saveWorkflowMock,
 }));
+vi.mock('../../../src/services/nativeMediaOriginPersistence', () => ({ persistNativeMediaOrigin: persistNativeOriginMock }));
+vi.mock('../../../src/services/nativeMediaMessages', () => ({ projectNativeMediaMessages: vi.fn(async () => undefined) }));
 
 import { useAppStore } from '../../../src/store/useAppStore';
 import { registerComfyAgentTools } from '../../../src/services/chat/tools/comfyTools';
@@ -90,6 +95,8 @@ beforeEach(() => {
   }));
   discoverMock.mockReset().mockResolvedValue({ folders: [] });
   validateMock.mockReset().mockResolvedValue(summary);
+  executeNativeMock.mockReset();
+  persistNativeOriginMock.mockReset().mockResolvedValue(undefined);
   executeMock.mockReset().mockResolvedValue({
     artifact: {
       id: 'artifact-1',
@@ -207,6 +214,30 @@ describe('ComfyUI assistant tools', () => {
       mediaStatus: 'succeeded',
       mediaResult: { id: 'artifact-1' },
     });
+  });
+
+  it('prepares native canvas delivery with a recoverable ComfyUI target', async () => {
+    const canvas = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'native-run',
+      projectId: 'owner', projectEpoch: 1, canvasId: context.projectId, episodeId: null, canvasEpoch: 1, canvasRevision: 0 } as const;
+    const native = { ...context, mode: 'autonomous' as const, mcpSessionId: 'bridge', conversationId: `mcp-control-${context.projectId}`, projectScope: canvas };
+    useAppStore.setState((state) => ({ projectLoadStatus: 'ready', projectExecutionContext: canvas,
+      agentTasks: [{ ...task(), conversationId: native.conversationId }],
+      messages: state.messages.map((message) => ({ ...message, conversationId: native.conversationId })),
+    }));
+    executeNativeMock.mockImplementationOnce(async (args) => {
+      const prepared = await args.prepare('a'.repeat(64));
+      await prepared.beforeSubmit();
+      expect(useAppStore.getState().nodes.find((node) => node.id === prepared.nodeId)?.data).toMatchObject({
+        role: 'generator', provider: 'comfyui', status: 'loading',
+      });
+      expect(persistNativeOriginMock).toHaveBeenCalledWith(canvas, expect.objectContaining({ messageId: 'assistant-1', deliveryMode: 'canvas' }));
+      return { operationId: 'native-operation', saveOffer: { ...summary, saveOfferId: 'save-1', suggestedName: '工作流' } };
+    });
+
+    const result = await getAgentTool('comfyui_execute_workflow')!.execute(native, { validationId: 'validation-1', prompt: '猫', deliveryMode: 'canvas' });
+    expect(result.status).toBe('success');
+    expect(JSON.parse(result.modelContent)).toMatchObject({ operationId: 'native-operation', persistence: 'saved' });
+    expect(executeMock).not.toHaveBeenCalled();
   });
 
   it('instructs the assistant to ask before saving after a successful execution', async () => {

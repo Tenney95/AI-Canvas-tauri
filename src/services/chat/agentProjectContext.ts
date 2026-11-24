@@ -29,13 +29,17 @@ export function captureAgentProjectScope(state: ProjectExecutionContextState,
 
 /** 旧任务缺显式字段时保留原工具合同；有类型上下文后禁止以空项目启动画布/付费能力。 */
 export function isAgentToolProjectContextCompatible(tool: Pick<AgentToolDefinition, 'id' | 'effect'>,
-  context: Pick<AgentToolContext, 'executionContext' | 'projectScope'>, input?: unknown,
+  context: Pick<AgentToolContext, 'executionContext' | 'projectScope'> & Partial<Pick<AgentToolContext, 'projectId' | 'conversationId'>>, input?: unknown,
   state?: ProjectExecutionContextState): boolean {
   const target = context.executionContext ?? context.projectScope;
   if (!target) return true;
-  // 只开放已接耐久原回执的统一媒体入口；发现阶段无input，实际参数仍由authorize和Provider复核。
+  // 新画布只开放已接通原任务回执的入口，实际参数仍由工具和 Provider 复核。
   if (target.modelGeneration > 0 && tool.effect === 'media_generation') {
-    if (target.modelGeneration !== 1 || target.kind !== 'canvas' || !['media_generate', 'media_resume_generation_stage'].includes(tool.id)) return false;
+    if (target.modelGeneration !== 1 || target.kind !== 'canvas') return false;
+    if (tool.id === 'canvas_run_nodes' || tool.id === 'comfyui_execute_workflow') {
+      return context.projectId === target.canvasId && context.conversationId === `mcp-control-${target.canvasId}`;
+    }
+    if (!['media_generate', 'media_resume_generation_stage'].includes(tool.id)) return false;
     if (tool.id === 'media_resume_generation_stage') return input === undefined || !!input && typeof input === 'object'
       && typeof (input as { nodeId?: unknown }).nodeId === 'string' && typeof (input as { operationId?: unknown }).operationId === 'string';
     if (input !== undefined && (!input || typeof input !== 'object' || !['image', 'video', 'audio'].includes(String((input as { kind?: unknown }).kind))

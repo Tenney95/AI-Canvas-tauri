@@ -814,9 +814,9 @@ export function formatComfyPromptError(status: number, rawBody: string): string 
 }
 
 /** 提交 workflowObj 到 ComfyUI 并返回 promptId */
-async function promptComfyUIWorkflow(
+export async function promptComfyUIWorkflow(
   baseUrl: string,
-  workflowObj: Record<string, Record<string, unknown>>,
+  workflowObj: Record<string, unknown>,
   signal?: AbortSignal,
   progressSession?: ComfyProgressSession,
   beforeSubmit?: () => void | Promise<void>,

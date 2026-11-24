@@ -2,10 +2,11 @@
  * 内部助手使用的 ComfyUI 动态工作流边界。
  *
  * 只从 ComfyUI API 发现模型和节点；助手生成的工作流必须先按当前实例的
- * /object_info 完整校验，换取短期、任务和服务器绑定的 validationId，才能进入执行工具。
+ * /object_info 完整校验，换取绑定服务器和执行上下文的短期 validationId。
  */
 import { generateId, useAppStore } from '../store/useAppStore';
 import type { WorkflowCategory, WorkflowDefinition, WorkflowIONodeType } from '../types';
+import type { CanvasContext } from '../types/project';
 import type {
   MediaDeliveryMode,
   MediaGenerationResult,
@@ -16,10 +17,11 @@ import { comfyFetch, pollComfyHistory } from './comfyPolling';
 import { classifyHttpResponseFailure } from './ai/httpUtils';
 import { maybeAutoReleaseComfyMemory } from './comfyMemory';
 import { COMFY_AUDIO_OUTPUT_KINDS, resolveComfyOutputUrl, type ComfyOutputKind } from './comfyOutputs';
-import { cancelComfyPrompt, formatComfyPromptError } from './comfyWorkflowService';
+import { cancelComfyPrompt, formatComfyPromptError, promptComfyUIWorkflow } from './comfyWorkflowService';
 import { extractComfyUIIONodes, sanitizeWorkflowFileName } from './comfyUIWindowService';
 import { assertComfyResponse } from './comfyQuery';
 import { listConfiguredComfyServers, resolveComfyServerSelection, type ComfyServerSelection } from './comfyServers';
+import { assertProjectExpectedContextCurrent, isProjectExpectedContextCurrent } from './projectExecutionContext';
 
 type ComfyWorkflow = Record<string, ComfyWorkflowNode>;
 
@@ -65,9 +67,18 @@ export interface ComfyWorkflowValidationSummary extends ComfyServerSelection {
   expiresAt: number;
 }
 
-interface ValidatedWorkflowEntry extends ComfyWorkflowValidationSummary {
+export interface ComfyMcpScope {
+  sessionId: string;
+  canvas: CanvasContext;
+}
+
+interface ComfyWorkflowOwner {
   taskId: string;
   projectId: string;
+  mcp?: ComfyMcpScope;
+}
+
+interface ValidatedWorkflowEntry extends ComfyWorkflowValidationSummary, ComfyWorkflowOwner {
   baseUrl: string;
   kind: MediaKind;
   workflow: ComfyWorkflow;
@@ -340,14 +351,14 @@ function cleanupExpiredValidations(): void {
   }
 }
 
-export async function validateComfyUIWorkflow(args: {
+export async function validateComfyUIWorkflow(args: ComfyWorkflowOwner & {
   workflow: unknown;
   kind: MediaKind;
-  taskId: string;
-  projectId: string;
   serverId?: string;
 }): Promise<ComfyWorkflowValidationSummary> {
   cleanupExpiredValidations();
+  const mcp = args.mcp && structuredClone(args.mcp);
+  if (mcp) assertProjectExpectedContextCurrent(mcp.canvas, useAppStore.getState(), { checkCanvasRevision: false });
   const target = resolveComfyServerSelection(args.serverId);
   const { baseUrl, serverId, serverName } = target;
   const workflow = parseWorkflow(args.workflow);
@@ -393,7 +404,8 @@ export async function validateComfyUIWorkflow(args: {
   if (outputNodeCount === 0) errors.push('工作流没有 ComfyUI 标记的输出节点');
   if (errors.length > 0) throw new Error(errors.slice(0, 12).join('；'));
 
-  const validationId = `comfy-validation-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  if (mcp) assertProjectExpectedContextCurrent(mcp.canvas, useAppStore.getState(), { checkCanvasRevision: false });
+  const validationId = `comfy-validation-${crypto.randomUUID()}`;
   const summary: ComfyWorkflowValidationSummary = {
     validationId,
     serverId,
@@ -410,6 +422,7 @@ export async function validateComfyUIWorkflow(args: {
     ...summary,
     taskId: args.taskId,
     projectId: args.projectId,
+    ...(mcp ? { mcp } : {}),
     baseUrl,
     kind: args.kind,
     workflow,
@@ -417,16 +430,24 @@ export async function validateComfyUIWorkflow(args: {
   return summary;
 }
 
-export function getValidatedComfyWorkflowSummary(
-  validationId: string,
-  taskId: string,
-  projectId: string,
-): ComfyWorkflowValidationSummary | null {
+function findValidatedWorkflow(validationId: string, owner: ComfyWorkflowOwner): ValidatedWorkflowEntry | undefined {
   cleanupExpiredValidations();
   const entry = validatedWorkflows.get(validationId);
-  if (!entry || entry.taskId !== taskId || entry.projectId !== projectId || !isServerSelectionCurrent(entry)) return null;
-  const { kind, serverId, serverName, nodeCount, outputNodeCount, nodeClasses, customNodeClasses, modelNames, expiresAt } = entry;
-  return { validationId, kind, serverId, serverName, nodeCount, outputNodeCount, nodeClasses, customNodeClasses, modelNames, expiresAt };
+  if (!entry || entry.projectId !== owner.projectId) return;
+  if (!entry.mcp || !owner.mcp) return !entry.mcp && !owner.mcp && entry.taskId === owner.taskId ? entry : undefined;
+  const { canvas, sessionId } = owner.mcp;
+  if (entry.mcp.sessionId === sessionId && canvas.canvasId === owner.projectId
+    && isProjectExpectedContextCurrent(entry.mcp.canvas, canvas, { checkCanvasRevision: false })
+    && isProjectExpectedContextCurrent(canvas, useAppStore.getState(), { checkCanvasRevision: false })) return entry;
+}
+
+export function getValidatedComfyWorkflowSummary(validationId: string, taskId: string, projectId: string,
+  mcp?: ComfyMcpScope): ComfyWorkflowValidationSummary | null {
+  const entry = findValidatedWorkflow(validationId, { taskId, projectId, mcp });
+  if (!entry || !isServerSelectionCurrent(entry)) return null;
+  const { kind, serverId, serverName, nodeCount, outputNodeCount, expiresAt } = entry;
+  return { validationId, kind, serverId, serverName, nodeCount, outputNodeCount, expiresAt,
+    nodeClasses: [...entry.nodeClasses], customNodeClasses: [...entry.customNodeClasses], modelNames: [...entry.modelNames] };
 }
 
 function outputKinds(kind: MediaKind): ComfyOutputKind[] {
@@ -461,7 +482,7 @@ function createSaveOffer(
   entry: ValidatedWorkflowEntry,
   conversationId: string,
 ): ComfyWorkflowSaveOfferSummary {
-  const saveOfferId = `comfy-save-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const saveOfferId = `comfy-save-${crypto.randomUUID()}`;
   const summary: ComfyWorkflowSaveOfferSummary = {
     saveOfferId,
     serverId: entry.serverId,
@@ -529,18 +550,57 @@ export async function saveCompletedComfyUIWorkflow(args: {
   return { id: workflow.id, name: workflow.name, category: workflow.category };
 }
 
-export async function executeValidatedComfyUIWorkflow(args: {
+interface ComfyExecutionRequest extends ComfyWorkflowOwner {
   validationId: string;
-  taskId: string;
-  projectId: string;
   conversationId: string;
+  signal?: AbortSignal;
+}
+
+export async function executeValidatedNativeComfyUIWorkflow(args: ComfyExecutionRequest & {
+  prepare: (digest: string) => Promise<{ nodeId: string; signal: AbortSignal; beforeSubmit: () => void | Promise<void> }>;
+}): Promise<{ operationId: string; saveOffer: ComfyWorkflowSaveOfferSummary }> {
+  const entry = findValidatedWorkflow(args.validationId, args);
+  if (!entry || args.mcp?.canvas.modelGeneration !== 1) throw new Error('工作流校验已失效，请在当前 MCP 画布重新校验');
+  assertServerSelectionCurrent(entry);
+  args.signal?.throwIfAborted();
+  validatedWorkflows.delete(args.validationId);
+
+  let sending = false;
+  let rejected = false;
+  try {
+    const { submitNativeWorkflowTask, nativeWorkflowDigest } = await import('./nativeWorkflowTasks');
+    const { kind, workflow, serverId, baseUrl } = entry;
+    const digest = await nativeWorkflowDigest(['comfyui-dynamic-v1', serverId, kind, workflow]);
+    const preparation = await args.prepare(digest);
+    await submitNativeWorkflowTask({
+      ...preparation,
+      descriptor: { adapter: 'comfyui', dynamic: true, connectionId: 'comfyui', providerBase: baseUrl, category: kind, serverId, digest },
+      requestMaterial: { prompt: workflow },
+      isDefinitiveFailure: () => !sending || rejected,
+      submit: async (_index, signal, received) => ({
+        taskId: await promptComfyUIWorkflow(baseUrl, workflow, signal, undefined, preparation.beforeSubmit, () => {
+          if (entry.expiresAt <= Date.now()) throw new Error('工作流校验已过期，请重新校验');
+          assertServerSelectionCurrent(entry);
+        }, undefined, { sending: () => { sending = true; }, rejected: () => { rejected = true; }, received }),
+      }),
+    });
+    throw new Error('未取得 ComfyUI 原任务回执');
+  } catch (error) {
+    if (error instanceof Error && error.name === 'NativeMediaTaskDelivered' && 'nativeOperationId' in error
+      && typeof error.nativeOperationId === 'string') {
+      return { operationId: error.nativeOperationId, saveOffer: createSaveOffer(entry, args.conversationId) };
+    }
+    if ((!sending || rejected) && entry.expiresAt > Date.now()) validatedWorkflows.set(args.validationId, entry);
+    throw error;
+  }
+}
+
+export async function executeValidatedComfyUIWorkflow(args: ComfyExecutionRequest & {
   prompt: string;
   deliveryMode: MediaDeliveryMode;
-  signal?: AbortSignal;
 }): Promise<ComfyDynamicExecutionResult> {
-  cleanupExpiredValidations();
-  const entry = validatedWorkflows.get(args.validationId);
-  if (!entry || entry.taskId !== args.taskId || entry.projectId !== args.projectId) {
+  const entry = findValidatedWorkflow(args.validationId, args);
+  if (!entry || args.mcp?.canvas.modelGeneration) {
     throw new Error('工作流校验已失效或不属于当前任务，请重新发现并校验');
   }
   assertServerSelectionCurrent(entry);
