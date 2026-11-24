@@ -31,7 +31,7 @@ interface CloudWorkflowParameterFieldProps extends CloudWorkflowParameterControl
 const parseNumber = (text: string) => text.trim() === '' ? NaN : Number(text);
 const rangeStyle = (progress: number): CSSProperties => ({ '--range-progress': `${Math.min(100, Math.max(0, progress))}%` } as CSSProperties);
 
-/** 分辨率和时长仅通过滑块与刻度编辑，不自动吸附已有值。 */
+/** 小数滑块也可以精确键入，不把保留的原值自动吸附到刻度。 */
 export default function CloudWorkflowParameterField({
   name, label, nodeId, type, value, options, min, max, step, multiline: declaredMultiline,
   required = false, disabled = false, onChange, onReset, defaultValue, displayDefaultWhenEmpty = false, allowRandomSeed = false,
@@ -41,6 +41,7 @@ export default function CloudWorkflowParameterField({
   const labelId = `${id}-label`;
   const accessibleLabel = nodeId ? `${label} · C#${nodeId}` : label;
   const [multiline] = useState(() => declaredMultiline ?? [value, String(defaultValue ?? '')].some((text) => /[\r\n]/.test(text) || text.length > 100));
+  const [decimalDraft, setDecimalDraft] = useState<string | null>(null);
   const effectiveValue = displayDefaultWhenEmpty && value === '' ? String(defaultValue ?? '') : value;
   const spec = resolveCloudWorkflowParameterSpec({ name, label, type, value: effectiveValue, options, min, max, step, multiline });
   const control = resolveCloudWorkflowParameterControl(spec);
@@ -63,6 +64,8 @@ export default function CloudWorkflowParameterField({
   const bounds = createCloudWorkflowSliderBounds(spec);
   const validBounds = [bounds.min, bounds.max, bounds.step].every(Number.isFinite) && bounds.step > 0 && bounds.max >= bounds.min;
   const validRange = validBounds && bounds.max > bounds.min;
+  const hasDecimalInput = control.kind === 'number-slider' && validBounds && bounds.precision > 0;
+  const showValueBadge = isSlider && !hasDecimalInput;
   const rangeHasValue = validBounds && Number.isFinite(numericValue) && numericValue >= bounds.min && numericValue <= bounds.max;
   const stepIndex = (numericValue - bounds.min) / bounds.step;
   const onSliderStep = rangeHasValue && Number.isFinite(stepIndex) && Math.abs(stepIndex - Math.round(stepIndex)) < 1e-7;
@@ -90,10 +93,10 @@ export default function CloudWorkflowParameterField({
         <span className="min-w-0">{label}{required ? ' *' : ''}</span>
         {nodeId && <code className="ui-badge ui-badge--outline shrink-0 normal-case" title={t('ComfyUI 节点 ID')}>C#{nodeId}</code>}
       </label>
-      {(isSlider || onReset) && <div className="flex min-w-0 items-center justify-end gap-2">
-        {isSlider && currentBadge}
+      {(showValueBadge || onReset) && <div className="flex min-w-0 items-center justify-end gap-2">
+        {showValueBadge && currentBadge}
         {onReset && <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm shrink-0" disabled={disabled}
-          onClick={onReset} aria-label={`${accessibleLabel}：${defaultValue === undefined ? t('清除') : t('恢复默认')}`}>
+          onClick={() => { setDecimalDraft(null); onReset(); }} aria-label={`${accessibleLabel}：${defaultValue === undefined ? t('清除') : t('恢复默认')}`}>
           {defaultValue === undefined ? t('清除') : t('恢复默认')}
         </button>}
       </div>}
@@ -162,21 +165,41 @@ export default function CloudWorkflowParameterField({
         </div>}
         {control.currentOptionIndex < 0 && <p className="ui-hint">{t('选择档位后可拖动调整。')}</p>}
       </div>
-        : control.kind === 'number-slider' ? <div className="rh-duration-slider">
-          <input id={id} className="w-full" type="range" min={Number.isFinite(bounds.min) ? bounds.min : 0} max={validBounds ? bounds.max : Number.isFinite(bounds.min) ? bounds.min : 0}
+        : control.kind === 'number-slider' ? <div className={hasDecimalInput
+          ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_4.5rem] items-center gap-x-2 gap-y-1' : 'rh-duration-slider'}>
+          <input id={hasDecimalInput ? `${id}-slider` : id} className={hasDecimalInput ? 'ui-slider min-w-0' : 'w-full'}
+            type="range" min={Number.isFinite(bounds.min) ? bounds.min : 0} max={validBounds ? bounds.max : Number.isFinite(bounds.min) ? bounds.min : 0}
             step={rangeHasValue && !onSliderStep ? 'any' : Number.isFinite(bounds.step) && bounds.step > 0 ? bounds.step : 1} value={rangeHasValue ? numericValue : Number.isFinite(bounds.min) ? bounds.min : 0}
-            style={rangeStyle(rangeHasValue && validRange ? (numericValue - bounds.min) / (bounds.max - bounds.min) * 100 : 0)} disabled={disabled || !validRange || !onSliderStep}
+            style={rangeStyle(rangeHasValue && validRange ? (numericValue - bounds.min) / (bounds.max - bounds.min) * 100 : 0)}
+            disabled={disabled || !validRange || !(hasDecimalInput ? rangeHasValue : onSliderStep)}
             aria-label={t('{label}滑块', { label: accessibleLabel })} aria-valuetext={effectiveValue || t('未填写')}
-            onChange={(event) => onChange(formatCloudWorkflowSliderValue(Number(event.target.value), bounds.precision))} />
+            onChange={(event) => {
+              const selected = Number(event.target.value);
+              // 精确键入可以落在刻度之间；动滑块时才按工作流步长取值。
+              const next = hasDecimalInput && !onSliderStep ? Math.min(bounds.max,
+                bounds.min + Math.round((selected - bounds.min) / bounds.step) * bounds.step) : selected;
+              setDecimalDraft(null);
+              onChange(formatCloudWorkflowSliderValue(next, bounds.precision));
+            }} />
+          {hasDecimalInput && <input id={id} className="ui-input ui-input--sm text-right tabular-nums" type="number" inputMode="decimal"
+            aria-label={accessibleLabel} min={bounds.min} max={bounds.max} step="any" value={decimalDraft ?? effectiveValue}
+            required={required} disabled={disabled} onBlur={() => setDecimalDraft(null)}
+            onChange={(event) => {
+              const raw = event.target.value;
+              const number = parseNumber(raw);
+              const valid = Number.isFinite(number) && number >= bounds.min && number <= bounds.max;
+              setDecimalDraft(valid ? null : raw);
+              if (valid) onChange(raw);
+            }} />}
           {validBounds && <div className="rh-duration-labels gap-1" role="group" aria-labelledby={labelId}>
             {cloudWorkflowSliderTicks(bounds).map((tick) => <button type="button" key={tick} disabled={disabled}
               className={`rh-duration-tick truncate disabled:cursor-not-allowed disabled:opacity-50 ${tick === effectiveValue ? 'active' : ''}`}
-              aria-pressed={tick === effectiveValue} onClick={() => onChange(tick)}>{tick}</button>)}
+              aria-pressed={tick === effectiveValue} onClick={() => { setDecimalDraft(null); onChange(tick); }}>{tick}</button>)}
           </div>}
-          {!rangeHasValue && <p className="ui-hint break-words">{!validBounds ? t('当前参数范围不可用，请核对工作流定义。')
+          {!rangeHasValue && <p className="ui-hint col-span-full break-words">{!validBounds ? t('当前参数范围不可用，请核对工作流定义。')
             : effectiveValue === '' ? t('未填写；请选择刻度设置。')
               : t('当前值 {value} 不在滑块范围 {min}–{max}，原值保留，可选择刻度调整。', { value: effectiveValue, min: bounds.min, max: bounds.max })}</p>}
-          {rangeHasValue && !onSliderStep && <p className="ui-hint">{t('原值保留；选择刻度后可拖动调整。')}</p>}
+          {!hasDecimalInput && rangeHasValue && !onSliderStep && <p className="ui-hint">{t('原值保留；选择刻度后可拖动调整。')}</p>}
         </div> : renderScalar()}
   </div>;
 }

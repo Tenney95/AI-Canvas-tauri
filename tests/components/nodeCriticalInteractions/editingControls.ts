@@ -65,6 +65,32 @@ async function loadWorkflowEditingDialog() {
 }
 
 export function registerEditingControlTests() {
+  it('工作流小数输入和滑块写入同一字段，未完成的输入不覆盖有效值', async () => {
+    await installReactHookDriver();
+    installStoreMock(createStore([], () => 1));
+    const Field = (await import('../../../src/components/nodes/shared/CloudWorkflowParameterField')).default;
+    const onChange = vi.fn();
+    const props = { name: 'target_megapixels', label: '百万像素', type: 'number' as const,
+      min: 0.2, max: 36, step: 0.1, onChange };
+    const draw = (value: string) => Field({ ...props, value });
+    const getInput = (tree: unknown, type: string) => findElement(tree, (element) => element.type === 'input' && element.props.type === type);
+    const edit = (tree: unknown, type: string, value: string) => {
+      (getInput(tree, type).props.onChange as (event: { target: { value: string } }) => void)({ target: { value } });
+    };
+    const original = draw('2.1');
+    edit(original, 'number', '');
+    edit(original, 'number', '36.1');
+    expect(onChange).not.toHaveBeenCalled();
+    edit(original, 'number', '2.15');
+    expect(onChange).toHaveBeenLastCalledWith('2.15');
+    const precise = draw('2.15');
+    expect(getInput(precise, 'range').props.value).toBe(2.15);
+    expect(getInput(precise, 'range').props.disabled).toBe(false);
+    edit(precise, 'range', '2.27');
+    expect(onChange).toHaveBeenLastCalledWith('2.3');
+    expect(getInput(draw('2.3'), 'number').props.value).toBe('2.3');
+  });
+
   it('种子面板不抽值，随机/固定切换、一次填入和固定编辑按操作写回', async () => {
     await installReactHookDriver();
     installStoreMock(createStore([], () => 1));

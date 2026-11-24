@@ -17,6 +17,7 @@ import Timeline from '../shared/Timeline';
 import MarkdownEditor from '../shared/MarkdownEditor';
 import FileUploadButton from '../shared/FileUploadButton';
 import ProviderBadge from '../shared/ProviderBadge';
+import CloudWorkflowParameterField from '../nodes/shared/CloudWorkflowParameterField';
 import Toast from '../Toast';
 import { useAppStore } from '../../store/useAppStore';
 import { memo, useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react';
@@ -562,7 +563,7 @@ function DropzoneSection() {
 function SelectionSection() {
   const [switchOn, setSwitchOn] = useState(true);
   const [switchOff, setSwitchOff] = useState(false);
-  const [slider, setSlider] = useState(65);
+  const [slider, setSlider] = useState('2.15');
   const [segment, setSegment] = useState('grid');
   const [nodeSegment, setNodeSegment] = useState('text');
   const [imageResolution, setImageResolution] = useState('1K');
@@ -633,18 +634,10 @@ function SelectionSection() {
         </div>
       </Demo>
 
-      <Demo label="滑块" code="<input type=&quot;range&quot; className=&quot;ui-slider&quot; />">
-        <div className="ui-field" style={{ maxWidth: 320 }}>
-          <label className="ui-label" htmlFor="sg-slider">画质权重 · {slider}%</label>
-          <input
-            id="sg-slider"
-            type="range"
-            className="ui-slider"
-            min={0}
-            max={100}
-            value={slider}
-            onChange={(e) => setSlider(Number(e.target.value))}
-          />
+      <Demo label="滑块与数字输入" code=".ui-slider / .ui-input.ui-input--sm">
+        <div className="max-w-xs">
+          <CloudWorkflowParameterField name="megapixels" label="百万像素" type="number"
+            min={0.2} max={36} step={0.05} value={slider} onChange={setSlider} />
         </div>
       </Demo>
 

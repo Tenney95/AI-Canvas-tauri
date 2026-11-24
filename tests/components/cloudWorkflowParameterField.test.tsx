@@ -186,14 +186,18 @@ describe('云工作流参数默认展示', () => {
     expect(html).toContain('未填写；请选择刻度设置。');
   });
 
-  it('合法的非步长倍数保留精确值，不让滑块自动显示为相邻值', () => {
+  it('小数滑块和紧凑数字输入显示同一个非步长值', () => {
     const html = renderToStaticMarkup(<CloudWorkflowParameterField name="resolution" label="分辨率" type="number"
       value="1.6" min={1} max={2} step={0.5} onChange={ignoreChange} />);
     const sliderInput = html.match(/<input[^>]*type="range"[^>]*>/)?.[0] ?? '';
+    const numericInput = html.match(/<input[^>]*type="number"[^>]*>/)?.[0] ?? '';
+    expect(sliderInput).toContain('class="ui-slider min-w-0"');
     expect(sliderInput).toContain('value="1.6"');
     expect(sliderInput).toContain('step="any"');
-    expect(sliderInput).toContain('disabled=""');
-    expect(html).toContain('原值保留；选择刻度后可拖动调整');
+    expect(sliderInput).not.toContain('disabled=""');
+    expect(numericInput).toContain('class="ui-input ui-input--sm text-right tabular-nums"');
+    expect(numericInput).toContain('value="1.6"');
+    expect(html.indexOf(sliderInput)).toBeLessThan(html.indexOf(numericInput));
   });
 
   it('数值型分辨率使用固定端点，普通数字字段仍可输入', () => {
@@ -202,7 +206,7 @@ describe('云工作流参数默认展示', () => {
     const sliderInput = resolution.match(/<input[^>]*type="range"[^>]*>/)?.[0] ?? '';
     expect(sliderInput).toContain('min="0.2"');
     expect(sliderInput).toContain('max="4"');
-    expect(resolution).not.toContain('type="number"');
+    expect(resolution).toContain('type="number"');
     const seed = renderToStaticMarkup(<CloudWorkflowParameterField name="seed" label="种子" type="number" value="0" onChange={ignoreChange} />);
     expect(seed).toContain('type="number"');
     expect(seed).toContain('value="0"');
