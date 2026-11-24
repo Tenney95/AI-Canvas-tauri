@@ -1182,10 +1182,63 @@
 
 /* ── 反推提示词弹窗 ── */
 
-.reverse-prompt-modal {
-  width: min(640px, calc(100vw - 40px));
+.reverse-prompt-modal.glass-panel {
+  width: min(640px, calc(100% - 32px));
   max-height: min(84vh, 720px);
-  pointer-events: auto;
+}
+
+.reverse-prompt-modal .preset-runner-body {
+  gap: 14px;
+}
+
+.reverse-prompt-settings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr));
+  gap: 10px;
+}
+
+.reverse-prompt-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 10px;
+}
+
+.reverse-prompt-settings .preset-manager-field,
+.reverse-prompt-fields .preset-manager-field {
+  min-inline-size: 0;
+}
+
+.reverse-prompt-fields textarea {
+  min-inline-size: 0;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.reverse-prompt-supplements textarea {
+  min-height: 66px;
+}
+
+.reverse-prompt-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-block-start: 12px;
+  border-block-start: 1px solid var(--theme-border);
+}
+
+.reverse-prompt-result-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 10px;
+}
+
+.reverse-prompt-source-text {
+  max-height: 108px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .reverse-prompt-thumbs {
@@ -1206,27 +1259,49 @@
 .reverse-prompt-model {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.reverse-prompt-model > .model-selector {
+  min-inline-size: 0;
+  flex: 1 1 14rem;
 }
 
 .reverse-prompt-hint {
   color: var(--theme-text-muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
-.reverse-prompt-loading,
+.reverse-prompt-preview-status,
 .reverse-prompt-error {
   display: flex;
-  min-height: 120px;
   align-items: center;
-  justify-content: center;
-  gap: 9px;
-  padding: 12px;
+  gap: 8px;
+  padding: 10px 12px;
   border: 1px solid var(--theme-border);
   border-radius: 8px;
   color: var(--theme-text-muted);
   font-size: 12px;
+}
+
+.reverse-prompt-preview-status {
+  min-height: 68px;
+  justify-content: center;
+  background: var(--theme-hover);
   text-align: center;
+}
+
+.reverse-prompt-actions {
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.reverse-prompt-actions > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-inline-start: auto;
 }
 
 .reverse-prompt-error {
@@ -1235,15 +1310,17 @@
   text-align: left;
 }
 
+.reverse-prompt-error > svg {
+  flex: none;
+}
+
 .reverse-prompt-error > span {
   min-width: 0;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .reverse-prompt-result {
   min-height: 148px;
-  line-height: 1.6;
-  resize: vertical;
 }
 
 /* 三个按钮统一高度和字号，主按钮不做成比旁边高一截的大块 */

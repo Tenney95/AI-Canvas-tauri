@@ -4,8 +4,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   addReversePromptTextNode,
+  addReversePromptTextNodes,
+  isCompleteReversePromptResult,
   resolveVisionTextModel,
   reversePrompt,
+  reversePromptDraft,
+  type ReversePromptOutput,
+  type ReversePromptResult,
 } from '../../src/services/ai/reversePrompt';
 import { useAppStore } from '../../src/store/useAppStore';
 import type { BaseNodeData } from '../../src/types';
@@ -131,6 +136,101 @@ describe('reversePrompt', () => {
   });
 });
 
+describe('reversePromptDraft', () => {
+  it.each<{
+    format: ReversePromptOutput;
+    response: string;
+    instruction: string;
+    expected: ReversePromptResult;
+  }>([
+    {
+      format: 'positive',
+      response: '  窗边的橘猫  ',
+      instruction: '只输出正向提示词',
+      expected: { prompt: '窗边的橘猫' },
+    },
+    {
+      format: 'negative',
+      response: '  水印，模糊画面  ',
+      instruction: '只输出逆向提示词正文',
+      expected: { negativePrompt: '水印，模糊画面' },
+    },
+    {
+      format: 'positive-negative',
+      response: '{"prompt":"窗边的橘猫","negativePrompt":"水印，模糊画面"}',
+      instruction: '只输出 JSON 对象',
+      expected: { prompt: '窗边的橘猫', negativePrompt: '水印，模糊画面' },
+    },
+  ])('$format 使用对应的提示词指令和草稿字段', async ({ format, response, instruction, expected }) => {
+    setupTextModelAndNode('ai-image');
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      jsonResponse({ choices: [{ message: { content: response } }] }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(reversePromptDraft({
+      kind: 'image',
+      imageUrls: ['data:image/png;base64,Y2F0'],
+      negativeRequirement: '水印',
+      ...modelChoice,
+    }, format)).resolves.toEqual(expected);
+
+    const content = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).messages[0].content;
+    expect(content[0].text).toContain(instruction);
+    expect(content[0].text).toContain('【逆向补充要求（应排除）】水印');
+  });
+
+  it('双向协议分别约束正向描述与逆向排除，接受带围栏的 JSON', async () => {
+    setupTextModelAndNode('ai-video');
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
+      choices: [{ message: { content: '```json\n{"prompt":" 缓慢推近 ","negativePrompt":" 镜头抖动 "}\n```' } }],
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(reversePromptDraft({
+      kind: 'video',
+      imageUrls: ['data:image/png;base64,Y2F0'],
+      ...modelChoice,
+    }, 'positive-negative')).resolves.toEqual({ prompt: '缓慢推近', negativePrompt: '镜头抖动' });
+
+    const content = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).messages[0].content;
+    expect(content[0].text).toContain('以上对素材的描述约束适用于正向提示词');
+    expect(content[0].text).toContain('应排除的画面瑕疵、主体运动及镜头运动偏差');
+  });
+
+  it.each(['正文', '{"prompt":"正文"}', '{"prompt":"正文","negativePrompt":"  "}', '{"prompt":1,"negativePrompt":"水印"}'])(
+    '拒绝不完整的双向结果 %s', async (content) => {
+      setupTextModelAndNode('ai-image');
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(jsonResponse({ choices: [{ message: { content } }] })));
+      await expect(reversePromptDraft({
+        kind: 'image',
+        imageUrls: ['data:image/png;base64,Y2F0'],
+        ...modelChoice,
+      }, 'positive-negative')).rejects.toThrow('模型未返回有效的正向和逆向提示词');
+    },
+  );
+
+  it('逆向文本反推仅发送参考文本与已选补充，保留引用为文字', async () => {
+    setupTextModelAndNode('ai-image');
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
+      choices: [{ message: { content: '水印' } }],
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(reversePromptDraft({
+      kind: 'text',
+      imageUrls: [],
+      sourceText: '窗边静物 @{node-source:参考图}',
+      extraPrompt: '保留柔光',
+      ...modelChoice,
+    }, 'negative')).resolves.toEqual({ negativePrompt: '水印' });
+    const content = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).messages[0].content;
+    expect(content).toContain('只输出逆向提示词正文');
+    expect(content).toContain('@\u200b{node-source:参考图}');
+    expect(content).toContain('【额外要求】保留柔光');
+  });
+});
+
 describe('resolveVisionTextModel', () => {
   it('Muse 显式声明看图时保留用户偏好，不按名称误切到其它厂商', () => {
     setupTextModelAndNode('ai-image');
@@ -191,5 +291,87 @@ describe('addReversePromptTextNode', () => {
     const created = useAppStore.getState().nodes.find((node) => node.id !== 'node-source');
     expect(created?.parentId).toBe('group-1');
     expect(created?.position).toEqual({ x: 340, y: 10 });
+  });
+});
+
+describe('addReversePromptTextNodes', () => {
+  it.each([false, true])('公共与逐图结果分别连接所用源节点（逐图：%s）', (individual) => {
+    setupTextModelAndNode('ai-image');
+    useAppStore.setState(({ nodes }) => ({ nodes: [...nodes, {
+      ...nodes[0],
+      id: 'node-second',
+      position: { x: 550, y: 20 },
+      data: { ...nodes[0].data, label: '第二张图片', displayId: 17 },
+    }] }));
+
+    const ids = addReversePromptTextNodes('images', individual ? [
+      { sourceNodeIds: ['node-source'], prompt: '窗边静物' },
+      { sourceNodeIds: ['node-second'], prompt: '室内植物' },
+    ] : [
+      { sourceNodeIds: ['node-source', 'node-second'], prompt: '室内柔光' },
+    ]);
+
+    const { nodes, edges, history } = useAppStore.getState();
+    const created = nodes.slice(2);
+    expect(created.map(({ data }) => data.displayId)).toEqual(individual ? [18, 19] : [18]);
+    expect(created[0].position).toEqual({ x: 870, y: 20 });
+    expect(edges.map(({ source, target }) => [source, target])).toEqual([
+      ['node-source', ids[0]], ['node-second', individual ? ids[1] : ids[0]],
+    ]);
+    expect(history).toHaveLength(1);
+  });
+
+  it('只有逆向提示词时生成一个正确命名的节点并连到源图片', () => {
+    setupTextModelAndNode('ai-image');
+
+    const ids = addReversePromptTextNodes('image', [{
+      sourceNodeIds: ['node-source'],
+      negativePrompt: '  水印，模糊画面  ',
+    }]);
+
+    const { nodes, edges } = useAppStore.getState();
+    expect(ids).toHaveLength(1);
+    expect(nodes.find((node) => node.id === ids[0])).toMatchObject({
+      type: 'ai-text',
+      data: { label: '测试素材 · 逆向提示词', output: '水印，模糊画面' },
+    });
+    expect(edges[0]).toMatchObject({ source: 'node-source', target: ids[0] });
+  });
+
+  it('双向结果一次添加两个节点和两条连线，一次撤销全部', async () => {
+    setupTextModelAndNode('ai-image');
+    const ids = addReversePromptTextNodes('image', [{
+      sourceNodeIds: ['node-source'],
+      prompt: '窗边静物',
+      negativePrompt: '水印',
+    }]);
+
+    const { nodes, edges, history, undo } = useAppStore.getState();
+    expect(ids).toHaveLength(2);
+    expect(nodes.slice(1).map((node) => [node.data.label, node.data.output, node.data.displayId])).toEqual([
+      ['测试素材 · 正向提示词', '窗边静物', 10],
+      ['测试素材 · 逆向提示词', '水印', 11],
+    ]);
+    expect(edges.map(({ source, target }) => [source, target])).toEqual(ids.map((id) => ['node-source', id]));
+    expect(history).toHaveLength(1);
+    expect(await undo()).toBe(true);
+    expect(useAppStore.getState().nodes.map((node) => node.id)).toEqual(['node-source']);
+    expect(useAppStore.getState().edges).toEqual([]);
+  });
+
+  it('拒绝仅填写一半的双向草稿和缺失来源，保持画布与历史完整', () => {
+    setupTextModelAndNode('ai-image');
+    const initial = useAppStore.getState();
+    const incomplete = { sourceNodeIds: ['node-source'], prompt: '窗边静物', negativePrompt: ' ' };
+    expect(isCompleteReversePromptResult(incomplete)).toBe(false);
+    expect(addReversePromptTextNodes('image', [incomplete])).toEqual([]);
+    expect(addReversePromptTextNodes('images', [
+      { sourceNodeIds: ['node-source'], prompt: '窗边静物' },
+      { sourceNodeIds: ['missing-source'], negativePrompt: '水印' },
+    ])).toEqual([]);
+    const after = useAppStore.getState();
+    expect(after.nodes).toBe(initial.nodes);
+    expect(after.edges).toBe(initial.edges);
+    expect(after.history).toBe(initial.history);
   });
 });

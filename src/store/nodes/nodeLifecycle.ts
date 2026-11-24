@@ -309,9 +309,10 @@ export function insertPreparedNode(state: AppState, node: Node<BaseNodeData>) {
 export function appendPreparedNodes(state: AppState, nodes: Node<BaseNodeData>[]): Node<BaseNodeData>[] {
   const nextNodes = [...state.nodes];
   const settings = state.projects.find((project) => project.id === state.currentProjectId)?.settings;
+  let displayId = getNextDisplayId(state.nodes);
   for (const node of nodes) {
     const data = applyProjectDefaultsToNodeData(node.data, settings);
-    nextNodes.push(prepareNodeForInsertion(node, data, getNextDisplayId(nextNodes)));
+    nextNodes.push(prepareNodeForInsertion(node, data, displayId++));
   }
   return nextNodes;
 }

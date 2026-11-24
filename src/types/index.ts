@@ -1168,12 +1168,18 @@ export interface PresetRunRequest {
   sourceNodeId: string;
 }
 
-/** 反推提示词弹窗的输入：图片节点给自身图，视频节点给抽好的关键帧 */
-export interface ReversePromptRequest {
+export interface ReversePromptImageSource {
   sourceNodeId: string;
-  kind: 'image' | 'video';
-  imageUrls: string[];
+  imageUrl: string;
+  label: string;
 }
+
+/** 关键帧属于同一个视频节点，多选图片则各自保留源节点身份。 */
+export type ReversePromptRequest =
+  | { kind: 'image'; sourceNodeId: string; imageUrls: string[] }
+  | { kind: 'video'; sourceNodeId: string; videoUrl: string; imageUrls: string[] }
+  | { kind: 'images'; sources: ReversePromptImageSource[] }
+  | { kind: 'text'; sourceNodeId: string; text: string };
 
 // ── 用户自定义画风 ──
 export interface CustomStyle {
