@@ -145,6 +145,7 @@ export interface GenerationOptions {
   comfyH3ExpectedSettings?: string;
   history?: 'transient';
   silent?: boolean;
+  onNativeResultCommitted?: (operationId: string, revision: number) => void;
 }
 
 /** 仅保留本进程内的提交身份，避免旧任务清理或覆盖同节点的新请求。 */
@@ -933,13 +934,16 @@ export async function executeGeneration(
       mediaDelivered = true;
       const batch = lease && imageBatchLeases.get(lease);
       const operationId = 'nativeOperationId' in err && typeof err.nativeOperationId === 'string' ? err.nativeOperationId : undefined;
-      if (batch?.currentNodeId === nodeId && nativeMediaGuard && operationId) {
+      if (operationId && (batch || batchOptions?.onNativeResultCommitted)) {
         const state = useAppStore.getState();
         const target = state.nodes.find((node) => node.id === nodeId)?.data;
-        // 只承认本张回执投影引起的一次修订；期间的编辑仍会阻止下一张提交。
-        if (ownsGeneration(state) && state.getCurrentRevision() === batch.expectedRevision + 1
-          && target?.status === 'success' && target.artifactId === nativeMediaOutputArtifactId(operationId, 0)) {
-          batch.expectedRevision += 1;
+        if (ownsGeneration(state) && target?.status === 'success' && target.artifactId === nativeMediaOutputArtifactId(operationId, 0)) {
+          const revision = state.getCurrentRevision();
+          // 只接纳当前结果带来的一次修订，期间的编辑仍会阻止下一张提交。
+          if (batch?.currentNodeId === nodeId && nativeMediaGuard && revision === batch.expectedRevision + 1) {
+            batch.expectedRevision = revision;
+          }
+          batchOptions?.onNativeResultCommitted?.(operationId, revision);
         }
       }
       if (postProcess === 'character-8-direction-grid' && nodeType === 'ai-image' && executionContext?.kind === 'canvas') {

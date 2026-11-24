@@ -195,9 +195,14 @@ export function useNodeContextMenu() {
   // ── Delete ──
   const handleDelete = useCallback(() => {
     if (!menu.nodeId) return;
-    deleteNode(menu.nodeId);
+    const state = useAppStore.getState();
+    if (state.selectedNodeIds.length > 1 && state.selectedNodeIds.includes(menu.nodeId)) {
+      if (!state.deleteSelectedCanvasElements()) return;
+    } else {
+      deleteNode(menu.nodeId);
+    }
     closeMenu();
-    useAppStore.getState().showToast(t('节点已删除'));
+    state.showToast(t('节点已删除'));
   }, [menu.nodeId, deleteNode, closeMenu, t]);
 
   // ── 打开文件所在位置 ──
