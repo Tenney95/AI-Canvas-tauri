@@ -114,6 +114,7 @@ describe('config persistence keeps secrets out of IndexedDB', () => {
     secretStore.entries.set('provider/custom-source', 'source-key');
     const store = configStore();
     await store.getState().loadConfig();
+    const persistedBeforeCopy = await loadConfigFromDb();
     const copyId = 'custom-copy';
     const copySecret = `provider/${copyId}`;
     store.getState().saveProviderConfig(copyId, { name: 'Copy', catalogId: 'custom-openai', apiKey: 'source-key' });
@@ -135,7 +136,7 @@ describe('config persistence keeps secrets out of IndexedDB', () => {
     expect(secretStore.entries.get(copySecret)).toBe(replacement);
     expect(secretStore.entries.get('provider/custom-source')).toBe('source-key');
     expect(store.getState().config.providers[copyId]).toBeUndefined();
-    expect(await loadConfigFromDb()).toEqual({ providers: { 'custom-source': original } });
+    expect(await loadConfigFromDb()).toEqual(persistedBeforeCopy);
   });
 
   it('records only a fingerprint after cleanup failure and finishes cleanup on a fresh load', async () => {

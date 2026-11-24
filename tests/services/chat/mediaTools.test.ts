@@ -667,11 +667,14 @@ describe('media_generate display parameters', () => {
 
   it('MCP 只发现 ComfyUI 图中有声明且可写的数值宽高', async () => {
     const mcp = configureLocalImageWorkflow();
-    const fetchSpecs = vi.spyOn(comfyWorkflow, 'fetchNodeInputSpecs').mockImplementation(async (_url, classType) => (
-      classType === 'EmptyLatentImage'
-        ? { width: { type: 'INT', min: 16, max: 4096, step: 8 }, height: { type: 'INT' }, batch_size: { type: 'INT' } }
-        : { height: { type: 'INT' } }
-    ));
+    const fetchSpecs = vi.spyOn(comfyWorkflow, 'fetchNodeInputSpecs').mockImplementation(
+      async (_url, classType): ReturnType<typeof comfyWorkflow.fetchNodeInputSpecs> => {
+        if (classType === 'EmptyLatentImage') {
+          return { width: { type: 'INT', min: 16, max: 4096, step: 8 }, height: { type: 'INT' }, batch_size: { type: 'INT' } };
+        }
+        return { height: { type: 'INT' } };
+      },
+    );
     const tool = getAgentTool('media_workflow_parameters')!;
     expect(tool.effect).toBe('read');
     const result = await tool.execute(mcp, { modelRef: 'comfyui/local-image' });
