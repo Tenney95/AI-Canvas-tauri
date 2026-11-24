@@ -2,22 +2,25 @@
  * CloudWorkflowParamSelector — 复用本地与云工作流的参数浮层。
  */
 import { Icon } from '@iconify/react';
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { WorkflowDefinition } from '../../../types';
-import type { ComfyWorkflowParameter } from '../../../types/comfyWorkflow';
+import type { ComfyInputSpec, ComfyWorkflowParameter } from '../../../types/comfyWorkflow';
 import { useAppStore } from '../../../store/useAppStore';
 import { useT } from '../../../i18n';
-import { getCloudWorkflowParameterSemantic } from '../../../services/cloudWorkflowParameterControls';
+import { getCloudWorkflowParameterSemantic, type CloudWorkflowParameterSemantic } from '../../../services/cloudWorkflowParameterControls';
 import { resolveRunningHubParameters, runningHubParameterKey } from '../../../services/runninghubWorkflowService';
 import { calcAnchoredPosition } from '../../../utils/popupPosition';
 import AnimatedButton from '../../shared/AnimatedButton';
 import RunningHubParameterFields from './RunningHubParameterFields';
 import WorkflowApiParameterFields from './WorkflowApiParameterFields';
 import ComfyWorkflowParameterFields from './ComfyWorkflowParameterFields';
+import type { ComfyVideoParameterFields } from './VideoParamSelector';
 import { comfyBaseUrlFor } from '../../../services/comfyServers';
 import { fetchNodeInputSpecs } from '../../../services/comfyWorkflowService';
 import { comfyWorkflowParameterKey, loadComfyWorkflowParameters, splitComfyWorkflowInputs } from '../../../services/comfyWorkflowParameters';
+import { injectVideoParamsIntoWorkflow } from '../../../services/comfyWorkflow/workflowDimensions';
+import { resolveVideoSubmissionControls, type VideoSubmissionControlParams } from '../../../services/ai/videoRequestResolver';
 
 interface CloudWorkflowParamSelectorProps {
   workflow: WorkflowDefinition;
@@ -25,10 +28,22 @@ interface CloudWorkflowParamSelectorProps {
   onChange: (values: Record<string, string>, aspectRatio?: string) => void;
   disabled?: boolean;
   onContinuousEditEnd?: () => void;
+  videoParameters?: {
+    controls: VideoSubmissionControlParams;
+    render: (fields: ComfyVideoParameterFields) => ReactNode;
+  };
+}
+
+function getComfyVideoParameterSemantic(field: ComfyWorkflowParameter): CloudWorkflowParameterSemantic {
+  if (field.type === 'boolean' || /load(video|image)|videoload|slice|trim|cut|crop/i.test(field.classType)) return 'other';
+  // 这类工作流把秒数放在 Primitive 的 value 里，含义写在节点标题上。
+  if (field.fieldName === 'value' && typeof field.defaultValue === 'number'
+    && /^Primitive(Float|Int)$/i.test(field.classType) && /duration|时长|秒/i.test(field.label.split(' · ')[0])) return 'duration';
+  return getCloudWorkflowParameterSemantic(field.fieldName, field.label);
 }
 
 /** 云参数沿用原键；本地只存字段覆盖值，节点声明留在内存并绑定当前服务器。 */
-export default function CloudWorkflowParamSelector({ workflow, values = {}, onChange, disabled, onContinuousEditEnd }: CloudWorkflowParamSelectorProps) {
+export default function CloudWorkflowParamSelector({ workflow, values = {}, onChange, disabled, onContinuousEditEnd, videoParameters }: CloudWorkflowParamSelectorProps) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -39,7 +54,14 @@ export default function CloudWorkflowParamSelector({ workflow, values = {}, onCh
   const serverAddress = useAppStore((state) => !local ? '' : workflow.serverId
     ? state.config.comfyServers?.find((server) => server.id === workflow.serverId)?.url ?? '' : state.config.comfyUIUrl ?? '');
   const [reload, setReload] = useState(0);
-  const [localState, setLocalState] = useState<{ workflow?: WorkflowDefinition; address?: string; reload?: number; fields: ComfyWorkflowParameter[]; error?: string }>({ fields: [] });
+  const [localState, setLocalState] = useState<{
+    workflow?: WorkflowDefinition;
+    address?: string;
+    reload?: number;
+    fields: ComfyWorkflowParameter[];
+    specs?: Map<string, Record<string, ComfyInputSpec>>;
+    error?: string;
+  }>({ fields: [] });
   const currentLocal = localState.workflow === workflow && localState.address === serverAddress && localState.reload === reload;
   const localFields = currentLocal ? localState.fields : [];
   const localLoading = local && open && !currentLocal;
@@ -51,8 +73,13 @@ export default function CloudWorkflowParamSelector({ workflow, values = {}, onCh
       try {
         const baseUrl = comfyBaseUrlFor(workflow.id);
         if (!baseUrl) throw new Error(t('请先配置或启动此工作流的 ComfyUI 服务'));
-        const fields = await loadComfyWorkflowParameters(workflow, (classType) => fetchNodeInputSpecs(baseUrl, classType, reload > 0));
-        if (active) setLocalState({ workflow, address: serverAddress, reload, fields });
+        const specs = new Map<string, Record<string, ComfyInputSpec>>();
+        const fields = await loadComfyWorkflowParameters(workflow, async (classType) => {
+          const inputs = await fetchNodeInputSpecs(baseUrl, classType, reload > 0);
+          if (inputs) specs.set(classType, inputs);
+          return inputs;
+        });
+        if (active) setLocalState({ workflow, address: serverAddress, reload, fields, specs });
       } catch (error) {
         if (active) setLocalState({ workflow, address: serverAddress, reload, fields: [],
           error: error instanceof Error ? error.message : t('读取工作流参数失败') });
@@ -92,7 +119,37 @@ export default function CloudWorkflowParamSelector({ workflow, values = {}, onCh
   const summary = fields.filter((field) => getCloudWorkflowParameterSemantic(field.name, field.label) !== 'other' && field.value !== '')
     .slice(0, 3).map((field) => getCloudWorkflowParameterSemantic(field.name, field.label) === 'duration'
       ? `${field.label} ${field.value}` : field.value).join(' · ');
-  const triggerLabel = summary || (local && !currentLocal ? t('参数') : t('参数 · {count} 项', { count: fields.length }));
+  const embeddedVideo = local && Boolean(videoParameters);
+  const triggerLabel = (!embeddedVideo && summary) || (local && !currentLocal ? t('参数') : t('参数 · {count} 项', { count: fields.length }));
+  const { videoResolution, videoFps, videoFrames, seedanceRatio, seedanceDuration } = videoParameters?.controls ?? {};
+  const localVideoFields = useMemo(() => {
+    if (!open || !embeddedVideo || !currentLocal) return;
+    const groups: Record<CloudWorkflowParameterSemantic, ComfyWorkflowParameter[]> = { ratio: [], resolution: [], duration: [], other: [] };
+    for (const field of localState.fields) groups[getComfyVideoParameterSemantic(field)].push(field);
+    if (!localState.specs || ![groups.ratio, groups.resolution, groups.duration].some((group) => group.length)) return groups;
+
+    const controls = resolveVideoSubmissionControls({ provider: 'comfyui', workflowId: workflow.id,
+      videoResolution, videoFps, videoFrames, seedanceRatio, seedanceDuration });
+    if (controls.videoResolution === undefined || controls.videoFps === undefined
+      || controls.videoFrames === undefined || controls.seedanceDuration === undefined) return groups;
+
+    // 老节点可能存着通用尺寸和时长。用提交时的注入规则在副本上算出顶部字段的当前值。
+    const graph = JSON.parse(workflow.fileContent) as Record<string, Record<string, unknown>>;
+    injectVideoParamsIntoWorkflow(graph, controls.videoResolution, controls.seedanceRatio, controls.videoFps,
+      controls.videoFrames, controls.seedanceDuration, localState.specs);
+    for (const key of ['ratio', 'resolution', 'duration'] as const) {
+      groups[key] = groups[key].map((field) => {
+        const inputs = graph[field.nodeId]?.inputs as Record<string, unknown> | undefined;
+        const value = inputs?.[field.fieldName];
+        return typeof value === 'string' || typeof value === 'number' ? { ...field, defaultValue: value } : field;
+      });
+    }
+    return groups;
+  }, [open, embeddedVideo, currentLocal, localState, workflow.id, workflow.fileContent,
+    videoResolution, videoFps, videoFrames, seedanceRatio, seedanceDuration]);
+  const renderLocalFields = (parameters: ComfyWorkflowParameter[] | undefined) => parameters?.length
+    ? <ComfyWorkflowParameterFields parameters={parameters} values={values} onChange={changeParameters} disabled={disabled} /> : null;
+  const localHint = local && <p className="ui-hint mb-3">{t('显示工作流原值；此处修改的字段优先于通用尺寸设置。默认正文和参考素材仍使用对话框内容。')}</p>;
   const close = useCallback(() => {
     setOpen(false);
     onContinuousEditEnd?.();
@@ -194,10 +251,16 @@ export default function CloudWorkflowParamSelector({ workflow, values = {}, onCh
         </button>
       </div>
       <div className="min-h-0 overflow-y-auto overscroll-contain pr-1">
-        {local && <p className="ui-hint mb-3">{t('显示工作流原值；此处修改的字段优先于通用尺寸设置。默认正文和参考素材仍使用对话框内容。')}</p>}
+        {!embeddedVideo && localHint}
         {localLoading && <p className="ui-hint flex items-center gap-2" role="status"><span className="ui-spinner" />{t('正在读取 ComfyUI 参数声明…')}</p>}
         {localError && <div className="ui-alert ui-alert--danger flex-wrap" role="alert"><span>{localError}</span>
           <button type="button" className="ui-btn ui-btn--sm" onClick={() => setReload((value) => value + 1)}>{t('重试')}</button></div>}
+        {localVideoFields && videoParameters?.render({
+          ratio: renderLocalFields(localVideoFields.ratio),
+          resolution: renderLocalFields(localVideoFields.resolution),
+          duration: renderLocalFields(localVideoFields.duration),
+        })}
+        {embeddedVideo && localHint}
         {staleLocalKeys.length > 0 && <div className="ui-alert ui-alert--warning mb-3 flex-wrap" role="alert">
           <span>{t('部分参数已失效，请清除后重新设置。')}</span><button type="button" className="ui-btn ui-btn--sm" disabled={disabled} onClick={() => {
             const next = { ...values }; for (const key of staleLocalKeys) delete next[key]; onChange(next);
@@ -206,7 +269,7 @@ export default function CloudWorkflowParamSelector({ workflow, values = {}, onCh
           parameters={workflow.runninghub?.parameters ?? []} defaultPromptKey={defaultPromptKey} values={values} onChange={changeParameters} disabled={disabled} />
           : manifest?.version === 2 ? <WorkflowApiParameterFields appearance="popover" manifest={manifest}
             values={values} onChange={changeParameters} disabled={disabled} /> : local && !localLoading && !localError
-              ? <ComfyWorkflowParameterFields parameters={localFields} values={values} onChange={changeParameters} disabled={disabled} /> : null}
+              ? renderLocalFields(localVideoFields ? localVideoFields.other : localFields) : null}
         {fields.length === 0 && !localLoading && !localError && <p className="text-xs text-canvas-text-muted">{t('此工作流没有额外可调参数')}</p>}
       </div>
     </div>, document.body)}

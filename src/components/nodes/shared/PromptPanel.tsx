@@ -36,7 +36,7 @@ import ModelSelector from './ModelSelector';
 import { RunningHubModelParameterFields } from './RunningHubParameterFields';
 import { getRunningHubModel } from '../../../services/ai/providers/runninghubModelManifest';
 import QualityRatioSelector from './QualityRatioSelector';
-import VideoParamSelector from './VideoParamSelector';
+import VideoParamSelector, { type ComfyVideoParameterFields } from './VideoParamSelector';
 import AudioParamSelector from './AudioParamSelector';
 import CharacterVoiceSelector, { type CharacterVoiceChoice } from './CharacterVoiceSelector';
 import { collectAudioSpeechReferences, resolveAudioSpeechWorkflow } from '../../../services/ai/audioSpeechSettings';
@@ -953,6 +953,46 @@ export default function PromptPanel({
   const cloudWorkflow = runninghubWorkflow ?? (workflowApi?.workflowApi?.version === 2 ? workflowApi : undefined);
   const parameterWorkflow = cloudWorkflow ?? workflows.find((workflow) => workflow.id === selectedWorkflowId
     && (!workflow.adapterType || workflow.adapterType === 'comfyui'));
+  const usesComfyVideoParameters = nodeType === 'ai-video' && Boolean(parameterWorkflow && !cloudWorkflow && onWorkflowInputsChange);
+  const renderVideoParameters = (inlineFields?: ComfyVideoParameterFields) => (
+    <VideoParamSelector
+      provider={selectedProvider}
+      selectedModel={selectedModel}
+      nodeId={nodeId}
+      videoReferences={videoReferences}
+      onChangeVideoReferences={onChangeVideoReferences}
+      videoResolution={videoResolution}
+      videoFps={videoFps}
+      videoFrames={videoFrames}
+      onChangeResolution={onChangeVideoResolution}
+      onChangeFps={onChangeVideoFps}
+      seedanceResolution={seedanceResolution}
+      seedanceRatio={seedanceRatio}
+      seedanceDuration={seedanceDuration}
+      generateAudio={generateAudio}
+      onChangeSeedanceResolution={onChangeSeedanceResolution}
+      onChangeSeedanceRatio={onChangeSeedanceRatio}
+      onChangeSeedanceDuration={onChangeSeedanceDuration}
+      onChangeGenerateAudio={onChangeGenerateAudio}
+      onContinuousEditEnd={onContinuousEditEnd}
+      inlineFields={inlineFields}
+      disabled={Boolean((inlineFields || workflowApi) && isGenerating)}
+      extraParameters={workflowApi?.workflowApi?.version === 1 && onWorkflowInputsChange ? (
+        <div className="mt-3 space-y-2 border-t border-canvas-border pt-2 text-xs text-canvas-text-secondary">
+          <p>{t('引用 1–9 张图片与最多 3 段音频；按引用顺序发送。')}</p>
+          <label className="flex flex-col gap-1">{t('随机种子（可选）')}
+            <input className="ui-input w-full" type="number" step={1} disabled={isGenerating}
+              value={workflowInputs?.seed ?? ''} placeholder={workflowApi.workflowApi.defaults?.seed?.toString() ?? t('留空随机')}
+              onChange={(event) => {
+                const values = { ...workflowInputs };
+                if (event.target.value === '') delete values.seed; else values.seed = event.target.value;
+                onWorkflowInputsChange(values);
+              }} onBlur={onContinuousEditEnd} />
+          </label>
+        </div>
+      ) : undefined}
+    />
+  );
   const generatingFallback = <span className="ui-spinner" role="img" aria-label={t('生成中')} />;
   const submitButton = (
     <button
@@ -1101,7 +1141,11 @@ export default function PromptPanel({
           {parameterWorkflow && onWorkflowInputsChange && (
             <CloudWorkflowParamSelector key={`${nodeId}:${selectedWorkflowId}`}
               workflow={parameterWorkflow} values={workflowInputs}
-              onChange={onWorkflowInputsChange} disabled={isGenerating} onContinuousEditEnd={onContinuousEditEnd} />
+              onChange={onWorkflowInputsChange} disabled={isGenerating} onContinuousEditEnd={onContinuousEditEnd}
+              videoParameters={usesComfyVideoParameters ? {
+                controls: { videoResolution, videoFps, videoFrames, seedanceRatio, seedanceDuration },
+                render: renderVideoParameters,
+              } : undefined} />
           )}
 
           {nodeType === 'ai-image' && !runninghubWorkflow && !runninghubModel && !workflowApi && (
@@ -1158,44 +1202,8 @@ export default function PromptPanel({
             />
           )}
 
-          {nodeType === 'ai-video' && !runninghubWorkflow && !runninghubModel && workflowApi?.workflowApi?.version !== 2 && (
-            <VideoParamSelector
-              provider={selectedProvider}
-              selectedModel={selectedModel}
-              nodeId={nodeId}
-              videoReferences={videoReferences}
-              onChangeVideoReferences={onChangeVideoReferences}
-              videoResolution={videoResolution}
-              videoFps={videoFps}
-              videoFrames={videoFrames}
-              onChangeResolution={onChangeVideoResolution || (() => {})}
-              onChangeFps={onChangeVideoFps || (() => {})}
-              seedanceResolution={seedanceResolution}
-              seedanceRatio={seedanceRatio}
-              seedanceDuration={seedanceDuration}
-              generateAudio={generateAudio}
-              onChangeSeedanceResolution={onChangeSeedanceResolution}
-              onChangeSeedanceRatio={onChangeSeedanceRatio}
-              onChangeSeedanceDuration={onChangeSeedanceDuration}
-              onChangeGenerateAudio={onChangeGenerateAudio}
-              onContinuousEditEnd={onContinuousEditEnd}
-              disabled={Boolean(workflowApi && isGenerating)}
-              extraParameters={workflowApi?.workflowApi?.version === 1 && onWorkflowInputsChange ? (
-                <div className="mt-3 space-y-2 border-t border-canvas-border pt-2 text-xs text-canvas-text-secondary">
-                  <p>{t('引用 1–9 张图片与最多 3 段音频；按引用顺序发送。')}</p>
-                  <label className="flex flex-col gap-1">{t('随机种子（可选）')}
-                    <input className="ui-input w-full" type="number" step={1} disabled={isGenerating}
-                      value={workflowInputs?.seed ?? ''} placeholder={workflowApi.workflowApi.defaults?.seed?.toString() ?? t('留空随机')}
-                      onChange={(event) => {
-                        const values = { ...workflowInputs };
-                        if (event.target.value === '') delete values.seed; else values.seed = event.target.value;
-                        onWorkflowInputsChange(values);
-                      }} onBlur={onContinuousEditEnd} />
-                  </label>
-                </div>
-              ) : undefined}
-            />
-          )}
+          {nodeType === 'ai-video' && !usesComfyVideoParameters && !runninghubWorkflow && !runninghubModel
+            && workflowApi?.workflowApi?.version !== 2 && renderVideoParameters()}
 
           {nodeType === 'ai-audio' && !runninghubWorkflow && !runninghubModel && !workflowApi && (
             <AudioParamSelector

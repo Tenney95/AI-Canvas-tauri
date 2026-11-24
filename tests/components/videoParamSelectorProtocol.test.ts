@@ -37,6 +37,22 @@ describe('ComfyUI 时长显示与提交一致', () => {
     expect(submitted.seedanceDuration).toBe(seconds);
     expect(html).toContain(`时长${seconds}s`);
   });
+
+  it('嵌入工作流原生字段，按比例、分辨率、时长显示且不再显示独立按钮', () => {
+    const html = renderToStaticMarkup(createElement(VideoParamSelector, {
+      provider: 'comfyui',
+      inlineFields: { ratio: '工作流比例', duration: '工作流时长' },
+    }));
+
+    expect(html).toContain('工作流比例');
+    expect(html).toContain('分辨率（长边）');
+    expect(html).toContain('工作流时长');
+    expect(html.indexOf('工作流比例')).toBeLessThan(html.indexOf('分辨率（长边）'));
+    expect(html.indexOf('分辨率（长边）')).toBeLessThan(html.indexOf('工作流时长'));
+    expect(html).not.toContain('img-pill-btn');
+    expect(html).not.toContain('画面比例');
+    expect(html).not.toContain('data-ui-schema-field="videoDuration"');
+  });
 });
 
 describe('视频比例保留与时长主题交互', () => {

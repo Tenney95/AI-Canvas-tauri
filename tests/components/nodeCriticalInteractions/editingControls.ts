@@ -189,6 +189,33 @@ export function registerEditingControlTests() {
     expect(store.commitToHistory).toHaveBeenCalledTimes(2);
   });
 
+  it('ComfyUI 顶部时长显示旧节点保存的通用值，显式工作流覆盖仍优先', async () => {
+    const graph = { '9': { class_type: 'PrimitiveFloat', inputs: { value: 5 }, _meta: { title: '生成时长' } } };
+    const workflow: WorkflowDefinition = { id: 'video', name: '视频', category: 'ai-video',
+      fileName: 'video.json', fileContent: JSON.stringify(graph), createdAt: 0 };
+    const fields: ComfyWorkflowParameter[] = [{ nodeId: '9', fieldName: 'value', classType: 'PrimitiveFloat',
+      label: '生成时长 · value', type: 'number', defaultValue: 5 }];
+    const specs = new Map([['PrimitiveFloat', { value: { type: 'FLOAT' } }]]);
+    await installReactHookDriver((initial) => initial === false ? true
+      : initial && typeof initial === 'object' && 'fields' in initial ? { workflow, address: '', reload: 0, fields, specs } : initial);
+    installStoreMock(createStore([], () => 1));
+    const Selector = (await import('../../../src/components/nodes/shared/CloudWorkflowParamSelector')).default;
+    const render = vi.fn(() => null);
+    const values = { 'comfy-param::9::value': '7' };
+
+    Selector({ workflow, values, onChange: vi.fn(), videoParameters: { controls: { seedanceDuration: 9 }, render } });
+
+    expect(render).toHaveBeenCalledExactlyOnceWith({
+      ratio: null,
+      resolution: null,
+      duration: expect.objectContaining({
+        props: expect.objectContaining({ parameters: [{ ...fields[0], defaultValue: 9 }], values }),
+      }),
+    });
+    expect(JSON.parse(workflow.fileContent)).toEqual(graph);
+    expect(fields[0].defaultValue).toBe(5);
+  });
+
   it('dismisses node input outside its React subtree while preserving portal interactions and edits', async () => {
     const effects: Array<() => void | (() => void)> = [];
     await installReactHookDriver(undefined, effects);

@@ -39,6 +39,12 @@ import { useAppStore, type AppState } from '../../../store/useAppStore';
 import { createCanvasNodeDataSelector, type CanvasNodeDataView } from '../../../utils/canvasNodeDataSelector';
 import { getCanvasConnectedSourceNodes } from '../../../utils/canvasConnectionIndex';
 
+export interface ComfyVideoParameterFields {
+  ratio?: ReactNode;
+  resolution?: ReactNode;
+  duration?: ReactNode;
+}
+
 interface VideoParamSelectorProps {
   provider?: string;
   selectedModel?: string;
@@ -65,6 +71,7 @@ interface VideoParamSelectorProps {
   onContinuousEditEnd?: () => void;
   /** 旧版云工作流的种子等额外字段，与视频参数共用浮层。 */
   extraParameters?: ReactNode;
+  inlineFields?: ComfyVideoParameterFields;
   disabled?: boolean;
 }
 
@@ -304,10 +311,11 @@ export default function VideoParamSelector({
   seedanceDuration, generateAudio,
   onChangeSeedanceResolution, onChangeSeedanceRatio,
   onChangeSeedanceDuration, onChangeGenerateAudio,
-  showSeedanceRatio = true, showGenerateAudio = true, onContinuousEditEnd, extraParameters, disabled,
+  showSeedanceRatio = true, showGenerateAudio = true, onContinuousEditEnd, extraParameters, inlineFields, disabled,
 }: VideoParamSelectorProps) {
   const t = useT();
   const [open, setOpen] = useState(false);
+  const fieldsVisible = open || Boolean(inlineFields);
   // 正在展开的来源选择器：frame = 加参考帧，character = 加参考角色
   const [pickerFor, setPickerFor] = useState<'frame' | 'character' | null>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -336,7 +344,7 @@ export default function VideoParamSelector({
       character.imageNodeId, ...(character.referenceImages ?? []).map((reference) => reference.sourceNodeId),
     ].filter((id): id is string => !!id)))],
   ), [projectCharacters]);
-  const canvasNodes = useAppStore((state) => selectCharacterNodes(open ? state.nodes : undefined));
+  const canvasNodes = useAppStore((state) => selectCharacterNodes(fieldsVisible ? state.nodes : undefined));
   const workflowApiManifest = useAppStore((state) => state.workflows.find((workflow) =>
     workflow.id === selectedModel?.replace(/^workflow-api\//, ''))?.workflowApi);
 
@@ -345,11 +353,11 @@ export default function VideoParamSelector({
   const characterReferences = references.filter((item) => item.kind === 'character' && item.mediaKind !== 'audio');
 
   const projectCharacterOptions = useMemo(() => (
-    open ? resolveCharacterVideoReferenceOptions(projectCharacters, canvasNodes, 'project') : []
-  ), [open, canvasNodes, projectCharacters]);
+    fieldsVisible ? resolveCharacterVideoReferenceOptions(projectCharacters, canvasNodes, 'project') : []
+  ), [fieldsVisible, canvasNodes, projectCharacters]);
   const globalCharacterOptions = useMemo(() => (
-    open ? resolveCharacterVideoReferenceOptions(globalCharacters, [], 'global') : []
-  ), [open, globalCharacters]);
+    fieldsVisible ? resolveCharacterVideoReferenceOptions(globalCharacters, [], 'global') : []
+  ), [fieldsVisible, globalCharacters]);
   const characterOptions = [...projectCharacterOptions, ...globalCharacterOptions];
 
   const addReference = (kind: 'frame' | 'character', option: CharacterVideoReferenceOption) => {
@@ -790,10 +798,112 @@ export default function VideoParamSelector({
     </div>
   );
 
+  const referenceFields = fieldsVisible && onChangeVideoReferences && provider !== 'workflow-api' && (
+    <div className="img-rp-quality-area mb-2">
+      <div className="img-rp-section-label rh-video-ref-head">
+        <span>
+          {t('参考帧')}
+          <span className="rh-tip" data-tooltip={`${t('可选：指定某张图作为视频的首帧或尾帧，其余作为中间参考帧。不添加时按连线顺序交给模型。')}${referenceLimitTip ? `
+${t('该模型：{limits}（连线带入的素材一并计数）。', { limits: referenceLimitTip })}` : ''}`}>!</span>
+        </span>
+        <button type="button" className="rh-video-ref-add" onClick={() => setPickerFor(pickerFor === 'frame' ? null : 'frame')}>
+          {t(pickerFor === 'frame' ? '取消' : '＋ 添加')}
+        </button>
+      </div>
+      {frameReferences.length > 0 && (
+        <div className="rh-video-frame-list">
+          {frameReferences.map((item) => (
+            <div key={item.id} className="rh-video-frame-row">
+              <ViewportImage className="rh-video-frame-thumb" src={getReferencePreviewUrl(item)} alt={item.label || t('参考帧')} title={item.label} loading="lazy" />
+              <div className="img-rp-quality-segmented rh-video-frame-seg">
+                {FRAME_ROLE_OPTIONS.filter((option) => provider !== 'muse' || option.value !== 'last_frame').map((option) => (
+                  <AnimatedButton
+                    key={option.value}
+                    type="button"
+                    className={`img-rp-quality-item rh-v5-res-btn ui-schema-option ${item.role === option.value ? 'active' : ''}`}
+                    onClick={() => setFrameRole(item.id, option.value)}
+                  >
+                    {t(provider === 'muse' && option.value === 'reference' ? '参考图' : option.label)}
+                  </AnimatedButton>
+                ))}
+              </div>
+              <button type="button" className="rh-video-ref-remove" aria-label={t('移除 {name}', { name: item.label || t('参考帧') })} onClick={() => removeReference(item.id)}>✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="img-rp-section-label rh-video-ref-head mt-2">
+        <span>
+          {t('参考角色')}
+          <span className="rh-tip" data-tooltip={t('可选：从本项目角色或全局角色中挑选角色形象，作为参考图提交。若角色设置了可用的主音色，也会携带音频作为参考；当前模型不支持参考音频时，生成前会提示。提示词中提到角色名字时，会说明它对应的参考图。')}>!</span>
+        </span>
+        <button ref={characterTriggerRef} type="button" className="rh-video-ref-add"
+          aria-haspopup="dialog" aria-expanded={pickerFor === 'character'}
+          onClick={() => setPickerFor(pickerFor === 'character' ? null : 'character')}>
+          {t(pickerFor === 'character' ? '取消' : '＋ 添加')}
+        </button>
+      </div>
+      {characterReferences.length > 0 && (
+        <div className="rh-video-frame-list">
+          {characterReferences.map((item) => (
+            <div key={item.id} className="rh-video-frame-row">
+              <ViewportImage className="rh-video-frame-thumb" src={getReferencePreviewUrl(item)} alt={item.label || t('参考角色')} title={item.label} loading="lazy" />
+              <span className="rh-video-ref-name">{item.label || t('参考角色')}</span>
+              {references.some((reference) => reference.id === `${item.id}:voice` && reference.mediaKind === 'audio') && (
+                <span className="shrink-0 text-[10px] text-canvas-text-muted">{t('含主音色')}</span>
+              )}
+              <button type="button" className="rh-video-ref-remove" aria-label={t('移除 {name}', { name: item.label || t('参考角色') })} onClick={() => removeReference(item.id)}>✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {pickerFor === 'character' && !disabled && <VideoCharacterPicker anchorRef={characterTriggerRef}
+        projectItems={characterPickerItems(projectCharacterOptions)} globalItems={characterPickerItems(globalCharacterOptions)}
+        globalLoading={globalCharactersLoading} onReloadGlobal={() => { void loadGlobalCharacters(); }}
+        onClose={closeCharacterPicker} />}
+      {pickerFor === 'frame' && (
+        <div className="rh-video-ref-picker">
+          {connectedImageNodes.length > 0 && <div className="rh-video-ref-picker-label">{t('连线节点')}</div>}
+          {connectedImageNodes.map((node) => {
+            const data = node.data as BaseNodeData;
+            return (
+              <button
+                key={node.id}
+                type="button"
+                className="rh-video-ref-option"
+                onClick={() => addReference('frame', { id: node.id, label: data.label || t('参考图'), url: data.imageUrl as string })}
+              >
+                <ViewportImage className="rh-video-frame-thumb" src={data.imageUrl} alt="" loading="lazy" />
+                <span className="rh-video-ref-name">{data.label || t('参考图')}</span>
+              </button>
+            );
+          })}
+          {connectedImageNodes.length === 0 && (
+            <div className="rh-video-ref-empty">
+              {t('还没有可选的图片：先给视频节点连一个图片节点')}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
+  const legacyDurationField = (inlineFields ? !inlineFields.duration : open && !usesDurationControls) && (
+    <div className="rh-vram-adv-row" data-ui-schema-field="videoDuration" data-ui-schema-type="slider">
+      <div className="rh-vram-adv-label">
+        <span>{t('生成时长（秒）')}</span>
+        <span className="rh-tip" data-tooltip={t('整数秒，范围 {min}-{max}。提交时会根据帧率自动换算为模型需要的总帧数。', { min: minDuration, max: maxDuration })}>!</span>
+      </div>
+      {renderDurationSlider(durationControlValue)}
+    </div>
+  );
+
   return (<>
-    <div className="ui-schema-renderer" data-ui-schema-placement="videoParams" ref={ref}>
-      <div className="ui-schema-quality-ratio-pill">
-        <AnimatedButton
+    <div className={inlineFields ? 'mb-3 min-w-0' : 'ui-schema-renderer'} data-ui-schema-placement="videoParams" ref={ref}>
+      <div className={inlineFields ? undefined : 'ui-schema-quality-ratio-pill'}>
+        {!inlineFields && <AnimatedButton
           type="button"
           className="img-pill-btn ui-schema-menu-trigger"
           title={triggerLabel}
@@ -810,106 +920,17 @@ export default function VideoParamSelector({
         >
           <Icon icon="lucide:film" width={12} height={12} aria-hidden="true" />
           <span className="ui-schema-pill-label ui-schema-quality-ratio-label">{triggerLabel}</span>
-        </AnimatedButton>
+        </AnimatedButton>}
 
-        {open && !needsParameterSettings && (
-          <div className="img-ratio-popup ui-schema-popup ui-schema-video-params-popup" style={{ display: 'block' }}
+        {(inlineFields || (open && !needsParameterSettings)) && (
+          <div className={inlineFields ? undefined : 'img-ratio-popup ui-schema-popup ui-schema-video-params-popup'}
+            style={inlineFields ? undefined : { display: 'block' }}
             data-cloud-workflow-parameters={extraParameters ? '' : undefined}>
             <fieldset className="m-0 min-w-0 border-0 p-0" disabled={disabled}
               onClickCapture={disabled ? (event) => { event.preventDefault(); event.stopPropagation(); } : undefined}>
-            {onChangeVideoReferences && provider !== 'workflow-api' && (
-              <div className="img-rp-quality-area mb-2">
-                <div className="img-rp-section-label rh-video-ref-head">
-                  <span>
-                    {t('参考帧')}
-                    <span className="rh-tip" data-tooltip={`${t('可选：指定某张图作为视频的首帧或尾帧，其余作为中间参考帧。不添加时按连线顺序交给模型。')}${referenceLimitTip ? `
-${t('该模型：{limits}（连线带入的素材一并计数）。', { limits: referenceLimitTip })}` : ''}`}>!</span>
-                  </span>
-                  <button type="button" className="rh-video-ref-add" onClick={() => setPickerFor(pickerFor === 'frame' ? null : 'frame')}>
-                    {t(pickerFor === 'frame' ? '取消' : '＋ 添加')}
-                  </button>
-                </div>
-                {frameReferences.length > 0 && (
-                  <div className="rh-video-frame-list">
-                    {frameReferences.map((item) => (
-                      <div key={item.id} className="rh-video-frame-row">
-                        <ViewportImage className="rh-video-frame-thumb" src={getReferencePreviewUrl(item)} alt={item.label || t('参考帧')} title={item.label} loading="lazy" />
-                        <div className="img-rp-quality-segmented rh-video-frame-seg">
-                          {FRAME_ROLE_OPTIONS.filter((option) => provider !== 'muse' || option.value !== 'last_frame').map((option) => (
-                            <AnimatedButton
-                              key={option.value}
-                              type="button"
-                              className={`img-rp-quality-item rh-v5-res-btn ui-schema-option ${item.role === option.value ? 'active' : ''}`}
-                              onClick={() => setFrameRole(item.id, option.value)}
-                            >
-                              {t(provider === 'muse' && option.value === 'reference' ? '参考图' : option.label)}
-                            </AnimatedButton>
-                          ))}
-                        </div>
-                        <button type="button" className="rh-video-ref-remove" aria-label={t('移除 {name}', { name: item.label || t('参考帧') })} onClick={() => removeReference(item.id)}>✕</button>
-                      </div>
-                    ))}
-                  </div>
-                )}
+            {!inlineFields && referenceFields}
 
-                <div className="img-rp-section-label rh-video-ref-head mt-2">
-                  <span>
-                    {t('参考角色')}
-                    <span className="rh-tip" data-tooltip={t('可选：从本项目角色或全局角色中挑选角色形象，作为参考图提交。若角色设置了可用的主音色，也会携带音频作为参考；当前模型不支持参考音频时，生成前会提示。提示词中提到角色名字时，会说明它对应的参考图。')}>!</span>
-                  </span>
-                  <button ref={characterTriggerRef} type="button" className="rh-video-ref-add"
-                    aria-haspopup="dialog" aria-expanded={pickerFor === 'character'}
-                    onClick={() => setPickerFor(pickerFor === 'character' ? null : 'character')}>
-                    {t(pickerFor === 'character' ? '取消' : '＋ 添加')}
-                  </button>
-                </div>
-                {characterReferences.length > 0 && (
-                  <div className="rh-video-frame-list">
-                    {characterReferences.map((item) => (
-                      <div key={item.id} className="rh-video-frame-row">
-                        <ViewportImage className="rh-video-frame-thumb" src={getReferencePreviewUrl(item)} alt={item.label || t('参考角色')} title={item.label} loading="lazy" />
-                        <span className="rh-video-ref-name">{item.label || t('参考角色')}</span>
-                        {references.some((reference) => reference.id === `${item.id}:voice` && reference.mediaKind === 'audio') && (
-                          <span className="shrink-0 text-[10px] text-canvas-text-muted">{t('含主音色')}</span>
-                        )}
-                        <button type="button" className="rh-video-ref-remove" aria-label={t('移除 {name}', { name: item.label || t('参考角色') })} onClick={() => removeReference(item.id)}>✕</button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {pickerFor === 'character' && !disabled && <VideoCharacterPicker anchorRef={characterTriggerRef}
-                  projectItems={characterPickerItems(projectCharacterOptions)} globalItems={characterPickerItems(globalCharacterOptions)}
-                  globalLoading={globalCharactersLoading} onReloadGlobal={() => { void loadGlobalCharacters(); }}
-                  onClose={closeCharacterPicker} />}
-                {pickerFor === 'frame' && (
-                  <div className="rh-video-ref-picker">
-                    {connectedImageNodes.length > 0 && <div className="rh-video-ref-picker-label">{t('连线节点')}</div>}
-                    {connectedImageNodes.map((node) => {
-                      const data = node.data as BaseNodeData;
-                      return (
-                        <button
-                          key={node.id}
-                          type="button"
-                          className="rh-video-ref-option"
-                          onClick={() => addReference('frame', { id: node.id, label: data.label || t('参考图'), url: data.imageUrl as string })}
-                        >
-                          <ViewportImage className="rh-video-frame-thumb" src={data.imageUrl} alt="" loading="lazy" />
-                          <span className="rh-video-ref-name">{data.label || t('参考图')}</span>
-                        </button>
-                      );
-                    })}
-                    {connectedImageNodes.length === 0 && (
-                      <div className="rh-video-ref-empty">
-                        {t('还没有可选的图片：先给视频节点连一个图片节点')}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {usesDurationControls ? (
+            {usesDurationControls && !inlineFields ? (
               <>
                 {/* Seedance 分辨率 */}
                 {showResolutionControl && <div className="img-rp-quality-area mb-2">
@@ -1116,7 +1137,7 @@ ${t('该模型：{limits}（连线带入的素材一并计数）。', { limits: 
               </>
             ) : (
               <>
-                {showGenericRatio && (
+                {inlineFields?.ratio ? <div className="mb-3">{inlineFields.ratio}</div> : showGenericRatio && (
                   <div className="img-rp-quality-area mb-2">
                     <div className="img-rp-section-label">
                       {t('画面比例')}
@@ -1138,7 +1159,7 @@ ${t('该模型：{limits}（连线带入的素材一并计数）。', { limits: 
                 )}
 
                 {/* ComfyUI / RunningHub 分辨率 */}
-                <div className="img-rp-quality-area mb-2" data-ui-schema-field="rhVideoResolution" data-ui-schema-type="segmented" data-ui-schema-value-type="number" data-ui-schema-default="832">
+                {inlineFields?.resolution ? <div className="mb-3">{inlineFields.resolution}</div> : <div className="img-rp-quality-area mb-2" data-ui-schema-field="rhVideoResolution" data-ui-schema-type="segmented" data-ui-schema-value-type="number" data-ui-schema-default="832">
                   <div className="img-rp-section-label">
                     {t('分辨率（长边）')}
                     <span className="rh-tip" data-tooltip={t('画面长边像素，短边由上方比例换算。分辨率越高细节越清晰、边缘更稳定，显存占用与生成耗时也明显增加。最后一格可以填预设以外的值，例如 384。')}>!</span>
@@ -1182,7 +1203,9 @@ ${t('该模型：{limits}（连线带入的素材一并计数）。', { limits: 
                       }}
                     />
                   </div>
-                </div>
+                </div>}
+
+                {inlineFields && <div className="mb-3">{inlineFields.duration ?? legacyDurationField}</div>}
 
                 {/* 帧率 & 时长 */}
                 <div className="rh-v5-meta-panel">
@@ -1213,16 +1236,11 @@ ${t('该模型：{limits}（连线带入的素材一并计数）。', { limits: 
                     </div>
                   </div>
 
-                  <div className="rh-vram-adv-row" data-ui-schema-field="videoDuration" data-ui-schema-type="slider">
-                    <div className="rh-vram-adv-label">
-                      <span>{t('生成时长（秒）')}</span>
-                      <span className="rh-tip" data-tooltip={t('整数秒，范围 {min}-{max}。提交时会根据帧率自动换算为模型需要的总帧数。', { min: minDuration, max: maxDuration })}>!</span>
-                    </div>
-                    {renderDurationSlider(durationControlValue)}
-                  </div>
+                  {!inlineFields && legacyDurationField}
                 </div>
               </>
             )}
+            {inlineFields && referenceFields}
             <ComfyH3MemorySelector nodeId={nodeId} disabled={disabled} />
             {extraParameters}
             </fieldset>
