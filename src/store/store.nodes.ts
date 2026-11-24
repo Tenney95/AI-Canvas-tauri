@@ -92,6 +92,28 @@ function retainMediaModelDefaults(data: BaseNodeData, provider: string | undefin
   if (parameters?.duration === undefined) delete data.seedanceDuration;
 }
 
+/** 带父节点插入时，分组成员也在同一次画布更新中登记。 */
+function appendExplicitGroupMembers(
+  state: Pick<AppState, 'nodes' | 'groups'>,
+  nodes: readonly Node<BaseNodeData>[],
+) {
+  const addedByGroup = new Map<string, string[]>();
+  for (const node of nodes) {
+    if (!node.parentId) continue;
+    const parent = getCanvasNodeById(state.nodes, node.parentId);
+    const groupId = parent?.type === 'group' ? parent.data.groupId : undefined;
+    if (typeof groupId !== 'string') continue;
+    const members = addedByGroup.get(groupId) ?? [];
+    members.push(node.id);
+    addedByGroup.set(groupId, members);
+  }
+  if (!addedByGroup.size) return state.groups;
+  return state.groups.map((group) => {
+    const added = addedByGroup.get(group.id);
+    return added ? { ...group, nodeIds: [...new Set([...group.nodeIds, ...added])] } : group;
+  });
+}
+
 export function isCanvasConnectionValid(connection: {
   source: string;
   target: string;
@@ -389,6 +411,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
       return {
         ...inserted,
         nodes: connected.nodes,
+        groups: appendExplicitGroupMembers(inserted, [node]),
         edges: [...state.edges, ...connected.edges],
       };
     });
@@ -403,6 +426,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
       const connected = appendConnectionMentions(nextNodes, edges, state.config?.autoMentionOnConnect, state.activeNodeId);
       return {
         nodes: connected.nodes,
+        groups: appendExplicitGroupMembers({ nodes: nextNodes, groups: state.groups }, nodes),
         edges: [...state.edges, ...connected.edges],
       };
     });

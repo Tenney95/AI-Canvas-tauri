@@ -989,10 +989,17 @@ const nodes = {
   // ── ReversePromptDialog ──
   '反推提示词': 'Reverse prompt',
   '请先选择一个能读图的文本模型': 'Select a vision-capable text model first',
+  '请先选择一个文本模型': 'Select a text model first',
   '提示词反推失败': 'Prompt reversal failed',
+  '模型返回了空的提示词': 'The model returned an empty prompt',
+  '模型未返回有效的正向和逆向提示词，请重试或更换模型': 'The model did not return valid positive and negative prompts. Try again or choose another model.',
+  '来源或画布已变化，请关闭后重新打开反推': 'The source or canvas changed. Close and reopen prompt reversal.',
   '已抽取 {count} 帧关键帧，连画面带运动一起反推':
     'Extracted {count} keyframes; reversing the prompt from both the visuals and the motion',
   '读取这张图，反推出能重新生成它的提示词': 'Read this image and reverse a prompt that can regenerate it',
+  '已选 {count} 张图片': '{count} images selected',
+  '根据所选文本重构生成提示词': 'Reconstruct a generation prompt from the selected text',
+  '参考文本': 'Reference text',
   '参与反推的{source}': '{source} used for reversal',
   '反推模型': 'Reverse model',
   '需要能读图的模型': 'Requires a vision-capable model',
@@ -1016,6 +1023,7 @@ const nodes = {
   '正向提示词': 'Positive prompt',
   '逆向提示词': 'Negative prompt',
   '查看图片结果': 'Image result',
+  '已处理 {done} / {total} 张图片': 'Processed {done} of {total} images',
   '{done} / {total} 组可添加': '{done} of {total} ready to add',
   '待反推': 'Pending',
   '当前图片待反推': 'This image is awaiting reversal',
@@ -1026,9 +1034,12 @@ const nodes = {
   '反推结果': 'Reverse result',
   '正在读{source}并反推提示词...': 'Reading the {source} and reversing the prompt…',
   '反推中...': 'Reversing…',
+  '停止反推': 'Stop reversal',
   '重新反推': 'Reverse again',
+  '反推未完成项': 'Retry unfinished items',
   '开始反推': 'Start reversal',
   '添加为文本节点': 'Add as text node',
+  '添加 {count} 组结果': 'Add {count} result sets',
 
   // ── PromptPanel · 摄影参数 ──
   '摄影参数综合成像预览': 'Photography settings composite preview',

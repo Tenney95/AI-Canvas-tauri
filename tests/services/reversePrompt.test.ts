@@ -359,6 +359,30 @@ describe('addReversePromptTextNodes', () => {
     expect(useAppStore.getState().edges).toEqual([]);
   });
 
+  it.each([false, true])('将反推节点登记为原分组成员并可一次回退（双向：%s）', async (dual) => {
+    setupTextModelAndNode('ai-image', { parentId: 'group-1' });
+    const group = { id: 'group-1', name: '分组', nodeIds: ['node-source'], color: 'blue', createdAt: 1 };
+    useAppStore.setState(({ nodes }) => ({
+      groups: [group],
+      nodes: [{
+        id: group.id, type: 'group', position: { x: 30, y: 20 },
+        data: { type: 'comment', label: group.name, groupId: group.id },
+      }, ...nodes],
+    }));
+
+    const ids = addReversePromptTextNodes('image', [{
+      sourceNodeIds: ['node-source'], prompt: '窗边静物', ...(dual ? { negativePrompt: '水印' } : {}),
+    }]);
+
+    const { groups, nodes, history, undo } = useAppStore.getState();
+    expect(ids).toHaveLength(dual ? 2 : 1);
+    expect(groups[0].nodeIds).toEqual(['node-source', ...ids]);
+    expect(nodes.slice(2).map((node) => node.parentId)).toEqual(ids.map(() => group.id));
+    expect(history).toHaveLength(1);
+    expect(await undo()).toBe(true);
+    expect(useAppStore.getState().groups).toEqual([group]);
+  });
+
   it('拒绝仅填写一半的双向草稿和缺失来源，保持画布与历史完整', () => {
     setupTextModelAndNode('ai-image');
     const initial = useAppStore.getState();
