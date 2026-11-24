@@ -122,8 +122,14 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     })),
   );
 
-  // 三者总是一起变化，合成一份状态；revision 用于每次打开时重挂载对话框
-  const [dialog, setDialog] = useState<{ open: boolean; connectionId?: string; revision: number; returnToRelayGroups?: boolean }>({
+  // revision 用于每次打开时重挂载对话框，重新初始化表单草稿。
+  const [dialog, setDialog] = useState<{
+    open: boolean;
+    connectionId?: string;
+    copyConfig?: ApiProviderConfig;
+    revision: number;
+    returnToRelayGroups?: boolean;
+  }>({
     open: false,
     revision: 0,
   });
@@ -287,6 +293,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   const editingConfig = editingConnectionId
     ? config.providers[editingConnectionId] ?? providerItems.find((item) => item.id === editingConnectionId)?.config
     : undefined;
+  const initialConnectionConfig = requestedConnectionId ? editingConfig : dialog.copyConfig ?? editingConfig;
 
   const tauriInvoke = useCallback(
     async <T,>(command: string, args?: Record<string, unknown>): Promise<T> => {
@@ -572,6 +579,33 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     setDialog((previous) => ({ open: true, connectionId, revision: previous.revision + 1 }));
   };
 
+  const openCopyDialog = (connectionId: string) => {
+    const { providers, generalModels } = useAppStore.getState().config;
+    const source = providers[connectionId];
+    const definition = source && getProviderDefinition(connectionId, source);
+    if (!source || definition?.id !== 'custom-openai') return;
+    const selectedModels = source.selectedModels ?? generalModels
+      ?.filter((model) => model.providerConfigId === connectionId)
+      .map(({ id: _id, modelId, providerConfigId, catalogMaxOutputTokens: _catalogMaxOutputTokens, ...model }) => ({
+        ...model, id: modelId, provider: providerConfigId,
+      }));
+    const copyConfig: ApiProviderConfig = structuredClone({
+      name: `${source.name.trim() || definition.name} Copy`,
+      catalogId: definition.id,
+      apiKey: source.apiKey,
+      baseUrl: source.baseUrl,
+      chatApiProtocol: source.chatApiProtocol,
+      selectedModels,
+      catalogModels: source.catalogModels,
+      visibleModelCategories: source.visibleModelCategories,
+      imageHosting: source.imageHosting,
+      imageProtocolDefault: source.imageProtocolDefault,
+      imageReferenceRequestModeDefault: source.imageReferenceRequestModeDefault,
+    });
+    setPendingApiKeyConnectionId(null);
+    setDialog((previous) => ({ open: true, copyConfig, revision: previous.revision + 1 }));
+  };
+
   const closeConnectionDialog = () => {
     setPendingApiKeyConnectionId(null);
     setDialog((previous) => previous.returnToRelayGroups
@@ -590,7 +624,9 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     related?: { runninghubWorkflowApiKey?: string; runninghubSiteKeys?: RunningHubSiteKeyDrafts; workflowApiDrafts?: import('../../types/workflowApi').WorkflowApiDraft[] },
   ) => {
     const definition = getProviderDefinition(connectionId, providerConfig);
-    const previousImageHostingRef = useAppStore.getState().config.providers[connectionId]?.imageHosting?.credentialRef;
+    const previousConfig = useAppStore.getState().config.providers[connectionId];
+    const previousImageHostingRef = previousConfig?.imageHosting?.credentialRef;
+    const creatingCopy = !!dialog.copyConfig && !previousConfig && definition?.id === 'custom-openai';
     if (definition?.id === 'runninghub-model' && related?.runninghubSiteKeys) {
       const providers = buildRunningHubSiteProviders(useAppStore.getState().config.providers, providerConfig, related.runninghubSiteKeys);
       updateConfig({ providers });
@@ -611,7 +647,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     } else if (related && 'runninghubWorkflowApiKey' in related && config.providers.runninghub) {
       await removeProviderConfig('runninghub');
     }
-    await saveConfig({ throwOnError: true });
+    await saveConfig({ throwOnError: true, ...(creatingCopy ? { rollbackNewProviderId: connectionId } : {}) });
     if (previousImageHostingRef && previousImageHostingRef !== providerConfig.imageHosting?.credentialRef
       && !Object.values(useAppStore.getState().config.providers).some((provider) => provider.imageHosting?.credentialRef === previousImageHostingRef)) {
       await deleteImageHostingCredential(previousImageHostingRef);
@@ -962,6 +998,17 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                           <Icon icon={isCustomConnection ? 'mdi:file-export-outline' : 'mdi:content-copy'} width="15" />
                         </AnimatedButton>
                       )}
+                      {definition.id === 'custom-openai' && (
+                        <AnimatedButton
+                          type="button"
+                          className="provider-icon-btn"
+                          aria-label={`${t('创建副本')} · ${displayName}`}
+                          data-tooltip={t('创建副本')}
+                          onClick={() => openCopyDialog(item.id)}
+                        >
+                          <Icon icon="mdi:content-copy" width="15" aria-hidden="true" />
+                        </AnimatedButton>
+                      )}
                       <AnimatedButton
                         type="button"
                         className="provider-icon-btn"
@@ -1014,7 +1061,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
         key={connectionDialogKey}
         isOpen={connectionDialogOpen}
         connectionId={editingConnectionId}
-        initialConfig={editingConfig}
+        initialConfig={initialConnectionConfig}
         initialModelId={requestedConnectionId ? pendingApiKeyModelId ?? undefined : undefined}
         providerConfigs={config.providers}
         connectedProviderIds={connectedProviderIds}

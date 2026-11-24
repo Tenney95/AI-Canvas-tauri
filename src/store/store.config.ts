@@ -133,7 +133,7 @@ export interface ConfigSlice {
   updateGeneralModel: (id: string, model: Partial<GeneralModelConfig>) => void;
   removeGeneralModel: (id: string) => void;
   /** 失败始终拒绝并保留修改；保留 throwOnError 参数兼容既有调用方。 */
-  saveConfig: (options?: { silent?: boolean; throwOnError?: boolean }) => Promise<void>;
+  saveConfig: (options?: { silent?: boolean; throwOnError?: boolean; rollbackNewProviderId?: string }) => Promise<void>;
   loadConfig: () => Promise<void>;
 }
 
@@ -412,8 +412,14 @@ function migrateLegacyGeneralModels(config: AppConfig): AppConfig {
   return { ...normalizedConfig, providers, generalModels: migratedModels };
 }
 
+function removeNewProvider(config: AppConfig, id: string): void {
+  delete config.providers[id];
+  config.generalModels = config.generalModels?.filter((model) => model.providerConfigId !== id);
+}
+
 export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (rawSet, get) => {
   let tail: Promise<unknown> = Promise.resolve();
+  const pendingProviderCreations = new Map<string, { failed: boolean }>();
   const enqueue = <T>(operation: () => Promise<T>): Promise<T> => {
     const result = tail.then(operation);
     tail = result.catch(() => {});
@@ -450,6 +456,11 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
       configRevision: state.configRevision + 1,
       configSaveStatus: state.configSaveStatus === 'saving' ? 'saving' : dirty ? 'dirty' : 'idle',
       configSaveError: null };
+  });
+  const rollbackNewProvider = (id: string) => set((state) => {
+    const config = { ...state.config, providers: { ...state.config.providers } };
+    removeNewProvider(config, id);
+    return { config };
   });
   registerSettingsPersistence('config', {
     flush: async (retry) => {
@@ -647,7 +658,9 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
     })),
 
   saveConfig: (options) => {
+    const newProviderId = options?.rollbackNewProviderId;
     if (!get().configHydrated) {
+      if (newProviderId) rollbackNewProvider(newProviderId);
       const message = '配置尚未完成加载，不能保存设置';
       if (!get().configSaveError) rawSet({ configSaveStatus: 'error', configSaveError: message });
       const rejected = Promise.reject<void>(new Error(message));
@@ -658,12 +671,20 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
     const secretChanges = { ...get().configSecretChanges };
     const revision = get().configRevision;
     const hydrated = get().configHydrated;
+    const earlierCreations = [...pendingProviderCreations];
+    const creation = newProviderId ? { failed: false } : undefined;
+    if (newProviderId && creation) pendingProviderCreations.set(newProviderId, creation);
     return enqueue(async () => {
       let committed: unknown;
       let committedFailure: unknown;
       let unstored: string[] = [];
       let directoriesSynced = false;
       try {
+        for (const [id, earlier] of earlierCreations) {
+          if (!earlier.failed || id === newProviderId) continue;
+          removeNewProvider(snapshot, id);
+          delete secretChanges[id];
+        }
         if (!hydrated) throw new Error('配置尚未完成加载，不能保存设置');
         rawSet({ configSaveStatus: 'saving', configSaveError: null });
         const normalized = migrateLegacyGeneralModels(snapshot);
@@ -723,6 +744,11 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
         rawSet({ configSaveStatus: get().configDirty ? 'dirty' : 'saved', configSaveError: null });
         if (!options?.silent && get().configRevision === revision) get().showToast('设置已保存');
       } catch (error) {
+        if (newProviderId && creation && committed === undefined) {
+          // 在下一个排队的保存开始前撤销副本，并使已捕获的快照丢弃这次创建。
+          creation.failed = true;
+          rollbackNewProvider(newProviderId);
+        }
         const conflict = error instanceof ConfigConflictError;
         if (error instanceof ProjectStorageRootError && get().config.baseDataDir === snapshot.baseDataDir) {
           set((state) => ({ config: { ...state.config, baseDataDir: state.configEditBaseline.baseDataDir as AppConfig['baseDataDir'] } }));
@@ -738,6 +764,10 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
         rawSet({ configSaveStatus: conflict ? 'conflict' : 'error', configSaveError: message });
         get().showToast(message, 'error');
         throw conflict ? new ConfigConflictError() : new Error(message);
+      } finally {
+        if (newProviderId && pendingProviderCreations.get(newProviderId) === creation) {
+          pendingProviderCreations.delete(newProviderId);
+        }
       }
     });
   },

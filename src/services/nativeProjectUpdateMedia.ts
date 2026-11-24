@@ -94,7 +94,7 @@ export async function createNativeUpdateBackup(expected: ProjectModelTransferCap
   await verifyNativeGlobalRecoverySources(expected, globalFiles);
   const oldAssets = nativeUpdateInventory(await port.inspectAssets(applyNativeGlobalRecoveryFiles(expected, globalFiles)));
   const originalAssets = await port.inspectAssets(portable);
-  const capturedAssets = await captureNativeAssetSnapshots(portable.aggregate, portable.editorRecords ?? [], nativeUpdateInventory(originalAssets), globalFiles);
+  const capturedAssets = await captureNativeAssetSnapshots(portable.aggregate, portable.editorRecords ?? [], originalAssets, globalFiles);
   const capturedIds = new Set(capturedAssets.map((asset) => asset.assetId));
   for (const asset of portable.assetMetadata ?? []) if (!capturedIds.has(asset.assetId) && originalAssets.some((file) => file.rootRef === asset.rootRef
     && file.path === asset.path && file.bytes === asset.bytes && file.sha256 === asset.sha256)) capturedAssets.push(structuredClone(asset));

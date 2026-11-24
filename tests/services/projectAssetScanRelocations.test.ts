@@ -115,6 +115,29 @@ describe('project asset scans with committed group relocations', () => {
     expect(await db.getAssetIndexById(current.assetId)).toEqual(current);
   });
 
+  it.each([{ size: 2, fingerprint: '2:1' }, { mtimeMs: 2, fingerprint: '1:2' }])(
+    '索引在补齐事务前已刷新时拒绝过期文件证据 %o', async (changed) => {
+      const db = await import('../../src/services/indexedDbService');
+      const snapshot = record('project-media');
+      const current = { ...snapshot, rootPath: undefined, relativePath: undefined, ...changed };
+      await db.putAssetIndex(current);
+
+      await expect(db.putAssetIndexes([snapshot], { repairMissingProjectLocation: true })).rejects.toThrow('资产身份已变化');
+      expect(await db.getAssetIndexById(snapshot.assetId)).toEqual(current);
+    },
+  );
+
+  it('同一路径的补齐事务保留最新摘要和使用时间，重复提交得到同一索引', async () => {
+    const db = await import('../../src/services/indexedDbService');
+    const snapshot = record('project-media');
+    const latest = { contentDigest: 'b'.repeat(64), lastUsedAt: 456 };
+    await db.putAssetIndex({ ...snapshot, ...latest, relativePath: undefined });
+    const expected = { ...snapshot, ...latest };
+
+    await expect(db.putAssetIndexes([snapshot], { repairMissingProjectLocation: true })).resolves.toEqual([expected]);
+    await expect(db.putAssetIndexes([snapshot], { repairMissingProjectLocation: true })).resolves.toEqual([expected]);
+  });
+
   it.each([
     { projectId: 'p2-11111111-1111-4111-8111-111111111111', rootPath: 'D:/another', relativePath: 'current.png',
       reason: '项目文件的素材根与当前项目不一致' },
