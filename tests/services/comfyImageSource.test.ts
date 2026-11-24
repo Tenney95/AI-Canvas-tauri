@@ -70,9 +70,14 @@ describe('Comfy 图片原生展示源', () => {
     await expect(acquireComfyImageSource(source, request.signal)).rejects.toMatchObject({ name: 'AbortError' });
     expect(URL.createObjectURL).not.toHaveBeenCalled();
   });
-  it('未声明长度的响应也按实际流字节拒绝超限图片', async () => {
-    mocks.native.mockResolvedValueOnce(new Response(new Blob([new Uint8Array(32 * 1024 * 1024 + 1)], { type: 'image/png' })));
+  it('按实际流字节执行默认限制，全屏可使用无额外字节上限的读取', async () => {
+    const image = new Blob([new Uint8Array(32 * 1024 * 1024 + 1)], { type: 'image/png' });
+    mocks.native.mockImplementation(async () => new Response(image));
     await expect(acquireComfyImageSource(source, new AbortController().signal)).rejects.toThrow('32 MiB');
+    await expect(readNativeComfyImageBlob(source, new AbortController().signal, Infinity)).resolves.toMatchObject({
+      size: image.size,
+      type: image.type,
+    });
     expect(URL.createObjectURL).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });

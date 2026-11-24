@@ -18,7 +18,7 @@ export function shouldLoadNativeComfyImage(source: string | undefined): boolean 
 }
 
 /** 原生流读取覆盖响应体的取消、超时和字节预算；失败不再交回 WebView 请求。 */
-export async function readNativeComfyImageBlob(source: string, signal: AbortSignal): Promise<Blob> {
+export async function readNativeComfyImageBlob(source: string, signal: AbortSignal, maxBytes = MAX_IMAGE_BYTES): Promise<Blob> {
   signal.throwIfAborted();
   if (!shouldLoadNativeComfyImage(source)) throw new Error('ComfyUI 图片地址不属于可用的原生读取目标');
   const activeSignal = AbortSignal.any([signal, AbortSignal.timeout(READ_TIMEOUT_MS)]);
@@ -28,9 +28,11 @@ export async function readNativeComfyImageBlob(source: string, signal: AbortSign
     await discard();
     throw new Error(`ComfyUI 图片读取失败（HTTP ${response.status}）`);
   }
-  if (Number(response.headers.get('content-length')) > MAX_IMAGE_BYTES) {
+  const sizeLimit = `${maxBytes / (1024 * 1024)} MiB 读取限制`;
+  const sizeError = () => new RangeError(`ComfyUI 图片超过 ${sizeLimit}`);
+  if (Number(response.headers.get('content-length')) > maxBytes) {
     await discard();
-    throw new RangeError('ComfyUI 图片超过 32 MiB 读取限制');
+    throw sizeError();
   }
   const mime = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() ?? '';
   if (mime && !mime.startsWith('image/') && mime !== 'application/octet-stream') {
@@ -41,7 +43,7 @@ export async function readNativeComfyImageBlob(source: string, signal: AbortSign
   if (!reader) {
     const blob = await response.blob();
     activeSignal.throwIfAborted();
-    if (!blob.size || blob.size > MAX_IMAGE_BYTES) throw new RangeError('ComfyUI 图片为空或超过 32 MiB 读取限制');
+    if (!blob.size || blob.size > maxBytes) throw new RangeError(`ComfyUI 图片为空或超过 ${sizeLimit}`);
     return blob;
   }
   const chunks: Uint8Array<ArrayBuffer>[] = [];
@@ -52,7 +54,7 @@ export async function readNativeComfyImageBlob(source: string, signal: AbortSign
       const { done, value } = await reader.read();
       if (done) break;
       total += value.byteLength;
-      if (total > MAX_IMAGE_BYTES) throw new RangeError('ComfyUI 图片超过 32 MiB 读取限制');
+      if (total > maxBytes) throw sizeError();
       chunks.push(Uint8Array.from(value));
     }
     activeSignal.throwIfAborted();

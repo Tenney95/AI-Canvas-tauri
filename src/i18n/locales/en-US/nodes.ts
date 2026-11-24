@@ -155,8 +155,6 @@ const nodes = {
   "适合日景、外景与混合亮度": "For daylight, locations, and mixed brightness.",
   "适合室内灯光与细腻层次": "For interior lighting and subtle gradation.",
   "适合夜景、室内与低照度氛围": "For night scenes, interiors, and low-light atmosphere.",
-  '图片超过全屏预览安全上限，请降低分辨率后重试': 'This image exceeds the safe full-screen preview limit. Lower its resolution and try again',
-  '此图片格式暂不支持安全全屏预览，请先转换为 PNG 或 JPEG': 'Safe full-screen preview is unavailable for this image format. Convert it to PNG or JPEG first',
   '图片预览资源不足，请关闭其他大图后重试': 'Not enough image preview resources. Close other large previews and try again',
   '图片读取或解码失败，请检查文件或网络后重试': 'The image could not be read or decoded. Check the file or network and try again',
   '无损压缩': 'Lossless compression',

@@ -1,17 +1,13 @@
 /**
- * fullscreenImageSource — 在资源预算约束内获取全屏图片来源。
+ * fullscreenImageSource — 为全屏查看器提供原图地址和资源租约。
  */
 import { readNativeComfyImageBlob, shouldLoadNativeComfyImage } from './comfyImageSource';
 import type { ComfyMediaSourceLease } from './comfyMediaSource';
-import { ImageSourceReadError, MAX_IMAGE_SOURCE_BYTES, readImageSourceBlob } from './fs/imageSourceBlob';
-import { parseRasterImageDimensions } from './rasterImageDimensions';
-import {
-  assertEditorSourceBudget, EDITOR_SOURCE_SURFACE_COPIES, MAX_EDITOR_SOURCE_WORKING_SET_BYTES,
-} from '../components/nodes/shared/image/imageResourceBudget';
+import { corsSafeFetch } from './ai/httpTransport';
+import { getAssetUrlFromPath } from './fs/core';
+import { isRemoteMediaUrl, isTauriAssetUrl, localMediaUrlToPath } from '../utils/mediaUrl';
 
 export const FULLSCREEN_IMAGE_ERRORS = {
-  too_large: '图片超过全屏预览安全上限，请降低分辨率后重试',
-  unsupported: '此图片格式暂不支持安全全屏预览，请先转换为 PNG 或 JPEG',
   busy: '图片预览资源不足，请关闭其他大图后重试',
   unavailable: '图片读取或解码失败，请检查文件或网络后重试',
 } as const;
@@ -32,8 +28,8 @@ interface Waiter {
   reject: (error: unknown) => void;
   abort: () => void;
 }
-const runtime: { preparing: boolean; waiters: Waiter[]; activeBytes: number } = import.meta.hot?.data.fullscreenImages
-  ?? { preparing: false, waiters: [], activeBytes: 0 };
+const runtime: { preparing: boolean; waiters: Waiter[] } = import.meta.hot?.data.fullscreenImages
+  ?? { preparing: false, waiters: [] };
 if (import.meta.hot) import.meta.hot.data.fullscreenImages = runtime;
 
 const abortError = () => new DOMException('图片预览已取消', 'AbortError');
@@ -63,37 +59,47 @@ function enterPreparation(signal: AbortSignal): Promise<() => void> {
   });
 }
 
-/** 原格式租约只在读头和预算通过后交给 img，整个过程不会转码或改写原文件。 */
+/** 本地原图交给 img 直接解码，远程读取继续走现有 HTTP 通道。 */
 export async function acquireFullscreenImageSource(source: string, signal: AbortSignal): Promise<ComfyMediaSourceLease> {
-  const timeout = new AbortController();
-  const timer = setTimeout(() => timeout.abort(), 15_000);
-  const activeSignal = AbortSignal.any([signal, timeout.signal]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
   let leave: (() => void) | undefined;
   try {
+    signal.throwIfAborted();
+    // 已有 asset URL 可能带缓存刷新参数，只有文件路径才需要转换。
+    const path = isTauriAssetUrl(source) ? undefined
+      : localMediaUrlToPath(source) ?? (/^(?:\/|[a-z]:[\\/]|\\\\)/i.test(source) ? source : undefined);
+    const url = path ? await getAssetUrlFromPath(path) : source;
+    signal.throwIfAborted();
+    if (isTauriAssetUrl(url)) return { src: url, release: () => {} };
+    if (path) throw new FullscreenImageSourceError('unavailable');
+    if (/^(?:data|blob):/i.test(url)) return { src: url, release: () => {} };
+    if (!isRemoteMediaUrl(url)) throw new FullscreenImageSourceError('unavailable');
+
+    const timeout = new AbortController();
+    timer = setTimeout(() => timeout.abort(), 15_000);
+    const activeSignal = AbortSignal.any([signal, timeout.signal]);
     leave = await enterPreparation(activeSignal);
     activeSignal.throwIfAborted();
-    const blob = shouldLoadNativeComfyImage(source)
-      ? await readNativeComfyImageBlob(source, activeSignal)
-      : await readImageSourceBlob(source, activeSignal);
+    let blob: Blob;
+    if (shouldLoadNativeComfyImage(url)) {
+      blob = await readNativeComfyImageBlob(url, activeSignal, Infinity);
+    } else {
+      const response = await corsSafeFetch(url, { signal: activeSignal });
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new FullscreenImageSourceError('unavailable');
+      }
+      blob = await response.blob();
+    }
     activeSignal.throwIfAborted();
-    if (!blob.size || blob.size > MAX_IMAGE_SOURCE_BYTES) throw new FullscreenImageSourceError('too_large');
-    // JPEG 的 SOF 前可能有大段 APP/ICC；输入已限额，解析完整字节仍不触发图片解码。
-    const dimensions = await blob.arrayBuffer().then((buffer) => parseRasterImageDimensions(new Uint8Array(buffer)));
-    activeSignal.throwIfAborted();
-    if (!dimensions) throw new FullscreenImageSourceError('unsupported');
-    const estimate = assertEditorSourceBudget(dimensions.width, dimensions.height, '全屏预览');
-    const bytes = blob.size + estimate.bytes * EDITOR_SOURCE_SURFACE_COPIES;
-    if (bytes > MAX_EDITOR_SOURCE_WORKING_SET_BYTES) throw new FullscreenImageSourceError('too_large');
-    if (runtime.activeBytes + bytes > MAX_EDITOR_SOURCE_WORKING_SET_BYTES) throw new FullscreenImageSourceError('busy');
+    if (!blob.size) throw new FullscreenImageSourceError('unavailable');
     const src = URL.createObjectURL(blob);
-    runtime.activeBytes += bytes;
     let released = false;
     const release = () => {
       if (released) return;
       released = true;
       signal.removeEventListener('abort', release);
       URL.revokeObjectURL(src);
-      runtime.activeBytes -= bytes;
     };
     signal.addEventListener('abort', release, { once: true });
     if (signal.aborted) { release(); throw abortError(); }
@@ -101,9 +107,6 @@ export async function acquireFullscreenImageSource(source: string, signal: Abort
   } catch (error) {
     if (signal.aborted) throw abortError();
     if (error instanceof FullscreenImageSourceError) throw error;
-    if (error instanceof RangeError || error instanceof ImageSourceReadError && error.code === 'too_large') {
-      throw new FullscreenImageSourceError('too_large');
-    }
     // 读取器或浏览器异常可能夹带地址，只把固定原因交给界面。
     throw new FullscreenImageSourceError('unavailable');
   } finally {

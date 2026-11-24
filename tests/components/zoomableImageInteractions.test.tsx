@@ -132,11 +132,11 @@ describe('fullscreen source preparation', () => {
   });
 
   it('keeps a fixed preparation failure inside the viewer and allows an explicit retry', async () => {
-    fullscreenSource.mockRejectedValueOnce(new FullscreenImageSourceError('too_large'))
+    fullscreenSource.mockRejectedValueOnce(new FullscreenImageSourceError('busy'))
       .mockResolvedValueOnce({ src: 'blob:retry', release: vi.fn() });
     const props = { src: 'asset://large.png', onError: vi.fn(), onClose: vi.fn() };
     const failure = await ready(props);
-    expect(text(failure)).toContain(FULLSCREEN_IMAGE_ERRORS.too_large);
+    expect(text(failure)).toContain(FULLSCREEN_IMAGE_ERRORS.busy);
     expect(props.onError).not.toHaveBeenCalled(); expect(props.onClose).not.toHaveBeenCalled();
     const buttons = children(children(children(failure)[0])[0]).flatMap(children);
     const retry = buttons.find((element) => text(element) === '重新加载')!;
