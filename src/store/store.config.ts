@@ -425,8 +425,11 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
     tail = result.catch(() => {});
     return result;
   };
-  const set = (partial: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => rawSet((state) => {
-    if (areSettingsMutationsFrozen()) return {};
+  const set = (
+    partial: Partial<AppState> | ((state: AppState) => Partial<AppState>),
+    { reconcile = false }: { reconcile?: boolean } = {},
+  ) => rawSet((state) => {
+    if (!reconcile && areSettingsMutationsFrozen()) return {};
     const next = typeof partial === 'function' ? partial(state) : partial;
     if (!next.config || next.config === state.config) return next;
     const secretChanges = { ...state.configSecretChanges };
@@ -461,7 +464,7 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
     const config = { ...state.config, providers: { ...state.config.providers } };
     removeNewProvider(config, id);
     return { config };
-  });
+  }, { reconcile: true });
   registerSettingsPersistence('config', {
     flush: async (retry) => {
       await tail;
@@ -693,7 +696,7 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
         const baseline = get().configPersistedBaseline;
         try {
           unstored = await fileService.saveConfig(normalized, {
-            baseline, changes, secretChanges,
+            baseline, changes, secretChanges, rollbackNewProviderId: newProviderId,
             onCommitted: (value) => { committed = value; },
           });
         } catch (error) {

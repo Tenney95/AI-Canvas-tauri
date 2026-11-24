@@ -71,6 +71,7 @@ vi.mock('../../src/services/fileService', async () => ({
 import ApiKeySettings from '../../src/components/settings/ApiKeySettings';
 import { createConfigSlice } from '../../src/store/store.config';
 import { loadConfigFromDb, saveConfigToDb } from '../../src/services/indexedDbService';
+import { areSettingsMutationsFrozen, prepareSettingsClose, resumeSettingsPersistence } from '../../src/services/configPersistenceQueue';
 import { serializeConnection } from '../../src/services/ai/providerConnectionTransfer';
 import { JsonFileTransferError } from '../../src/services/fs/jsonFileTransfer';
 import type { RunningHubSiteKeyDrafts } from '../../src/types/runninghub';
@@ -347,6 +348,61 @@ it('从自定义接口卡片打开独立的新建草稿，取消后保留原连�
   (dialog().onClose as () => void)();
   expect(dialog()).toMatchObject({ isOpen: false, initialConfig: undefined });
   expect(driver.state().config.providers).toBe(providers);
+});
+
+it('复制旧版模型迁移出的自定义接口时保留实际使用的调用配置', async () => {
+  await saveConfigToDb({
+    providers: {},
+    generalModels: [{
+      id: 'legacy-model', name: '旧自定义模型', modelId: 'fixture-model', category: 'text',
+      openaiUrl: 'https://legacy.example.test/v1', contextWindow: 32768,
+      description: '模型用途', inputModalities: ['text', 'image'],
+      executionProfile: { preset: 'openai-responses' },
+    }],
+  });
+  await driver.state().loadConfig();
+  const source = driver.state().config.generalModels![0];
+  expect(driver.state().config.providers[source.providerConfigId].selectedModels?.[0].executionProfile).toBeUndefined();
+  const button = find(render(), (element) => element.props['aria-label'] === '创建副本 · 旧自定义模型')!;
+  (button.props.onClick as () => void)();
+  const dialog = find(render(), (element) => 'onSaveCccGroups' in element.props)!.props;
+  const draft = dialog.initialConfig as AppState['config']['providers'][string];
+  expect(draft.selectedModels).toEqual([expect.objectContaining({
+    id: 'fixture-model', contextWindow: 32768, description: '模型用途', inputModalities: ['text', 'image'],
+    executionProfile: { preset: 'openai-responses' },
+  })]);
+  expect(draft.selectedModels![0].executionProfile).not.toBe(source.executionProfile);
+});
+
+it('退出等待保存期间撤销失败的连接副本，重试仅保存其他设置', async () => {
+  driver.native = true;
+  const copyId = 'custom-copy-close';
+  driver.state().saveProviderConfig(copyId, {
+    ...driver.state().config.providers['custom-1'],
+    apiKey: 'copy-key-fixture',
+    selectedModels: [{ id: 'fixture-model', name: 'Fixture', category: 'text', provider: copyId }],
+  });
+  driver.state().updateConfig({ language: 'en-US' });
+  driver.failSecretWriteFor = `provider/${copyId}`;
+
+  const save = driver.state().saveConfig({ silent: true, rollbackNewProviderId: copyId });
+  try {
+    const closing = prepareSettingsClose();
+    expect(areSettingsMutationsFrozen()).toBe(true);
+    await expect(save).rejects.toThrow('设置保存失败');
+    expect(await closing).toBe(false);
+    expect(driver.state().config.providers[copyId]).toBeUndefined();
+    expect(driver.state().config.generalModels?.some((model) => model.providerConfigId === copyId)).toBe(false);
+
+    driver.failSecretWriteFor = null;
+    expect(await prepareSettingsClose(true)).toBe(true);
+    const saved = await loadConfigFromDb() as AppState['config'];
+    expect(saved.language).toBe('en-US');
+    expect(saved.providers[copyId]).toBeUndefined();
+    expect(driver.secrets.has(`provider/${copyId}`)).toBe(false);
+  } finally {
+    resumeSettingsPersistence();
+  }
 });
 
 it('副本保存失败可重试，重载和删除副本均保留原连接凭据', async () => {

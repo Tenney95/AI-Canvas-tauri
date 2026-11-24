@@ -2,7 +2,8 @@ import { enqueueConfigPersistence } from '../configPersistenceQueue';
 import { applyConfigPatch, ConfigConflictError, configValuesEqual, configWithoutSecrets, createConfigPatch, type ConfigChange } from '../configPatch';
 import { isTauriEnv } from '../fs/core';
 import { loadConfigFromDb, patchConfigToDb, saveConfigToDb } from '../indexedDbService';
-import { deleteProviderSecretIfUnchanged, hasPlaintextSecret, readProviderSecretFingerprint, restoreConfigSecrets, stripConfigSecrets } from '../providerSecretService';
+import { deleteProviderSecretIfUnchanged, hasPlaintextSecret, providerSecretRef, readProviderSecretFingerprint, restoreConfigSecrets, stripConfigSecrets } from '../providerSecretService';
+import { sha256BytesHex } from '../mediaDataUrl';
 import { classifyStorageError, readStorageWithRetry } from '../storageDiagnostics';
 
 /**
@@ -16,6 +17,7 @@ export interface ConfigSaveOptions {
   changes: ConfigChange[];
   /** 连接 ID → 本次凭据变更的随机版本，只在明确编辑凭据时提供。 */
   secretChanges?: Record<string, string>;
+  rollbackNewProviderId?: string;
   onCommitted?: (config: unknown) => void;
 }
 
@@ -153,11 +155,21 @@ async function completeSecretCleanup(raw: unknown): Promise<unknown> {
   return committed;
 }
 
+function hasProviderSecretOwner(config: unknown, id: string): boolean {
+  const providers = (config as { providers?: Record<string, { apiKeyRef?: string }> } | null)?.providers ?? {};
+  const ref = providerSecretRef(id);
+  return !!providers[id] || Object.entries(providers).some(([otherId, provider]) =>
+    providerSecretRef(otherId) === ref || provider?.apiKeyRef === ref);
+}
+
 export async function saveConfig(data: unknown, options?: ConfigSaveOptions): Promise<string[]> {
   try {
     // 入队前捕获快照，异步凭据操作期间调用方修改对象不能改变本次保存内容。
     const snapshot: unknown = structuredClone(data);
-    const intent = options ? structuredClone({ baseline: options.baseline, changes: options.changes, secretChanges: options.secretChanges }) : undefined;
+    const intent = options ? structuredClone({
+      baseline: options.baseline, changes: options.changes, secretChanges: options.secretChanges,
+      rollbackNewProviderId: options.rollbackNewProviderId,
+    }) : undefined;
     return await enqueueConfigPersistence(async () => {
       // 先读已保存记录，确认既有引用；读取失败时不触碰任何凭据。
       const previous = await completeSecretCleanup(await readStorageWithRetry('config-read', loadConfigFromDb));
@@ -191,18 +203,38 @@ export async function saveConfig(data: unknown, options?: ConfigSaveOptions): Pr
           if (fingerprint) cleanup[id] = fingerprint;
         }
         if (Object.keys(cleanup).length) next._pendingSecretCleanup = cleanup;
+        const copyId = intent.rollbackNewProviderId;
+        const copyKey = copyId ? changedProviders[copyId]?.apiKey : undefined;
+        const copyFingerprint = copyId && typeof copyKey === 'string' && isTauriEnv()
+          && !hasProviderSecretOwner(previous, copyId) && await readProviderSecretFingerprint(copyId) === null
+          ? await sha256BytesHex(new TextEncoder().encode(copyKey)) : undefined;
         let unstored: string[] = [];
-        if (Object.keys(changedProviders).length) {
-          const result = await stripConfigSecrets({ providers: changedProviders }, previous);
-          unstored = result.unstored;
-          if (result.failedExistingSecrets.length || (isTauriEnv() && unstored.length)) throw new Error('渠道凭据保存未完成');
-          const storedProviders = (result.config as { providers: Record<string, Record<string, unknown>> }).providers;
-          for (const [id, provider] of Object.entries(storedProviders)) {
-            if (provider.apiKeyRef) providers[id].apiKeyRef = provider.apiKeyRef;
+        let committed: unknown;
+        try {
+          if (Object.keys(changedProviders).length) {
+            const result = await stripConfigSecrets({ providers: changedProviders }, previous);
+            unstored = result.unstored;
+            if (result.failedExistingSecrets.length || (isTauriEnv() && unstored.length)) throw new Error('渠道凭据保存未完成');
+            const storedProviders = (result.config as { providers: Record<string, Record<string, unknown>> }).providers;
+            for (const [id, provider] of Object.entries(storedProviders)) {
+              if (provider.apiKeyRef) providers[id].apiKeyRef = provider.apiKeyRef;
+            }
+            next = configWithoutSecrets(next);
           }
-          next = configWithoutSecrets(next);
+          committed = await patchConfigToDb(createConfigPatch(baseline, next));
+        } catch (error) {
+          if (copyId && copyFingerprint) {
+            try {
+              // 数据库仍未引用本次新增的 Key 时才清理，并保留期间被改过的值。
+              if (!hasProviderSecretOwner(await loadConfigFromDb(), copyId)) {
+                await deleteProviderSecretIfUnchanged(copyId, copyFingerprint);
+              }
+            } catch {
+              console.warn('[storage] 未能确认失败副本的凭据已清理');
+            }
+          }
+          throw error;
         }
-        const committed = await patchConfigToDb(createConfigPatch(baseline, next));
         options?.onCommitted?.(committed);
         const cleaned = await completeSecretCleanup(committed);
         options?.onCommitted?.(cleaned);

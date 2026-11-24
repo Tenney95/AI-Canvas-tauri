@@ -584,11 +584,27 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     const source = providers[connectionId];
     const definition = source && getProviderDefinition(connectionId, source);
     if (!source || definition?.id !== 'custom-openai') return;
-    const selectedModels = source.selectedModels ?? generalModels
-      ?.filter((model) => model.providerConfigId === connectionId)
+    const linkedModels = (generalModels ?? [])
+      .filter((model) => model.providerConfigId === connectionId)
       .map(({ id: _id, modelId, providerConfigId, catalogMaxOutputTokens: _catalogMaxOutputTokens, ...model }) => ({
         ...model, id: modelId, provider: providerConfigId,
       }));
+    const linkedById = new Map(linkedModels.map((model) => [model.id, model]));
+    // 旧连接的启用列表可能只记了模型 ID，完整调用配置仍在关联模型里。
+    const selectedModels = source.selectedModels?.map((selection) => {
+      const model = linkedById.get(selection.id);
+      if (!model || model.category !== selection.category) return selection;
+      return {
+        ...selection,
+        contextWindow: model.contextWindow ?? selection.contextWindow,
+        description: model.description ?? selection.description,
+        inputModalities: model.inputModalities ?? selection.inputModalities,
+        executionProfile: model.executionProfile ?? selection.executionProfile,
+        imageReferenceRequestMode: model.imageReferenceRequestMode ?? selection.imageReferenceRequestMode,
+        imageCapability: model.imageCapability ?? selection.imageCapability,
+        videoCapability: model.videoCapability ?? selection.videoCapability,
+      };
+    }) ?? linkedModels;
     const copyConfig: ApiProviderConfig = structuredClone({
       name: `${source.name.trim() || definition.name} Copy`,
       catalogId: definition.id,

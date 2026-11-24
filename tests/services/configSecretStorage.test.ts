@@ -108,6 +108,36 @@ describe('config persistence keeps secrets out of IndexedDB', () => {
     expect(await loadConfigFromDb()).not.toHaveProperty('providers.a');
   });
 
+  it.each([undefined, 'newer-copy-key'])('cleans up only the attempted copy key after an aborted config write (%s)', async (replacement) => {
+    const original = { name: 'Source', catalogId: 'custom-openai', apiKeyRef: 'secret:provider/custom-source' };
+    await saveConfigToDb({ providers: { 'custom-source': original } });
+    secretStore.entries.set('provider/custom-source', 'source-key');
+    const store = configStore();
+    await store.getState().loadConfig();
+    const copyId = 'custom-copy';
+    const copySecret = `provider/${copyId}`;
+    store.getState().saveProviderConfig(copyId, { name: 'Copy', catalogId: 'custom-openai', apiKey: 'source-key' });
+    let keyBeforeAbort: string | undefined;
+    const originalPut = IDBObjectStore.prototype.put;
+    vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementationOnce(function (this: IDBObjectStore, value, key) {
+      const request = originalPut.call(this, value, key);
+      request.addEventListener('success', () => {
+        keyBeforeAbort = secretStore.entries.get(copySecret);
+        if (replacement) secretStore.entries.set(copySecret, replacement);
+        this.transaction.abort();
+      });
+      return request;
+    });
+
+    await expect(store.getState().saveConfig({ rollbackNewProviderId: copyId })).rejects.toThrow();
+
+    expect(keyBeforeAbort).toBe('source-key');
+    expect(secretStore.entries.get(copySecret)).toBe(replacement);
+    expect(secretStore.entries.get('provider/custom-source')).toBe('source-key');
+    expect(store.getState().config.providers[copyId]).toBeUndefined();
+    expect(await loadConfigFromDb()).toEqual({ providers: { 'custom-source': original } });
+  });
+
   it('records only a fingerprint after cleanup failure and finishes cleanup on a fresh load', async () => {
     await saveConfigToDb({ providers: { a: { name: 'A', apiKeyRef: 'secret:provider/a' } } });
     secretStore.entries.set('provider/a', 'delete-fixture');
