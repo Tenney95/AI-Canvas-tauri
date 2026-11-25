@@ -125,31 +125,21 @@ fn host_file_scope_preserves_project_access_and_requires_external_grants() {
     .plugin(tauri_plugin_fs::init())
     .build(context)
     .unwrap();
+  let root = FixtureDirectory::create(app.path().app_data_dir().unwrap());
+  // WebView 初始化可能先创建与 app cache 共用的目录，外部样本直接用独立临时目录。
+  let outside = FixtureDirectory::create(
+    app.path().temp_dir().unwrap().join(format!("{identifier}-external")),
+  );
   let window = WebviewWindowBuilder::new(&app, "main", Default::default())
     .build()
     .unwrap();
-  let root = FixtureDirectory::create(app.path().app_data_dir().unwrap());
   let directory = root.0.join("data").join("项目 2-0af10eef");
   let scope = app.fs_scope();
   scope
     .forbid_directory(root.0.join("secrets"), true)
     .unwrap();
 
-  let cache = app.path().app_cache_dir().unwrap();
-  let cache_parent = cache.parent().unwrap();
-  fs::create_dir_all(cache_parent).unwrap();
   let canonical_root = root.0.canonicalize().unwrap();
-  let canonical_cache = cache_parent
-    .canonicalize()
-    .unwrap()
-    .join(cache.file_name().unwrap());
-  // Some platforms resolve multiple app directory names to the same physical path.
-  let outside = if canonical_cache.starts_with(&canonical_root) {
-    app.path().temp_dir().unwrap().join(format!("{identifier}-external"))
-  } else {
-    cache
-  };
-  let outside = FixtureDirectory::create(outside);
   assert!(!outside.0.canonicalize().unwrap().starts_with(&canonical_root));
 
   let ipc_path = |path: &Path| path.to_string_lossy().replace('\\', "/");

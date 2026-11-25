@@ -43,6 +43,7 @@ import {
   type PluginResourceReadContext,
 } from './pluginResourceService';
 import { executeWsagentPluginEffect, getWsagentPluginNode, isWsagentPluginEffect, isWsagentPluginTool } from './pluginWsagentSharedImages';
+import { executePluginUiSlice, isUiSliceEffect, UI_SLICE_PLUGIN_ID, UI_SLICE_TOOL_ID, type UiSliceSessionState } from './pluginUiSliceService';
 
 const MESSAGE_CHANNEL = 'ai-canvas-plugin-ui-v1';
 const MAX_UI_EFFECTS = PLUGIN_HOST.limits.ui.ordinary;
@@ -55,6 +56,9 @@ const MAX_UI_REQUESTS = PLUGIN_HOST.limits.ui.total;
 const MAX_UI_NETWORK_EFFECTS = PLUGIN_HOST.limits.ui.network;
 const MAX_REPLICA_JOB_QUERIES = 2048;
 const MIN_REPLICA_JOB_QUERY_INTERVAL_MS = 250;
+// 两个有限秒数相加也必须能安全转换为浏览器定时器的毫秒数。
+const UI_SLICE_WAIT_DEFAULTS = { hostSeconds: 180, modelSeconds: 300, replySeconds: 30, maxSeconds: 1_073_741 };
+const MAX_UI_SLICE_CROP_GENERATIONS = 144;
 const MAX_UI_SETTINGS_EFFECTS = PLUGIN_HOST.limits.ui.settings;
 const MAX_REQUEST_ID_LENGTH = 64;
 const MAX_KIND_LENGTH = 32;
@@ -118,6 +122,8 @@ interface PluginUiSession {
   replicaJobQueryCount?: number;
   lastReplicaJobQueryAt?: number;
   effectAbortController?: AbortController;
+  uiSlice?: UiSliceSessionState;
+  uiSliceCropGenerations?: number;
   trustedMediaReferences: Set<string>;
   onClose: () => void;
   onRestart?: () => void;
@@ -328,6 +334,41 @@ function finishRequest(session: PluginUiSession): void {
   if (session.completed) closeSession(session.sessionId, true, session.restartRequested === true);
 }
 
+function readUiSliceWait(value: unknown) {
+  if (value === undefined) return UI_SLICE_WAIT_DEFAULTS;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('切图等待设置无效');
+  const record = value as Record<string, unknown>;
+  const seconds = (key: string) => {
+    const number = record[key];
+    if (typeof number !== 'number' || !Number.isInteger(number) || number < 0 || number > UI_SLICE_WAIT_DEFAULTS.maxSeconds) {
+      throw new Error(`切图等待时间必须为 0 至 ${UI_SLICE_WAIT_DEFAULTS.maxSeconds} 秒的整数`);
+    }
+    return number;
+  };
+  return { hostSeconds: seconds('hostSeconds'), modelSeconds: seconds('modelSeconds'), replySeconds: seconds('replySeconds') };
+}
+
+async function waitForUiSliceOperation<T>(
+  operation: Promise<T>, controller: AbortController, seconds: number, label: string,
+): Promise<T> {
+  const { signal } = controller;
+  let rejectOnAbort!: () => void;
+  const aborted = new Promise<never>((_, reject) => {
+    rejectOnAbort = () => reject(signal.reason);
+    if (signal.aborted) rejectOnAbort();
+    else signal.addEventListener('abort', rejectOnAbort, { once: true });
+  });
+  const timer = seconds === 0 ? undefined : setTimeout(() => {
+    controller.abort(new Error(`${label}在 ${seconds} 秒内未完成，已停止等待。`));
+  }, seconds * 1_000);
+  try {
+    return await Promise.race([aborted, operation]);
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener('abort', rejectOnAbort);
+  }
+}
+
 async function dispatchRequest(
   session: PluginUiSession,
   request: { kind: string; payload: unknown },
@@ -337,23 +378,37 @@ async function dispatchRequest(
   }
   const effectType = request.kind === 'effect' && request.payload && typeof request.payload === 'object' && 'type' in request.payload
     ? request.payload.type : undefined;
+  const modelInput = effectType === 'model.generate' ? request.payload as Record<string, unknown> : undefined;
+  const cropGeneration = modelInput?.uiSliceCrop === true;
+  const sliceCropRequest = cropGeneration && session.pluginId === UI_SLICE_PLUGIN_ID && session.tool.id === UI_SLICE_TOOL_ID;
   const replicaObservation = !!session.replicaJobId && request.kind === 'effect'
     && (effectType === 'video.replicaJob.status' || effectType === 'video.replicaJob.cancel' || effectType === 'video.replicaJob.restart');
   const playbackRead = request.kind === 'effect' && effectType === 'video.readPlayback';
   if (playbackRead && (session.playbackReadFailures ?? 0) >= 4) return { ok: false, error: '播放预览读取已失效，请重新打开插件' };
-  if (request.kind !== 'close' && !replicaObservation && !playbackRead && session.requestCount >= MAX_UI_REQUESTS) {
+  const ordinaryRequest = request.kind !== 'close' && !replicaObservation && !playbackRead && !sliceCropRequest;
+  if (ordinaryRequest && session.requestCount >= MAX_UI_REQUESTS) {
     return { ok: false, error: '插件界面请求次数已达上限' };
   }
-  if (request.kind !== 'close' && !replicaObservation && !playbackRead) session.requestCount += 1;
   const exclusive = request.kind === 'effect'
     || request.kind === 'set-parameters'
     || request.kind === 'submit';
   if (exclusive && session.requestInFlight) {
     return { ok: false, error: '插件界面已有操作正在执行' };
   }
+  if (ordinaryRequest) session.requestCount += 1;
   if (exclusive) session.requestInFlight = true;
+  let draining: Promise<unknown> | undefined;
+  const waitForSlice = async <T>(operation: Promise<T>, controller: AbortController, seconds: number, label: string) => {
+    try {
+      return await waitForUiSliceOperation(operation, controller, seconds, label);
+    } finally {
+      if (controller.signal.aborted) draining = operation;
+    }
+  };
   try {
     const plugin = resolveLivePlugin(session, !session.replicaJobId);
+    const uiSliceTool = plugin.id === UI_SLICE_PLUGIN_ID && session.tool.id === UI_SLICE_TOOL_ID
+      && plugin.manifest.requiredCapabilities?.includes('image.uiSlice');
     if (session.replicaJobId && (request.kind === 'set-parameters' || request.kind === 'submit'
       || (request.kind === 'effect' && !replicaObservation))) {
       throw new Error('当前界面仅观察已启动任务；不能执行普通操作或再次提交');
@@ -374,7 +429,10 @@ async function dispatchRequest(
         return {
           ok: true,
           value: {
-            host: PLUGIN_HOST,
+            host: uiSliceTool ? {
+              ...PLUGIN_HOST, uiSliceWait: UI_SLICE_WAIT_DEFAULTS, uiSliceDraft: true,
+              uiSliceCropGenerationLimit: MAX_UI_SLICE_CROP_GENERATIONS,
+            } : PLUGIN_HOST,
             surface: session.surface,
             theme: appliedTheme === 'light' || appliedTheme === 'dark' ? appliedTheme
               : resolveAppearanceMode(state.appearancePreview?.mode ?? state.config.appearance?.mode ?? state.config.theme),
@@ -387,6 +445,45 @@ async function dispatchRequest(
         };
       }
       case 'effect': {
+        let cropModels;
+        if (cropGeneration) {
+          if (!uiSliceTool) throw new Error('当前插件工具不能使用切图生图');
+          const used = session.uiSliceCropGenerations ?? 0;
+          if (used >= MAX_UI_SLICE_CROP_GENERATIONS) throw new Error('切图生图次数已达上限，请重新打开插件');
+          session.uiSliceCropGenerations = used + 1;
+          cropModels = modelCatalog(plugin, session.tool).filter((model) => model.category === 'image');
+          const refs = modelInput?.imageUrls;
+          if (!cropModels.some((model) => model.id === modelInput?.modelId)
+            || modelInput?.resourceIds !== undefined || !Array.isArray(refs) || refs.length !== 1
+            || typeof refs[0] !== 'string' || refs[0].length > MAX_JSON_STRING
+            || !/^data:image\/(?:png|webp);base64,[A-Za-z0-9+/]+=*$/u.test(refs[0])) {
+            throw new Error('切图生图需要当前插件的一张内联裁片和可用的生图模型');
+          }
+        }
+        const waits = uiSliceTool && (isUiSliceEffect(effectType) || effectType === 'model.generate')
+          ? readUiSliceWait((request.payload as Record<string, unknown>).uiSliceWait) : undefined;
+        if (isUiSliceEffect(effectType)) {
+          if (!waits) {
+            throw new Error('当前插件工具不能使用切图能力');
+          }
+          const limit = effectType === 'image.uiSlice.publish' ? MAX_UI_EXPORT_EFFECTS : MAX_UI_EFFECTS;
+          const budget = effectType === 'image.uiSlice.publish' ? 'exportEffectBudget' : 'mediaEffectBudget';
+          if ((session[budget] ?? 0) >= limit) throw new Error('本次切图操作达到上限，请重新打开插件');
+          session[budget] = (session[budget] ?? 0) + 1;
+          const controller = new AbortController();
+          session.effectAbortController = controller;
+          try {
+            const operation = executePluginUiSlice({
+              type: effectType, payload: request.payload, resources: session.resources,
+              context: resourceReadContext(session, plugin), signal: controller.signal,
+              state: session.uiSlice ??= {}, assertFresh: () => { resolveLivePlugin(session); },
+            });
+            const value = await waitForSlice(operation, controller, waits.hostSeconds, '切图操作');
+            return { ok: true, value: { type: effectType, ok: true, value: normalizeJson(value) } };
+          } finally {
+            if (session.effectAbortController === controller) session.effectAbortController = undefined;
+          }
+        }
         if (isWsagentPluginEffect(effectType)) {
           const target = useAppStore.getState().nodes.find((node) => node.id === session.nodeId);
           if (!target || !getWsagentPluginNode(plugin, session.tool.id, target.data)) throw new Error('共享素材操作只对 WSAGENT 互联节点开放');
@@ -490,31 +587,36 @@ async function dispatchRequest(
         } else if (effectType === 'resource.export' || effectType === 'resource.createText') {
           if ((session.exportEffectBudget ?? 0) >= MAX_UI_EXPORT_EFFECTS) throw new Error('本次会话导出达到 12 次上限');
           session.exportEffectBudget = (session.exportEffectBudget ?? 0) + 1;
-        } else {
+        } else if (!cropGeneration) {
           if (session.effectBudget >= MAX_UI_EFFECTS) throw new Error(`宿主操作不能超过 ${MAX_UI_EFFECTS} 次`);
           session.effectBudget += 1;
         }
         const controller = new AbortController();
         session.effectAbortController = controller;
-        const result = await executePluginUiHostEffect({
-          pluginId: plugin.id,
-          toolId: session.tool.id,
-          projectId: session.projectId,
-          title: session.tool.title,
-          permissions: plugin.manifest.permissions,
-          nodeId: session.nodeId,
-          effect: request.payload,
-          models: modelCatalog(plugin, session.tool),
-          trustedMediaReferences: session.trustedMediaReferences,
-          resources: session.resources,
-          resourceReadContext: resourceReadContext(session, plugin),
-          signal: controller.signal,
-        }).finally(() => {
+        try {
+          const operation = executePluginUiHostEffect({
+            pluginId: plugin.id,
+            toolId: session.tool.id,
+            projectId: session.projectId,
+            title: session.tool.title,
+            permissions: plugin.manifest.permissions,
+            nodeId: session.nodeId,
+            effect: request.payload,
+            models: cropModels ?? modelCatalog(plugin, session.tool),
+            trustedMediaReferences: session.trustedMediaReferences,
+            resources: session.resources,
+            resourceReadContext: resourceReadContext(session, plugin),
+            signal: controller.signal,
+          });
+          const result = await (waits && effectType === 'model.generate'
+            ? waitForSlice(operation, controller, waits.modelSeconds, '模型调用')
+            : operation);
+          resolveLivePlugin(session);
+          if (playbackRead && !result.ok) session.playbackReadFailures = (session.playbackReadFailures ?? 0) + 1;
+          return { ok: true, value: result };
+        } finally {
           if (session.effectAbortController === controller) session.effectAbortController = undefined;
-        });
-        resolveLivePlugin(session);
-        if (playbackRead && !result.ok) session.playbackReadFailures = (session.playbackReadFailures ?? 0) + 1;
-        return { ok: true, value: result };
+        }
       }
       case 'set-parameters': {
         const patch = normalizeJson(request.payload);
@@ -526,17 +628,22 @@ async function dispatchRequest(
         const record = request.payload && typeof request.payload === 'object' && !Array.isArray(request.payload)
           ? request.payload as Record<string, unknown> : {};
         const submitted = record.data;
+        let waits: ReturnType<typeof readUiSliceWait> | undefined = uiSliceTool ? UI_SLICE_WAIT_DEFAULTS : undefined;
         if (submitted !== undefined) {
           if (!submitted || typeof submitted !== 'object' || Array.isArray(submitted)) {
             throw new Error('提交参数必须是对象');
           }
           const data = normalizeJson(submitted) as Record<string, PluginJsonValue>;
+          if (uiSliceTool) {
+            waits = readUiSliceWait(data.uiSliceWait);
+            delete data.uiSliceWait;
+          }
           session.parameters = normalizeJson({ ...session.parameters, ...data }) as Record<string, PluginJsonValue>;
         }
         const controller = new AbortController();
         session.effectAbortController = controller;
         session.submitting = true;
-        await executeNodePluginTool(
+        const operation = executeNodePluginTool(
           availableTool(plugin, session),
           session.nodeId,
           session.parameters,
@@ -548,6 +655,7 @@ async function dispatchRequest(
             signal: controller.signal,
           },
         );
+        await (waits ? waitForSlice(operation, controller, waits.hostSeconds, '添加到画布') : operation);
         // 工具自身已在提交前检查 guard；成功写回会推进 revision，不能把自己的提交误判为过期。
         resolveLivePlugin(session, false);
         session.completed = true;
@@ -574,14 +682,18 @@ async function dispatchRequest(
       error: error instanceof Error ? error.message : String(error),
     };
   } finally {
-    if (exclusive) session.requestInFlight = false;
-    if (request.kind === 'submit') {
-      session.submitting = false;
-      session.effectAbortController = undefined;
-    }
-    if (!session.completed) {
-      try { resolveLivePlugin(session, !session.submitting && !session.replicaJobId); } catch { closeSession(session.sessionId, true); }
-    }
+    const settle = () => {
+      if (exclusive) session.requestInFlight = false;
+      if (request.kind === 'submit') {
+        session.submitting = false;
+        session.effectAbortController = undefined;
+      }
+      if (!session.completed) {
+        try { resolveLivePlugin(session, !session.submitting && !session.replicaJobId); } catch { closeSession(session.sessionId, true); }
+      }
+    };
+    if (draining) void draining.then(settle, settle);
+    else settle();
   }
 }
 

@@ -572,7 +572,7 @@ pub fn resolve_native_project_media_subroot<R: Runtime>(webview: Webview<R>, pro
 // nonempty for publication; it never shares DELETE. OPEN_REPARSE_POINT inspects
 // the entry itself; conflicting existing handles fail closed.
 #[cfg(windows)]
-fn lease_directory(path: &Path, share_write: bool) -> Result<File, String> {
+pub(crate) fn lease_directory(path: &Path, share_write: bool) -> Result<File, String> {
     use std::os::windows::fs::OpenOptionsExt;
     use windows::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
     let sharing = FILE_SHARE_READ.0 | if share_write { FILE_SHARE_WRITE.0 } else { 0 };
@@ -634,7 +634,7 @@ fn windows_staging_metadata(file: &File, limit: u64) -> Result<fs::Metadata, Str
 }
 
 #[cfg(windows)]
-fn rename_windows_media_file(file: &File, destination: &Path) -> Result<(), String> {
+pub(crate) fn rename_windows_media_file(file: &File, destination: &Path) -> Result<(), String> {
     use std::{mem::{offset_of, size_of}, os::windows::{ffi::OsStrExt, io::AsRawHandle}, ptr};
     use windows::Win32::{Foundation::HANDLE, Storage::FileSystem::{
         FILE_RENAME_INFO, FileRenameInfo, SetFileInformationByHandle,

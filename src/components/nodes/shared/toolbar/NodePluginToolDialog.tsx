@@ -14,6 +14,7 @@ import type {
 } from '../../../../types/plugin';
 import { executeNodePluginTool } from '../../../../services/plugins/pluginRuntime';
 import { openPluginUiWindow, pluginUiWindowUnavailableReason } from '../../../../services/plugins/pluginUiWindowService';
+import { UI_SLICE_PLUGIN_ID, UI_SLICE_TOOL_ID } from '../../../../services/plugins/pluginUiSliceService';
 import {
   createPluginUiFrameSession,
   type PluginUiFrameSession,
@@ -73,6 +74,9 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
   const dialog = pluginTool.tool.dialog;
   const supportsNativeWindow = dialog?.presentation === 'window' && Boolean(dialog.ui);
   const windowUnavailableReason = supportsNativeWindow ? pluginUiWindowUnavailableReason() : null;
+  const [nativeFallback, setNativeFallback] = useState(false);
+  const launchNative = supportsNativeWindow && !windowUnavailableReason && !nativeFallback
+    && pluginTool.pluginId === UI_SLICE_PLUGIN_ID && pluginTool.tool.id === UI_SLICE_TOOL_ID;
   // 只有声明 models.read 的插件才拿得到模型目录，且目录不含任何厂商凭据。
   const models = useMemo(
     () => (pluginTool.permissions.includes('models.read')
@@ -124,6 +128,26 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
     const plugin = useAppStore
       .getState()
       .installedPlugins.find((item) => item.id === pluginTool.pluginId);
+    if (launchNative) {
+      queueMicrotask(() => {
+        if (cancelled) return;
+        if (!plugin) {
+          setNativeFallback(true);
+          return;
+        }
+        void openPluginUiWindow({
+          plugin, tool: pluginTool.tool, nodeId, exportName,
+          parameters: initialPluginParameters(pluginTool),
+        }).then(() => {
+          if (!cancelled) onCloseRef.current();
+        }).catch((cause) => {
+          if (cancelled) return;
+          showToast(cause instanceof Error ? cause.message : t('插件窗口打开失败'), 'error');
+          setNativeFallback(true);
+        });
+      });
+      return () => { cancelled = true; };
+    }
     if (!plugin) {
       queueMicrotask(() => {
         if (cancelled) return;
@@ -186,9 +210,9 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
         frameDocumentRef.current = null;
       }
     };
-  }, [dialog?.ui, frameEpoch, nodeId, pluginTool, showToast]);
+  }, [dialog?.ui, frameEpoch, launchNative, nodeId, pluginTool, showToast]);
 
-  if (!dialog) return null;
+  if (!dialog || launchNative) return null;
 
   const openInWindow = async () => {
     if (!supportsNativeWindow || !dialog.ui || windowUnavailableReason || openingWindowRef.current) return;

@@ -113,12 +113,12 @@ fn write_publication_receipt(path: &Path, receipt: &ArchivePublicationReceipt) -
     publish_archive_exclusive(&temporary, path).map_err(|_| PUBLICATION_ERROR.into())
 }
 
-enum ExclusiveArchivePublishError {
+pub(crate) enum ExclusiveArchivePublishError {
     DestinationOccupied,
     Unconfirmed,
 }
 
-fn publish_archive_exclusive(temporary: &Path, output: &Path) -> Result<(), ExclusiveArchivePublishError> {
+pub(crate) fn publish_archive_exclusive(temporary: &Path, output: &Path) -> Result<(), ExclusiveArchivePublishError> {
     use ExclusiveArchivePublishError::{DestinationOccupied, Unconfirmed};
     let parent = output.parent().ok_or(Unconfirmed)?;
     #[cfg(windows)]

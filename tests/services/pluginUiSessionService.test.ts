@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   mintResources: vi.fn(),
   clearResources: vi.fn(),
   collectMedia: vi.fn(),
+  modelCatalog: vi.fn((): Array<{ id: string; category: string }> => []),
   executeTool: vi.fn(),
   executeEffect: vi.fn(),
   parseReplicaEffect: vi.fn(),
@@ -50,7 +51,7 @@ vi.mock('../../src/services/canvasDerivationGuard', () => ({
   completeCanvasDerivation: mocks.completeCanvasDerivation,
 }));
 vi.mock('../../src/services/plugins/pluginModelCatalog', () => ({
-  buildPluginModelCatalog: vi.fn(() => []),
+  buildPluginModelCatalog: mocks.modelCatalog,
   collectDeclaredModelCategories: vi.fn(() => []),
 }));
 vi.mock('../../src/services/plugins/pluginResourceService', () => ({
@@ -252,6 +253,112 @@ describe('pluginUiSessionService', () => {
     expect(signal.aborted).toBe(true);
     finish();
     expect(await pending).toMatchObject({ ok: false, error: expect.stringContaining('关闭') });
+  });
+
+  it('keeps UI slicing requests exclusive until a timed-out model settles', async () => {
+    const sliceTool = { ...tool, id: 'slice-image' };
+    const slicePlugin: InstalledPlugin = {
+      ...plugin,
+      id: 'ai-canvas.ui-slice',
+      manifest: { ...plugin.manifest, apiVersion: 2, id: 'ai-canvas.ui-slice',
+        requiredCapabilities: ['image.uiSlice'], contributes: { nodeTools: [sliceTool] } },
+    };
+    mocks.getState().installedPlugins = [slicePlugin];
+    const session = await createPluginUiNativeSession({
+      plugin: slicePlugin, tool: sliceTool, nodeId: 'target', exportName: 'dialog', onClose: vi.fn(),
+    });
+    const requestModel = () => session.request('effect', { type: 'model.generate' });
+    const success = { type: 'model.generate', ok: true, value: { text: '{"items":[],"missing":[]}' } };
+    vi.useFakeTimers();
+    try {
+      mocks.executeEffect.mockImplementationOnce(() => new Promise((resolve) => {
+        setTimeout(() => resolve(success), 190_000);
+      }));
+      const slow = requestModel();
+      await vi.advanceTimersByTimeAsync(190_000);
+      expect(await slow).toEqual({ ok: true, value: success });
+      expect(vi.getTimerCount()).toBe(0);
+
+      let finishLate!: () => void;
+      mocks.executeEffect.mockImplementationOnce(() => new Promise((resolve) => {
+        finishLate = () => resolve(success);
+      }));
+      const pending = requestModel();
+      const signal = mocks.executeEffect.mock.lastCall?.[0].signal as AbortSignal;
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(signal.aborted).toBe(true);
+      expect(await pending).toMatchObject({ ok: false, error: expect.stringContaining('300 秒') });
+      expect(session.isActive()).toBe(true);
+      expect(mocks.executeEffect).toHaveBeenCalledTimes(2);
+
+      expect(await requestModel()).toMatchObject({ ok: false, error: expect.stringContaining('正在执行') });
+      expect(mocks.executeEffect).toHaveBeenCalledTimes(2);
+      finishLate();
+      await Promise.resolve();
+      mocks.executeEffect.mockResolvedValueOnce(success);
+      expect(await requestModel()).toEqual({ ok: true, value: success });
+
+      mocks.executeEffect.mockImplementationOnce(() => new Promise((resolve) => {
+        finishLate = () => resolve(success);
+      }));
+      const unlimited = session.request('effect', { type: 'model.generate',
+        uiSliceWait: { hostSeconds: 10, modelSeconds: 0, replySeconds: 1 } });
+      const unlimitedSignal = mocks.executeEffect.mock.lastCall?.[0].signal as AbortSignal;
+      await vi.advanceTimersByTimeAsync(86_400_000);
+      expect(unlimitedSignal.aborted).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+      session.dispose();
+      expect(unlimitedSignal.aborted).toBe(true);
+      expect(await unlimited).toMatchObject({ ok: false });
+      finishLate();
+    } finally {
+      session.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds crop attempts independently of ordinary requests and model calls', async () => {
+    const sliceTool = { ...tool, id: 'slice-image' };
+    const slicePlugin: InstalledPlugin = {
+      ...plugin,
+      id: 'ai-canvas.ui-slice',
+      manifest: { ...plugin.manifest, apiVersion: 2, id: 'ai-canvas.ui-slice',
+        permissions: [...plugin.manifest.permissions, 'models.read', 'models.invoke'],
+        requiredCapabilities: ['image.uiSlice'], contributes: { nodeTools: [sliceTool] } },
+    };
+    mocks.getState().installedPlugins = [slicePlugin];
+    mocks.modelCatalog.mockReturnValue([{ id: 'image', category: 'image' }, { id: 'vision', category: 'text' }]);
+    const session = await createPluginUiNativeSession({
+      plugin: slicePlugin, tool: sliceTool, nodeId: 'target', exportName: 'dialog', onClose: vi.fn(),
+    });
+    const crop = { type: 'model.generate', uiSliceCrop: true, modelId: 'image',
+      imageUrls: ['data:image/png;base64,AA=='], prompt: '生成裁片' };
+    try {
+      expect(await session.request('context', null)).toMatchObject({ ok: true, value: { host: { uiSliceCropGenerationLimit: 144 } } });
+      expect(await session.request('effect', { ...crop, modelId: 'vision' })).toMatchObject({ ok: false });
+      expect(await session.request('effect', { ...crop, imageUrls: ['https://example.com/image.png'] })).toMatchObject({ ok: false });
+      expect(await session.request('effect', { ...crop, resourceIds: ['source'] })).toMatchObject({ ok: false });
+      expect(mocks.executeEffect).not.toHaveBeenCalled();
+      for (let index = 0; index < 4; index++) {
+        expect(await session.request('effect', { type: 'model.generate' })).toMatchObject({ ok: true });
+      }
+      expect(await session.request('effect', { type: 'model.generate' })).toMatchObject({ ok: false, error: expect.stringContaining('4') });
+      for (let index = 0; index < 64; index++) {
+        expect(await session.request('effect', { type: 'settings.get', key: 'wait' })).toMatchObject({ ok: true });
+      }
+      for (let index = 0; index < 122; index++) {
+        expect(await session.request('context', null)).toMatchObject({ ok: true });
+      }
+      expect(await session.request('context', null)).toMatchObject({ ok: false, error: expect.stringContaining('请求次数') });
+      for (let index = 0; index < 141; index++) {
+        expect(await session.request('effect', crop)).toMatchObject({ ok: true });
+      }
+      expect(await session.request('effect', crop)).toMatchObject({ ok: false, error: expect.stringContaining('生图次数') });
+      expect(await session.request('close', null)).toMatchObject({ ok: true });
+    } finally {
+      session.dispose();
+      mocks.modelCatalog.mockReturnValue([]);
+    }
   });
 
   it('revokes UI and resources when a dependency changes without changing the owner revision', async () => {

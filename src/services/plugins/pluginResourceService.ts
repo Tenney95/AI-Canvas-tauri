@@ -732,6 +732,25 @@ export async function resolvePluginMediaWorkspaceInputs(
   return [{ resourceId: lease.ref.resourceId, path: identity.path }];
 }
 
+/** 仅供原生切图宿主使用。源路径不进入插件载荷或结果。 */
+export async function resolvePluginUiSliceSource(
+  context: PluginResourceReadContext,
+  resources: PluginInvocationResources,
+): Promise<string> {
+  if (!context.permissions.includes('files.connected.read') || !context.permissions.includes('files.output.create')) {
+    throw new Error('切图需要当前节点读取与输出权限');
+  }
+  if (resources.self.length !== 1) throw new Error('切图需要当前节点的一张本地项目图片');
+  const lease = requireLease(context, resources.self[0].resourceId);
+  if (lease.ref.origin !== 'node-self' || lease.sourceNodeId !== context.nodeId
+    || !lease.ref.mediaType.startsWith('image/') || lease.bytes || lease.packageResourceId) {
+    throw new Error('切图仅支持当前节点授权的本地项目图片');
+  }
+  const identity = await revalidateProjectLease(context, lease);
+  requireLease(context, lease.ref.resourceId);
+  return identity.path;
+}
+
 /** 仅供宿主模型适配器使用；返回值不得进入插件输入或日志。 */
 export async function resolvePluginResourceHostUrl(
   context: PluginResourceReadContext,

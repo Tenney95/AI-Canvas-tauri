@@ -41,14 +41,28 @@
     root.appendChild(panel);
   }
 
+  function requestTimeoutMs(kind, payload) {
+    if (kind !== 'effect' && kind !== 'submit') return REQUEST_TIMEOUT_MS;
+    const defaults = context?.host?.uiSliceWait;
+    const model = kind === 'effect' && payload?.type === 'model.generate';
+    const sliceOperation = kind === 'submit' || (kind === 'effect'
+      && (payload?.type === 'image.uiSlice.inspect' || payload?.type === 'image.uiSlice.openDraft' || payload?.type === 'image.uiSlice.publish'));
+    if (!defaults || (!model && !sliceOperation)) return LONG_REQUEST_TIMEOUT_MS;
+    const waits = (kind === 'submit' ? payload?.data?.uiSliceWait : payload?.uiSliceWait) ?? defaults;
+    const { hostSeconds, modelSeconds, replySeconds } = waits;
+    const validSeconds = (seconds) => Number.isInteger(seconds) && seconds >= 0 && seconds <= defaults.maxSeconds;
+    if (![hostSeconds, modelSeconds, replySeconds].every(validSeconds)) return LONG_REQUEST_TIMEOUT_MS;
+    if (model) return modelSeconds && replySeconds ? (modelSeconds + replySeconds) * 1_000 : 0;
+    // 给 Broker 先报告普通操作已结束的时间，避免两个同长定时器争抢回包。
+    return hostSeconds ? (hostSeconds + 2) * 1_000 : 0;
+  }
+
   function request(kind, payload = null) {
     if (!sessionId) return Promise.reject(new Error('缺少插件界面会话'));
     const requestId = crypto.randomUUID();
     return new Promise((resolve, reject) => {
-      const timeoutMs = kind === 'effect' || kind === 'submit'
-        ? LONG_REQUEST_TIMEOUT_MS
-        : REQUEST_TIMEOUT_MS;
-      const timeoutId = window.setTimeout(() => {
+      const timeoutMs = requestTimeoutMs(kind, payload);
+      const timeoutId = timeoutMs === 0 ? undefined : window.setTimeout(() => {
         if (!pending.delete(requestId)) return;
         reject(new Error('宿主请求超时'));
       }, timeoutMs);

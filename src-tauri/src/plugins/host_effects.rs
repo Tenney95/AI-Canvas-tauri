@@ -17,6 +17,11 @@ use tauri::{AppHandle, Webview};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
+#[path = "ui_slice.rs"]
+mod ui_slice;
+#[path = "ui_slice_pixels.rs"]
+mod ui_slice_pixels;
+
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_SETTINGS_BYTES: usize = 256 * 1024;
@@ -50,6 +55,25 @@ pub(crate) enum HostEffect {
     Set { key: String, value: Value },
     #[serde(rename = "settings.delete")]
     Delete { key: String },
+    #[serde(rename = "image.uiSlice.inspect", rename_all = "camelCase")]
+    UiSliceInspect { source_path: String, assume_srgb: bool },
+    #[serde(rename = "image.uiSlice.openDraft", rename_all = "camelCase")]
+    UiSliceOpenDraft { source_path: String, archive_path: String, assume_srgb: bool },
+    #[serde(rename = "image.uiSlice.publish", rename_all = "camelCase")]
+    UiSlicePublish {
+        source_path: String,
+        directory: Option<String>,
+        source_sha256: String,
+        assume_srgb: bool,
+        items: Vec<ui_slice_pixels::Item>,
+        #[serde(default)]
+        missing: Vec<ui_slice::Missing>,
+        #[serde(default)]
+        include_source: bool,
+        #[serde(default)]
+        new_draft: bool,
+        overwrite_draft: Option<ui_slice::DraftFile>,
+    },
 }
 
 fn get_method() -> String {
@@ -606,6 +630,57 @@ pub async fn execute_plugin_host_effect(
         return Err("插件调用 ID 无效".into());
     }
     let lease = RequestLease::register(&identity.plugin_id, &request_id)?;
+    if matches!(&effect, HostEffect::UiSliceInspect { .. } | HostEffect::UiSliceOpenDraft { .. } | HostEffect::UiSlicePublish { .. }) {
+        if identity.plugin_id != "ai-canvas.ui-slice" || identity.tool_id != "slice-image" {
+            return Err("当前插件工具不能使用切图能力".into());
+        }
+        let slot = tokio::select! {
+            biased;
+            _ = lease.token.cancelled() => return Err("切图操作已取消".into()),
+            slot = ui_slice::SLOT.acquire() => slot.map_err(|_| "切图工作队列已关闭")?,
+        };
+        return tauri::async_runtime::spawn_blocking(move || {
+            let _slot = slot;
+            let authorize = |operation: &mut dyn FnMut() -> Result<(), String>| {
+                plugin_registry::with_plugin_host_authority(&app, &identity, |_, grant| {
+                    require_permission(grant, "files.connected.read")?;
+                    require_permission(grant, "files.output.create")?;
+                    require_permission(grant, "ui.custom")?;
+                    ui_slice_pixels::check_cancelled(&lease.token)?;
+                    operation()
+                })
+            };
+            authorize(&mut || Ok(()))?;
+            match effect {
+                HostEffect::UiSliceInspect { source_path, assume_srgb } => {
+                    let result = ui_slice::inspect(&app, &source_path, assume_srgb, &lease.token)?;
+                    authorize(&mut || Ok(()))?;
+                    Ok(result)
+                }
+                HostEffect::UiSliceOpenDraft { source_path, archive_path, assume_srgb } => {
+                    let result = ui_slice::open_draft(&app, &archive_path, &source_path, assume_srgb, &lease.token)?;
+                    authorize(&mut || Ok(()))?;
+                    Ok(result)
+                }
+                HostEffect::UiSlicePublish {
+                    source_path, directory, source_sha256, assume_srgb, items, missing, include_source,
+                    new_draft, overwrite_draft,
+                } => {
+                    let destination = match (directory.as_deref(), new_draft, overwrite_draft.as_ref()) {
+                        (Some(path), false, None) => ui_slice::Destination::Directory(path),
+                        (Some(path), true, None) if include_source => ui_slice::Destination::NewDraft(path),
+                        (None, false, Some(draft)) if include_source => ui_slice::Destination::OverwriteDraft(draft),
+                        _ => return Err("切图保存目标无效".into()),
+                    };
+                    ui_slice::publish(&app, ui_slice::Publish {
+                        source: &source_path, destination, source_sha256: &source_sha256,
+                        assume_srgb, items: &items, missing: &missing, include_source,
+                    }, &request_id, &lease.token, authorize)
+                }
+                _ => unreachable!("slice effects matched above"),
+            }
+        }).await.map_err(|_| "切图工作线程异常")?;
+    }
     if let HostEffect::Network {
         url,
         method,

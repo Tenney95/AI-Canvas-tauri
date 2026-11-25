@@ -66,6 +66,7 @@ async function readPackageText(
 export async function readLocalPluginPackage(paths: string[], requireManifest = false, options?: { verifyIntegrity?: boolean }) {
   const fs = await import('@tauri-apps/plugin-fs');
   const manifests = new Set<string>();
+  let hasZipFile = false;
   for (const rawPath of paths) {
     const path = rawPath.replace(/\\/g, '/').replace(/\/+$/, '');
     const info = await fs.stat(rawPath);
@@ -77,13 +78,16 @@ export async function readLocalPluginPackage(paths: string[], requireManifest = 
       }
     } else if (path.endsWith('/manifest.json')) {
       manifests.add(path);
+    } else if (info.isFile && /\.zip$/i.test(path)) {
+      hasZipFile = true;
     }
   }
 
   if (manifests.size === 0) {
     // 原生拖放是全窗口事件，拖入画布的普通素材不应弹出插件安装错误。
     if (!requireManifest) return null;
-    throw new Error('所选文件夹根目录缺少 manifest.json，请选择插件根目录');
+    if (hasZipFile) throw new Error('请先解压插件 ZIP，再选择直接包含 manifest.json 的文件夹');
+    throw new Error('所选文件夹根目录缺少 manifest.json。请选择直接包含 manifest.json 的文件夹');
   }
   if (manifests.size !== 1) throw new Error('请一次只选择一个插件根目录');
 
