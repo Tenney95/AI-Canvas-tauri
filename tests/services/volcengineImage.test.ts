@@ -102,6 +102,25 @@ describe('Volcengine Seedream image requests', () => {
   });
 
   it.each([
+    ['1.5K', '9:16', '1152x2048'],
+    ['4K', '9:16', '1584x2816'],
+    ['1.5K', 'auto', '1.5K'],
+  ])('sends only the Seedream 5.5 single-image fields for %s %s', async (imageSize, aspectRatio, size) => {
+    const imageUrls = aspectRatio === 'auto' ? [] : baseParams.imageUrls;
+    await expect(generateVolcengineImagesBatch({ ...baseParams,
+      model: 'volcengine/doubao-seedream-5-5-261028', imageSize, aspectRatio, imageUrls,
+    }, 1)).resolves.toMatchObject({ requestedCount: 1, failedCount: 0 });
+
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0]?.[1].body));
+    expect(body).toEqual({
+      model: 'doubao-seedream-5-5-261028', prompt: baseParams.prompt, size,
+      response_format: 'url', watermark: true,
+      ...(imageUrls.length ? { image: imageUrls } : {}),
+    });
+  });
+
+  it.each([
     ['doubao-seedream-4-0-250828', '1K', '9:16', 720, 1280],
     ['doubao-seedream-4-0-250828', '2K', '9:16', 1600, 2848],
     ['doubao-seedream-4-0-250828', '4K', '9:16', 3040, 5504],

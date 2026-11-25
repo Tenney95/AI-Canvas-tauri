@@ -530,6 +530,18 @@ describe('image model capability resolution', () => {
     expect(normalizeSeedreamSize('doubao-seedream-5-0-flash-260915', '1.5K')).toBe('1.5K');
     expect(normalizeSeedreamSize('doubao-seedream-5-0-flash-260915', '4K')).toBe('2K');
   });
+
+  it('resolves the official single-image capability for Seedream 5.5', () => {
+    const capability = getImageCapability('volcengine/doubao-seedream-5-5-261028');
+    expect(capability).toMatchObject({
+      modelId: 'doubao-seedream-5-5-261028',
+      resolutions: ['1K', '1.5K', '2K'],
+      defaultResolution: '2K',
+      supportsBatch: false,
+      maxImageReferences: 10,
+    });
+    expect(capability?.dimensionPresets?.['1.5K']?.['9:16']).toEqual([1152, 2048]);
+  });
 });
 
 describe('APIMart 新图片模型合同', () => {

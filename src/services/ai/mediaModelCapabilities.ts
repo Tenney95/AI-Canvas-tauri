@@ -274,6 +274,11 @@ const IMAGE_CAPABILITIES: Record<string, ImageCapability> = {
     resolutionStyle: 'K',
     ...getImageCapabilityTemplate('seedream-5-pro', { dimensionPresets: getImageSizePresets('volcengine-seedream-5-pro') }),
   },
+  'doubao-seedream-5.5-261028': {
+    modelId: 'doubao-seedream-5-5-261028',
+    resolutionStyle: 'K',
+    ...getImageCapabilityTemplate('seedream-5-pro', { dimensionPresets: getImageSizePresets('volcengine-seedream-5-pro') }),
+  },
 };
 
 /**

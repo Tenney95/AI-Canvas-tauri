@@ -40,6 +40,7 @@ export function formatImageSizeForModel(
  * 各模型支持的画质范围不同，未支持的分辨率自动降级到最接近的有效值
  */
 const SEEDREAM_SIZE_SUPPORT: Record<string, string[]> = {
+  'doubao-seedream-5-5-261028': ['1K', '1.5K', '2K'],
   'doubao-seedream-5-0-pro': ['1K', '1.5K', '2K'],
   'doubao-seedream-5-0-flash': ['1K', '1.5K', '2K'],
   'doubao-seedream-5-0-lite': ['2K', '3K', '4K'],
