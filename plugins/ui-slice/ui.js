@@ -18,7 +18,7 @@
       '坐标都是 0–1000 的整数，x 从左到右，y 从上到下，原点为图片左上角。按浏览器正常朝向，原图方向尺寸为 ' + width + '×' + height + '。box 顺序固定为 [x0,y0,x1,y1]，右和下边界不包含。',
       '纯矩形填 rings:[]。不规则边缘、遮挡或孔洞用 rings:[[[x,y],[x,y],[x,y]]]。仅保留定位轮廓所需的转折点，省略共线点和重复闭合点。每环至少 3 个不同顶点，最多 16 环、合计 128 个顶点，点均在 box 内。外环在前，孔洞按奇偶规则扣除，各环不得交叉。',
       '框内包含明显无关前景且无法画出可信轮廓、很小的文字无法定位、元素完全被挡住或缺原始透明底时，在 missing 写明项目与原因。仅在缺项的外接范围可推断时，补充同格式的 box。一个元素可同时交付可见部分和记录缺失部分。不要给疑似内容随意填框。',
-      '只输出紧凑 JSON，名称和缺项原因用短语。格式 {"items":[{"name":"确认按钮底板","role":"button","box":[170,640,480,740],"rings":[]}],"missing":[{"name":"按钮下方底纹","reason":"被遮挡"}]}。',
+      '只输出紧凑 JSON。每项返回简短名称、description（说明可见的颜色、形状、材质、文字及用途，限 80 字）和 prompt（用于单独再生此素材的中文视觉提示词，限 120 字）。只描述可见特征，避免重复整页内容。格式 {"items":[{"name":"确认按钮底板","role":"button","description":"蓝色圆角底板，边缘有浅蓝高光。","prompt":"绘制蓝色圆角按钮底板，保留浅蓝高光和中心留白，透明背景。","box":[170,640,480,740],"rings":[]}],"missing":[{"name":"按钮下方底纹","reason":"被遮挡"}]}。',
       'role 只能是 background、panel、button、icon、text、decoration、image、other。items 和 missing 各最多 128 条。若超出上限，在 missing 说明超出的区域和元素类型。避免为同一组件重复输出整体和所有子件。',
     ].join('\n');
   }
@@ -184,6 +184,10 @@
       const role = Object.hasOwn(ROLES, proposed?.role) ? ROLES[proposed.role] : ROLES.other;
       try {
         const item = toSourceSelection(proposed, role + ' · ' + name, source);
+        const description = cleanLabel(proposed.description, 160);
+        const prompt = cleanLabel(proposed.prompt, 240);
+        if (description) item.description = description;
+        if (prompt) item.prompt = prompt;
         const signature = JSON.stringify([item.label, item.rect, item.rings]);
         if (seen.has(signature)) return;
         const crops = splitLargeRectangle(item);
@@ -255,6 +259,7 @@
     const crops = [];
     for (let y = y0; y < y1; y += stripeHeight) {
       crops.push({
+        ...item,
         label: cleanLabel(item.label, 68) + ' 分片 ' + (crops.length + 1),
         rect: { x0, y0: y, x1, y1: Math.min(y1, y + stripeHeight) },
         rings: [],
@@ -289,10 +294,14 @@
     ].filter(Boolean).join('\n');
   }
 
-  function cropGenerationPrompt(label) {
+  function cropGenerationPrompt(item) {
+    const { label, rect } = item;
     return [
       '以附图中裁出的单个 UI 素材为参考，重新生成一张独立素材图。',
       '素材名称（仅供参考）为 ' + JSON.stringify(label.replaceAll('@', '＠')) + '。',
+      ...(item.description ? ['识别描述：' + JSON.stringify(item.description.replaceAll('@', '＠'))] : []),
+      ...(item.prompt ? ['素材视觉提示词：' + JSON.stringify(item.prompt.replaceAll('@', '＠'))] : []),
+      '裁片原始尺寸 ' + (rect.x1 - rect.x0) + '×' + (rect.y1 - rect.y0) + ' 像素，保持原始宽高比例。',
       '还原造型、颜色、纹理、文字和相对比例。完整呈现素材，居中并保留少量边距。保留原有镂空和透明背景。',
       '只输出这一个素材。不要拼版、添加水印或绘制其他页面元素。',
     ].join('\n');
@@ -581,6 +590,14 @@
       '<section data-field="gaps" aria-labelledby="slice-gaps-title" hidden>',
       '<h2 id="slice-gaps-title" data-field="gapCount"></h2><ul class="slice-list" data-field="missing"></ul></section>',
       '</div></section></div>',
+      '<dialog class="slice-location" data-field="locationDialog" aria-labelledby="slice-location-title">',
+      '<div class="slice-line"><h2 id="slice-location-title" data-field="locationTitle">原图位置</h2>',
+      '<button type="button" data-action="closeLocation" autofocus>关闭预览</button></div>',
+      '<div class="slice-location-body"><div class="slice-location-frame" data-field="locationFrame"><img data-field="locationImage" alt="选区所在的原图">',
+      '<span data-field="locationBox" aria-hidden="true"></span></div><div class="slice-location-details">',
+      '<h3>当前裁片</h3><canvas data-field="locationCrop" role="img" aria-label="当前选区的裁片"></canvas><p data-field="locationInfo"></p>',
+      '<h3>识别描述</h3><p data-field="locationDescription"></p>',
+      '<h3>生图提示词</h3><p data-field="locationPrompt"></p></div></div></dialog>',
     ].join('');
     const style = document.createElement('style');
     style.textContent = [
@@ -634,7 +651,13 @@
       '.slice-card-markers { display:flex; align-items:center; gap:4px; }',
       '.slice-card-main { min-inline-size:0; display:grid; gap:6px; }',
       '.slice-card-title { display:grid; gap:1px; overflow-wrap:anywhere; }',
-      '.slice-thumbnail { display:grid; place-items:center; inline-size:64px; block-size:52px; border-radius:6px; background:var(--page); }',
+      '.slice-panel button.slice-thumbnail { display:grid; place-items:center; inline-size:68px; min-block-size:52px; padding:2px; border-radius:6px; background:var(--page); }',
+      '.slice-location { box-sizing:border-box; width:min(94vw,960px); padding:12px; border:1px solid var(--line); border-radius:8px; color:var(--ink); background:var(--surface); }',
+      '.slice-location::backdrop { background:rgb(0 0 0 / .65); } .slice-location-frame { position:relative; margin:8px auto 0; }',
+      '.slice-location-frame img { display:block; width:100%; height:100%; } .slice-location-frame span { position:absolute; box-sizing:border-box; min-width:2px; min-height:2px; border:2px solid #ffce38; box-shadow:0 0 0 1px #181818; pointer-events:none; }',
+      '.slice-location-body { display:grid; gap:14px; align-items:start; } @media (min-width:680px) { .slice-location-body { grid-template-columns:minmax(0,3fr) minmax(0,2fr); } }',
+      '.slice-location-details { min-width:0; overflow-wrap:anywhere; } .slice-location-details h3 { font-size:1em; margin:12px 0 4px; } .slice-location-details p { white-space:pre-wrap; user-select:text; } .slice-location-details canvas { max-width:100%; height:auto; background:var(--page); }',
+      '.slice-row:has(.slice-thumbnail:enabled) { cursor:pointer; } .slice-inspector,.slice-candidate { cursor:auto; }',
       '.slice-thumbnail canvas:not([hidden]) { display:block; max-inline-size:60px; max-block-size:48px; }',
       '.slice-check { min-block-size:44px; display:inline-flex; align-items:center; gap:7px; cursor:pointer; }',
       '.slice-card-markers .slice-check { min-inline-size:44px; justify-content:center; }',
@@ -715,6 +738,7 @@
     let gapRows = [];
     let pendingReplacement;
     let previewImage;
+    let locationCropItem;
     let previousItems;
     const selectedItems = new Set();
     const generatedSlices = new WeakMap();
@@ -1098,6 +1122,41 @@
       if (batch && previewImage) renderOriginal(batch.snapshot, previewImage);
     }
 
+    function showSourcePosition(relativeX, relativeY) {
+      const bounds = original.getBoundingClientRect();
+      viewport.scrollLeft = Math.max(0, relativeX * bounds.width - viewport.clientWidth / 2);
+      viewport.scrollTop = Math.max(0, relativeY * bounds.height - viewport.clientHeight / 2);
+      viewport.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+
+    function previewItemLocation(item, row) {
+      const { width, height } = batch.snapshot;
+      const { x0, y0, x1, y1 } = item.rect;
+      const frame = field('locationFrame');
+      frame.style.width = 'min(100%, ' + width + 'px, ' + (65 * width / height) + 'dvh)';
+      frame.style.aspectRatio = width + ' / ' + height;
+      const image = field('locationImage');
+      if (image.getAttribute('src') !== previewImage.src) image.src = previewImage.src;
+      const box = field('locationBox').style;
+      box.left = (100 * x0 / width) + '%';
+      box.top = (100 * y0 / height) + '%';
+      box.width = (100 * (x1 - x0) / width) + '%';
+      box.height = (100 * (y1 - y0) / height) + '%';
+      field('locationTitle').textContent = '原图位置 · ' + item.label;
+      if (locationCropItem !== item) {
+        drawThumbnail(field('locationCrop'), item, previewImage, batch.snapshot, 192);
+        locationCropItem = item;
+      }
+      field('locationInfo').textContent = (x1 - x0) + ' × ' + (y1 - y0) + ' px · 左上角 (' + x0 + ', ' + y0 + ')';
+      field('locationDescription').textContent = item.description || '此选区没有识别描述。';
+      field('locationPrompt').textContent = cropGenerationPrompt(item);
+      const dialog = field('locationDialog');
+      if (!dialog.open) {
+        row.querySelector('.slice-thumbnail').focus({ preventScroll: true });
+        dialog.showModal();
+      }
+    }
+
     function beginEdit(item, vertices = false) {
       if (!item || busy || waitSaving || editSession || gapBoxMode) return;
       if (activeItem !== item || splitMode) selectItem(item);
@@ -1156,6 +1215,12 @@
         const thumbnail = document.createElement('canvas');
         thumbnail.hidden = true;
         thumbnail.setAttribute('aria-hidden', 'true');
+        const locate = document.createElement('button');
+        locate.type = 'button';
+        locate.className = 'slice-thumbnail';
+        locate.title = '查看「' + item.label + '」的原图位置';
+        locate.setAttribute('aria-label', locate.title);
+        locate.append(thumbnail, '预览原图');
         const details = document.createElement('div');
         details.className = 'slice-row-text';
         const title = document.createElement('strong');
@@ -1244,7 +1309,7 @@
         editTools.append(save, vertices, boxSplit, split, remove);
         form.append(editTools);
         const editable = [...Object.values(inputs), contour];
-        const controls = [...editable, checkbox, edit, save, vertices, boxSplit, split, remove];
+        const controls = [...editable, checkbox, locate, edit, save, vertices, boxSplit, split, remove];
         for (const control of controls) control.disabled = busy || waitSaving;
         form.addEventListener('submit', (event) => {
           event.preventDefault();
@@ -1303,16 +1368,14 @@
         });
         const heading = document.createElement('div');
         heading.className = 'slice-card-head';
-        const thumbnailFrame = document.createElement('div');
-        thumbnailFrame.className = 'slice-thumbnail';
-        thumbnailFrame.append(thumbnail);
         const markers = document.createElement('div');
         markers.className = 'slice-card-markers';
-        markers.append(selection, thumbnailFrame);
+        markers.append(selection, locate);
         const main = document.createElement('div');
         main.className = 'slice-card-main';
         const caption = document.createElement('div');
         caption.className = 'slice-card-title';
+        caption.title = locate.title;
         caption.append(title, status);
         const tools = document.createElement('div');
         tools.className = 'slice-actions';
@@ -1341,7 +1404,7 @@
         heading.append(markers, main);
         details.append(heading, candidatePanel, inspector);
         row.append(details);
-        const entry = { row, thumbnail, status, size, inputs, contour, item, checkbox, generate, inspector,
+        const entry = { row, thumbnail, status, size, inputs, contour, item, index, checkbox, generate, inspector,
           insert, candidatePanel, generationStatus, candidateImage, controls, editable };
         renderCropGeneration(entry);
         generate.addEventListener('click', () => startCropGeneration([entry]));
@@ -1349,7 +1412,7 @@
           const candidate = generatedSlices.get(item)?.candidate;
           if (candidate) void run(async () => {
             showStage(progress.value, '正在将生图结果添加到画布。');
-            await props.submit(withWaitSettings({ label: '生图 · ' + cleanLabel(item.label, 70), imageUrl: candidate.url }));
+            await props.submit(withWaitSettings(candidate.nodeData));
           });
         });
         rows.append(row);
@@ -1454,8 +1517,12 @@
             && previousRows[index]?.gap.reason === gap.reason ? previousRows[index] : undefined);
         if (previous) {
           prompt.value = previous.prompt.value;
-          status.textContent = previous.status.textContent;
-          entry.candidate = previous.candidate;
+          const sameBox = previous.gap.box === gap.box || (previous.gap.box && gap.box
+            && gap.box.every((coordinate, index) => coordinate === previous.gap.box[index]));
+          if (sameBox) {
+            status.textContent = previous.status.textContent;
+            entry.candidate = previous.candidate;
+          }
           if (entry.candidate) {
             thumbnail.hidden = !entry.candidate.previewUrl;
             if (entry.candidate.previewUrl) thumbnail.src = entry.candidate.previewUrl;
@@ -1472,9 +1539,7 @@
           for (const itemRow of currentRows) itemRow.row.dataset.active = 'false';
           for (const candidate of gapRows) candidate.row.dataset.active = String(candidate === entry);
           renderOriginal(batch.snapshot, previewImage);
-          const bounds = original.getBoundingClientRect();
-          viewport.scrollLeft = Math.max(0, (gap.box[0] + gap.box[2]) / (2 * SCALE) * bounds.width - viewport.clientWidth / 2);
-          viewport.scrollTop = Math.max(0, (gap.box[1] + gap.box[3]) / (2 * SCALE) * bounds.height - viewport.clientHeight / 2);
+          showSourcePosition((gap.box[0] + gap.box[2]) / (2 * SCALE), (gap.box[1] + gap.box[3]) / (2 * SCALE));
           field('editMode').textContent = '待补 ' + (index + 1) + ' · ' + gap.name + '，橙色虚线为待核对区域。';
         });
         define.addEventListener('click', () => {
@@ -1512,7 +1577,7 @@
         insert.addEventListener('click', () => {
           if (entry.candidate) void run(async () => {
             showStage(progress.value, '正在将再生候选添加到画布。');
-            await props.submit(withWaitSettings({ label: '再生候选 · ' + gap.name, imageUrl: entry.candidate.url }));
+            await props.submit(withWaitSettings(entry.candidate.nodeData));
           });
         });
         row.append(title, reason, location, sourcePreview, locate, define, accept, promptLabel, status, thumbnail, generate, insert);
@@ -1521,13 +1586,13 @@
       field('missing').replaceChildren(...gapRows.map(({ row }) => row));
     }
 
-    async function requestModel(model, prompt) {
+    async function requestModel(model, prompt, candidateRequest = {}) {
       if (attempts >= MAX_MODEL_CALLS) throw new Error('已用完本窗口的模型调用次数，请重新打开插件。');
       attempts++;
       const completed = progress.value;
       progress.removeAttribute('value');
       try {
-        return await effect(withWaitSettings({ type: 'model.generate', modelId: model.id, resourceIds: [sourceRef.resourceId], prompt }));
+        return await effect(withWaitSettings({ type: 'model.generate', modelId: model.id, resourceIds: [sourceRef.resourceId], prompt, ...candidateRequest }));
       } finally {
         if (!cleanup.signal.aborted) progress.value = completed;
       }
@@ -1539,7 +1604,8 @@
       entry.generate.textContent = candidate ? '重新生图' : '此项生图';
       entry.candidatePanel.hidden = !generation;
       entry.candidatePanel.dataset.state = generation?.state ?? '';
-      entry.generationStatus.textContent = generation?.message ?? '';
+      const message = generation?.message ?? '';
+      entry.generationStatus.textContent = candidate ? message + ' · ' + candidate.nodeData.description : message;
       entry.insert.hidden = !candidate;
       entry.candidateImage.hidden = !candidate?.previewUrl;
       const previewUrl = candidate?.previewUrl;
@@ -1547,6 +1613,25 @@
         if (previewUrl) entry.candidateImage.src = previewUrl;
         else entry.candidateImage.removeAttribute('src');
       }
+    }
+
+    function candidateRequest(selection, snapshot, description, previous) {
+      return props.host?.uiSliceOriginalImages ? { uiSliceSelection: JSON.stringify(selection),
+        uiSliceSourceSha256: snapshot.sourceSha256, uiSliceDescription: description,
+        uiSlicePreviousId: previous?.nodeData.uiSliceCandidateId } : {};
+    }
+
+    function candidateData(candidate, model, prompt, label, description, snapshot, selection, response) {
+      if (props.host?.uiSliceOriginalImages && !response?.uiSliceCandidateId) throw new Error('宿主没有返回已保存的原图身份');
+      return {
+        imageUrl: candidate.url, label, prompt, model: model.id, provider: model.provider,
+        ...(response?.uiSliceCandidateId ? { uiSliceCandidateId: response.uiSliceCandidateId } : {}),
+        description,
+        uiSliceSource: {
+          nodeId: props.node?.id, sourceLabel: props.node?.data?.label, sha256: snapshot.sourceSha256,
+          width: snapshot.width, height: snapshot.height, ...selection,
+        },
+      };
     }
 
     function startCropGeneration(entries) {
@@ -1565,7 +1650,8 @@
       stop.hidden = false;
       stop.disabled = false;
       const previousGenerations = entries.map(({ item }) => generatedSlices.get(item));
-      for (const [index, entry] of entries.entries()) {
+      for (let index = 0; index < entries.length; index++) {
+        const entry = entries[index];
         generatedSlices.set(entry.item, { ...previousGenerations[index], state: 'queued', message: '等待生成' });
         renderCropGeneration(entry);
       }
@@ -1574,8 +1660,9 @@
       progress.max = entries.length;
       progress.value = 0;
       try {
-        for (const [index, entry] of entries.entries()) {
+        for (let index = 0; index < entries.length; index++) {
           if (queue.stopped) break;
+          const entry = entries[index];
           const { item } = entry;
           const previous = previousGenerations[index];
           showStage(processed, '正在生成 ' + (index + 1) + ' / ' + entries.length + ' · ' + item.label);
@@ -1590,12 +1677,19 @@
             if (queue.stopped || closing) break;
             if (cropLimit === undefined) attempts++;
             else cropAttempts++;
+            const prompt = cropGenerationPrompt(item);
+            const selection = { label: item.label, rect: item.rect, rings: item.rings, index: entry.index + 1 };
+            const { x0, y0, x1, y1 } = item.rect;
+            const description = (item.description || item.label) + ' · 原图 (' + x0 + ', ' + y0 + ') · ' + (x1 - x0) + '×' + (y1 - y0) + ' 像素 · ' + model.name;
             const response = await effect(withWaitSettings({
-              type: 'model.generate', modelId: model.id, prompt: cropGenerationPrompt(item.label),
+              type: 'model.generate', modelId: model.id, prompt,
+              ...candidateRequest(selection, batch.snapshot, description, previous?.candidate),
               imageUrls: [reference], ...(cropLimit === undefined ? {} : { uiSliceCrop: true }),
             }));
             const candidate = await readCandidate(response?.url, encodingCanvas, cleanup.signal);
             cleanup.signal.throwIfAborted();
+            candidate.nodeData = candidateData(candidate, model, prompt, '生图 · ' + item.label, description,
+              batch.snapshot, selection, response);
             generatedSlices.set(item, { candidate, state: 'ready', message: candidate.previewUrl
               ? '生图已完成' : '生图已完成 · 添加到画布后可预览' });
             success++;
@@ -1606,6 +1700,7 @@
               + (previous?.candidate ? ' · 已保留上次结果' : '') });
           }
           processed++;
+          previousGenerations[index] = undefined;
           progress.value = processed;
           renderCropGeneration(entry);
         }
@@ -1639,9 +1734,14 @@
         const additionalPrompt = entry.prompt.value.trim();
         const prompt = regenPrompt(entry.gap, snapshot.width, snapshot.height)
           + (additionalPrompt ? '\n补充要求：' + JSON.stringify(additionalPrompt.replaceAll('@', '＠')) : '');
-        const response = await requestModel(model, prompt);
+        const { name, reason, box } = entry.gap;
+        const selection = { name, reason, ...(box ? { normalizedBox: [...box] } : {}) };
+        const description = name + ' · ' + reason + ' · ' + model.name;
+        const response = await requestModel(model, prompt, candidateRequest(selection, snapshot, description, entry.candidate));
         const candidate = await readCandidate(response?.url, encodingCanvas, cleanup.signal);
         cleanup.signal.throwIfAborted();
+        candidate.nodeData = candidateData(candidate, model, prompt, '再生候选 · ' + name, description,
+          snapshot, selection, response);
         entry.candidate = candidate;
         entry.thumbnail.hidden = !candidate.previewUrl;
         if (candidate.previewUrl) entry.thumbnail.src = candidate.previewUrl;
@@ -1650,6 +1750,7 @@
         entry.generate.textContent = '重新生成';
         entry.status.textContent = candidate.compact ? '再生候选已生成 · 压缩预览可添加到画布'
           : candidate.previewUrl ? '再生候选已生成' : '再生候选已生成 · 添加到画布查看图片';
+        entry.status.textContent += ' · ' + candidate.nodeData.description;
         showStage(stage, '再生候选已返回 · ' + entry.gap.name);
         return true;
       } catch (error) {
@@ -1863,6 +1964,27 @@
     selectAll.addEventListener('change', () => changeSelection(selectAll.checked ? 'all' : 'clear'), listeners);
     action('invertSelection').addEventListener('click', () => changeSelection('invert'), listeners);
     action('clearSelection').addEventListener('click', () => changeSelection('clear'), listeners);
+    action('closeLocation').addEventListener('click', () => field('locationDialog').close(), listeners);
+    field('locationDialog').addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') event.stopPropagation();
+    }, listeners);
+    field('locationDialog').addEventListener('close', () => {
+      if (!field('locationDialog').open) field('locationImage').removeAttribute('src');
+    }, listeners);
+    field('items').addEventListener('click', (event) => {
+      if (selectAll.disabled || !batch || !(event.target instanceof Element)) return;
+      const row = event.target.closest('.slice-row');
+      if (row?.parentElement !== event.currentTarget) return;
+      const control = event.target.closest('button, label, details');
+      if (control && !control.matches('button.slice-thumbnail:enabled')) return;
+      const item = row._sliceItem;
+      if (activeItem !== item || splitMode || editGesture || pan) selectItem(item);
+      if (control) previewItemLocation(item, row);
+      else {
+        const { x0, y0, x1, y1 } = item.rect;
+        showSourcePosition((x0 + x1) / (2 * batch.snapshot.width), (y0 + y1) / (2 * batch.snapshot.height));
+      }
+    }, listeners);
     results.addEventListener('keydown', (event) => {
       if (event.defaultPrevented || selectAll.disabled || !(event.ctrlKey || event.metaKey)
         || event.shiftKey || event.altKey || event.key.toLowerCase() !== 'a'
@@ -2342,6 +2464,10 @@
     return () => {
       if (cleanup.signal.aborted) return;
       cleanup.abort();
+      if (field('locationDialog').open) field('locationDialog').close();
+      field('locationImage').removeAttribute('src');
+      field('locationCrop').width = field('locationCrop').height = 0;
+      locationCropItem = undefined;
       clearInterval(clock);
       viewportObserver?.disconnect();
       cancelGesture();

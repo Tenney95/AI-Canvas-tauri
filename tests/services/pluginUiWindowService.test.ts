@@ -16,7 +16,9 @@ vi.mock('@tauri-apps/api/core', () => ({
   },
 }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: mocks.getState } }));
-vi.mock('../../src/services/plugins/pluginUiSessionService', () => ({ createPluginUiNativeSession: mocks.create }));
+vi.mock('../../src/services/plugins/pluginUiSessionService', () => ({
+  createPluginUiNativeSession: mocks.create, MAX_UI_SLICE_CROP_GENERATIONS: 2048,
+}));
 import {
   closePluginUiWindow, getPluginUiWindowStates, openPluginUiWindow, pluginUiWindowUnavailableReason,
 } from '../../src/services/plugins/pluginUiWindowService';
@@ -55,6 +57,13 @@ const send = (kind: 'context' | 'effect' | 'submit' | 'close' = 'context') => {
 const replies = () => mocks.invoke.mock.calls.filter(([command]) => command === 'respond_plugin_ui_window_request');
 const closes = () => mocks.invoke.mock.calls.filter(([command]) => command === 'close_plugin_ui_window');
 const opens = () => mocks.invoke.mock.calls.filter(([command]) => command === 'open_plugin_ui_window');
+
+async function openWindowForTool(pluginId: string, toolId: string) {
+  const installed = { ...plugin, id: pluginId };
+  binding = { ...binding, identity: { ...binding.identity, pluginId, toolId } };
+  mocks.getState.mockReturnValue({ ...mocks.getState(), installedPlugins: [installed] });
+  await openPluginUiWindow({ ...options, plugin: installed, tool: { ...tool, id: toolId } });
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -220,6 +229,57 @@ describe('pluginUiWindowService', () => {
     expect(request).toHaveBeenCalledTimes(192); expect(dispose).not.toHaveBeenCalled();
     send('effect');
     expect(dispose).toHaveBeenCalledOnce(); expect(request).toHaveBeenCalledTimes(192);
+  });
+
+  it.each(['close', 'extra crop', 'replay'] as const)('keeps both slice budgets independent through %s', async (ending) => {
+    await openWindowForTool('ai-canvas.ui-slice', 'slice-image');
+    const crop = (): Extract<PluginUiWindowEvent, { type: 'request' }> => ({
+      type: 'request', binding, kind: 'effect', requestId: crypto.randomUUID(),
+      payload: { type: 'model.generate', uiSliceCrop: true },
+    });
+    const first = crop();
+    emit(first);
+    await Promise.resolve(); await Promise.resolve();
+    for (let index = 0; index < 192; index++) {
+      send();
+      await Promise.resolve(); await Promise.resolve();
+    }
+    if (ending === 'replay') {
+      emit(first);
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(request).toHaveBeenCalledTimes(193);
+      return;
+    }
+    for (let index = 1; index < 2048; index++) {
+      emit(crop());
+      await Promise.resolve(); await Promise.resolve();
+    }
+    expect(request).toHaveBeenCalledTimes(192 + 2048);
+    expect(dispose).not.toHaveBeenCalled();
+    if (ending === 'close') {
+      send('close');
+      expect(request).toHaveBeenLastCalledWith('close', {});
+    } else {
+      emit(crop());
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(request).toHaveBeenCalledTimes(192 + 2048);
+    }
+  });
+
+  it.each([
+    ['com.example.review', 'slice-image', 'model.generate', true],
+    ['ai-canvas.ui-slice', 'other-tool', 'model.generate', true],
+    ['ai-canvas.ui-slice', 'slice-image', 'model.generate', false],
+    ['ai-canvas.ui-slice', 'slice-image', 'settings.get', true],
+  ] as const)('checks the slice budget identity and effect: %s %s %s %s', async (pluginId, toolId, type, uiSliceCrop) => {
+    await openWindowForTool(pluginId, toolId);
+    for (let index = 0; index < 192; index++) {
+      send();
+      await Promise.resolve(); await Promise.resolve();
+    }
+    emit({ type: 'request', binding, kind: 'effect', requestId: crypto.randomUUID(), payload: { type, uiSliceCrop } });
+    expect(request).toHaveBeenCalledTimes(192);
+    expect(dispose).toHaveBeenCalledOnce();
   });
 
   it('makes native windows available on desktop and preserves web fallback', async () => {

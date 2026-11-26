@@ -317,6 +317,23 @@ describe('pluginUiSessionService', () => {
     }
   });
 
+  it('requires a candidate from this session before submitting a UI slice with original image metadata', async () => {
+    const sliceTool = { ...tool, id: 'slice-image', output: { ...tool.output, fields: ['imageUrl', 'uiSliceSource'] } };
+    const installed: InstalledPlugin = { ...plugin, id: 'ai-canvas.ui-slice',
+      manifest: { ...plugin.manifest, id: 'ai-canvas.ui-slice', apiVersion: 2,
+        requiredCapabilities: ['image.uiSlice'], contributes: { nodeTools: [sliceTool] } } };
+    mocks.getState().installedPlugins = [installed];
+    const session = await createPluginUiNativeSession({
+      plugin: installed, tool: sliceTool, nodeId: 'target', exportName: 'dialog', onClose: vi.fn(),
+    });
+    try {
+      for (const data of [{ imageUrl: 'data:image/png;base64,AA==' }, { uiSliceCandidateId: 'old-session' }]) {
+        expect(await session.request('submit', { data })).toMatchObject({ ok: false, error: expect.stringContaining('本窗口') });
+      }
+      expect(mocks.executeTool).not.toHaveBeenCalled();
+    } finally { session.dispose(); }
+  });
+
   it('bounds crop attempts independently of ordinary requests and model calls', async () => {
     const sliceTool = { ...tool, id: 'slice-image' };
     const slicePlugin: InstalledPlugin = {
@@ -334,7 +351,7 @@ describe('pluginUiSessionService', () => {
     const crop = { type: 'model.generate', uiSliceCrop: true, modelId: 'image',
       imageUrls: ['data:image/png;base64,AA=='], prompt: '生成裁片' };
     try {
-      expect(await session.request('context', null)).toMatchObject({ ok: true, value: { host: { uiSliceCropGenerationLimit: 144 } } });
+      expect(await session.request('context', null)).toMatchObject({ ok: true, value: { host: { uiSliceCropGenerationLimit: 2048 } } });
       expect(await session.request('effect', { ...crop, modelId: 'vision' })).toMatchObject({ ok: false });
       expect(await session.request('effect', { ...crop, imageUrls: ['https://example.com/image.png'] })).toMatchObject({ ok: false });
       expect(await session.request('effect', { ...crop, resourceIds: ['source'] })).toMatchObject({ ok: false });
@@ -350,7 +367,7 @@ describe('pluginUiSessionService', () => {
         expect(await session.request('context', null)).toMatchObject({ ok: true });
       }
       expect(await session.request('context', null)).toMatchObject({ ok: false, error: expect.stringContaining('请求次数') });
-      for (let index = 0; index < 141; index++) {
+      for (let attempt = 4; attempt <= 2048; attempt++) {
         expect(await session.request('effect', crop)).toMatchObject({ ok: true });
       }
       expect(await session.request('effect', crop)).toMatchObject({ ok: false, error: expect.stringContaining('生图次数') });

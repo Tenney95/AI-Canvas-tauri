@@ -30,6 +30,7 @@ export interface UiSliceSessionState {
 
 interface Options {
   type: UiSliceEffect;
+  nativeWindow: boolean;
   payload: unknown;
   context: PluginResourceReadContext;
   resources: PluginInvocationResources;
@@ -130,9 +131,7 @@ export async function executePluginUiSlice(options: Options) {
   }
   if (type === 'image.uiSlice.openDraft') {
     if (typeof input.assumeSrgb !== 'boolean') throw new Error('色彩确认参数无效');
-    const { open } = await import('@tauri-apps/plugin-dialog');
-    assertActive();
-    const archivePath = await open({ multiple: false, filters: [{ name: '切图工作稿', extensions: ['zip'] }], title: '选择切图工作稿' });
+    const archivePath = await execute<string | null>({ type: 'image.uiSlice.pick', purpose: 'openDraft', nativeWindow: options.nativeWindow });
     if (typeof archivePath !== 'string') return { cancelled: true };
     const { draft, ...info } = await execute<Omit<ImageSnapshot, 'assumeSrgb'> & {
       previewPngBase64: string; items: unknown; missing: unknown; draft: DraftFile;
@@ -168,10 +167,9 @@ export async function executePluginUiSlice(options: Options) {
     overwriteDraft = typeof input.draftRef === 'string' ? state.drafts?.get(input.draftRef) : undefined;
     if (!overwriteDraft || newDraft) throw new Error('当前草稿关联已失效，请重新打开草稿或另存为');
   } else {
-    const { open } = await import('@tauri-apps/plugin-dialog');
-    assertActive();
-    const selected = await open({ directory: true, multiple: false, recursive: false,
-      title: includeSource ? '选择识别草稿保存目录' : '选择切图 ZIP 保存目录' });
+    const selected = await execute<string | null>({
+      type: 'image.uiSlice.pick', purpose: includeSource ? 'saveDraft' : 'export', nativeWindow: options.nativeWindow,
+    });
     if (typeof selected !== 'string') return { cancelled: true };
     directory = selected;
   }

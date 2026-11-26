@@ -27,7 +27,7 @@ use crate::plugin_registry::{plugin_private_dir, with_active_window_ui, PluginUi
 const MAX_SESSIONS: usize = 4;
 const MAX_REQUESTS: usize = 192;
 const MAX_REPLICA_STATUS_REQUESTS: usize = 2048;
-const MAX_UI_SLICE_CROP_GENERATIONS: usize = 144;
+const MAX_UI_SLICE_CROP_GENERATIONS: usize = 2048;
 const MAX_PENDING: usize = 8;
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_REPLY_BYTES: usize = 32 * 1024 * 1024;
@@ -207,6 +207,13 @@ struct WindowSessions {
 static SESSIONS: LazyLock<Mutex<WindowSessions>> =
     LazyLock::new(|| Mutex::new(WindowSessions::default()));
 
+pub(crate) fn dialog_owner_label(
+    identity: &crate::plugin_host_effects::PluginHostIdentity,
+    native_window: bool,
+) -> Result<String, String> {
+    SESSIONS.lock().map_err(|_| CLOSED_ERROR)?.dialog_owner_label(identity, native_window).map(str::to_owned)
+}
+
 fn valid_uuid(value: &str) -> bool {
     value.len() == 36
         && value.bytes().enumerate().all(|(index, byte)| {
@@ -278,6 +285,21 @@ fn caller_matches(session: &Session, label: &str, window_label: &str, url: &Url)
 }
 
 impl WindowSessions {
+    fn dialog_owner_label(&self, identity: &crate::plugin_host_effects::PluginHostIdentity, native_window: bool) -> Result<&str, String> {
+        let session = match (native_window, self.sessions.get(&identity.invocation_id)) {
+            (false, None) => return Ok("main"),
+            (true, Some(session)) => session,
+            _ => return Err(CLOSED_ERROR.into()),
+        };
+        let bound = &session.options.binding.identity;
+        if bound.plugin_id != identity.plugin_id || bound.tool_id != identity.tool_id
+            || bound.source_digest != identity.source_digest || bound.revision_digest != identity.revision_digest
+        {
+            return Err(CLOSED_ERROR.into());
+        }
+        Ok(&session.label)
+    }
+
     fn next_label(&mut self) -> Result<String, String> {
         self.next_label = self.next_label.checked_add(1).ok_or("插件窗口编号已耗尽")?;
         Ok(format!("plugin-window-{}", self.next_label))
@@ -922,6 +944,34 @@ mod tests {
     }
 
     #[test]
+    fn dialog_owner_follows_the_invocation_and_checks_its_revision() {
+        let mut sessions = WindowSessions::default();
+        let first = session();
+        let binding = first.options.binding.clone();
+        let mut identity = crate::plugin_host_effects::PluginHostIdentity {
+            invocation_id: binding.session_id.clone(),
+            plugin_id: binding.identity.plugin_id,
+            tool_id: binding.identity.tool_id,
+            source_digest: binding.identity.source_digest,
+            revision_digest: binding.identity.revision_digest,
+        };
+        assert_eq!(sessions.dialog_owner_label(&identity, false).unwrap(), "main");
+        assert!(sessions.dialog_owner_label(&identity, true).is_err());
+        sessions.sessions.insert(binding.session_id, first);
+        let mut second = session();
+        second.options.binding.session_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into();
+        second.label = "plugin-window-2".into();
+        let second_id = second.options.binding.session_id.clone();
+        sessions.sessions.insert(second_id.clone(), second);
+        assert_eq!(sessions.dialog_owner_label(&identity, true).unwrap(), "plugin-window-1");
+        assert!(sessions.dialog_owner_label(&identity, false).is_err());
+        identity.invocation_id = second_id;
+        assert_eq!(sessions.dialog_owner_label(&identity, true).unwrap(), "plugin-window-2");
+        identity.revision_digest = "d".repeat(64);
+        assert!(sessions.dialog_owner_label(&identity, true).is_err());
+    }
+
+    #[test]
     fn only_top_level_main_can_manage_windows() {
         assert!(is_main_surface("main", "main"));
         for (label, window) in [
@@ -1181,9 +1231,11 @@ mod tests {
             assert!(enqueue(&mut slicing, &crop(number)).is_ok());
             slicing.pending.clear();
         }
-        assert!(enqueue(&mut slicing, &crop(1000)).is_err());
-        assert!(enqueue(&mut slicing, &request(RequestKind::Context, 1001)).is_err());
-        assert!(enqueue(&mut slicing, &request(RequestKind::Close, 1002)).is_ok());
+        assert_eq!(slicing.ui_slice_crop_requests, 2048);
+        let next = 500 + MAX_UI_SLICE_CROP_GENERATIONS;
+        assert!(enqueue(&mut slicing, &crop(next)).is_err());
+        assert!(enqueue(&mut slicing, &request(RequestKind::Context, next + 1)).is_err());
+        assert!(enqueue(&mut slicing, &request(RequestKind::Close, next + 2)).is_ok());
     }
 
     #[test]

@@ -6,7 +6,7 @@
   ],
   "id": "ai-canvas.ui-slice",
   "name": "UI 切图再生",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "识别整页 UI，编辑轮廓并导出裁片，支持按单项、勾选项或整个切图列表生图。",
   "category": "media",
   "runtime": "javascript",
@@ -24,7 +24,7 @@
   ],
   "ui": {
     "entry": "ui.js",
-    "integrity": "sha256-5cbf73124d0d0accc4242f9b94f8cb8a4c91fb27a15e308b57dc8406db87dc6b",
+    "integrity": "sha256-9840c93c81c580a1bd480d52471c7f111161be360587d7a702df6f3449d6389a",
     "exports": {
       "sliceDialog": "UiSliceDialog"
     }
@@ -74,7 +74,12 @@
           "nodeType": "ai-image",
           "fields": [
             "label",
-            "imageUrl"
+            "imageUrl",
+            "description",
+            "prompt",
+            "model",
+            "provider",
+            "uiSliceSource"
           ]
         }
       }

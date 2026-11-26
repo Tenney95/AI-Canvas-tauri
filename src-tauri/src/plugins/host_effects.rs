@@ -13,7 +13,9 @@ use std::{
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Webview};
+use tauri::{AppHandle, Manager, Webview};
+use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_fs::FsExt;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -26,6 +28,7 @@ const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_SETTINGS_BYTES: usize = 256 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+static UI_SLICE_PICKER_SLOT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -35,6 +38,14 @@ pub(crate) struct PluginHostIdentity {
     pub revision_digest: String,
     pub tool_id: String,
     pub invocation_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum UiSlicePicker {
+    OpenDraft,
+    SaveDraft,
+    Export,
 }
 
 #[derive(Deserialize)]
@@ -57,6 +68,8 @@ pub(crate) enum HostEffect {
     Delete { key: String },
     #[serde(rename = "image.uiSlice.inspect", rename_all = "camelCase")]
     UiSliceInspect { source_path: String, assume_srgb: bool },
+    #[serde(rename = "image.uiSlice.pick", rename_all = "camelCase")]
+    UiSlicePick { purpose: UiSlicePicker, native_window: bool },
     #[serde(rename = "image.uiSlice.openDraft", rename_all = "camelCase")]
     UiSliceOpenDraft { source_path: String, archive_path: String, assume_srgb: bool },
     #[serde(rename = "image.uiSlice.publish", rename_all = "camelCase")]
@@ -617,6 +630,67 @@ fn execute_settings(
     }
 }
 
+async fn pick_ui_slice_path(
+    app: &AppHandle,
+    identity: &PluginHostIdentity,
+    purpose: UiSlicePicker,
+    native_window: bool,
+    token: &CancellationToken,
+) -> Result<Value, String> {
+    let _picker = tokio::select! {
+        biased;
+        _ = token.cancelled() => return Err("切图操作已取消".into()),
+        slot = UI_SLICE_PICKER_SLOT.acquire() => slot.map_err(|_| "文件选择器不可用")?,
+    };
+    let owner_label = plugin_registry::with_plugin_host_authority(app, identity, |_, grant| {
+        require_permission(grant, "ui.custom")?;
+        require_permission(grant, "files.connected.read")?;
+        require_permission(grant, "files.output.create")?;
+        ui_slice_pixels::check_cancelled(token)?;
+        crate::plugin_window::dialog_owner_label(identity, native_window)
+    })?;
+    let owner = app.get_webview_window(&owner_label).ok_or("切图窗口已关闭")?;
+    let dialog = app.dialog().file().set_parent(&owner);
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let done = move |selected| { let _ = sender.send(selected); };
+    match purpose {
+        UiSlicePicker::OpenDraft => dialog.set_title("选择切图工作稿")
+            .add_filter("切图工作稿", &["zip"]).pick_file(done),
+        UiSlicePicker::SaveDraft => dialog.set_title("选择识别草稿保存目录").pick_folder(done),
+        UiSlicePicker::Export => dialog.set_title("选择切图 ZIP 保存目录").pick_folder(done),
+    }
+    // The desktop dialog outlives the IPC wait and has no cancellation handle.
+    // Hold the slot until the system closes it, then reject any cancelled selection.
+    let selected = receiver.await.map_err(|_| "文件选择器已关闭")?;
+    ui_slice_pixels::check_cancelled(token)?;
+    let Some(selected) = selected else { return Ok(Value::Null); };
+    let path = selected.simplified().into_path().map_err(|_| "请选择本机路径")?;
+    let root = crate::path_policy::canonicalize_simplified(&path).map_err(|_| "所选路径不可用")?;
+    let roots = std::slice::from_ref(&root);
+    let opening_file = matches!(purpose, UiSlicePicker::OpenDraft);
+    let verified = if opening_file {
+        crate::path_policy::authorize_existing_plain_file_with_roots(
+            app, path.to_str().ok_or("工作稿文件名无效")?, roots,
+        )?
+    } else {
+        crate::path_policy::reauthorize_existing_plain_directory_with_roots(app, &path, roots)?
+    };
+    let path_text = verified.to_str().ok_or("所选路径名称无效")?;
+    let scope = app.fs_scope();
+    plugin_registry::with_plugin_host_authority(app, identity, |_, _| {
+        ui_slice_pixels::check_cancelled(token)?;
+        if crate::plugin_window::dialog_owner_label(identity, native_window)? != owner_label {
+            return Err("切图窗口已关闭".into());
+        }
+        if opening_file {
+            scope.allow_file(&verified).map_err(|_| "工作稿文件未获授权")?;
+        } else {
+            scope.allow_directory(&verified, false).map_err(|_| "保存目录未获授权")?;
+        }
+        Ok(Value::String(path_text.to_owned()))
+    })
+}
+
 #[tauri::command]
 pub async fn execute_plugin_host_effect(
     app: AppHandle,
@@ -630,9 +704,12 @@ pub async fn execute_plugin_host_effect(
         return Err("插件调用 ID 无效".into());
     }
     let lease = RequestLease::register(&identity.plugin_id, &request_id)?;
-    if matches!(&effect, HostEffect::UiSliceInspect { .. } | HostEffect::UiSliceOpenDraft { .. } | HostEffect::UiSlicePublish { .. }) {
+    if matches!(&effect, HostEffect::UiSliceInspect { .. } | HostEffect::UiSlicePick { .. } | HostEffect::UiSliceOpenDraft { .. } | HostEffect::UiSlicePublish { .. }) {
         if identity.plugin_id != "ai-canvas.ui-slice" || identity.tool_id != "slice-image" {
             return Err("当前插件工具不能使用切图能力".into());
+        }
+        if let HostEffect::UiSlicePick { purpose, native_window } = effect {
+            return pick_ui_slice_path(&app, &identity, purpose, native_window, &lease.token).await;
         }
         let slot = tokio::select! {
             biased;

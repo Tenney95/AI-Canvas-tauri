@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   revision: 3,
   updateNodeData: vi.fn(),
   addNode: vi.fn(),
+  resolveSliceFile: vi.fn(),
   addNodesWithEdges: vi.fn(),
   showToast: vi.fn(),
   saveBinaryToProjectData: vi.fn(),
@@ -64,6 +65,7 @@ vi.mock('../../src/services/plugins/pluginModelCatalog', () => ({
 }));
 vi.mock('../../src/services/ai/generateText', () => ({ generateText: mocks.generateText }));
 vi.mock('../../src/services/ai/generateImage', () => ({ generateImage: mocks.generateImage }));
+vi.mock('../../src/services/plugins/pluginUiSliceImageTask', () => ({ resolveUiSliceImageFile: mocks.resolveSliceFile }));
 vi.mock('../../src/services/ai/generateVideo', () => ({ generateVideo: vi.fn() }));
 vi.mock('../../src/services/ai/generateAudio', () => ({ generateAudio: vi.fn() }));
 vi.mock('../../src/services/ai/generationRuntime', () => ({ resolveMediaModel: mocks.resolveMediaModel }));
@@ -499,6 +501,49 @@ describe('trusted Python media workspace', () => {
     mocks.invoke.mockImplementation(async (command: string) => command === 'execute_node_plugin_tool'
       ? { effect: { type: 'settings.get', key: 'prefs' } } : undefined);
     await expect(next.run()).rejects.toThrow('只接受最终节点集结果');
+  });
+});
+
+describe('切图候选写回', () => {
+  it.each(['完整候选', '错配选区', '错配描述', '错配预览', '原图不可用'])('%s', async (scenario) => {
+    const tool = { ...plugin.manifest.contributes.nodeTools![0],
+      output: { mode: 'create-node' as const, nodeType: 'ai-image' as const,
+        fields: ['label', 'imageUrl', 'description', 'prompt', 'model', 'provider', 'uiSliceSource'] } };
+    const installed = { ...plugin, manifest: { ...plugin.manifest, contributes: { nodeTools: [tool] } } };
+    mocks.state.installedPlugins = [installed];
+    const selection = { index: 1, label: '金色按钮', rect: { x0: 2, y0: 4, x1: 9, y1: 12 }, rings: [] };
+    const preview = 'data:image/png;base64,AA==';
+    const candidate = { id: 'candidate-1', previewSha256: createHash('sha256').update(preview).digest('hex'), width: 800, height: 620,
+      sourceWidth: 1600, sourceHeight: 1200, description: '金色按钮 · 原图 (2, 4)', prompt: '生成金色按钮', model: 'model', provider: 'general',
+      sourceSha256: 'a'.repeat(64), selection: JSON.stringify(selection),
+      file: { relativePath: 'media/button.png', bytes: 2321, sha256: 'b'.repeat(64) } };
+    const source = { ...selection, nodeId: 'node-1', sourceLabel: '界面', width: candidate.sourceWidth, height: candidate.sourceHeight,
+      sha256: candidate.sourceSha256 };
+    mocks.invoke.mockResolvedValue({ data: { label: '生图 · 金色按钮', imageUrl: scenario === '错配预览' ? 'data:image/png;base64,AQ==' : preview, prompt: candidate.prompt,
+      description: scenario === '错配描述' ? '另一项' : candidate.description, provider: candidate.provider,
+      model: candidate.model, uiSliceSource: scenario === '错配选区' ? { ...source, index: 2 } : source } });
+    const original = { relativePath: candidate.file.relativePath, filePath: 'project/media/button.png', imageUrl: 'asset://localhost/button.png',
+      thumbnailUrl: 'asset://localhost/button.png', output: 'asset://localhost/button.png' };
+    mocks.resolveSliceFile.mockResolvedValue(original);
+    if (scenario === '原图不可用') mocks.resolveSliceFile.mockRejectedValueOnce(new Error('原图摘要不一致'));
+    const guard = registerCanvasDerivation(mocks.state as never, 'node-1')!;
+    const trustedMediaReferences = new Set<string>();
+    const run = executeNodePluginTool(getAvailableNodePluginTools([installed], 'ai-text')[0], 'node-1', {}, {
+      invocationId: 'slice-output', resources: { self: [], incoming: [], inputs: {}, package: [], derived: [] },
+      guard, sliceCandidate: candidate, trustedMediaReferences,
+    });
+    if (scenario === '完整候选') {
+      await run;
+      expect(trustedMediaReferences.has(preview)).toBe(false);
+      expect(mocks.resolveSliceFile).toHaveBeenCalledWith('project-1', candidate.file);
+      expect(mocks.addNode).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+        ...original, description: candidate.description, uiSliceSource: source, imageWidth: 800, imageHeight: 620,
+        prompt: candidate.prompt, provider: candidate.provider, model: candidate.model,
+      }) }));
+    } else {
+      await expect(run).rejects.toThrow(scenario === '原图不可用' ? '摘要不一致' : '不匹配');
+      expect(mocks.addNode).not.toHaveBeenCalled();
+    }
   });
 });
 

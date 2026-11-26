@@ -360,12 +360,13 @@ async function runImageBatch(
 
   const characterWorkbench = params.characterWorkbench;
   const characterContext = isCharacterImageTaskContext(beforeSubmit);
+  const standaloneCandidate = characterContext && !characterWorkbench && !params.nodeId;
   const characterGuard = isNativeCharacterImageSubmissionGuard(beforeSubmit) ? beforeSubmit : undefined;
   if (characterWorkbench && (!characterContext || params.nodeId)) {
     throw new Error('角色图片生成缺少受信角色任务目的地');
   }
   if (!inspectOnly && useAppStore.getState().projectExecutionContext?.modelGeneration === 1 && characterWorkbench !== 'global') {
-    if (!isNativeVideoSubmissionGuard(beforeSubmit) && !(characterWorkbench && characterContext)) {
+    if (!isNativeVideoSubmissionGuard(beforeSubmit) && !(characterWorkbench && characterContext) && !standaloneCandidate) {
       throw new Error('此原生图片模型或批量合同没有可耐久续查的完整回执，未提交请求');
     }
   }
@@ -383,7 +384,7 @@ async function runImageBatch(
   const connectionId = generalModel?.providerConfigId ?? provider;
   const providerConfig = config.providers[connectionId];
   if (!params.workflowId) assertProviderAvailableForSubmission(connectionId, providerConfig);
-  const characterRoute = characterWorkbench ? characterImageConnection(model, provider, config) : undefined;
+  const characterRoute = characterWorkbench || standaloneCandidate ? characterImageConnection(model, provider, config) : undefined;
   const characterMidjourney = !!characterWorkbench && characterImageChannel(model, provider, config) === 'midjourney';
   if (params.characterPaintMask && (!characterRoute || !supportsCharacterPaintMask(model, provider, config)
     || params.image_urls?.length !== 1 || params.workflowId)) {
@@ -440,7 +441,7 @@ async function runImageBatch(
   const imageOutput = resolveConfiguredImageOutput(parameterCapability, params);
   const outputCapability = resolveImageOutputCapability(parameterCapability, imageOutput.imageOutputFormat);
   const klingContract = isKlingImage ? resolveKlingModelContract(modelName, effectiveProfile) : undefined;
-  const styleMasterUrl = characterWorkbench || klingContract?.acceptsProjectStyleImage === false ? null : getProjectStyleMasterUrl();
+  const styleMasterUrl = characterWorkbench || standaloneCandidate || klingContract?.acceptsProjectStyleImage === false ? null : getProjectStyleMasterUrl();
   // 先拒绝调用参数、连线及风格母图；@图片沿用原解析器，汇总后在上传/POST前再次校验。
   const textOnlyFormat = imageOutput.imageOutputFormat && parameterCapability?.textOnlyOutputFormats?.includes(imageOutput.imageOutputFormat);
   const hasAdditionalImage = textOnlyFormat && (styleMasterUrl
@@ -517,9 +518,9 @@ async function runImageBatch(
   if (isRunningHubWorkflow(selectedWorkflow)) rawPrompt = splitRunningHubPrompt(rawWorkflowPrompt).prompt;
   const cameraSettings = useAppStore.getState().nodes.find((node) => node.id === params.nodeId)?.data.cameraSettings;
   const comfyMedia = isComfyWorkflow ? await resolvePromptWithMediaRefs(rawPrompt, { cameraSettings }) : undefined;
-  const runninghubMedia = isRunningHub ? await resolvePromptWithMediaRefs(rawPrompt, { preserveBindings: true, cameraSettings, signal }) : undefined;
+  const runninghubMedia = isRunningHub && !standaloneCandidate ? await resolvePromptWithMediaRefs(rawPrompt, { preserveBindings: true, cameraSettings, signal }) : undefined;
   const localMedia = runninghubMedia ?? comfyMedia;
-  const { prompt: resolvedPrompt, imageUrls, segments: imageSegments } = characterWorkbench
+  const { prompt: resolvedPrompt, imageUrls, segments: imageSegments } = characterWorkbench || standaloneCandidate
     ? { prompt: rawPrompt, imageUrls: [], segments: undefined }
     : localMedia
     ? { prompt: localMedia.prompt, imageUrls: getMediaReferenceUrls(localMedia.references, 'image', 'local'), segments: undefined }
@@ -559,7 +560,7 @@ async function runImageBatch(
   ) : undefined;
   if (referenceMedia) allImageUrls = getMediaReferenceUrls(referenceMedia, 'image', 'local');
   const boundPrompt = usesKlingProtocol && imageSegments ? renderKlingImageMentions(imageSegments, allImageUrls) : resolvedPrompt;
-  let prompt = characterWorkbench ? resolvedPrompt : enrichPromptWithReferenceHints(
+  let prompt = characterWorkbench || standaloneCandidate ? resolvedPrompt : enrichPromptWithReferenceHints(
     runninghubMedia && referenceMedia ? compileVideoReferencePrompt(runninghubMedia, referenceMedia, { target: 'local' }) : boundPrompt,
     allImageUrls.length,
     styleAsFirst,

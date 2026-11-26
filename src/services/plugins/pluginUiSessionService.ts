@@ -44,6 +44,7 @@ import {
 } from './pluginResourceService';
 import { executeWsagentPluginEffect, getWsagentPluginNode, isWsagentPluginEffect, isWsagentPluginTool } from './pluginWsagentSharedImages';
 import { executePluginUiSlice, isUiSliceEffect, UI_SLICE_PLUGIN_ID, UI_SLICE_TOOL_ID, type UiSliceSessionState } from './pluginUiSliceService';
+import type { UiSliceImageCandidate } from './pluginUiSliceImageTask';
 
 const MESSAGE_CHANNEL = 'ai-canvas-plugin-ui-v1';
 const MAX_UI_EFFECTS = PLUGIN_HOST.limits.ui.ordinary;
@@ -58,7 +59,7 @@ const MAX_REPLICA_JOB_QUERIES = 2048;
 const MIN_REPLICA_JOB_QUERY_INTERVAL_MS = 250;
 // 两个有限秒数相加也必须能安全转换为浏览器定时器的毫秒数。
 const UI_SLICE_WAIT_DEFAULTS = { hostSeconds: 180, modelSeconds: 300, replySeconds: 30, maxSeconds: 1_073_741 };
-const MAX_UI_SLICE_CROP_GENERATIONS = 144;
+export const MAX_UI_SLICE_CROP_GENERATIONS = 2048;
 const MAX_UI_SETTINGS_EFFECTS = PLUGIN_HOST.limits.ui.settings;
 const MAX_REQUEST_ID_LENGTH = 64;
 const MAX_KIND_LENGTH = 32;
@@ -124,6 +125,7 @@ interface PluginUiSession {
   effectAbortController?: AbortController;
   uiSlice?: UiSliceSessionState;
   uiSliceCropGenerations?: number;
+  sliceCandidates?: Map<string, UiSliceImageCandidate>;
   trustedMediaReferences: Set<string>;
   onClose: () => void;
   onRestart?: () => void;
@@ -431,7 +433,7 @@ async function dispatchRequest(
           value: {
             host: uiSliceTool ? {
               ...PLUGIN_HOST, uiSliceWait: UI_SLICE_WAIT_DEFAULTS, uiSliceDraft: true,
-              uiSliceCropGenerationLimit: MAX_UI_SLICE_CROP_GENERATIONS,
+              uiSliceCropGenerationLimit: MAX_UI_SLICE_CROP_GENERATIONS, uiSliceOriginalImages: true,
             } : PLUGIN_HOST,
             surface: session.surface,
             theme: appliedTheme === 'light' || appliedTheme === 'dark' ? appliedTheme
@@ -475,6 +477,7 @@ async function dispatchRequest(
           try {
             const operation = executePluginUiSlice({
               type: effectType, payload: request.payload, resources: session.resources,
+              nativeWindow: session.transport === 'native',
               context: resourceReadContext(session, plugin), signal: controller.signal,
               state: session.uiSlice ??= {}, assertFresh: () => { resolveLivePlugin(session); },
             });
@@ -594,6 +597,24 @@ async function dispatchRequest(
         const controller = new AbortController();
         session.effectAbortController = controller;
         try {
+          let sliceImage;
+          if (modelInput?.uiSliceSelection !== undefined) {
+            const snapshot = session.uiSlice?.snapshot;
+            if (!uiSliceTool || !snapshot || modelInput.uiSliceSourceSha256 !== snapshot.sourceSha256
+              || typeof modelInput.uiSliceDescription !== 'string' || !modelInput.uiSliceDescription.trim()
+              || modelInput.uiSliceDescription.length > 8192 || typeof modelInput.uiSliceSelection !== 'string' || !modelInput.uiSliceSelection
+              || modelInput.uiSliceSelection.length > 8192 || !cropGeneration && (!Array.isArray(modelInput.resourceIds)
+                || modelInput.resourceIds.length !== 1 || modelInput.resourceIds[0] !== session.resources.self[0]?.resourceId
+                || modelInput.imageUrls !== undefined)) throw new Error('切图来源或选区无效');
+            const selection = JSON.parse(modelInput.uiSliceSelection);
+            if (!selection || typeof selection !== 'object' || Array.isArray(selection)
+              || (cropGeneration ? !selection.label || !Number.isSafeInteger(selection.index) || !selection.rect || !Array.isArray(selection.rings)
+                : !selection.name || !selection.reason)) throw new Error('切图缺少选区或待补项信息');
+            sliceImage = { sourceSha256: snapshot.sourceSha256, sourceWidth: snapshot.width, sourceHeight: snapshot.height,
+              description: modelInput.uiSliceDescription, selection: modelInput.uiSliceSelection,
+              previousId: typeof modelInput.uiSlicePreviousId === 'string' ? modelInput.uiSlicePreviousId : undefined,
+              candidates: session.sliceCandidates ??= new Map() };
+          }
           const operation = executePluginUiHostEffect({
             pluginId: plugin.id,
             toolId: session.tool.id,
@@ -602,6 +623,7 @@ async function dispatchRequest(
             permissions: plugin.manifest.permissions,
             nodeId: session.nodeId,
             effect: request.payload,
+            sliceImage,
             models: cropModels ?? modelCatalog(plugin, session.tool),
             trustedMediaReferences: session.trustedMediaReferences,
             resources: session.resources,
@@ -643,6 +665,11 @@ async function dispatchRequest(
         const controller = new AbortController();
         session.effectAbortController = controller;
         session.submitting = true;
+        const candidateId = session.parameters.uiSliceCandidateId;
+        const sliceCandidate = uiSliceTool && typeof candidateId === 'string' ? session.sliceCandidates?.get(candidateId) : undefined;
+        if (uiSliceTool && (session.tool.output.fields.includes('uiSliceSource') || candidateId !== undefined || session.sliceCandidates?.size) && !sliceCandidate) {
+          throw new Error('请从本窗口选择已生成的完整候选');
+        }
         const operation = executeNodePluginTool(
           availableTool(plugin, session),
           session.nodeId,
@@ -650,6 +677,7 @@ async function dispatchRequest(
           {
             invocationId: session.sessionId,
             guard: session.guard,
+            sliceCandidate,
             resources: session.resources,
             trustedMediaReferences: session.trustedMediaReferences,
             signal: controller.signal,
@@ -776,6 +804,7 @@ async function createSession(
     };
     session.lifecycle.defer(() => completeCanvasDerivation(session.guard));
     session.lifecycle.defer(() => clearPluginInvocationResources(session.sessionId));
+    session.lifecycle.defer(() => session.sliceCandidates?.clear());
     session.lifecycle.defer(() => session.effectAbortController?.abort());
     session.lifecycle.defer(() => { session.unsubscribe?.(); });
     // 在异步 mint 前占用配额并监听失效，避免关闭/切项目后再注册一个迟到会话。
