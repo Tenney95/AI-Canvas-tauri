@@ -274,10 +274,9 @@ export default function VideoEditorWindow() {
   // 叠加轨必须保持自由时间位置，不能借用主轨的顺排更新函数。
   const handleSourceProbed = useCallback((url: string, probe: { duration: number }) => {
     if (probe.duration <= 0) return;
-    setRecord((previous) => {
-      if (!previous) return previous;
+    updateTracks((currentTracks) => {
       let changed = false;
-      const nextTracks = previous.tracks.map((track) => {
+      const nextTracks = currentTracks.map((track) => {
         if (track.kind !== 'video') return track;
         let trackChanged = false;
         const nextClips = track.clips.map((clip) => {
@@ -292,15 +291,9 @@ export default function VideoEditorWindow() {
           clips: track.overlay ? nextClips : relayoutSequential(nextClips),
         };
       });
-      if (!changed) return previous;
-      const next = { ...previous, tracks: nextTracks, updatedAt: Date.now() };
-      void persistWindowProject(next).catch((reason) => {
-        console.error('[videoEditor] 工程保存失败:', reason);
-        setNotice('剪辑工程保存失败，修改仅保留在当前窗口，请检查项目状态后重试。');
-      });
-      return next;
+      return changed ? nextTracks : currentTracks;
     });
-  }, []);
+  }, [updateTracks]);
 
   const { getSource } = useVideoEditorSources(sourceClips, handleSourceProbed);
 
@@ -712,18 +705,17 @@ export default function VideoEditorWindow() {
     targetTrackId: string,
     position: number,
   ) => {
-    setRecord((previous) => {
-      if (!previous) return previous;
-      const sourceTrack = previous.tracks.find((t) => t.id === sourceTrackId);
-      const targetTrack = previous.tracks.find((t) => t.id === targetTrackId);
-      if (!sourceTrack || !targetTrack) return previous;
-      if (sourceTrack.locked || targetTrack.locked) return previous;
+    updateTracks((currentTracks) => {
+      const sourceTrack = currentTracks.find((t) => t.id === sourceTrackId);
+      const targetTrack = currentTracks.find((t) => t.id === targetTrackId);
+      if (!sourceTrack || !targetTrack) return currentTracks;
+      if (sourceTrack.locked || targetTrack.locked) return currentTracks;
 
       const clipIndex = sourceTrack.clips.findIndex((c) => c.id === clipId);
-      if (clipIndex < 0) return previous;
+      if (clipIndex < 0) return currentTracks;
       const clip = sourceTrack.clips[clipIndex];
 
-      const nextTracks = previous.tracks.map((track) => {
+      return currentTracks.map((track) => {
         if (track.id === sourceTrackId) {
           // 从源轨道移除，主轨做磁吸压实
           const nextClips = track.clips.filter((c) => c.id !== clipId);
@@ -747,15 +739,8 @@ export default function VideoEditorWindow() {
         }
         return track;
       });
-
-      const next = { ...previous, tracks: nextTracks, updatedAt: Date.now() };
-      void persistWindowProject(next).catch((reason) => {
-        console.error('[videoEditor] 工程保存失败:', reason);
-        setNotice('剪辑工程保存失败，修改仅保留在当前窗口，请检查项目状态后重试。');
-      });
-      return next;
     });
-  }, []);
+  }, [updateTracks]);
 
   /** 叠加轨内移动：更新时间轴位置 */
   const handleMoveClipInOverlay = useCallback((
@@ -763,10 +748,9 @@ export default function VideoEditorWindow() {
     trackId: string,
     timelineStart: number,
   ) => {
-    setRecord((previous) => {
-      if (!previous) return previous;
-      if (isTrackLocked(previous.tracks, trackId)) return previous;
-      const nextTracks = previous.tracks.map((track) => {
+    updateTracks((currentTracks) => {
+      if (isTrackLocked(currentTracks, trackId)) return currentTracks;
+      return currentTracks.map((track) => {
         if (track.id !== trackId) return track;
         return {
           ...track,
@@ -775,14 +759,8 @@ export default function VideoEditorWindow() {
           )),
         };
       });
-      const next = { ...previous, tracks: nextTracks, updatedAt: Date.now() };
-      void persistWindowProject(next).catch((reason) => {
-        console.error('[videoEditor] 工程保存失败:', reason);
-        setNotice('剪辑工程保存失败，修改仅保留在当前窗口，请检查项目状态后重试。');
-      });
-      return next;
     });
-  }, []);
+  }, [updateTracks]);
 
   /** 拖到空白区域时创建新叠加轨并把片段移过去 */
   const handleCreateTrackAndMove = useCallback((
@@ -790,20 +768,19 @@ export default function VideoEditorWindow() {
     sourceTrackId: string,
     timelineStart: number,
   ) => {
-    setRecord((previous) => {
-      if (!previous) return previous;
-      const sourceTrack = previous.tracks.find((t) => t.id === sourceTrackId);
-      if (!sourceTrack) return previous;
-      if (sourceTrack.locked) return previous;
+    updateTracks((currentTracks) => {
+      const sourceTrack = currentTracks.find((t) => t.id === sourceTrackId);
+      if (!sourceTrack) return currentTracks;
+      if (sourceTrack.locked) return currentTracks;
 
       const clipIndex = sourceTrack.clips.findIndex((c) => c.id === clipId);
-      if (clipIndex < 0) return previous;
+      if (clipIndex < 0) return currentTracks;
       const clip = sourceTrack.clips[clipIndex];
 
       // 创建新的叠加轨
-      const newTrack = createTrack('video', previous.tracks);
+      const newTrack = createTrack('video', currentTracks);
 
-      const nextTracks = previous.tracks.map((track) => {
+      const nextTracks = currentTracks.map((track) => {
         if (track.id === sourceTrackId) {
           const nextClips = track.clips.filter((c) => c.id !== clipId);
           return {
@@ -817,18 +794,9 @@ export default function VideoEditorWindow() {
       // 把片段放入新轨道
       newTrack.clips = [{ ...clip, timelineStart: Math.max(0, timelineStart) }];
 
-      const next = {
-        ...previous,
-        tracks: [...nextTracks, newTrack],
-        updatedAt: Date.now(),
-      };
-      void persistWindowProject(next).catch((reason) => {
-        console.error('[videoEditor] 工程保存失败:', reason);
-        setNotice('剪辑工程保存失败，修改仅保留在当前窗口，请检查项目状态后重试。');
-      });
-      return next;
+      return [...nextTracks, newTrack];
     });
-  }, []);
+  }, [updateTracks]);
 
   const canSplit = !!videoTrack && !videoTrack.locked && !!findClipAtTime(clips, playhead);
 
