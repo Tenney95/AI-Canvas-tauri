@@ -1,14 +1,20 @@
 use super::ui_slice_pixels::{self as pixels, Item, Rect, MAX_ITEMS, MAX_SOURCE_BYTES, NORMALIZATION};
+use super::UiSliceSelection;
 use crate::path_policy::{
-    authorize_existing_plain_file, authorize_path, is_link_or_reparse,
-    reauthorize_existing_plain_directory, PathAccess,
+    authorize_existing_plain_file, authorize_existing_plain_file_with_roots, authorize_path_with_roots,
+    is_link_or_reparse, reauthorize_existing_plain_directory_with_roots, PathAccess,
 };
+#[cfg(any(target_os = "macos", all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))))]
+use crate::native_project_media::AnchoredDirectory;
+#[cfg(not(any(windows, target_os = "macos", all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))))]
+use unsupported_export::AnchoredDirectory;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    ffi::{OsStr, OsString},
     fs::{self, File, OpenOptions},
     io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -16,6 +22,24 @@ use std::{
 use tauri::{AppHandle, Runtime};
 use tokio_util::sync::CancellationToken;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
+
+#[cfg(not(any(windows, target_os = "macos", all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))))]
+mod unsupported_export {
+    use std::{ffi::OsStr, fs::File, io, path::Path};
+
+    pub(super) enum AnchoredDirectory {}
+
+    impl AnchoredDirectory {
+        pub(super) fn open(_: &Path) -> Result<Self, String> { Err("当前平台不支持安全导出切图归档".into()) }
+        pub(super) fn verify(&self) -> Result<(), String> { match *self {} }
+        pub(super) fn identity(&self) -> io::Result<file_id::FileId> { match *self {} }
+        pub(super) fn open_file(&self, _: &OsStr) -> io::Result<File> { match *self {} }
+        pub(super) fn create_file(&self, _: &OsStr) -> io::Result<File> { match *self {} }
+        pub(super) fn remove_file(&self, _: &OsStr) -> Result<(), String> { match *self {} }
+        pub(super) fn rename_file(&self, _: &OsStr, _: &OsStr, _: bool) -> Result<(), String> { match *self {} }
+        pub(super) fn sync(&self) -> io::Result<()> { match *self {} }
+    }
+}
 
 const MAX_PREVIEW_BYTES: usize = 180_000;
 const MAX_DETAILED_PREVIEW_BYTES: usize = 12 * 1024 * 1024;
@@ -266,22 +290,24 @@ fn decode_draft_png(bytes: &[u8]) -> Result<RgbaImage, String> {
     pixels::decode(bytes, false)
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DraftFile {
     path: PathBuf,
     version: String,
+    parent_identity: String,
 }
 
 fn draft_version(identity: file_id::FileId, bytes: u64, modified: std::time::SystemTime) -> String {
     format!("{identity:?}:{bytes}:{modified:?}")
 }
 
-fn validate_draft_target<R: Runtime>(app: &AppHandle<R>, draft: &DraftFile) -> Result<(), String> {
+fn validate_draft_target<R: Runtime>(app: &AppHandle<R>, draft: &DraftFile) -> Result<file_id::FileId, String> {
     let error = "原草稿已被修改、移动或无法写入，请重新打开草稿或另存为";
     let raw = draft.path.to_str().ok_or(error)?;
-    if authorize_existing_plain_file(app, raw).ok().as_ref() != Some(&draft.path)
-        || authorize_path(app, raw, PathAccess::Write).ok().as_ref() != Some(&draft.path)
+    let roots = std::slice::from_ref(&draft.path);
+    if authorize_existing_plain_file_with_roots(app, raw, roots).ok().as_ref() != Some(&draft.path)
+        || authorize_path_with_roots(app, raw, PathAccess::Write, roots).ok().as_ref() != Some(&draft.path)
     {
         return Err(error.into());
     }
@@ -291,24 +317,30 @@ fn validate_draft_target<R: Runtime>(app: &AppHandle<R>, draft: &DraftFile) -> R
     if draft_version(identity, metadata.len(), modified) != draft.version {
         return Err(error.into());
     }
-    Ok(())
+    Ok(identity)
 }
 
 pub(super) fn open_draft<R: Runtime>(
     app: &AppHandle<R>,
-    archive_path: &str,
+    selection: &UiSliceSelection,
     source_path: &str,
     assume_srgb: bool,
     cancel: &CancellationToken,
 ) -> Result<Value, String> {
     let source = read_snapshot(app, source_path, assume_srgb, cancel)?;
-    let path = authorize_existing_plain_file(app, archive_path).map_err(|_| "工作稿文件未获原生读授权")?;
-    let identity = file_id::get_file_id(&path).map_err(|_| "无法确认工作稿文件身份")?;
+    let archive_path = selection.path.to_str().ok_or("工作稿文件名无效")?;
+    let roots = std::slice::from_ref(&selection.path);
+    let path = authorize_existing_plain_file_with_roots(app, archive_path, roots)
+        .map_err(|_| "工作稿文件未获原生读授权")?;
+    if path != selection.path { return Err("所选工作稿已变化，请重新选择".into()); }
+    let parent = path.parent().ok_or("无法定位工作稿所在目录")?;
+    let parent_id = file_id::get_file_id(parent).map_err(|_| "无法确认工作稿所在目录")?;
+    let identity = selection.identity;
     let mut file = open_for_read(&path).map_err(|_| "无法打开工作稿文件")?;
     let metadata = file.metadata().map_err(|_| "无法读取工作稿文件信息")?;
     if !metadata.is_file() || is_link_or_reparse(&metadata) || metadata.len() == 0
         || metadata.len() > MAX_ARCHIVE_BYTES || opened_file_id(&file).ok() != Some(identity)
-        || authorize_existing_plain_file(app, archive_path).ok().as_ref() != Some(&path)
+        || authorize_existing_plain_file_with_roots(app, archive_path, roots).ok().as_ref() != Some(&path)
     {
         return Err("工作稿文件类型、大小或身份无效".into());
     }
@@ -402,17 +434,144 @@ pub(super) fn open_draft<R: Runtime>(
     let current = file.metadata().map_err(|_| "无法核对工作稿文件")?;
     if current.len() != metadata.len() || current.modified().ok() != Some(modified)
         || file_id::get_file_id(&path).ok() != Some(identity)
-        || authorize_existing_plain_file(app, archive_path).ok().as_ref() != Some(&path)
+        || file_id::get_file_id(parent).ok() != Some(parent_id)
+        || authorize_existing_plain_file_with_roots(app, archive_path, roots).ok().as_ref() != Some(&path)
     { return Err("工作稿读取期间已改变".into()); }
     let mut result = inspect_snapshot(&source, cancel)?;
     result["items"] = json!(items);
     result["missing"] = json!(missing);
-    result["draft"] = json!(DraftFile { path, version: draft_version(identity, metadata.len(), modified) });
+    result["draft"] = json!(DraftFile {
+        path, version: draft_version(identity, metadata.len(), modified), parent_identity: format!("{parent_id:?}"),
+    });
     Ok(result)
 }
 
-struct StagedArchive {
+struct ExportDirectory {
     path: PathBuf,
+    identity: file_id::FileId,
+    #[cfg(windows)]
+    _leases: Vec<File>,
+    #[cfg(not(windows))]
+    anchor: AnchoredDirectory,
+}
+
+impl ExportDirectory {
+    fn open(path: PathBuf, expected: file_id::FileId) -> Result<Self, String> {
+        #[cfg(windows)]
+        let directory = {
+            let leases = path.ancestors().filter(|path| !path.as_os_str().is_empty())
+                .collect::<Vec<_>>().into_iter().rev()
+                .map(|ancestor| crate::native_project_media::lease_directory(ancestor, ancestor == path))
+                .collect::<Result<Vec<_>, _>>().map_err(|_| "无法锁定导出目录路径")?;
+            Self { path, identity: expected, _leases: leases }
+        };
+        #[cfg(not(windows))]
+        let directory = {
+            let anchor = AnchoredDirectory::open(&path).map_err(|_| "无法固定导出目录")?;
+            if anchor.identity().ok() != Some(expected) { return Err("所选导出目录已变化".into()); }
+            Self { path, identity: expected, anchor }
+        };
+        directory.verify()?;
+        Ok(directory)
+    }
+
+    fn verify(&self) -> Result<(), String> {
+        #[cfg(windows)]
+        if file_id::get_file_id(&self.path).ok() != Some(self.identity) {
+            return Err("导出目录已变化".into());
+        }
+        #[cfg(not(windows))]
+        self.anchor.verify().map_err(|_| "导出目录已变化")?;
+        Ok(())
+    }
+
+    fn open_file(&self, name: &OsStr) -> std::io::Result<File> {
+        #[cfg(windows)]
+        { open_for_read(&self.path.join(name)) }
+        #[cfg(not(windows))]
+        { self.anchor.open_file(name) }
+    }
+
+    fn current(&self, name: &OsStr) -> Result<Option<(file_id::FileId, fs::Metadata)>, String> {
+        #[cfg(windows)]
+        let entry = {
+            let path = self.path.join(name);
+            fs::symlink_metadata(&path).and_then(|meta| {
+                if !meta.is_file() || is_link_or_reparse(&meta) { return Err(std::io::ErrorKind::InvalidData.into()); }
+                Ok((file_id::get_file_id(path)?, meta))
+            })
+        };
+        #[cfg(not(windows))]
+        let entry = self.open_file(name).and_then(|file| Ok((opened_file_id(&file)?, file.metadata()?)));
+        match entry {
+            Ok((identity, metadata)) if metadata.is_file() && !is_link_or_reparse(&metadata) => Ok(Some((identity, metadata))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            _ => Err("目标归档无法核对或不是普通文件".into()),
+        }
+    }
+
+    fn matches(&self, name: &OsStr, identity: file_id::FileId, bytes: u64, modified: std::time::SystemTime) -> bool {
+        self.current(name).ok().flatten().is_some_and(|(entry_id, metadata)| {
+            entry_id == identity && metadata.len() == bytes && metadata.modified().ok() == Some(modified)
+        })
+    }
+
+    fn create_stage(&self, name: OsString) -> Result<(File, StagedArchive<'_>), String> {
+        #[cfg(windows)]
+        let file = {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows::Win32::Storage::FileSystem::{
+                DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+            };
+            OpenOptions::new().create_new(true).write(true).read(true)
+                .access_mode(DELETE.0 | FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0).share_mode(0)
+                .open(self.path.join(&name))
+        };
+        #[cfg(not(windows))]
+        let file = self.anchor.create_file(&name);
+        let file = file.map_err(|_| "无法在所选目录建立独占暂存档")?;
+        let identity = opened_file_id(&file).map_err(|_| "无法确认暂存档身份")?;
+        Ok((file, StagedArchive { directory: self, name, identity }))
+    }
+
+    fn remove_owned(&self, name: &OsStr, identity: file_id::FileId) -> Result<(), String> {
+        if !self.current(name)?.is_some_and(|(entry_id, _)| entry_id == identity) { return Ok(()); }
+        #[cfg(windows)]
+        fs::remove_file(self.path.join(name)).map_err(|_| "无法移除暂存档")?;
+        #[cfg(not(windows))]
+        self.anchor.remove_file(name).map_err(|_| "无法移除暂存档")?;
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    fn replace_draft(
+        &self, stage: &StagedArchive<'_>, target: &OsStr, draft: &DraftFile, old: file_id::FileId,
+    ) -> Result<(), String> {
+        let error = "无法安全覆盖原草稿，请检查目录后重新打开草稿";
+        let matches_old = |name| -> Result<bool, String> {
+            let (identity, metadata) = self.current(name)?.ok_or(error)?;
+            let modified = metadata.modified().map_err(|_| error)?;
+            Ok(identity == old && draft_version(identity, metadata.len(), modified) == draft.version)
+        };
+        if !matches_old(target)? { return Err(error.into()); }
+        self.verify()?;
+        self.anchor.rename_file(&stage.name, target, true).map_err(|_| error)?;
+        let new_is_target = || self.current(target).ok().flatten().is_some_and(|(identity, _)| identity == stage.identity);
+        if !new_is_target() || self.anchor.sync().is_err() || self.verify().is_err() || matches_old(&stage.name) != Ok(true) {
+            // 交换不会删除后来替换的目标。还能确认新稿位置时，把两个名字各归原位。
+            if new_is_target() { let _ = self.anchor.rename_file(&stage.name, target, true); }
+            return Err(error.into());
+        }
+        self.anchor.remove_file(&stage.name).map_err(|_| error)?;
+        self.anchor.sync().map_err(|_| error)?;
+        self.verify()
+    }
+}
+
+struct StagedArchive<'a> {
+    directory: &'a ExportDirectory,
+    name: OsString,
     identity: file_id::FileId,
 }
 
@@ -421,14 +580,20 @@ fn render_capacity(items: &[Item]) -> usize {
         .max().unwrap_or(0)
 }
 
-impl Drop for StagedArchive {
+impl Drop for StagedArchive<'_> {
     fn drop(&mut self) {
-        if regular_file(&self.path).is_ok()
-            && file_id::get_file_id(&self.path).ok().as_ref() == Some(&self.identity)
-        {
-            let _ = fs::remove_file(&self.path);
-        }
+        let _ = self.directory.remove_owned(&self.name, self.identity);
     }
+}
+
+fn validate_export_directory<R: Runtime>(app: &AppHandle<R>, selection: &UiSliceSelection) -> Result<(), String> {
+    let error = "导出目录未获授权或已变化";
+    let resolved = reauthorize_existing_plain_directory_with_roots(app, &selection.path, std::slice::from_ref(&selection.path))
+        .map_err(|_| error)?;
+    if resolved != selection.path || file_id::get_file_id(&resolved).ok() != Some(selection.identity) {
+        return Err(error.into());
+    }
+    Ok(())
 }
 
 fn hash_stream(
@@ -475,8 +640,8 @@ fn verify_archive(
 }
 
 pub(super) enum Destination<'a> {
-    Directory(&'a str),
-    NewDraft(&'a str),
+    Directory(&'a UiSliceSelection),
+    NewDraft(&'a UiSliceSelection),
     OverwriteDraft(&'a DraftFile),
 }
 
@@ -549,36 +714,21 @@ pub(super) fn publish<R: Runtime>(
     cancel: &CancellationToken,
     commit: impl FnOnce(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
 ) -> Result<Value, String> {
-    let (directory, new_draft, overwrite_draft) = match params.destination {
-        Destination::Directory(path) | Destination::NewDraft(path) => {
-            let directory = reauthorize_existing_plain_directory(app, Path::new(path))
-                .map_err(|_| "导出目录未获授权或已变化")?;
-            (directory, matches!(params.destination, Destination::NewDraft(_)), None)
+    let (directory, selected_directory, new_draft, overwrite_draft) = match params.destination {
+        Destination::Directory(selection) | Destination::NewDraft(selection) => {
+            validate_export_directory(app, selection)?;
+            let directory = ExportDirectory::open(selection.path.clone(), selection.identity)?;
+            (directory, Some(selection), matches!(params.destination, Destination::NewDraft(_)), None)
         }
         Destination::OverwriteDraft(draft) => {
             validate_draft_target(app, draft)?;
-            let directory = draft.path.parent().ok_or("无法定位原草稿所在目录")?.to_path_buf();
-            (directory, false, Some(draft))
+            let path = draft.path.parent().ok_or("无法定位原草稿所在目录")?.to_path_buf();
+            let identity = file_id::get_file_id(&path).map_err(|_| "无法确认导出目录身份")?;
+            if format!("{identity:?}") != draft.parent_identity {
+                return Err("原草稿所在目录已变化，请重新打开草稿".into());
+            }
+            (ExportDirectory::open(path, identity)?, None, false, Some(draft))
         }
-    };
-    let directory_id = file_id::get_file_id(&directory).map_err(|_| "无法确认导出目录身份")?;
-    #[cfg(windows)]
-    let _directory_leases = {
-        let leases = directory
-            .ancestors()
-            .filter(|path| !path.as_os_str().is_empty())
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .map(|path| {
-                crate::native_project_media::lease_directory(path, path == directory)
-                    .map_err(|_| "无法锁定导出目录路径")
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        if file_id::get_file_id(&directory).ok() != Some(directory_id) {
-            return Err("导出目录在锁定期间已变化".into());
-        }
-        leases
     };
     let source = read_snapshot(app, params.source, params.assume_srgb, cancel)?;
     if source.raw_digest != params.source_sha256 {
@@ -603,28 +753,10 @@ pub(super) fn publish<R: Runtime>(
     } else {
         format!("ui-slice-{}.zip", &pack_id[..24])
     };
-    let target = directory.join(&name);
-    let path = directory.join(format!(".ui-slice-{}.pending", request_id));
-    let mut options = OpenOptions::new();
-    options.create_new(true).write(true).read(true);
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows::Win32::Storage::FileSystem::{
-            DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
-        };
-        options
-            .access_mode(DELETE.0 | FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
-            .share_mode(0);
-    }
-    let file = options
-        .open(&path)
-        .map_err(|_| "无法在所选目录建立独占暂存档")?;
-    let stage = StagedArchive {
-        identity: opened_file_id(&file).map_err(|_| "无法确认暂存档身份")?,
-        path,
-    };
+    let target_name = OsStr::new(&name);
+    directory.verify()?;
+    if let Some(draft) = overwrite_draft { validate_draft_target(app, draft)?; }
+    let (file, stage) = directory.create_stage(format!(".ui-slice-{request_id}.pending").into())?;
     let mut zip = ZipWriter::new(BufWriter::new(file));
     let options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Stored)
@@ -707,16 +839,11 @@ pub(super) fn publish<R: Runtime>(
     let sha256 = verify_archive(writer.get_mut(), &entries, cancel)?;
     let matches_published =
         || -> Result<Option<(File, file_id::FileId, std::time::SystemTime)>, String> {
-            let meta = match fs::symlink_metadata(&target) {
-                Ok(meta) => meta,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                Err(_) => return Err("无法核对目标归档".into()),
-            };
-            if !meta.is_file() || is_link_or_reparse(&meta) || meta.len() != bytes {
+            let Some((identity, meta)) = directory.current(target_name)? else { return Ok(None); };
+            if meta.len() != bytes {
                 return Err("目标文件已存在，不能安全重用".into());
             }
-            let identity = file_id::get_file_id(&target).map_err(|_| "无法确认已有归档身份")?;
-            let mut file = open_for_read(&target).map_err(|_| "无法读取已有切图归档")?;
+            let mut file = directory.open_file(target_name).map_err(|_| "无法读取已有切图归档")?;
             let opened = file.metadata().map_err(|_| "无法读取已有切图归档")?;
             if opened_file_id(&file).ok() != Some(identity)
                 || is_link_or_reparse(&opened)
@@ -727,54 +854,37 @@ pub(super) fn publish<R: Runtime>(
             if hash_stream(&mut BufReader::new(&mut file), bytes, cancel)? != sha256 {
                 return Err("目标文件已存在且内容不同".into());
             }
-            if regular_file(&target)
-                .ok()
-                .and_then(|meta| meta.modified().ok())
-                != opened.modified().ok()
-                || file_id::get_file_id(&target).ok() != Some(identity)
-            {
+            let modified = opened.modified().map_err(|_| "无法读取已有归档修改时间")?;
+            if !directory.matches(target_name, identity, bytes, modified) {
                 return Err("已有归档在回读期间已变化".into());
             }
-            let modified = opened.modified().map_err(|_| "无法读取已有归档修改时间")?;
             Ok(Some((file, identity, modified)))
         };
     let reused = if overwrite_draft.is_some() || new_draft { None } else { matches_published()? };
     commit(&mut || {
         pixels::check_cancelled(cancel)?;
-        if overwrite_draft.is_none()
-            && reauthorize_existing_plain_directory(app, &directory).ok().as_ref() != Some(&directory)
-        {
-            return Err("导出目录已变化".into());
+        if let Some(selection) = selected_directory {
+            validate_export_directory(app, selection)?;
         }
-        if file_id::get_file_id(&directory).ok().as_ref() != Some(&directory_id)
-            || regular_file(&stage.path)
-                .ok()
-                .map(|meta| (meta.len(), meta.modified().ok()))
-                != Some((bytes, Some(stage_modified)))
-            || file_id::get_file_id(&stage.path).ok().as_ref() != Some(&stage.identity)
-        {
+        directory.verify()?;
+        if !directory.matches(&stage.name, stage.identity, bytes, stage_modified) {
             return Err("导出目录或暂存档已变化".into());
         }
         pixels::check_cancelled(cancel)?;
         if let Some(draft) = overwrite_draft {
-            validate_draft_target(app, draft)?;
+            let _old_identity = validate_draft_target(app, draft)?;
             #[cfg(windows)]
-            replace_windows_draft(writer.get_ref(), &target)?;
+            replace_windows_draft(writer.get_ref(), &directory.path.join(target_name))?;
             #[cfg(not(windows))]
-            fs::rename(&stage.path, &target).map_err(|_| "无法覆盖原草稿")?;
+            directory.replace_draft(&stage, target_name, draft, _old_identity)?;
         } else if let Some((_file, identity, modified)) = &reused {
-            if regular_file(&target)
-                .ok()
-                .map(|meta| (meta.len(), meta.modified().ok()))
-                != Some((bytes, Some(*modified)))
-                || file_id::get_file_id(&target).ok().as_ref() != Some(identity)
-            {
+            if !directory.matches(target_name, *identity, bytes, *modified) {
                 return Err("已有切图归档在提交前已变化".into());
             }
         } else {
             #[cfg(windows)]
             let published =
-                crate::native_project_media::rename_windows_media_file(writer.get_ref(), &target)
+                crate::native_project_media::rename_windows_media_file(writer.get_ref(), &directory.path.join(target_name))
                     .and_then(|_| {
                         writer
                             .get_ref()
@@ -782,22 +892,32 @@ pub(super) fn publish<R: Runtime>(
                             .map_err(|_| "切图归档落盘失败".into())
                     });
             #[cfg(not(windows))]
-            let published = crate::project_archive::publish_archive_exclusive(&stage.path, &target);
+            let published = directory.anchor.rename_file(&stage.name, target_name, false).and_then(|_| {
+                let result = directory.verify().and_then(|_| {
+                    if !directory.matches(target_name, stage.identity, bytes, stage_modified) {
+                        return Err("发布后的归档身份已变化".into());
+                    }
+                    directory.anchor.sync().map_err(|_| "切图归档落盘失败".into())
+                }).and_then(|_| directory.verify());
+                if result.is_err() { let _ = directory.remove_owned(target_name, stage.identity); }
+                result
+            });
             published.map_err(|_| "切图发布结果需核对。重试同一选区可校验已有整包")?;
         }
-        Ok(())
+        directory.verify()
     })?;
     drop(writer);
     let mut receipt = json!({ "fileName": name, "assetCount": params.items.len(), "sha256": sha256, "bytes": bytes, "reused": reused.is_some() });
     if params.include_source {
         let error = "草稿保存后无法确认文件身份，请重新打开草稿";
         let identity = reused.as_ref().map_or(stage.identity, |(_, identity, _)| *identity);
-        let metadata = regular_file(&target).map_err(|_| error)?;
-        if metadata.len() != bytes || file_id::get_file_id(&target).ok() != Some(identity) {
+        let (actual, metadata) = directory.current(target_name).map_err(|_| error)?.ok_or(error)?;
+        if metadata.len() != bytes || actual != identity {
             return Err(error.into());
         }
         let version = draft_version(identity, bytes, metadata.modified().map_err(|_| error)?);
-        receipt["draft"] = json!(DraftFile { path: target, version });
+        let parent_identity = format!("{:?}", directory.identity);
+        receipt["draft"] = json!(DraftFile { path: directory.path.join(target_name), version, parent_identity });
     }
     Ok(receipt)
 }
@@ -806,6 +926,41 @@ pub(super) fn publish<R: Runtime>(
 mod tests {
     use super::*;
     use tauri_plugin_fs::FsExt;
+
+    fn select(path: &Path) -> UiSliceSelection {
+        let path = crate::path_policy::canonicalize_simplified(path).unwrap();
+        let identity = file_id::get_file_id(&path).unwrap();
+        UiSliceSelection { path, identity }
+    }
+
+    #[cfg(any(target_os = "macos", all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))))]
+    #[test]
+    fn rejects_replaced_export_directory_and_cleans_only_its_own_stage() {
+        let root = std::env::temp_dir().join(crate::comfyui::media_source::new_id().unwrap());
+        let path = root.join("output");
+        let moved = root.join("moved");
+        let unrelated = root.join("unrelated");
+        fs::create_dir_all(&path).unwrap();
+        fs::create_dir(&unrelated).unwrap();
+        let selection = select(&path);
+        let directory = ExportDirectory::open(selection.path.clone(), selection.identity).unwrap();
+        let name = ".ui-slice-relocate.pending";
+        let (file, stage) = directory.create_stage(name.into()).unwrap();
+        fs::write(unrelated.join(name), b"unrelated").unwrap();
+        fs::rename(&path, &moved).unwrap();
+        std::os::unix::fs::symlink(&unrelated, &path).unwrap();
+
+        assert!(directory.verify().is_err());
+        drop(file);
+        drop(stage);
+        assert!(!moved.join(name).exists());
+        assert_eq!(fs::read(unrelated.join(name)).unwrap(), b"unrelated");
+
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(ExportDirectory::open(selection.path, selection.identity).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn detailed_preview_retains_original_pixels_when_the_thumbnail_exceeds_its_budget() {
@@ -845,10 +1000,8 @@ mod tests {
             .unwrap();
         let scope = app.fs_scope();
         scope.allow_file(&source).unwrap();
-        scope.allow_file(&draft).unwrap();
-        scope.allow_directory(&fixture, false).unwrap();
         let token = CancellationToken::new();
-        let restored = open_draft(app.handle(), draft.to_str().unwrap(), source.to_str().unwrap(), true, &token).unwrap();
+        let restored = open_draft(app.handle(), &select(&draft), source.to_str().unwrap(), true, &token).unwrap();
         assert_eq!(restored["items"][0]["label"], "卡片");
         assert_eq!(restored["items"][0]["rings"].as_array().unwrap().len(), 2);
         assert_eq!(restored["missing"][0]["name"], "底板");
@@ -856,7 +1009,7 @@ mod tests {
         let missing: Vec<Missing> = serde_json::from_value(restored["missing"].clone()).unwrap();
         let source_sha256 = restored["sourceSha256"].as_str().unwrap();
         let result = publish(app.handle(), Publish {
-            source: source.to_str().unwrap(), destination: Destination::Directory(fixture.to_str().unwrap()), source_sha256,
+            source: source.to_str().unwrap(), destination: Destination::Directory(&select(&fixture)), source_sha256,
             assume_srgb: true, items: &items, missing: &missing, include_source: true,
         }, "interop", &token, |commit| commit()).unwrap();
         assert!(fixture.join(result["fileName"].as_str().unwrap()).is_file());
@@ -877,7 +1030,7 @@ mod tests {
         fs::write(&source, &source_bytes).unwrap();
         let scope = app.fs_scope();
         scope.allow_file(&source).unwrap();
-        scope.allow_directory(&directory, false).unwrap();
+        let selected_directory = select(&directory);
 
         let token = CancellationToken::new();
         let info = inspect(app.handle(), source.to_str().unwrap(), true, &token).unwrap();
@@ -893,7 +1046,7 @@ mod tests {
 
         let publish_once = |request_id: &str, cancel: &CancellationToken| {
             publish(app.handle(), Publish {
-                source: source.to_str().unwrap(), destination: Destination::Directory(directory.to_str().unwrap()),
+                source: source.to_str().unwrap(), destination: Destination::Directory(&selected_directory),
                 source_sha256: &source_sha256, assume_srgb: true, items: &items, missing: &missing, include_source: false,
             }, request_id, cancel, |commit| commit())
         };
@@ -917,18 +1070,16 @@ mod tests {
         }
         assert_eq!(publish_once("again", &token).unwrap()["reused"], true);
         let draft = publish(app.handle(), Publish {
-            source: source.to_str().unwrap(), destination: Destination::Directory(directory.to_str().unwrap()),
+            source: source.to_str().unwrap(), destination: Destination::Directory(&selected_directory),
             source_sha256: &source_sha256, assume_srgb: true, items: &items, missing: &missing, include_source: true,
         }, "draft", &token, |commit| commit()).unwrap();
         let draft_path = directory.join(draft["fileName"].as_str().unwrap());
-        scope.allow_file(&draft_path).unwrap();
-        let restored = open_draft(app.handle(), draft_path.to_str().unwrap(), source.to_str().unwrap(), true, &token).unwrap();
+        let restored = open_draft(app.handle(), &select(&draft_path), source.to_str().unwrap(), true, &token).unwrap();
         assert_eq!(restored["items"], json!(items));
         assert_eq!(restored["missing"], json!(missing));
         let named_draft = root.join("当前草稿.zip");
         fs::copy(&draft_path, &named_draft).unwrap();
-        scope.allow_file(&named_draft).unwrap();
-        let opened = open_draft(app.handle(), named_draft.to_str().unwrap(), source.to_str().unwrap(), true, &token).unwrap();
+        let opened = open_draft(app.handle(), &select(&named_draft), source.to_str().unwrap(), true, &token).unwrap();
         let overwrite: DraftFile = serde_json::from_value(opened["draft"].clone()).unwrap();
         let edited_items: Vec<Item> = serde_json::from_value(json!([{
             "label": "已编辑", "rect": {"x0": 0, "y0": 0, "x1": 1, "y1": 1}, "rings": []
@@ -940,11 +1091,11 @@ mod tests {
         let updated = save_edited(Destination::OverwriteDraft(&overwrite), "overwrite").unwrap();
         assert_eq!(updated["fileName"], "当前草稿.zip");
         assert!(save_edited(Destination::OverwriteDraft(&overwrite), "stale").is_err());
-        let copy = save_edited(Destination::NewDraft(directory.to_str().unwrap()), "copy").unwrap();
-        let second_copy = save_edited(Destination::NewDraft(directory.to_str().unwrap()), "copy-again").unwrap();
+        let copy = save_edited(Destination::NewDraft(&selected_directory), "copy").unwrap();
+        let second_copy = save_edited(Destination::NewDraft(&selected_directory), "copy-again").unwrap();
         assert_ne!(copy["fileName"], second_copy["fileName"]);
         assert_eq!(fs::read(&named_draft).unwrap(), fs::read(directory.join(copy["fileName"].as_str().unwrap())).unwrap());
-        let reopened = open_draft(app.handle(), named_draft.to_str().unwrap(), source.to_str().unwrap(), true, &token).unwrap();
+        let reopened = open_draft(app.handle(), &select(&named_draft), source.to_str().unwrap(), true, &token).unwrap();
         assert_eq!(reopened["items"], json!(edited_items));
         fs::remove_file(named_draft).unwrap();
         for receipt in [copy, second_copy] {
@@ -965,8 +1116,7 @@ mod tests {
         }
         let broken_path = root.join("broken.zip");
         fs::write(&broken_path, broken.finish().unwrap().into_inner()).unwrap();
-        scope.allow_file(&broken_path).unwrap();
-        assert!(open_draft(app.handle(), broken_path.to_str().unwrap(), source.to_str().unwrap(), true, &token).is_err());
+        assert!(open_draft(app.handle(), &select(&broken_path), source.to_str().unwrap(), true, &token).is_err());
         fs::remove_file(broken_path).unwrap();
         let mut duplicate = ZipWriter::new(std::io::Cursor::new(Vec::new()));
         for index in 0..original.len() {
@@ -989,13 +1139,12 @@ mod tests {
             }
         }
         fs::write(&duplicate_path, duplicate_bytes).unwrap();
-        scope.allow_file(&duplicate_path).unwrap();
-        assert!(open_draft(app.handle(), duplicate_path.to_str().unwrap(), source.to_str().unwrap(), true, &token).is_err());
+        assert!(open_draft(app.handle(), &select(&duplicate_path), source.to_str().unwrap(), true, &token).is_err());
         fs::remove_file(duplicate_path).unwrap();
         let other_source = root.join("other.png");
         fs::write(&other_source, pixels::png(&[0, 0, 0, 255, 44, 55, 66, 0], 2, 1).unwrap()).unwrap();
         scope.allow_file(&other_source).unwrap();
-        assert!(open_draft(app.handle(), draft_path.to_str().unwrap(), other_source.to_str().unwrap(), true, &token).is_err());
+        assert!(open_draft(app.handle(), &select(&draft_path), other_source.to_str().unwrap(), true, &token).is_err());
         fs::remove_file(other_source).unwrap();
         fs::remove_file(draft_path).unwrap();
         token.cancel();

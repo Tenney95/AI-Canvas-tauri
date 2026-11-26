@@ -347,6 +347,8 @@ describe('pluginUiSessionService', () => {
       manifest: { ...plugin.manifest, id: 'ai-canvas.ui-slice', apiVersion: 2,
         requiredCapabilities: ['image.uiSlice'], contributes: { nodeTools: [sliceTool] } } };
     mocks.getState().installedPlugins = [installed];
+    mocks.isTauri.mockReturnValue(true);
+    mocks.invoke.mockResolvedValueOnce(null);
     const session = await createPluginUiNativeSession({
       plugin: installed, tool: sliceTool, nodeId: 'target', exportName: 'dialog', onClose: vi.fn(),
     });
@@ -357,9 +359,12 @@ describe('pluginUiSessionService', () => {
       type: 'image.uiSlice.publish', sourceSha256, assumeSrgb,
       items: [{ label: '按钮', rect: { x0: 0, y0: 0, x1: 1, y1: 1 }, rings: [] }],
     });
-    mocks.isTauri.mockReturnValue(true);
     mocks.resolveUiSliceSource.mockResolvedValue('G:\\project\\image.png');
     try {
+      const identity = expect.objectContaining({ invocationId: session.binding.sessionId, toolId: 'slice-image' });
+      expect(mocks.invoke).toHaveBeenCalledWith('execute_plugin_host_effect', expect.objectContaining({
+        identity, effect: { type: 'image.uiSlice.sessionOpen', nativeWindow: true },
+      }));
       expect(await session.request('context', null)).toMatchObject({ ok: true, value: { host: { uiSliceRetainsSnapshots: true } } });
       mocks.invoke.mockResolvedValueOnce(snapshot);
       expect(await inspect(true)).toMatchObject({ ok: true });
@@ -367,15 +372,19 @@ describe('pluginUiSessionService', () => {
       mocks.invoke.mockResolvedValueOnce(snapshot);
       expect(await inspect(false)).toMatchObject({ ok: true });
 
-      mocks.invoke.mockResolvedValueOnce('G:\\export').mockResolvedValueOnce({ fileName: 'slice.zip', assetCount: 1 });
+      mocks.invoke.mockResolvedValueOnce('selection-1').mockResolvedValueOnce({ fileName: 'slice.zip', assetCount: 1 });
       expect(await publish(true)).toMatchObject({ ok: true, value: { value: { fileName: 'slice.zip' } } });
       expect(mocks.invoke).toHaveBeenLastCalledWith('execute_plugin_host_effect', expect.objectContaining({
-        effect: expect.objectContaining({ type: 'image.uiSlice.publish', sourceSha256, assumeSrgb: true }),
+        identity, effect: expect.objectContaining({ type: 'image.uiSlice.publish', sourceSha256, assumeSrgb: true, selectionId: 'selection-1' }),
       }));
 
       mocks.invoke.mockResolvedValueOnce({ ...snapshot, sourceSha256: '2'.repeat(64) });
       expect(await inspect(false)).toMatchObject({ ok: true });
       expect(await publish(true)).toMatchObject({ ok: false, error: expect.stringContaining('图片') });
+      session.dispose();
+      await vi.waitFor(() => expect(mocks.invoke).toHaveBeenLastCalledWith('execute_plugin_host_effect', expect.objectContaining({
+        identity, effect: { type: 'image.uiSlice.sessionClose' },
+      })));
     } finally {
       session.dispose();
       mocks.isTauri.mockReturnValue(false);

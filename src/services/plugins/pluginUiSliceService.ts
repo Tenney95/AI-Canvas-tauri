@@ -17,14 +17,8 @@ interface ImageSnapshot {
   height: number;
 }
 
-interface DraftFile {
-  path: string;
-  version: string;
-}
-
 export interface UiSliceSessionState {
   snapshot?: ImageSnapshot & { verifiedColorInterpretations: Set<boolean> };
-  drafts?: Map<string, DraftFile>;
 }
 
 function rememberSnapshot(state: UiSliceSessionState, snapshot: ImageSnapshot, assumeSrgb: boolean) {
@@ -34,7 +28,6 @@ function rememberSnapshot(state: UiSliceSessionState, snapshot: ImageSnapshot, a
 
 interface Options {
   type: UiSliceEffect;
-  nativeWindow: boolean;
   payload: unknown;
   context: PluginResourceReadContext;
   resources: PluginInvocationResources;
@@ -98,6 +91,21 @@ function readMissing(value: unknown) {
   });
 }
 
+type UiSliceHostIdentity = Pick<PluginResourceReadContext, 'pluginId' | 'sourceDigest' | 'revisionDigest' | 'invocationId'>;
+
+export async function openPluginUiSliceSession(context: UiSliceHostIdentity, nativeWindow: boolean) {
+  if (!isTauri()) return;
+  const identity = { ...context, toolId: UI_SLICE_TOOL_ID };
+  await invoke('execute_plugin_host_effect', {
+    identity, requestId: crypto.randomUUID(), effect: { type: 'image.uiSlice.sessionOpen', nativeWindow },
+  });
+  return async () => {
+    await invoke('execute_plugin_host_effect', {
+      identity, requestId: crypto.randomUUID(), effect: { type: 'image.uiSlice.sessionClose' },
+    });
+  };
+}
+
 export async function executePluginUiSlice(options: Options) {
   const { type, context, resources, signal, assertFresh, state } = options;
   if (!isTauri()) throw new Error('切图需要 AI Canvas 桌面端');
@@ -112,83 +120,88 @@ export async function executePluginUiSlice(options: Options) {
     if (signal.aborted) throw new Error('切图操作已取消');
     assertFresh();
   };
-  const execute = async <T,>(effect: Record<string, unknown>): Promise<T> => {
+  const execute = <T,>(effect: Record<string, unknown>) => {
     assertActive();
-    const cancel = () => {
-      void invoke('cancel_plugin_host_effect', { pluginId: context.pluginId, requestId }).catch(() => undefined);
-    };
-    signal.addEventListener('abort', cancel, { once: true });
-    try {
-      return await invoke<T>('execute_plugin_host_effect', { identity, requestId, effect });
-    } finally {
-      signal.removeEventListener('abort', cancel);
-    }
+    return invoke<T>('execute_plugin_host_effect', { identity, requestId, effect });
   };
-  if (type === 'image.uiSlice.inspect') {
-    if (typeof input.assumeSrgb !== 'boolean') throw new Error('色彩确认参数无效');
-    const info = await execute<ImageSnapshot & { previewPngBase64: string }>(
-      { type, sourcePath, assumeSrgb: input.assumeSrgb },
-    );
-    assertActive();
-    rememberSnapshot(state, { sourceSha256: info.sourceSha256, width: info.width, height: info.height }, input.assumeSrgb);
-    return { ...info, supportsDraftSaveAs: true };
-  }
-  if (type === 'image.uiSlice.openDraft') {
-    if (typeof input.assumeSrgb !== 'boolean') throw new Error('色彩确认参数无效');
-    const archivePath = await execute<string | null>({ type: 'image.uiSlice.pick', purpose: 'openDraft', nativeWindow: options.nativeWindow });
-    if (typeof archivePath !== 'string') return { cancelled: true };
-    const { draft, ...info } = await execute<ImageSnapshot & {
-      previewPngBase64: string; items: unknown; missing: unknown; draft: DraftFile;
-    }>(
-      { type, sourcePath, archivePath, assumeSrgb: input.assumeSrgb },
-    );
-    assertActive();
-    const currentPath = await resolvePluginUiSliceSource(context, resources);
-    assertActive();
-    if (currentPath !== sourcePath) throw new Error('源图已改变，请重新打开切图界面');
-    const snapshot = { sourceSha256: info.sourceSha256, width: info.width, height: info.height };
-    if (!Array.isArray(info.items)) throw new Error('工作稿选区无效');
-    const items = readItems(info.items.map((item: unknown) => {
-      const entry = object(item);
-      return { ...entry, rings: entry.rings ?? [] };
-    }), snapshot);
-    const missing = readMissing(info.missing);
-    rememberSnapshot(state, snapshot, input.assumeSrgb);
-    (state.drafts ??= new Map()).set(requestId, draft);
-    return { ...info, items, missing, draftRef: requestId, supportsDraftSaveAs: true };
-  }
-  const snapshot = state.snapshot;
-  const { assumeSrgb } = input;
-  if (!snapshot || snapshot.sourceSha256 !== input.sourceSha256 || typeof assumeSrgb !== 'boolean'
-    || !snapshot.verifiedColorInterpretations.has(assumeSrgb)) {
-    throw new Error('图片或色彩解释已变化，请重新分析并审核选区');
-  }
-  const items = readItems(input.items, snapshot);
-  const missing = readMissing(input.missing);
-  const includeSource = input.includeSource === true;
-  const newDraft = includeSource && input.newDraft === true;
-  let overwriteDraft: DraftFile | undefined;
-  let directory: string | undefined;
-  if (includeSource && input.draftRef !== undefined) {
-    overwriteDraft = typeof input.draftRef === 'string' ? state.drafts?.get(input.draftRef) : undefined;
-    if (!overwriteDraft || newDraft) throw new Error('当前草稿关联已失效，请重新打开草稿或另存为');
-  } else {
-    const selected = await execute<string | null>({
-      type: 'image.uiSlice.pick', purpose: includeSource ? 'saveDraft' : 'export', nativeWindow: options.nativeWindow,
+  let cancellation: Promise<unknown> | undefined;
+  const cancel = () => cancellation ??= invoke('cancel_plugin_host_effect', {
+    pluginId: context.pluginId, requestId,
+  }).catch(() => undefined);
+  signal.addEventListener('abort', cancel, { once: true });
+  let selectionPending = false;
+  try {
+    if (type === 'image.uiSlice.inspect') {
+      if (typeof input.assumeSrgb !== 'boolean') throw new Error('色彩确认参数无效');
+      const info = await execute<ImageSnapshot & { previewPngBase64: string }>(
+        { type, sourcePath, assumeSrgb: input.assumeSrgb },
+      );
+      assertActive();
+      rememberSnapshot(state, { sourceSha256: info.sourceSha256, width: info.width, height: info.height }, input.assumeSrgb);
+      return { ...info, supportsDraftSaveAs: true };
+    }
+    if (type === 'image.uiSlice.openDraft') {
+      if (typeof input.assumeSrgb !== 'boolean') throw new Error('色彩确认参数无效');
+      const selectionId = await execute<string | null>({ type: 'image.uiSlice.pick', purpose: 'openDraft' });
+      if (typeof selectionId !== 'string') return { cancelled: true };
+      selectionPending = true;
+      const info = await execute<ImageSnapshot & {
+        previewPngBase64: string; items: unknown; missing: unknown; draftRef: string;
+      }>(
+        { type, sourcePath, selectionId, assumeSrgb: input.assumeSrgb },
+      );
+      selectionPending = false;
+      assertActive();
+      const currentPath = await resolvePluginUiSliceSource(context, resources);
+      assertActive();
+      if (currentPath !== sourcePath) throw new Error('源图已改变，请重新打开切图界面');
+      const snapshot = { sourceSha256: info.sourceSha256, width: info.width, height: info.height };
+      if (!Array.isArray(info.items)) throw new Error('工作稿选区无效');
+      const items = readItems(info.items.map((item: unknown) => {
+        const entry = object(item);
+        return { ...entry, rings: entry.rings ?? [] };
+      }), snapshot);
+      const missing = readMissing(info.missing);
+      rememberSnapshot(state, snapshot, input.assumeSrgb);
+      return { ...info, items, missing, supportsDraftSaveAs: true };
+    }
+    const snapshot = state.snapshot;
+    const { assumeSrgb } = input;
+    if (!snapshot || snapshot.sourceSha256 !== input.sourceSha256 || typeof assumeSrgb !== 'boolean'
+      || !snapshot.verifiedColorInterpretations.has(assumeSrgb)) {
+      throw new Error('图片或色彩解释已变化，请重新分析并审核选区');
+    }
+    const items = readItems(input.items, snapshot);
+    const missing = readMissing(input.missing);
+    const includeSource = input.includeSource === true;
+    const newDraft = includeSource && input.newDraft === true;
+    let draftRef: string | undefined;
+    let selectionId: string | undefined;
+    if (includeSource && input.draftRef !== undefined) {
+      if (typeof input.draftRef !== 'string' || !/^[a-f0-9]{64}$/u.test(input.draftRef) || newDraft) {
+        throw new Error('当前草稿关联已失效，请重新打开草稿或另存为');
+      }
+      draftRef = input.draftRef;
+    } else {
+      const selected = await execute<string | null>({
+        type: 'image.uiSlice.pick', purpose: includeSource ? 'saveDraft' : 'export',
+      });
+      if (typeof selected !== 'string') return { cancelled: true };
+      selectionPending = true;
+      selectionId = selected;
+    }
+    await resolvePluginUiSliceSource(context, resources).then((currentPath) => {
+      if (currentPath !== sourcePath) throw new Error('源图已改变，请重新打开切图界面');
     });
-    if (typeof selected !== 'string') return { cancelled: true };
-    directory = selected;
+    const receipt = await execute<{ draftRef?: string; fileName: string; assetCount: number }>(
+      { type, sourcePath, selectionId, items, missing, includeSource, newDraft, draftRef,
+        sourceSha256: snapshot.sourceSha256, assumeSrgb },
+    );
+    selectionPending = false;
+    assertActive();
+    return receipt;
+  } finally {
+    signal.removeEventListener('abort', cancel);
+    if (selectionPending) await cancel();
   }
-  await resolvePluginUiSliceSource(context, resources).then((currentPath) => {
-    if (currentPath !== sourcePath) throw new Error('源图已改变，请重新打开切图界面');
-  });
-  const { draft, ...receipt } = await execute<{ draft?: DraftFile; fileName: string; assetCount: number }>(
-    { type, sourcePath, directory, items, missing, includeSource, newDraft, overwriteDraft,
-      sourceSha256: snapshot.sourceSha256, assumeSrgb },
-  );
-  assertActive();
-  if (!draft) return receipt;
-  const draftRef = overwriteDraft && typeof input.draftRef === 'string' ? input.draftRef : requestId;
-  (state.drafts ??= new Map()).set(draftRef, draft);
-  return { ...receipt, draftRef };
 }

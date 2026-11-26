@@ -406,6 +406,9 @@ fn enqueue(
 
 fn dispose_sessions(sessions: Vec<Session>, reason: CloseReason) {
     for session in sessions {
+        crate::plugin_host_effects::revoke_ui_slice_session(
+            &session.options.binding.identity.plugin_id, &session.options.binding.session_id,
+        );
         for (_, pending) in session.pending {
             let _ = pending.sender.send(Err(CLOSED_ERROR.into()));
         }
@@ -808,6 +811,7 @@ pub(crate) fn on_window_event<R: Runtime>(window: &Window<R>, event: &WindowEven
         return;
     }
     if window.label() == "main" && matches!(event, WindowEvent::Destroyed) {
+        crate::plugin_host_effects::revoke_all_ui_slice_sessions();
         revoke_all_sessions();
         return;
     }

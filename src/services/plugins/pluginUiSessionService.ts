@@ -43,7 +43,7 @@ import {
   type PluginResourceReadContext,
 } from './pluginResourceService';
 import { executeWsagentPluginEffect, getWsagentPluginNode, isWsagentPluginEffect, isWsagentPluginTool } from './pluginWsagentSharedImages';
-import { executePluginUiSlice, isUiSliceEffect, UI_SLICE_PLUGIN_ID, UI_SLICE_TOOL_ID, type UiSliceSessionState } from './pluginUiSliceService';
+import { executePluginUiSlice, isUiSliceEffect, openPluginUiSliceSession, UI_SLICE_PLUGIN_ID, UI_SLICE_TOOL_ID, type UiSliceSessionState } from './pluginUiSliceService';
 import type { UiSliceImageCandidate } from './pluginUiSliceImageTask';
 
 const MESSAGE_CHANNEL = 'ai-canvas-plugin-ui-v1';
@@ -485,7 +485,6 @@ async function dispatchRequest(
           try {
             const operation = executePluginUiSlice({
               type: effectType, payload: request.payload, resources: session.resources,
-              nativeWindow: session.transport === 'native',
               context: resourceReadContext(session, plugin), signal: controller.signal,
               state: session.uiSlice ??= {}, assertFresh: () => { resolveLivePlugin(session); },
             });
@@ -811,6 +810,12 @@ async function createSession(
       onClose: options.onClose,
       onRestart: options.onRestart,
     };
+    let nativeSliceSession: ReturnType<typeof openPluginUiSliceSession> | undefined;
+    const uiSliceTool = plugin.id === UI_SLICE_PLUGIN_ID && tool.id === UI_SLICE_TOOL_ID
+      && plugin.manifest.requiredCapabilities?.includes('image.uiSlice');
+    if (uiSliceTool) {
+      session.lifecycle.defer(async () => { await (await nativeSliceSession)?.(); });
+    }
     session.lifecycle.defer(() => completeCanvasDerivation(session.guard));
     session.lifecycle.defer(() => clearPluginInvocationResources(session.sessionId));
     session.lifecycle.defer(() => session.sliceCandidates?.clear());
@@ -867,6 +872,12 @@ async function createSession(
       state,
     });
     resolveLivePlugin(session);
+    if (uiSliceTool) {
+      nativeSliceSession = openPluginUiSliceSession({ pluginId: session.pluginId, sourceDigest,
+        revisionDigest, invocationId: sessionId }, transport === 'native');
+      await nativeSliceSession;
+      resolveLivePlugin(session);
+    }
     session.ready = true;
     return { session, globalExport };
   } catch (error) {
