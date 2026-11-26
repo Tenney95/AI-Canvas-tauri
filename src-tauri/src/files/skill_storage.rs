@@ -611,6 +611,12 @@ fn plan_managed_removal(root: &Path, target: &Path, directory: bool,
 
 fn execute_managed_removal(plan: &SkillRemovalPlan,
     authorize: &impl Fn(&Path) -> Result<(), String>) -> Result<(), String> {
+    #[cfg(windows)]
+    for entry in plan.entries.iter().filter(|entry| !entry.directory) {
+        if removal_metadata(&plan.root, &entry.path, false)?.permissions().readonly() {
+            return Err(REMOVE_ERROR.into());
+        }
+    }
     let directories: BTreeMap<_, _> = plan.entries.iter().filter(|entry| entry.directory)
         .map(|entry| (entry.path.as_path(), entry.identity)).collect();
     // 广度优先预检的逆序保证先删子项；不用 remove_dir_all 跟随后来替换的父目录。
@@ -624,9 +630,11 @@ fn execute_managed_removal(plan: &SkillRemovalPlan,
                 if file_id::get_file_id(ancestor).ok().as_ref() != Some(identity) { return Err(REMOVE_CHANGED.into()); }
             }
         }
-        removal_metadata(&plan.root, &entry.path, entry.directory)?;
+        let _metadata = removal_metadata(&plan.root, &entry.path, entry.directory)?;
         authorize(&entry.path)?;
         if file_id::get_file_id(&entry.path).ok() != Some(entry.identity) { return Err(REMOVE_CHANGED.into()); }
+        #[cfg(windows)]
+        if !entry.directory && _metadata.permissions().readonly() { return Err(REMOVE_ERROR.into()); }
         let result = if entry.directory { fs::remove_dir(&entry.path) } else { fs::remove_file(&entry.path) };
         result.map_err(|_| REMOVE_ERROR)?;
     }

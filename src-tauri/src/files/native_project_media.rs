@@ -572,7 +572,7 @@ pub fn resolve_native_project_media_subroot<R: Runtime>(webview: Webview<R>, pro
 // nonempty for publication; it never shares DELETE. OPEN_REPARSE_POINT inspects
 // the entry itself; conflicting existing handles fail closed.
 #[cfg(windows)]
-fn lease_directory(path: &Path, share_write: bool) -> Result<File, String> {
+pub(crate) fn lease_directory(path: &Path, share_write: bool) -> Result<File, String> {
     use std::os::windows::fs::OpenOptionsExt;
     use windows::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
     let sharing = FILE_SHARE_READ.0 | if share_write { FILE_SHARE_WRITE.0 } else { 0 };
@@ -634,7 +634,7 @@ fn windows_staging_metadata(file: &File, limit: u64) -> Result<fs::Metadata, Str
 }
 
 #[cfg(windows)]
-fn rename_windows_media_file(file: &File, destination: &Path) -> Result<(), String> {
+pub(crate) fn rename_windows_media_file(file: &File, destination: &Path) -> Result<(), String> {
     use std::{mem::{offset_of, size_of}, os::windows::{ffi::OsStrExt, io::AsRawHandle}, ptr};
     use windows::Win32::{Foundation::HANDLE, Storage::FileSystem::{
         FILE_RENAME_INFO, FileRenameInfo, SetFileInformationByHandle,
@@ -734,6 +734,9 @@ fn write_windows_media_file(media: &Path, media_lease: &mut File, name: &str, re
 // macOS and the two supported Linux desktop ABIs have distinct fcntl constants.
 // Keep this boundary dependency-free, as with project_archive's exclusive Unix publication.
 #[cfg(any(target_os = "macos", all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))))]
+pub(crate) use unix_io::AnchoredDirectory;
+
+#[cfg(any(target_os = "macos", all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))))]
 mod unix_io {
     use super::*;
     use std::{ffi::{CString, OsStr}, fs::File, io::{Seek, SeekFrom}, os::{fd::{AsRawFd, FromRawFd},
@@ -763,7 +766,6 @@ mod unix_io {
         fn mkdirat(directory: c_int, path: *const c_char, mode: Mode) -> c_int;
         #[cfg(target_os = "macos")]
         fn renameatx_np(from_dir: c_int, from: *const c_char, to_dir: c_int, to: *const c_char, flags: c_uint) -> c_int;
-        #[cfg(target_os = "macos")]
         fn unlinkat(directory: c_int, path: *const c_char, flags: c_int) -> c_int;
         #[cfg(target_os = "linux")]
         fn renameat2(from_dir: c_int, from: *const c_char, to_dir: c_int, to: *const c_char, flags: c_uint) -> c_int;
@@ -815,6 +817,64 @@ mod unix_io {
             if !same_file(expected, actual)? { return Err(ERROR.into()); }
         }
         Ok(())
+    }
+
+    pub(crate) struct AnchoredDirectory {
+        path: PathBuf,
+        chain: Vec<File>,
+    }
+
+    impl AnchoredDirectory {
+        pub(crate) fn open(path: &Path) -> Result<Self, String> {
+            Ok(Self { path: path.to_owned(), chain: open_chain(path)? })
+        }
+
+        fn directory(&self) -> &File {
+            self.chain.last().expect("open_chain always retains the root directory")
+        }
+
+        pub(crate) fn verify(&self) -> Result<(), String> {
+            verify_chain(&self.path, &self.chain)
+        }
+
+        pub(crate) fn identity(&self) -> std::io::Result<file_id::FileId> {
+            let metadata = self.directory().metadata()?;
+            Ok(file_id::FileId::new_inode(metadata.dev(), metadata.ino()))
+        }
+
+        pub(crate) fn open_file(&self, name: &OsStr) -> std::io::Result<File> {
+            open_at(self.directory(), name, 0, false)
+        }
+
+        pub(crate) fn create_file(&self, name: &OsStr) -> std::io::Result<File> {
+            open_at(self.directory(), name, 2 | CREATE | EXCLUSIVE, true)
+        }
+
+        pub(crate) fn remove_file(&self, name: &OsStr) -> Result<(), String> {
+            let name = component(name)?;
+            // SAFETY: The descriptor stays open and the name is one validated component.
+            if unsafe { unlinkat(self.directory().as_raw_fd(), name.as_ptr(), 0) } != 0 {
+                return Err(ERROR.into());
+            }
+            Ok(())
+        }
+
+        pub(crate) fn rename_file(&self, from: &OsStr, to: &OsStr, exchange: bool) -> Result<(), String> {
+            let from = component(from)?;
+            let to = component(to)?;
+            let directory = self.directory().as_raw_fd();
+            // SAFETY: Both names are validated and relative to the same live directory.
+            #[cfg(target_os = "macos")]
+            let result = unsafe { renameatx_np(directory, from.as_ptr(), directory, to.as_ptr(), if exchange { 0x2 } else { 0x4 }) };
+            #[cfg(target_os = "linux")]
+            let result = unsafe { renameat2(directory, from.as_ptr(), directory, to.as_ptr(), if exchange { 2 } else { 1 }) };
+            if result != 0 { return Err(ERROR.into()); }
+            Ok(())
+        }
+
+        pub(crate) fn sync(&self) -> std::io::Result<()> {
+            self.directory().sync_all()
+        }
     }
 
     #[cfg(target_os = "macos")]

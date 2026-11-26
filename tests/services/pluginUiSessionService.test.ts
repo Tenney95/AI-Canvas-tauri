@@ -12,6 +12,9 @@ import type {
 
 const mocks = vi.hoisted(() => ({
   getState: vi.fn(),
+  isTauri: vi.fn(() => false),
+  invoke: vi.fn(),
+  resolveUiSliceSource: vi.fn(),
   subscribers: new Set<() => void>(),
   registerCanvasDerivation: vi.fn(),
   isCanvasDerivationFresh: vi.fn(),
@@ -20,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   mintResources: vi.fn(),
   clearResources: vi.fn(),
   collectMedia: vi.fn(),
+  modelCatalog: vi.fn((): Array<{ id: string; category: string }> => []),
   executeTool: vi.fn(),
   executeEffect: vi.fn(),
   parseReplicaEffect: vi.fn(),
@@ -33,6 +37,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@tauri-apps/api/core', () => ({
   convertFileSrc: (path: string, protocol: string) => `http://${protocol}.localhost/${path}`,
+  isTauri: mocks.isTauri,
+  invoke: mocks.invoke,
 }));
 vi.mock('../../src/store/useAppStore', () => ({
   useAppStore: {
@@ -50,12 +56,13 @@ vi.mock('../../src/services/canvasDerivationGuard', () => ({
   completeCanvasDerivation: mocks.completeCanvasDerivation,
 }));
 vi.mock('../../src/services/plugins/pluginModelCatalog', () => ({
-  buildPluginModelCatalog: vi.fn(() => []),
+  buildPluginModelCatalog: mocks.modelCatalog,
   collectDeclaredModelCategories: vi.fn(() => []),
 }));
 vi.mock('../../src/services/plugins/pluginResourceService', () => ({
   mintPluginInvocationResources: mocks.mintResources,
   clearPluginInvocationResources: mocks.clearResources,
+  resolvePluginUiSliceSource: mocks.resolveUiSliceSource,
 }));
 vi.mock('../../src/services/plugins/pluginRuntime', () => ({
   collectTrustedNodeMediaReferences: mocks.collectMedia,
@@ -252,6 +259,199 @@ describe('pluginUiSessionService', () => {
     expect(signal.aborted).toBe(true);
     finish();
     expect(await pending).toMatchObject({ ok: false, error: expect.stringContaining('关闭') });
+  });
+
+  it('keeps UI slicing requests exclusive until a timed-out model settles', async () => {
+    const sliceTool = { ...tool, id: 'slice-image' };
+    const slicePlugin: InstalledPlugin = {
+      ...plugin,
+      id: 'ai-canvas.ui-slice',
+      manifest: { ...plugin.manifest, apiVersion: 2, id: 'ai-canvas.ui-slice',
+        permissions: [...plugin.manifest.permissions, 'models.read', 'models.invoke'],
+        requiredCapabilities: ['image.uiSlice'], contributes: { nodeTools: [sliceTool] } },
+    };
+    mocks.getState().installedPlugins = [slicePlugin];
+    mocks.modelCatalog.mockReturnValue([{ id: 'image', category: 'image' }]);
+    const session = await createPluginUiNativeSession({
+      plugin: slicePlugin, tool: sliceTool, nodeId: 'target', exportName: 'dialog', onClose: vi.fn(),
+    });
+    const requestModel = () => session.request('effect', { type: 'model.generate' });
+    const success = { type: 'model.generate', ok: true, value: { text: '{"items":[],"missing":[]}' } };
+    vi.useFakeTimers();
+    try {
+      mocks.executeEffect.mockImplementationOnce(() => new Promise((resolve) => {
+        setTimeout(() => resolve(success), 190_000);
+      }));
+      const slow = requestModel();
+      await vi.advanceTimersByTimeAsync(190_000);
+      expect(await slow).toEqual({ ok: true, value: success });
+      expect(vi.getTimerCount()).toBe(0);
+
+      let finishLate!: () => void;
+      mocks.executeEffect.mockImplementationOnce(() => new Promise((resolve) => {
+        finishLate = () => resolve(success);
+      }));
+      const pending = requestModel();
+      const signal = mocks.executeEffect.mock.lastCall?.[0].signal as AbortSignal;
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(signal.aborted).toBe(true);
+      expect(await pending).toMatchObject({ ok: false, error: expect.stringContaining('300 秒') });
+      expect(session.isActive()).toBe(true);
+      expect(mocks.executeEffect).toHaveBeenCalledTimes(2);
+
+      expect(await requestModel()).toMatchObject({ ok: false, error: expect.stringContaining('正在执行') });
+      expect(mocks.executeEffect).toHaveBeenCalledTimes(2);
+      finishLate();
+      await Promise.resolve();
+      mocks.executeEffect.mockResolvedValueOnce(success);
+      expect(await requestModel()).toEqual({ ok: true, value: success });
+
+      const requestCrop = () => session.request('effect', { type: 'model.generate', uiSliceCrop: true,
+        modelId: 'image', prompt: '生成裁片', imageUrls: ['data:image/png;base64,AA=='],
+        uiSliceWait: { hostSeconds: 10, modelSeconds: 1, replySeconds: 1 } });
+      mocks.executeEffect.mockImplementationOnce(() => new Promise((resolve) => {
+        finishLate = () => resolve(success);
+      }));
+      const crop = requestCrop();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await crop).toMatchObject({ ok: true, value: { ok: false, uiSliceQueuePaused: true, error: expect.stringContaining('1 秒') } });
+      expect(await requestCrop()).toMatchObject({ ok: true, value: { ok: false, uiSliceQueuePaused: true, error: expect.stringContaining('正在执行') } });
+      expect(mocks.executeEffect).toHaveBeenCalledTimes(4);
+      finishLate();
+      await Promise.resolve();
+      mocks.executeEffect.mockResolvedValueOnce(success);
+      expect(await requestCrop()).toEqual({ ok: true, value: success });
+
+      mocks.executeEffect.mockImplementationOnce(() => new Promise((resolve) => {
+        finishLate = () => resolve(success);
+      }));
+      const unlimited = session.request('effect', { type: 'model.generate',
+        uiSliceWait: { hostSeconds: 10, modelSeconds: 0, replySeconds: 1 } });
+      const unlimitedSignal = mocks.executeEffect.mock.lastCall?.[0].signal as AbortSignal;
+      await vi.advanceTimersByTimeAsync(86_400_000);
+      expect(unlimitedSignal.aborted).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+      session.dispose();
+      expect(unlimitedSignal.aborted).toBe(true);
+      expect(await unlimited).toMatchObject({ ok: false });
+      finishLate();
+    } finally {
+      session.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('can publish a restored selection in either verified color interpretation of the same source', async () => {
+    const sliceTool = { ...tool, id: 'slice-image' };
+    const installed: InstalledPlugin = { ...plugin, id: 'ai-canvas.ui-slice',
+      manifest: { ...plugin.manifest, id: 'ai-canvas.ui-slice', apiVersion: 2,
+        requiredCapabilities: ['image.uiSlice'], contributes: { nodeTools: [sliceTool] } } };
+    mocks.getState().installedPlugins = [installed];
+    mocks.isTauri.mockReturnValue(true);
+    mocks.invoke.mockResolvedValueOnce(null);
+    const session = await createPluginUiNativeSession({
+      plugin: installed, tool: sliceTool, nodeId: 'target', exportName: 'dialog', onClose: vi.fn(),
+    });
+    const sourceSha256 = '1'.repeat(64);
+    const snapshot = { sourceSha256, width: 8, height: 8, previewPngBase64: 'AA==' };
+    const inspect = (assumeSrgb: boolean) => session.request('effect', { type: 'image.uiSlice.inspect', assumeSrgb });
+    const publish = (assumeSrgb: boolean) => session.request('effect', {
+      type: 'image.uiSlice.publish', sourceSha256, assumeSrgb,
+      items: [{ label: '按钮', rect: { x0: 0, y0: 0, x1: 1, y1: 1 }, rings: [] }],
+    });
+    mocks.resolveUiSliceSource.mockResolvedValue('G:\\project\\image.png');
+    try {
+      const identity = expect.objectContaining({ invocationId: session.binding.sessionId, toolId: 'slice-image' });
+      expect(mocks.invoke).toHaveBeenCalledWith('execute_plugin_host_effect', expect.objectContaining({
+        identity, effect: { type: 'image.uiSlice.sessionOpen', nativeWindow: true },
+      }));
+      expect(await session.request('context', null)).toMatchObject({ ok: true, value: { host: { uiSliceRetainsSnapshots: true } } });
+      mocks.invoke.mockResolvedValueOnce(snapshot);
+      expect(await inspect(true)).toMatchObject({ ok: true });
+      expect(await publish(false)).toMatchObject({ ok: false, error: expect.stringContaining('色彩解释') });
+      mocks.invoke.mockResolvedValueOnce(snapshot);
+      expect(await inspect(false)).toMatchObject({ ok: true });
+
+      mocks.invoke.mockResolvedValueOnce('selection-1').mockResolvedValueOnce({ fileName: 'slice.zip', assetCount: 1 });
+      expect(await publish(true)).toMatchObject({ ok: true, value: { value: { fileName: 'slice.zip' } } });
+      expect(mocks.invoke).toHaveBeenLastCalledWith('execute_plugin_host_effect', expect.objectContaining({
+        identity, effect: expect.objectContaining({ type: 'image.uiSlice.publish', sourceSha256, assumeSrgb: true, selectionId: 'selection-1' }),
+      }));
+
+      mocks.invoke.mockResolvedValueOnce({ ...snapshot, sourceSha256: '2'.repeat(64) });
+      expect(await inspect(false)).toMatchObject({ ok: true });
+      expect(await publish(true)).toMatchObject({ ok: false, error: expect.stringContaining('图片') });
+      session.dispose();
+      await vi.waitFor(() => expect(mocks.invoke).toHaveBeenLastCalledWith('execute_plugin_host_effect', expect.objectContaining({
+        identity, effect: { type: 'image.uiSlice.sessionClose' },
+      })));
+    } finally {
+      session.dispose();
+      mocks.isTauri.mockReturnValue(false);
+      mocks.resolveUiSliceSource.mockReset();
+      mocks.invoke.mockReset();
+    }
+  });
+
+  it('requires a candidate from this session before submitting a UI slice with original image metadata', async () => {
+    const sliceTool = { ...tool, id: 'slice-image', output: { ...tool.output, fields: ['imageUrl', 'uiSliceSource'] } };
+    const installed: InstalledPlugin = { ...plugin, id: 'ai-canvas.ui-slice',
+      manifest: { ...plugin.manifest, id: 'ai-canvas.ui-slice', apiVersion: 2,
+        requiredCapabilities: ['image.uiSlice'], contributes: { nodeTools: [sliceTool] } } };
+    mocks.getState().installedPlugins = [installed];
+    const session = await createPluginUiNativeSession({
+      plugin: installed, tool: sliceTool, nodeId: 'target', exportName: 'dialog', onClose: vi.fn(),
+    });
+    try {
+      for (const data of [{ imageUrl: 'data:image/png;base64,AA==' }, { uiSliceCandidateId: 'old-session' }]) {
+        expect(await session.request('submit', { data })).toMatchObject({ ok: false, error: expect.stringContaining('本窗口') });
+      }
+      expect(mocks.executeTool).not.toHaveBeenCalled();
+    } finally { session.dispose(); }
+  });
+
+  it('bounds crop attempts independently of ordinary requests and model calls', async () => {
+    const sliceTool = { ...tool, id: 'slice-image' };
+    const slicePlugin: InstalledPlugin = {
+      ...plugin,
+      id: 'ai-canvas.ui-slice',
+      manifest: { ...plugin.manifest, apiVersion: 2, id: 'ai-canvas.ui-slice',
+        permissions: [...plugin.manifest.permissions, 'models.read', 'models.invoke'],
+        requiredCapabilities: ['image.uiSlice'], contributes: { nodeTools: [sliceTool] } },
+    };
+    mocks.getState().installedPlugins = [slicePlugin];
+    mocks.modelCatalog.mockReturnValue([{ id: 'image', category: 'image' }, { id: 'vision', category: 'text' }]);
+    const session = await createPluginUiNativeSession({
+      plugin: slicePlugin, tool: sliceTool, nodeId: 'target', exportName: 'dialog', onClose: vi.fn(),
+    });
+    const crop = { type: 'model.generate', uiSliceCrop: true, modelId: 'image',
+      imageUrls: ['data:image/png;base64,AA=='], prompt: '生成裁片' };
+    try {
+      expect(await session.request('context', null)).toMatchObject({ ok: true, value: { host: { uiSliceCropGenerationLimit: 2048 } } });
+      expect(await session.request('effect', { ...crop, modelId: 'vision' })).toMatchObject({ ok: false });
+      expect(await session.request('effect', { ...crop, imageUrls: ['https://example.com/image.png'] })).toMatchObject({ ok: false });
+      expect(await session.request('effect', { ...crop, resourceIds: ['source'] })).toMatchObject({ ok: false });
+      expect(mocks.executeEffect).not.toHaveBeenCalled();
+      for (let index = 0; index < 4; index++) {
+        expect(await session.request('effect', { type: 'model.generate' })).toMatchObject({ ok: true });
+      }
+      expect(await session.request('effect', { type: 'model.generate' })).toMatchObject({ ok: false, error: expect.stringContaining('4') });
+      for (let index = 0; index < 64; index++) {
+        expect(await session.request('effect', { type: 'settings.get', key: 'wait' })).toMatchObject({ ok: true });
+      }
+      for (let index = 0; index < 122; index++) {
+        expect(await session.request('context', null)).toMatchObject({ ok: true });
+      }
+      expect(await session.request('context', null)).toMatchObject({ ok: false, error: expect.stringContaining('请求次数') });
+      for (let attempt = 4; attempt <= 2048; attempt++) {
+        expect(await session.request('effect', crop)).toMatchObject({ ok: true });
+      }
+      expect(await session.request('effect', crop)).toMatchObject({ ok: false, error: expect.stringContaining('生图次数') });
+      expect(await session.request('close', null)).toMatchObject({ ok: true });
+    } finally {
+      session.dispose();
+      mocks.modelCatalog.mockReturnValue([]);
+    }
   });
 
   it('revokes UI and resources when a dependency changes without changing the owner revision', async () => {

@@ -80,6 +80,9 @@ import {
   normalizePluginToolParameters,
 } from './pluginRuntimeContract';
 import { type PluginMaterialLayout, preparePluginNodeSet } from './pluginNodeSetPreparation';
+import type { UiSliceImageCandidate, UiSliceImageDestination } from './pluginUiSliceImageTask';
+import { configValuesEqual } from '../configPatch';
+import { sha256BytesHex } from '../mediaDataUrl';
 
 export { collectTrustedNodeMediaReferences, parsePluginVideoReplicaEffect } from './pluginRuntimeContract';
 
@@ -422,6 +425,7 @@ interface PluginHostEffectContext {
   pluginNode?: AvailablePluginNode;
   inputs?: Record<string, PluginJsonValue>;
   signal?: AbortSignal;
+  sliceImage?: UiSliceImageDestination;
 }
 
 function allResourceRefs(resources: PluginInvocationResources | undefined) {
@@ -520,7 +524,16 @@ async function executeHostEffect(
         imageUrls.push(...resolved.imageUrls);
       } else if (/@\{plugin-ref-/u.test(effect.prompt)) throw new Error('插件未声明 prompt.references.read 权限');
       assertFresh();
-      const value = await executeModelEffect(modelEffect, models, nodeId, [...new Set(imageUrls)], context.signal);
+      const model = models.find((entry) => entry.id === modelEffect.modelId);
+      let value: PluginJsonValue;
+      if (context.sliceImage) {
+        if (model?.category !== 'image' || !context.signal) throw new Error('请选择本次会话可用的生图模型');
+        const { generateUiSliceImage } = await import('./pluginUiSliceImageTask');
+        value = await generateUiSliceImage({ prompt: modelEffect.prompt, model: model.id, provider: model.provider,
+          image_urls: imageUrls }, nodeId, context.sliceImage, context.signal, assertFresh);
+      } else {
+        value = await executeModelEffect(modelEffect, models, nodeId, [...new Set(imageUrls)], context.signal);
+      }
       assertFresh();
       return {
         type: effect.type,
@@ -892,6 +905,7 @@ export async function executeNodePluginTool(
   parameters: Record<string, PluginJsonValue> = {},
   executionLease?: {
     invocationId: string;
+    sliceCandidate?: UiSliceImageCandidate;
     guard: CanvasDerivationGuard;
     resources: PluginInvocationResources;
     trustedMediaReferences?: Set<string>;
@@ -1031,10 +1045,20 @@ export async function executeNodePluginTool(
       const outputNodeType = pluginTool.tool.output.mode === 'create-node'
         ? pluginTool.tool.output.nodeType ?? sourceNode.data.type
         : sourceNode.data.type;
+      const candidate = executionLease?.sliceCandidate;
+      let outputReferences = trustedMediaReferences;
+      if (candidate) {
+        const preview = recordValue(recordValue(rawResult).data).imageUrl;
+        if (typeof preview !== 'string' || await sha256BytesHex(new TextEncoder().encode(preview)) !== candidate.previewSha256) {
+          throw new Error('切图预览与已生成候选不匹配，未添加到画布');
+        }
+        outputReferences = new Set(trustedMediaReferences).add(preview);
+        assertExecutionFresh();
+      }
       const result = validateResult(
         rawResult,
         pluginTool.tool.output,
-        trustedMediaReferences,
+        outputReferences,
         outputNodeType,
         usesNativeMedia,
         installedPlugin.manifest.apiVersion === 2
@@ -1073,6 +1097,20 @@ export async function executeNodePluginTool(
       if (pluginTool.tool.output.mode === 'update-current') {
         current.updateNodeData(nodeId, data as Partial<BaseNodeData>);
       } else if (pluginTool.tool.output.mode === 'create-node') {
+        if (candidate) {
+          const provenance = recordValue(data.uiSliceSource);
+          if (data.prompt !== candidate.prompt || data.model !== candidate.model
+            || data.provider !== candidate.provider || data.description !== candidate.description
+            || provenance.width !== candidate.sourceWidth || provenance.height !== candidate.sourceHeight
+            || provenance.sha256 !== candidate.sourceSha256 || provenance.nodeId !== nodeId
+            || !Object.entries(JSON.parse(candidate.selection) as Record<string, unknown>).every(([key, value]) =>
+              configValuesEqual(provenance[key], value))) {
+            throw new Error('切图候选与描述或模型不匹配，未添加到画布');
+          }
+          const { resolveUiSliceImageFile } = await import('./pluginUiSliceImageTask');
+          Object.assign(data, await resolveUiSliceImageFile(projectId, candidate.file), { imageWidth: candidate.width, imageHeight: candidate.height });
+          assertExecutionFresh();
+        }
         const nodeType = pluginTool.tool.output.nodeType ?? sourceNode.data.type;
         const placement = derivedNodePlacement(sourceNode);
         current.addNode({
@@ -1185,6 +1223,7 @@ export async function executePluginUiHostEffect(options: {
   permissions: PluginPermission[];
   nodeId: string;
   effect: unknown;
+  sliceImage?: UiSliceImageDestination;
   models: PluginModelSummary[];
   trustedMediaReferences: Set<string>;
   resources?: PluginInvocationResources;
@@ -1198,6 +1237,7 @@ export async function executePluginUiHostEffect(options: {
       toolId: options.toolId,
       projectId: options.projectId,
       title: options.title,
+      sliceImage: options.sliceImage,
       permissions: options.permissions,
       resources: options.resources,
       resourceReadContext: options.resourceReadContext,
@@ -1207,7 +1247,7 @@ export async function executePluginUiHostEffect(options: {
     parsed,
     options.models,
   );
-  if (parsed.type === 'model.generate') {
+  if (parsed.type === 'model.generate' && !options.sliceImage) {
     addTrustedModelEffectReference(
       parsed,
       result,

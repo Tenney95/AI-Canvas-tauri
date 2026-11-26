@@ -1,0 +1,88 @@
+{
+  "apiVersion": 2,
+  "minHostVersion": "0.11.12",
+  "requiredCapabilities": [
+    "image.uiSlice"
+  ],
+  "id": "ai-canvas.ui-slice",
+  "name": "UI 切图再生",
+  "version": "0.5.0",
+  "description": "识别整页 UI，编辑轮廓并导出裁片，支持按单项、勾选项或整个切图列表生图。",
+  "category": "media",
+  "runtime": "javascript",
+  "entry": "main.js",
+  "permissions": [
+    "node.read",
+    "node.write",
+    "files.connected.read",
+    "files.output.create",
+    "ui.custom",
+    "models.read",
+    "models.invoke",
+    "settings.read",
+    "settings.write"
+  ],
+  "ui": {
+    "entry": "ui.js",
+    "integrity": "sha256-9d0f4f695895c0b4fec7ecff06a9733f07ded463f523d39294474d54e4b71eb9",
+    "exports": {
+      "sliceDialog": "UiSliceDialog"
+    }
+  },
+  "contributes": {
+    "nodeTools": [
+      {
+        "id": "slice-image",
+        "title": "UI 切图再生",
+        "placements": [
+          "node-toolbar"
+        ],
+        "icon": "lucide:scan-line",
+        "dialog": {
+          "fields": [
+            {
+              "id": "sliceVisionModel",
+              "label": "识别模型",
+              "type": "model",
+              "modelCategories": [
+                "text"
+              ]
+            },
+            {
+              "id": "sliceImageModel",
+              "label": "生图模型",
+              "type": "model",
+              "modelCategories": [
+                "image"
+              ]
+            }
+          ],
+          "ui": "sliceDialog",
+          "presentation": "window"
+        },
+        "nodeTypes": [
+          "ai-image"
+        ],
+        "inputFields": [
+          "label"
+        ],
+        "resourceAccess": {
+          "self": true
+        },
+        "output": {
+          "mode": "create-node",
+          "nodeType": "ai-image",
+          "fields": [
+            "label",
+            "imageUrl",
+            "description",
+            "prompt",
+            "model",
+            "provider",
+            "uiSliceSource"
+          ]
+        }
+      }
+    ]
+  }
+}

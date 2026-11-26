@@ -1,4 +1,4 @@
-//! 插件的受控联网和私有偏好。调用方只提交身份与 JSON，不接收路径或执行源码。
+//! 插件的受控联网、私有偏好和原生切图。插件界面只持有宿主签发的引用。
 use crate::{
     path_policy::ensure_trusted_caller,
     plugin_registry::{self, PluginHostGrant},
@@ -13,16 +13,26 @@ use std::{
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Webview};
+use tauri::{AppHandle, Manager, Webview};
+use tauri_plugin_dialog::DialogExt;
 use tokio_util::sync::CancellationToken;
 use url::Url;
+
+#[path = "ui_slice.rs"]
+mod ui_slice;
+#[path = "ui_slice_pixels.rs"]
+mod ui_slice_pixels;
 
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_SETTINGS_BYTES: usize = 256 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const UI_SLICE_SELECTION_TTL: Duration = Duration::from_secs(60);
+const MAX_UI_SLICE_SESSIONS: usize = 8;
+const MAX_UI_SLICE_DRAFTS: usize = 192;
+static UI_SLICE_PICKER_SLOT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PluginHostIdentity {
     pub plugin_id: String,
@@ -30,6 +40,14 @@ pub(crate) struct PluginHostIdentity {
     pub revision_digest: String,
     pub tool_id: String,
     pub invocation_id: String,
+}
+
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum UiSlicePicker {
+    OpenDraft,
+    SaveDraft,
+    Export,
 }
 
 #[derive(Deserialize)]
@@ -50,6 +68,31 @@ pub(crate) enum HostEffect {
     Set { key: String, value: Value },
     #[serde(rename = "settings.delete")]
     Delete { key: String },
+    #[serde(rename = "image.uiSlice.sessionOpen", rename_all = "camelCase")]
+    UiSliceSessionOpen { native_window: bool },
+    #[serde(rename = "image.uiSlice.sessionClose")]
+    UiSliceSessionClose,
+    #[serde(rename = "image.uiSlice.inspect", rename_all = "camelCase")]
+    UiSliceInspect { source_path: String, assume_srgb: bool },
+    #[serde(rename = "image.uiSlice.pick", rename_all = "camelCase")]
+    UiSlicePick { purpose: UiSlicePicker },
+    #[serde(rename = "image.uiSlice.openDraft", rename_all = "camelCase")]
+    UiSliceOpenDraft { source_path: String, selection_id: String, assume_srgb: bool },
+    #[serde(rename = "image.uiSlice.publish", rename_all = "camelCase")]
+    UiSlicePublish {
+        source_path: String,
+        selection_id: Option<String>,
+        source_sha256: String,
+        assume_srgb: bool,
+        items: Vec<ui_slice_pixels::Item>,
+        #[serde(default)]
+        missing: Vec<ui_slice::Missing>,
+        #[serde(default)]
+        include_source: bool,
+        #[serde(default)]
+        new_draft: bool,
+        draft_ref: Option<String>,
+    },
 }
 
 fn get_method() -> String {
@@ -79,7 +122,7 @@ struct RequestLease {
     token: CancellationToken,
 }
 impl RequestLease {
-    fn register(plugin_id: &str, request_id: &str) -> Result<Self, String> {
+    fn register(plugin_id: &str, request_id: &str, session: Option<&CancellationToken>) -> Result<Self, String> {
         if !valid_id(plugin_id) || !valid_id(request_id) {
             return Err("插件请求身份无效".into());
         }
@@ -103,7 +146,7 @@ impl RequestLease {
         {
             return Err("插件宿主请求并发已达上限".into());
         }
-        let token = CancellationToken::new();
+        let token = session.map_or_else(CancellationToken::new, CancellationToken::child_token);
         map.insert(
             key.clone(),
             PendingRequest {
@@ -130,6 +173,9 @@ pub(crate) fn cancel_plugin_requests(plugin_id: Option<&str>) {
                 entry.token.cancel();
             }
         }
+    }
+    if plugin_id.is_none_or(|id| id == UI_SLICE_PLUGIN_ID) {
+        revoke_all_ui_slice_sessions();
     }
 }
 
@@ -173,7 +219,17 @@ pub async fn cancel_plugin_host_effect(
     request_id: String,
 ) -> Result<(), String> {
     ensure_host_caller(&webview)?;
-    cancel_request(&plugin_id, &request_id)
+    let result = cancel_request(&plugin_id, &request_id);
+    if plugin_id == UI_SLICE_PLUGIN_ID {
+        if let Ok(mut sessions) = ui_slice_sessions().lock() {
+            for session in sessions.values_mut() {
+                if session.selection.as_ref().is_some_and(|selection| selection.id == request_id) {
+                    session.selection = None;
+                }
+            }
+        }
+    }
+    result
 }
 
 fn require_permission(grant: &PluginHostGrant, permission: &str) -> Result<(), String> {
@@ -593,6 +649,194 @@ fn execute_settings(
     }
 }
 
+const UI_SLICE_PLUGIN_ID: &str = "ai-canvas.ui-slice";
+const UI_SLICE_TOOL_ID: &str = "slice-image";
+const UI_SLICE_SESSION_CLOSED: &str = "切图会话已关闭";
+const UI_SLICE_SELECTION_INVALID: &str = "文件选择已失效，请重新选择";
+
+pub(super) struct UiSliceSelection {
+    pub(super) path: PathBuf,
+    pub(super) identity: file_id::FileId,
+}
+
+struct PickedUiSlicePath {
+    id: String,
+    purpose: UiSlicePicker,
+    selection: UiSliceSelection,
+    created_at: Instant,
+}
+
+struct UiSliceDraft {
+    source_sha256: String,
+    file: ui_slice::DraftFile,
+}
+
+struct UiSliceSession {
+    identity: PluginHostIdentity,
+    native_window: bool,
+    token: CancellationToken,
+    selection: Option<PickedUiSlicePath>,
+    drafts: HashMap<String, UiSliceDraft>,
+}
+
+impl UiSliceSession {
+    fn take_selection(&mut self, id: &str, purpose: UiSlicePicker) -> Result<UiSliceSelection, String> {
+        if self.selection.as_ref().is_some_and(|selection| selection.created_at.elapsed() >= UI_SLICE_SELECTION_TTL) {
+            self.selection = None;
+        }
+        if self.selection.as_ref().is_some_and(|selection| selection.id == id && selection.purpose == purpose) {
+            return self.selection.take().map(|selection| selection.selection).ok_or_else(|| UI_SLICE_SELECTION_INVALID.into());
+        }
+        Err(UI_SLICE_SELECTION_INVALID.into())
+    }
+}
+
+impl Drop for UiSliceSession {
+    fn drop(&mut self) {
+        self.token.cancel();
+    }
+}
+
+static UI_SLICE_SESSIONS: OnceLock<Mutex<HashMap<String, UiSliceSession>>> = OnceLock::new();
+
+fn ui_slice_sessions() -> &'static Mutex<HashMap<String, UiSliceSession>> {
+    UI_SLICE_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn with_ui_slice_session<T>(
+    identity: &PluginHostIdentity,
+    operation: impl FnOnce(&mut UiSliceSession) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut sessions = ui_slice_sessions().lock().map_err(|_| UI_SLICE_SESSION_CLOSED)?;
+    let session = sessions.get_mut(&identity.invocation_id)
+        .filter(|session| session.identity == *identity && !session.token.is_cancelled())
+        .ok_or(UI_SLICE_SESSION_CLOSED)?;
+    operation(session)
+}
+
+pub(crate) fn revoke_ui_slice_session(plugin_id: &str, invocation_id: &str) {
+    if plugin_id == UI_SLICE_PLUGIN_ID {
+        if let Ok(mut sessions) = ui_slice_sessions().lock() {
+            sessions.remove(invocation_id);
+        }
+    }
+}
+
+pub(crate) fn revoke_all_ui_slice_sessions() {
+    if let Ok(mut sessions) = ui_slice_sessions().lock() {
+        sessions.clear();
+    }
+}
+
+fn with_ui_slice_authority<T>(
+    app: &AppHandle,
+    identity: &PluginHostIdentity,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    plugin_registry::with_plugin_host_authority(app, identity, |_, grant| {
+        require_permission(grant, "ui.custom")?;
+        require_permission(grant, "files.connected.read")?;
+        require_permission(grant, "files.output.create")?;
+        operation()
+    })
+}
+
+fn save_ui_slice_draft(
+    identity: &PluginHostIdentity,
+    token: &CancellationToken,
+    mut result: Value,
+    source_sha256: String,
+    draft_ref: Option<String>,
+) -> Result<Value, String> {
+    let fields = result.as_object_mut().ok_or("切图回执格式无效")?;
+    if let Some(draft) = fields.remove("draft") {
+        let draft = serde_json::from_value(draft).map_err(|_| "切图草稿回执格式无效")?;
+        let draft_ref = match draft_ref {
+            Some(id) => id,
+            None => {
+                let bytes = crate::secure_random::random_bytes::<32>().map_err(|_| "无法分配草稿引用")?;
+                bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+            }
+        };
+        with_ui_slice_session(identity, |session| {
+            ui_slice_pixels::check_cancelled(token)?;
+            if session.drafts.len() >= MAX_UI_SLICE_DRAFTS && !session.drafts.contains_key(&draft_ref) {
+                return Err("当前窗口的草稿引用已达上限".into());
+            }
+            session.drafts.insert(draft_ref.clone(), UiSliceDraft { source_sha256, file: draft });
+            Ok(())
+        })?;
+        fields.insert("draftRef".into(), Value::String(draft_ref));
+    }
+    Ok(result)
+}
+
+async fn pick_ui_slice_path(
+    app: &AppHandle,
+    identity: &PluginHostIdentity,
+    request_id: &str,
+    purpose: UiSlicePicker,
+    native_window: bool,
+    token: &CancellationToken,
+) -> Result<Value, String> {
+    let _picker = tokio::select! {
+        biased;
+        _ = token.cancelled() => return Err("切图操作已取消".into()),
+        slot = UI_SLICE_PICKER_SLOT.acquire() => slot.map_err(|_| "文件选择器不可用")?,
+    };
+    let owner_label = with_ui_slice_authority(app, identity, || {
+        let owner_label = crate::plugin_window::dialog_owner_label(identity, native_window)?;
+        with_ui_slice_session(identity, |session| {
+            ui_slice_pixels::check_cancelled(token)?;
+            session.selection = None;
+            Ok(owner_label)
+        })
+    })?;
+    let owner = app.get_webview_window(&owner_label).ok_or("切图窗口已关闭")?;
+    let dialog = app.dialog().file().set_parent(&owner);
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let done = move |selected| { let _ = sender.send(selected); };
+    match purpose {
+        UiSlicePicker::OpenDraft => dialog.set_title("选择切图工作稿")
+            .add_filter("切图工作稿", &["zip"]).pick_file(done),
+        UiSlicePicker::SaveDraft => dialog.set_title("选择识别草稿保存目录").pick_folder(done),
+        UiSlicePicker::Export => dialog.set_title("选择切图 ZIP 保存目录").pick_folder(done),
+    }
+    // 系统对话框没有取消句柄。等它关闭再释放选择器，已取消的请求不会登记路径。
+    let selected = receiver.await.map_err(|_| "文件选择器已关闭")?;
+    ui_slice_pixels::check_cancelled(token)?;
+    let Some(selected) = selected else { return Ok(Value::Null); };
+    let path = selected.simplified().into_path().map_err(|_| "请选择本机路径")?;
+    let root = crate::path_policy::canonicalize_simplified(&path).map_err(|_| "所选路径不可用")?;
+    let file_identity = file_id::get_file_id(&root).map_err(|_| "无法确认所选路径身份")?;
+    let roots = std::slice::from_ref(&root);
+    let opening_file = matches!(purpose, UiSlicePicker::OpenDraft);
+    let verified = if opening_file {
+        crate::path_policy::authorize_existing_plain_file_with_roots(
+            app, path.to_str().ok_or("工作稿文件名无效")?, roots,
+        )?
+    } else {
+        crate::path_policy::reauthorize_existing_plain_directory_with_roots(app, &path, roots)?
+    };
+    if verified != root || file_id::get_file_id(&verified).ok() != Some(file_identity) {
+        return Err("所选路径已变化，请重新选择".into());
+    }
+    verified.to_str().ok_or("所选路径名称无效")?;
+    with_ui_slice_authority(app, identity, || {
+        if crate::plugin_window::dialog_owner_label(identity, native_window)? != owner_label {
+            return Err(UI_SLICE_SESSION_CLOSED.into());
+        }
+        with_ui_slice_session(identity, |session| {
+            ui_slice_pixels::check_cancelled(token)?;
+            session.selection = Some(PickedUiSlicePath {
+                id: request_id.to_owned(), purpose, created_at: Instant::now(),
+                selection: UiSliceSelection { path: verified, identity: file_identity },
+            });
+            Ok(Value::String(request_id.to_owned()))
+        })
+    })
+}
+
 #[tauri::command]
 pub async fn execute_plugin_host_effect(
     app: AppHandle,
@@ -605,7 +849,112 @@ pub async fn execute_plugin_host_effect(
     if !valid_id(&identity.invocation_id) {
         return Err("插件调用 ID 无效".into());
     }
-    let lease = RequestLease::register(&identity.plugin_id, &request_id)?;
+    if matches!(&effect,
+        HostEffect::UiSliceSessionOpen { .. } | HostEffect::UiSliceSessionClose
+        | HostEffect::UiSliceInspect { .. } | HostEffect::UiSlicePick { .. }
+        | HostEffect::UiSliceOpenDraft { .. } | HostEffect::UiSlicePublish { .. }
+    ) {
+        if identity.plugin_id != UI_SLICE_PLUGIN_ID || identity.tool_id != UI_SLICE_TOOL_ID {
+            return Err("当前插件工具不能使用切图能力".into());
+        }
+        if matches!(&effect, HostEffect::UiSliceSessionClose) {
+            // 停用之后也要允许清理，但会话身份仍然必须完全一致。
+            let mut sessions = ui_slice_sessions().lock().map_err(|_| UI_SLICE_SESSION_CLOSED)?;
+            if sessions.get(&identity.invocation_id).is_some_and(|session| session.identity == identity) {
+                sessions.remove(&identity.invocation_id);
+            }
+            return Ok(Value::Null);
+        }
+        if let HostEffect::UiSliceSessionOpen { native_window } = effect {
+            return with_ui_slice_authority(&app, &identity, || {
+                let mut sessions = ui_slice_sessions().lock().map_err(|_| UI_SLICE_SESSION_CLOSED)?;
+                if sessions.len() >= MAX_UI_SLICE_SESSIONS || sessions.contains_key(&identity.invocation_id) {
+                    return Err("无法创建切图文件授权会话".into());
+                }
+                sessions.insert(identity.invocation_id.clone(), UiSliceSession {
+                    identity: identity.clone(), native_window, token: CancellationToken::new(),
+                    selection: None, drafts: HashMap::new(),
+                });
+                Ok(Value::Null)
+            });
+        }
+        let (native_window, session_token) = with_ui_slice_session(&identity, |session| {
+            Ok((session.native_window, session.token.clone()))
+        })?;
+        let lease = RequestLease::register(&identity.plugin_id, &request_id, Some(&session_token))?;
+        if let HostEffect::UiSlicePick { purpose } = effect {
+            return pick_ui_slice_path(&app, &identity, &request_id, purpose, native_window, &lease.token).await;
+        }
+        let slot = tokio::select! {
+            biased;
+            _ = lease.token.cancelled() => return Err("切图操作已取消".into()),
+            slot = ui_slice::SLOT.acquire() => slot.map_err(|_| "切图工作队列已关闭")?,
+        };
+        return tauri::async_runtime::spawn_blocking(move || {
+            let _slot = slot;
+            let authorize = |operation: &mut dyn FnMut() -> Result<(), String>| {
+                with_ui_slice_authority(&app, &identity, || {
+                    crate::plugin_window::dialog_owner_label(&identity, native_window)?;
+                    with_ui_slice_session(&identity, |_| {
+                        ui_slice_pixels::check_cancelled(&lease.token)?;
+                        operation()
+                    })
+                })
+            };
+            authorize(&mut || Ok(()))?;
+            match effect {
+                HostEffect::UiSliceInspect { source_path, assume_srgb } => {
+                    let result = ui_slice::inspect(&app, &source_path, assume_srgb, &lease.token)?;
+                    authorize(&mut || Ok(()))?;
+                    Ok(result)
+                }
+                HostEffect::UiSliceOpenDraft { source_path, selection_id, assume_srgb } => {
+                    let selection = with_ui_slice_session(&identity, |session| {
+                        session.take_selection(&selection_id, UiSlicePicker::OpenDraft)
+                    })?;
+                    let result = ui_slice::open_draft(&app, &selection, &source_path, assume_srgb, &lease.token)?;
+                    authorize(&mut || Ok(()))?;
+                    let source_sha256 = result["sourceSha256"].as_str().ok_or("切图原图回执无效")?.to_owned();
+                    save_ui_slice_draft(&identity, &lease.token, result, source_sha256, None)
+                }
+                HostEffect::UiSlicePublish {
+                    source_path, selection_id, source_sha256, assume_srgb, items, missing, include_source,
+                    new_draft, draft_ref,
+                } => {
+                    let selection;
+                    let draft;
+                    let destination = match (selection_id.as_deref(), new_draft, draft_ref.as_deref()) {
+                        (Some(id), false, None) => {
+                            let purpose = if include_source { UiSlicePicker::SaveDraft } else { UiSlicePicker::Export };
+                            selection = with_ui_slice_session(&identity, |session| session.take_selection(id, purpose))?;
+                            ui_slice::Destination::Directory(&selection)
+                        }
+                        (Some(id), true, None) if include_source => {
+                            selection = with_ui_slice_session(&identity, |session| session.take_selection(id, UiSlicePicker::SaveDraft))?;
+                            ui_slice::Destination::NewDraft(&selection)
+                        }
+                        (None, false, Some(id)) if include_source => {
+                            draft = with_ui_slice_session(&identity, |session| {
+                                session.drafts.get(id)
+                                    .filter(|draft| draft.source_sha256 == source_sha256)
+                                    .map(|draft| draft.file.clone())
+                                    .ok_or_else(|| "草稿引用已失效，请重新打开草稿".into())
+                            })?;
+                            ui_slice::Destination::OverwriteDraft(&draft)
+                        }
+                        _ => return Err("切图保存目标无效".into()),
+                    };
+                    let result = ui_slice::publish(&app, ui_slice::Publish {
+                        source: &source_path, destination, source_sha256: &source_sha256,
+                        assume_srgb, items: &items, missing: &missing, include_source,
+                    }, &request_id, &lease.token, authorize)?;
+                    save_ui_slice_draft(&identity, &lease.token, result, source_sha256, draft_ref)
+                }
+                _ => unreachable!("slice effects matched above"),
+            }
+        }).await.map_err(|_| "切图工作线程异常")?;
+    }
+    let lease = RequestLease::register(&identity.plugin_id, &request_id, None)?;
     if let HostEffect::Network {
         url,
         method,
@@ -1018,12 +1367,49 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
     #[test]
+    fn slice_selection_is_purpose_bound_single_use_and_expires() {
+        let selected = || PickedUiSlicePath {
+            id: "selection".into(), purpose: UiSlicePicker::Export,
+            selection: UiSliceSelection {
+                path: PathBuf::from("output"), identity: file_id::FileId::new_inode(1, 2),
+            },
+            created_at: Instant::now(),
+        };
+        let mut session = UiSliceSession {
+            identity: PluginHostIdentity {
+                plugin_id: UI_SLICE_PLUGIN_ID.into(), tool_id: UI_SLICE_TOOL_ID.into(),
+                source_digest: "source".into(), revision_digest: "revision".into(),
+                invocation_id: "session".into(),
+            },
+            native_window: false,
+            token: CancellationToken::new(),
+            selection: Some(selected()),
+            drafts: HashMap::new(),
+        };
+        assert!(session.take_selection("other", UiSlicePicker::Export).is_err());
+        assert!(session.take_selection("selection", UiSlicePicker::SaveDraft).is_err());
+        assert_eq!(session.take_selection("selection", UiSlicePicker::Export).unwrap().path, PathBuf::from("output"));
+        assert!(session.take_selection("selection", UiSlicePicker::Export).is_err());
+
+        session.selection = Some(PickedUiSlicePath {
+            created_at: Instant::now() - UI_SLICE_SELECTION_TTL,
+            ..selected()
+        });
+        assert!(session.take_selection("selection", UiSlicePicker::Export).is_err());
+        assert!(session.selection.is_none());
+
+        let operation = session.token.child_token();
+        drop(session);
+        assert!(operation.is_cancelled());
+    }
+
+    #[test]
     fn early_cancellation_and_revision_revocation_stop_requests() {
         let id = format!("test-{}", test_id());
         cancel_request(&id, "early").unwrap();
-        assert!(RequestLease::register(&id, "early").is_err());
-        let lease = RequestLease::register(&id, "active").unwrap();
-        assert!(RequestLease::register(&id, "active").is_err());
+        assert!(RequestLease::register(&id, "early", None).is_err());
+        let lease = RequestLease::register(&id, "active", None).unwrap();
+        assert!(RequestLease::register(&id, "active", None).is_err());
         cancel_plugin_requests(Some(&id));
         assert!(lease.token.is_cancelled());
     }

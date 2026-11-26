@@ -5,7 +5,8 @@ import type {
   InstalledPlugin, PluginJsonValue, PluginNodeToolManifest, PluginUiRequestKind,
   PluginUiWindowBinding, PluginUiWindowEvent,
 } from '../../types/plugin';
-import { createPluginUiNativeSession } from './pluginUiSessionService';
+import { createPluginUiNativeSession, MAX_UI_SLICE_CROP_GENERATIONS } from './pluginUiSessionService';
+import { UI_SLICE_PLUGIN_ID, UI_SLICE_TOOL_ID } from './pluginUiSliceService';
 import { captureLegacyCanvasContext, isProjectExpectedContextCurrent, parseProjectExpectedContext } from '../projectExecutionContext';
 
 // Windows WebView2 实机已验证专用窗口、CSP/IPC 拒绝、桥接与写回；详见插件实施记录。
@@ -42,6 +43,7 @@ interface WindowRecord {
   contextResponded: boolean;
   seenRequests: Set<string>;
   replicaStatusRequests: number;
+  sliceCropRequests: number;
   closeRequested: boolean;
   pending: number;
   awaitingClose?: boolean;
@@ -53,13 +55,15 @@ const REQUEST_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f
 const REQUEST_KINDS = new Set<PluginUiRequestKind>(['context', 'effect', 'set-parameters', 'submit', 'close', 'toast']);
 const MAX_REQUESTS = 192;
 const MAX_REPLICA_STATUS_REQUESTS = 2048;
+const REPLICA_JOB_ID = /^video-replica-[a-zA-Z0-9-]{1,80}$/u;
 
-function isReplicaStatusRequest(request: { kind: PluginUiRequestKind; payload: unknown }): boolean {
-  if (request.kind !== 'effect' || !request.payload || typeof request.payload !== 'object' || Array.isArray(request.payload)) return false;
-  const payload = request.payload as Record<string, unknown>;
-  const keys = Object.keys(payload);
-  return keys.length === 2 && keys.every((key) => key === 'type' || key === 'jobId') && payload.type === 'video.replicaJob.status'
-    && typeof payload.jobId === 'string' && /^video-replica-[a-zA-Z0-9-]{1,80}$/u.test(payload.jobId);
+function isReplicaStatusRequest(payload: Record<string, unknown> | undefined): boolean {
+  if (payload?.type !== 'video.replicaJob.status' || typeof payload.jobId !== 'string'
+    || !REPLICA_JOB_ID.test(payload.jobId) || !Object.hasOwn(payload, 'type') || !Object.hasOwn(payload, 'jobId')) return false;
+  for (const key in payload) {
+    if (key !== 'type' && key !== 'jobId' && Object.hasOwn(payload, key)) return false;
+  }
+  return true;
 }
 
 function sameBinding(value: unknown, expected: PluginUiWindowBinding): boolean {
@@ -139,20 +143,25 @@ async function receive(record: WindowRecord, event: PluginUiWindowEvent): Promis
     return;
   }
   // 只读状态查询不挤占普通操作额度；任务身份和查询间隔仍由主窗口 Broker 复核。
-  const replicaStatus = event.type === 'request' && isReplicaStatusRequest(event);
-  const ordinaryRequests = record.seenRequests.size - record.replicaStatusRequests - Number(record.closeRequested);
+  const payload = event.type === 'request' && event.kind === 'effect' && event.payload
+    && typeof event.payload === 'object' && !Array.isArray(event.payload) ? event.payload as Record<string, unknown> : undefined;
+  const replicaStatus = isReplicaStatusRequest(payload);
+  const sliceCrop = payload?.type === 'model.generate' && payload.uiSliceCrop === true
+    && record.target.pluginId === UI_SLICE_PLUGIN_ID && record.target.toolId === UI_SLICE_TOOL_ID;
+  const ordinaryRequests = record.seenRequests.size - record.replicaStatusRequests - record.sliceCropRequests - Number(record.closeRequested);
   if (event.type !== 'request' || !REQUEST_ID.test(event.requestId)
     || !REQUEST_KINDS.has(event.kind) || record.seenRequests.has(event.requestId)
     || record.pending >= 8
-    || (replicaStatus ? record.replicaStatusRequests >= MAX_REPLICA_STATUS_REQUESTS
-      : event.kind !== 'close' && ordinaryRequests >= MAX_REQUESTS)
-    || (event.kind === 'close' && record.closeRequested)
-    || record.seenRequests.size >= MAX_REQUESTS + MAX_REPLICA_STATUS_REQUESTS + 1) {
+    || (replicaStatus && record.replicaStatusRequests >= MAX_REPLICA_STATUS_REQUESTS)
+    || (sliceCrop && record.sliceCropRequests >= MAX_UI_SLICE_CROP_GENERATIONS)
+    || (!replicaStatus && !sliceCrop && event.kind !== 'close' && ordinaryRequests >= MAX_REQUESTS)
+    || (event.kind === 'close' && record.closeRequested)) {
     disposeRecord(record, true);
     return;
   }
   record.seenRequests.add(event.requestId);
   if (replicaStatus) record.replicaStatusRequests += 1;
+  if (sliceCrop) record.sliceCropRequests += 1;
   if (event.kind === 'close') record.closeRequested = true;
   record.pending += 1;
   try {
@@ -270,7 +279,7 @@ export async function openPluginUiWindow(options: OpenWindowOptions): Promise<Pl
   const record: WindowRecord = {
     key, target: { projectId, nodeId: options.nodeId, pluginId: options.plugin.id, toolId: options.tool.id }, expectedContext,
     channel, disposed: false, nativeStarted: false, opened: false, contextResponded: false,
-    seenRequests: new Set(), replicaStatusRequests: 0, closeRequested: false, pending: 0,
+    seenRequests: new Set(), replicaStatusRequests: 0, sliceCropRequests: 0, closeRequested: false, pending: 0,
     // 推迟到 microtask，先完成登记；重复调用共享同一创建 Promise，不重复 mint。
     ready: Promise.resolve().then(async () => {
       try {

@@ -1,13 +1,13 @@
 [CmdletBinding()]
 param(
     [string]$OutputRoot,
-    [switch]$NoOpen
+    [switch]$NoOpen,
+    [switch]$KeepBuildCache
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
-[Console]::OutputEncoding = $utf8
 $OutputEncoding = $utf8
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $workspaceRoot = Split-Path $projectRoot -Parent
@@ -19,6 +19,11 @@ $buildLock = $null
 $resourceDirectory = $null
 $stagedRuntimeDll = $null
 $exitCode = 1
+$cleanup = [ordered]@{}
+$protectedPaths = @()
+$cacheRoot = Join-Path $workspaceRoot '.build-cache'
+$oldEnvironment = [Environment]::GetEnvironmentVariables('Process')
+$oldEncoding = [Console]::OutputEncoding
 
 function Write-BuildMessage([string]$Message) {
     Write-Host $Message
@@ -32,6 +37,58 @@ function Get-Sha256([string]$Path) {
         try { return [BitConverter]::ToString($hash.ComputeHash($stream)).Replace('-', '').ToLowerInvariant() }
         finally { $hash.Dispose() }
     } finally { $stream.Dispose() }
+}
+
+function Test-InDirectory([string]$Path, [string]$Root) {
+    $prefix = $Root.TrimEnd('\') + '\'
+    return ($Path.TrimEnd('\') + '\').StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-OrdinaryBuildPath([string]$Path) {
+    for ($current = $Path; $current; $current = [IO.Path]::GetDirectoryName($current)) {
+        try { $attributes = [IO.File]::GetAttributes($current) }
+        catch [IO.FileNotFoundException] { continue }
+        catch [IO.DirectoryNotFoundException] { continue }
+        if ($attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Build path redirects through $current" }
+    }
+}
+
+function Add-CleanupPath([string]$Root, [string]$Relative, [switch]$EmptyOnly) {
+    $path = [IO.Path]::GetFullPath((Join-Path $Root $Relative))
+    if ($path -eq $Root -or !(Test-InDirectory $path $Root)) { throw "Invalid cleanup path: $path" }
+    foreach ($protected in $script:protectedPaths) {
+        if ((Test-InDirectory $protected $path) -or (Test-InDirectory $path $protected)) { return }
+    }
+    Assert-OrdinaryBuildPath $path
+    $script:cleanup[$path] = $EmptyOnly.IsPresent
+}
+
+function Remove-BuildPath([string]$Path, [bool]$EmptyOnly) {
+    if (!$script:cleanup.Contains($Path)) { throw "Unregistered cleanup path: $Path" }
+    Assert-OrdinaryBuildPath $Path
+    if (![IO.Directory]::Exists($Path)) {
+        if ([IO.File]::Exists($Path)) { [IO.File]::Delete($Path) }
+        return
+    }
+    if ($EmptyOnly) {
+        if (!([IO.Directory]::EnumerateFileSystemEntries($Path) | Select-Object -First 1)) { [IO.Directory]::Delete($Path) }
+        return
+    }
+    try { [IO.Directory]::Delete($Path, $true) }
+    catch [UnauthorizedAccessException] {
+        Clear-ReadOnlyBuildEntries $Path
+        [IO.Directory]::Delete($Path, $true)
+    }
+}
+
+function Clear-ReadOnlyBuildEntries([string]$Directory) {
+    foreach ($entry in [IO.DirectoryInfo]::new($Directory).EnumerateFileSystemInfos()) {
+        if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+        if ($entry.Attributes -band [IO.FileAttributes]::ReadOnly) {
+            $entry.Attributes = $entry.Attributes -band (-bnot [IO.FileAttributes]::ReadOnly)
+        }
+        if ($entry -is [IO.DirectoryInfo]) { Clear-ReadOnlyBuildEntries $entry.FullName }
+    }
 }
 
 function Invoke-BuildStep([string]$Label, [string]$Executable, [string[]]$Arguments, [switch]$CompactFrontendOutput) {
@@ -66,6 +123,7 @@ function Invoke-BuildStep([string]$Label, [string]$Executable, [string[]]$Argume
 try {
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'This script requires Windows x64.' }
     if (![Environment]::Is64BitOperatingSystem) { throw 'Windows x64 is required.' }
+    [Console]::OutputEncoding = $utf8
     Set-Location -LiteralPath $projectRoot
     $package = [IO.File]::ReadAllText((Join-Path $projectRoot 'package.json'), $utf8) | ConvertFrom-Json
     $tauri = [IO.File]::ReadAllText((Join-Path $projectRoot 'src-tauri\tauri.conf.json'), $utf8) | ConvertFrom-Json
@@ -74,10 +132,40 @@ try {
     if ($package.version -ne $tauri.version -or $package.version -ne $cargoVersion) { throw 'package.json, tauri.conf.json and Cargo.toml versions must match.' }
     if ($package.version -notmatch '^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$') { throw 'Invalid application version.' }
 
-    $cacheRoot = Join-Path $workspaceRoot '.build-cache'
+    Assert-OrdinaryBuildPath (Join-Path $cacheRoot 'windows-build.lock')
     [IO.Directory]::CreateDirectory($cacheRoot) | Out-Null
     try { $buildLock = [IO.File]::Open((Join-Path $cacheRoot 'windows-build.lock'), 'OpenOrCreate', 'ReadWrite', 'None') }
     catch { throw 'Another local build is using this workspace. Wait for it to finish.' }
+
+    $node = (Get-Command node.exe -ErrorAction Stop).Source
+    # Keep relative Cargo paths based on the .NET process directory, as in earlier builds.
+    $explicit = [ordered]@{}
+    foreach ($name in @('CARGO_HOME', 'CARGO_TARGET_DIR', 'CARGO_BUILD_BUILD_DIR')) {
+        $value = [Environment]::GetEnvironmentVariable($name, 'Process')
+        $explicit[$name] = if ($value) { [IO.Path]::GetFullPath($value) } else { $null }
+    }
+    $resolvePaths = @'
+const fs = require('node:fs'), path = require('node:path');
+function physical(p) {
+  try { return fs.realpathSync.native(p); } catch (e) {
+    if (e.code !== 'ENOENT' || path.dirname(p) === p) throw e;
+    return path.join(physical(path.dirname(p)), path.basename(p));
+  }
+}
+console.log(JSON.stringify(process.argv.slice(2).map(p => physical(path.resolve(p)))));
+'@
+    $explicitPaths = @($explicit.Values | Where-Object { $_ })
+    $locations = @($OutputRoot, $cacheRoot, (Join-Path $projectRoot 'dist'), (Join-Path $projectRoot 'node_modules')) + $explicitPaths
+    $resolved = $resolvePaths | & $node - @locations
+    if ($LASTEXITCODE -ne 0) { throw 'Could not resolve the delivery and cache paths.' }
+    $resolved = ConvertFrom-Json -InputObject $resolved
+    foreach ($root in $resolved[1..3]) {
+        if (Test-InDirectory $resolved[0] $root) { throw "Choose an output directory outside $root" }
+    }
+    $protectedPaths = $explicitPaths + @($resolved | Select-Object -Skip 4)
+    foreach ($path in $protectedPaths) {
+        if (Test-InDirectory $path (Join-Path $cacheRoot 'tmp')) { throw 'Explicit Cargo paths must be outside the packaging temp directory.' }
+    }
 
     $buildName = 'AI-Canvas-' + $package.version + '-local-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff')
     $outputDirectory = Join-Path $OutputRoot $buildName
@@ -89,13 +177,27 @@ try {
 
     # Discover tools in newly installed Rust locations without requiring a reboot.
     $rustBins = @()
-    if ($env:CARGO_HOME) { $rustBins += Join-Path $env:CARGO_HOME 'bin' }
+    if ($explicit.CARGO_HOME) { $rustBins += Join-Path $explicit.CARGO_HOME 'bin' }
     $rustBins += Join-Path ([Environment]::GetFolderPath('UserProfile')) '.cargo\bin'
     foreach ($directory in $rustBins) { if (Test-Path -LiteralPath $directory -PathType Container) { $env:Path = $directory + ';' + $env:Path } }
-    $node = (Get-Command node.exe -ErrorAction Stop).Source
     $cargo = (Get-Command cargo.exe -ErrorAction Stop).Source
     $rustc = (Get-Command rustc.exe -ErrorAction Stop).Source
     $npm = (Get-Command npm.cmd -ErrorAction Stop).Source
+    $git = $null
+    $gitCommand = Get-Command git.exe -ErrorAction SilentlyContinue
+    if ($gitCommand) { $git = $gitCommand.Source }
+    $sourceHead = $null
+    $sourceDirty = $null
+    if ($git) {
+        $previousPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $head = & $git rev-parse --verify HEAD 2>$null
+            if ($LASTEXITCODE -eq 0) { $sourceHead = $head }
+            $status = & $git status --porcelain --untracked-files=normal 2>$null
+            if ($LASTEXITCODE -eq 0) { $sourceDirty = [bool]$status }
+        } finally { $ErrorActionPreference = $previousPreference }
+    }
 
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
     if (!(Test-Path -LiteralPath $vswhere)) { throw 'Visual Studio C++ Build Tools and the Windows SDK are required.' }
@@ -110,13 +212,30 @@ try {
 
     # Keep large downloads/build caches beside the checkout, off the system drive.
     # Respect an explicitly configured cache, but never change user/global settings.
-    if (!$env:CARGO_HOME) { $env:CARGO_HOME = Join-Path $cacheRoot 'cargo' }
-    if (!$env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = Join-Path $cacheRoot 'target' }
-    $env:CARGO_HOME = [IO.Path]::GetFullPath($env:CARGO_HOME)
-    $env:CARGO_TARGET_DIR = [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)
+    foreach ($entry in $explicit.GetEnumerator()) {
+        [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process')
+    }
+    if (!$env:CARGO_HOME) {
+        $env:CARGO_HOME = Join-Path $cacheRoot 'cargo'
+        Assert-OrdinaryBuildPath $env:CARGO_HOME
+        if (!$KeepBuildCache) {
+            foreach ($name in @('registry', 'git', '.global-cache', '.package-cache', '.package-cache-mutate')) {
+                Add-CleanupPath $cacheRoot "cargo\$name"
+            }
+            Add-CleanupPath $cacheRoot 'cargo' -EmptyOnly
+        }
+    }
+    if (!$env:CARGO_TARGET_DIR) {
+        $env:CARGO_TARGET_DIR = Join-Path $cacheRoot 'target'
+        Assert-OrdinaryBuildPath $env:CARGO_TARGET_DIR
+        if (!$KeepBuildCache) { Add-CleanupPath $cacheRoot 'target' }
+    }
     $env:CARGO_TERM_COLOR = 'never'
     $env:NO_COLOR = '1'
-    $env:TEMP = Join-Path $cacheRoot 'tmp'
+    $tempRelative = 'tmp\' + [Guid]::NewGuid().ToString('N')
+    Add-CleanupPath $cacheRoot $tempRelative
+    if (![IO.Directory]::Exists((Join-Path $cacheRoot 'tmp'))) { Add-CleanupPath $cacheRoot 'tmp' -EmptyOnly }
+    $env:TEMP = Join-Path $cacheRoot $tempRelative
     $env:TMP = $env:TEMP
     [IO.Directory]::CreateDirectory($env:TEMP) | Out-Null
 
@@ -140,14 +259,21 @@ try {
         [IO.File]::WriteAllText($npmLockStamp, $npmLockHash, $utf8)
     }
 
+    if (![IO.Directory]::Exists((Join-Path $projectRoot 'dist'))) { Add-CleanupPath $projectRoot 'dist' }
+    $tsCache = Join-Path $projectRoot 'node_modules\.tmp'
+    foreach ($file in @('tsconfig.app.tsbuildinfo', 'tsconfig.node.tsbuildinfo')) {
+        if (![IO.File]::Exists((Join-Path $tsCache $file))) { Add-CleanupPath $tsCache $file }
+    }
+    if (![IO.Directory]::Exists($tsCache)) { Add-CleanupPath $projectRoot 'node_modules\.tmp' -EmptyOnly }
+
     # Use a temporary merge config instead of modifying the checked-in signing,
     # security, application identity, version, or feature configuration.
-    $localConfig = Join-Path $outputDirectory 'tauri-local.config.json'
+    $localConfig = Join-Path $env:TEMP 'tauri-local.config.json'
     [IO.File]::WriteAllText($localConfig, '{"bundle":{"createUpdaterArtifacts":false}}', $utf8)
     $target = 'x86_64-pc-windows-msvc'
     $releaseRoot = Join-Path $env:CARGO_TARGET_DIR "$target\release"
     $intermediateRoot = $env:CARGO_TARGET_DIR
-    if ($env:CARGO_BUILD_BUILD_DIR) { $intermediateRoot = [IO.Path]::GetFullPath($env:CARGO_BUILD_BUILD_DIR) }
+    if ($env:CARGO_BUILD_BUILD_DIR) { $intermediateRoot = $env:CARGO_BUILD_BUILD_DIR }
     $env:CARGO_BUILD_BUILD_DIR = $intermediateRoot
     $buildReleaseRoot = Join-Path $intermediateRoot "$target\release"
     # ort-sys rc.12 assumes the pre-Cargo-1.100 OUT_DIR depth. New Cargo places
@@ -175,6 +301,9 @@ try {
     # Stage on the source drive so an external CARGO_TARGET_DIR works too.
     $relativeResourceDirectory = 'target/local-nsis-' + [Guid]::NewGuid().ToString('N')
     $resourceDirectory = Join-Path (Join-Path $projectRoot 'src-tauri') $relativeResourceDirectory
+    $stageParent = Split-Path $resourceDirectory -Parent
+    Assert-OrdinaryBuildPath $resourceDirectory
+    if (![IO.Directory]::Exists($stageParent)) { Add-CleanupPath $projectRoot 'src-tauri\target' -EmptyOnly }
     [IO.Directory]::CreateDirectory($resourceDirectory) | Out-Null
     $stagedRuntimeDll = Join-Path $resourceDirectory 'DirectML.dll'
     Copy-Item -LiteralPath $runtimeDll -Destination $stagedRuntimeDll
@@ -197,41 +326,58 @@ try {
         Copy-Item -LiteralPath $installer.FullName -Destination $destination
         $artifacts += @{ file = $installer.Name; bytes = $installer.Length; sha256 = Get-Sha256 $destination }
     }
-    $sourceHead = $null
-    $sourceDirty = $null
-    if (Get-Command git.exe -ErrorAction SilentlyContinue) {
-        $previousPreference = $ErrorActionPreference
-        try {
-            $ErrorActionPreference = 'Continue'
-            $head = & git.exe rev-parse --verify HEAD 2>$null
-            if ($LASTEXITCODE -eq 0) { $sourceHead = $head }
-            $status = & git.exe status --porcelain --untracked-files=normal 2>$null
-            if ($LASTEXITCODE -eq 0) { $sourceDirty = [bool]$status }
-        } finally { $ErrorActionPreference = $previousPreference }
-        if ($null -eq $sourceHead -or $null -eq $sourceDirty) {
-            Write-BuildMessage 'Warning: Git source metadata is unavailable.'
-        }
+    if ($null -eq $sourceHead -or $null -eq $sourceDirty) {
+        Write-BuildMessage 'Warning: Git source metadata is unavailable.'
     }
     $metadata = @{ version = $package.version; kind = 'local-unsigned'; target = $target; builtAtUtc = [DateTime]::UtcNow.ToString('o'); sourceHead = $sourceHead; workingTreeDirty = $sourceDirty; runtime = @{ file = 'DirectML.dll'; sha256 = $runtimeHash }; artifacts = $artifacts }
     [IO.File]::WriteAllText((Join-Path $outputDirectory 'build-info.json'), ($metadata | ConvertTo-Json -Depth 5), $utf8)
-    Write-BuildMessage "`nBUILD SUCCEEDED. Installers and SHA-256 are in:"
-    Write-BuildMessage $outputDirectory
-    Write-BuildMessage 'Install manually when ready. This local package is not an official update release.'
     $exitCode = 0
-    if (!$NoOpen) { Start-Process explorer.exe -ArgumentList @('"' + $outputDirectory + '"') | Out-Null }
 } catch {
     Write-BuildMessage ('BUILD FAILED: ' + $_.Exception.Message)
-    Write-BuildMessage 'Resolve the reported error, then run the launcher again. Existing caches will be reused.'
 } finally {
     try {
-        if ($stagedRuntimeDll -and [IO.File]::Exists($stagedRuntimeDll)) { [IO.File]::Delete($stagedRuntimeDll) }
-        if ($resourceDirectory -and [IO.Directory]::Exists($resourceDirectory)) { [IO.Directory]::Delete($resourceDirectory) }
-    } catch {
-        Write-Warning ('Could not remove staged NSIS resources: ' + $_.Exception.Message)
+        if ($buildLock) {
+            try {
+                if ($resourceDirectory) { Assert-OrdinaryBuildPath $resourceDirectory }
+                if ($stagedRuntimeDll) { [IO.File]::Delete($stagedRuntimeDll) }
+                if ($resourceDirectory -and [IO.Directory]::Exists($resourceDirectory)) { [IO.Directory]::Delete($resourceDirectory) }
+            } catch {
+                Write-BuildMessage ('Cleanup failed: ' + $_.Exception.Message)
+                if ($exitCode -eq 0) { $exitCode = 2 }
+            }
+            foreach ($entry in $cleanup.GetEnumerator()) {
+                for ($attempt = 1; $attempt -le 3; $attempt++) {
+                    try { Remove-BuildPath $entry.Key $entry.Value; break }
+                    catch {
+                        if ($attempt -lt 3) { Start-Sleep -Milliseconds 250; continue }
+                        Write-BuildMessage ("Cleanup failed for {0}: {1}" -f $entry.Key, $_.Exception.Message)
+                        if ($exitCode -eq 0) { $exitCode = 2 }
+                    }
+                }
+            }
+        }
+        if ($exitCode -eq 0) { Write-BuildMessage ('BUILD SUCCEEDED. Installer, SHA-256 and log: ' + $outputDirectory) }
+        elseif ($exitCode -eq 2) { Write-BuildMessage ('Installer created; cleanup incomplete. See ' + $outputDirectory) }
+        elseif ($writer) { Write-BuildMessage ('Build log: ' + $outputDirectory) }
     } finally {
-        if ($writer) { $writer.Dispose() }
-        if ($buildLock) { $buildLock.Dispose() }
-        Set-Location -LiteralPath $originalLocation.Path
+        try { if ($writer) { $writer.Dispose() } }
+        finally {
+            if ($buildLock) { $buildLock.Dispose() }
+            foreach ($name in [Environment]::GetEnvironmentVariables('Process').Keys) {
+                if (!$oldEnvironment.ContainsKey($name)) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
+            }
+            foreach ($name in $oldEnvironment.Keys) {
+                if ([Environment]::GetEnvironmentVariable($name, 'Process') -cne $oldEnvironment[$name]) {
+                    [Environment]::SetEnvironmentVariable($name, $oldEnvironment[$name], 'Process')
+                }
+            }
+            [Console]::OutputEncoding = $oldEncoding
+            Set-Location -LiteralPath $originalLocation.Path
+        }
     }
+}
+if ($exitCode -eq 0 -and !$NoOpen) {
+    try { Start-Process explorer.exe -ArgumentList @('"' + $outputDirectory + '"') | Out-Null }
+    catch { Write-Warning ('Could not open installer folder: ' + $_.Exception.Message) }
 }
 exit $exitCode

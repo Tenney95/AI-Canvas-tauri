@@ -120,14 +120,16 @@ fn permission_directory_commands(directory: &std::path::Path) -> Result<BTreeSet
 
 #[cfg(not(test))]
 fn main() {
-    // 仅 MockRuntime 安全测试需要；集成测试不会继承主程序的 Windows manifest。
-    // 不把测试链接参数传播到正式二进制、库或其他平台。
+    // 启用 MockRuntime 的 Windows 测试程序需要公共控件 v6。
+    // rustc-link-arg-tests 只覆盖独立的测试 target，库的单元测试也需要清单。
     if std::env::var_os("CARGO_FEATURE_TAURI_CHANNEL_TESTS").is_some()
         && std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
         && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
     {
-        println!("cargo:rustc-link-arg-tests=/MANIFEST:EMBED");
-        println!("cargo:rustc-link-arg-tests=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'");
+        println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+        println!("cargo:rustc-link-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'");
+        // 主程序已有 Tauri 编译的清单资源，关闭链接器的额外清单生成。
+        println!("cargo:rustc-link-arg-bin=ai-canvas-tauri=/MANIFEST:NO");
     }
     println!("cargo:rerun-if-changed=src/lib.rs");
     println!("cargo:rerun-if-changed=permissions");

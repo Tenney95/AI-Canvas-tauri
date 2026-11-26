@@ -12,13 +12,19 @@ const channel = 'ai-canvas-plugin-ui-v1';
 function harness() {
   const listeners = new Map<string, (event: unknown) => void>();
   const attributes = new Map<string, string>();
-  const mount = vi.fn<(root: unknown, props: { locale: string; theme: string; host: unknown }) => void>();
+  const mount = vi.fn<(root: unknown, props: {
+    locale: string;
+    theme: string;
+    host: unknown;
+    runEffect: (effect: { type: string }) => Promise<unknown>;
+  }) => void>();
   const parent = { postMessage: vi.fn() };
+  const setTimeout = vi.fn(() => 1);
   Object.defineProperty(parent, 'document', { get: () => { throw new Error('cross origin'); } });
   const windowStub: Record<string, unknown> = {
     parent, origin: 'null',
     location: { protocol: 'blob:', hash: '#session=test-session&export=Review&bundle=http%3A%2F%2Fplugin-ui.localhost%2Ftest' },
-    setTimeout: () => 1, clearTimeout: vi.fn(),
+    setTimeout, clearTimeout: vi.fn(),
     addEventListener: (name: string, listener: (event: unknown) => void) => listeners.set(name, listener),
     dispatchEvent: vi.fn(),
   };
@@ -46,12 +52,39 @@ function harness() {
   const deliver = (data: Record<string, unknown>, sender: unknown = parent) => listeners.get('message')?.({
     source: sender, data: { channel, sessionId: 'test-session', ...data },
   });
-  const context = (locale: string | undefined = 'zh-CN', theme = 'dark') => deliver({
+  const context = (locale: string | undefined = 'zh-CN', theme = 'dark', host = { capabilities: ['javascript.async'] }) => deliver({
     direction: 'response', requestId: 'context-request', ok: true,
-    value: { locale, host: { capabilities: ['javascript.async'] }, theme, parameters: { prompt: 'draft' } },
+    value: { locale, host, theme, parameters: { prompt: 'draft' } },
   });
-  return { context, deliver, mount, attributes, windowStub };
+  return { context, deliver, mount, attributes, windowStub, setTimeout };
 }
+
+it('uses custom and unlimited timeouts only for UI slice requests', async () => {
+  const host = harness();
+  const defaults = { hostSeconds: 180, modelSeconds: 300, replySeconds: 30, maxSeconds: 1_073_741 };
+  const sliceHost = { capabilities: ['image.uiSlice'], uiSliceWait: defaults };
+  host.context('zh-CN', 'dark', sliceHost);
+  await flush();
+  const { runEffect } = host.mount.mock.calls[0][1];
+  const custom = { hostSeconds: 17, modelSeconds: 400, replySeconds: 8 };
+  const cases = [
+    [{ type: 'model.generate' }, 330_000],
+    [{ type: 'model.generate', uiSliceWait: custom }, 408_000],
+    [{ type: 'model.generate', uiSliceWait: { ...custom, modelSeconds: 0 } }, undefined],
+    [{ type: 'model.generate', uiSliceWait: { ...custom, replySeconds: 0 } }, undefined],
+    [{ type: 'image.uiSlice.inspect', uiSliceWait: custom }, 19_000],
+    [{ type: 'image.uiSlice.publish', uiSliceWait: { ...custom, hostSeconds: 0 } }, undefined],
+    [{ type: 'settings.get', uiSliceWait: { ...custom, hostSeconds: 0 } }, 180_000],
+  ] as const;
+  for (const [effect, timeout] of cases) {
+    host.setTimeout.mockClear();
+    const pending = runEffect(effect);
+    if (timeout === undefined) expect(host.setTimeout).not.toHaveBeenCalled();
+    else expect(host.setTimeout).toHaveBeenCalledWith(expect.any(Function), timeout);
+    host.deliver({ direction: 'response', requestId: 'context-request', ok: true, value: { type: effect.type, ok: true } });
+    await expect(pending).resolves.toMatchObject({ type: effect.type, ok: true });
+  }
+});
 
 describe('embedded plugin locale bridge', () => {
   it.each(['zh-CN', 'en-US', 'ja-JP', 'ko-KR'])('initializes document and props with %s', async (locale) => {

@@ -237,6 +237,15 @@ describe('本地插件只读取 Manifest 声明的文件', () => {
     expect(native.readFile).not.toHaveBeenCalled();
   });
 
+  it('在插件导入区拖入 ZIP 时提示解压，普通拖放仍静默忽略', async () => {
+    native.stat.mockResolvedValue({ isFile: true, isDirectory: false, size: 20 });
+    const paths = ['G:/plugins/ui-slice.ZIP'];
+    await expect(readLocalPluginPackage(paths, true)).rejects.toThrow('请先解压插件 ZIP');
+    await expect(readLocalPluginPackage(paths)).resolves.toBeNull();
+    expect(native.readDir).not.toHaveBeenCalled();
+    expect(native.readFile).not.toHaveBeenCalled();
+  });
+
   it('直接拖入 manifest.json 时只读取其声明文件', async () => {
     mountPackage();
     expect(await readLocalPluginPackage([`${ROOT}/manifest.json`])).not.toBeNull();

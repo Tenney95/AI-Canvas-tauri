@@ -27,10 +27,13 @@ use crate::plugin_registry::{plugin_private_dir, with_active_window_ui, PluginUi
 const MAX_SESSIONS: usize = 4;
 const MAX_REQUESTS: usize = 192;
 const MAX_REPLICA_STATUS_REQUESTS: usize = 2048;
+const MAX_UI_SLICE_CROP_GENERATIONS: usize = 2048;
 const MAX_PENDING: usize = 8;
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_REPLY_BYTES: usize = 32 * 1024 * 1024;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+// 与 pluginUiSessionService.ts 一致，保证两个有限秒数之和可用于浏览器定时器。
+const MAX_UI_SLICE_WAIT_SECONDS: u64 = 1_073_741;
 const HOST_HTML: &str = include_str!("window-host.html");
 const BOOTSTRAP: &str = include_str!("window-bootstrap.js");
 // 只放行 Tauri IPC 传输来源，不放行任何业务网络、asset 或 file 来源。
@@ -99,6 +102,41 @@ pub struct PluginWindowRequest {
     payload: Value,
 }
 
+impl PluginWindowRequest {
+    fn timeout(&self) -> Result<Option<Duration>, String> {
+        let identity = &self.binding.identity;
+        let default = Some(self.kind.timeout());
+        if identity.plugin_id != "ai-canvas.ui-slice" || identity.tool_id != "slice-image" {
+            return Ok(default);
+        }
+        let effect_type = self.payload.get("type").and_then(Value::as_str);
+        let model = self.kind == RequestKind::Effect && effect_type == Some("model.generate");
+        let waits = match (self.kind, effect_type) {
+            (RequestKind::Effect, Some("model.generate" | "image.uiSlice.inspect" | "image.uiSlice.openDraft" | "image.uiSlice.publish")) => {
+                self.payload.get("uiSliceWait")
+            }
+            (RequestKind::Submit, _) => self.payload.get("data").and_then(|data| data.get("uiSliceWait")),
+            _ => return Ok(default),
+        };
+        let (host_seconds, model_seconds, reply_seconds) = if let Some(waits) = waits {
+            let seconds = |key| {
+                waits.get(key).and_then(Value::as_u64)
+                    .filter(|seconds| *seconds <= MAX_UI_SLICE_WAIT_SECONDS)
+                    .ok_or_else(|| "切图等待设置无效".to_string())
+            };
+            (seconds("hostSeconds")?, seconds("modelSeconds")?, seconds("replySeconds")?)
+        } else {
+            (180, 300, 30)
+        };
+        if model {
+            return Ok((model_seconds != 0 && reply_seconds != 0)
+                .then(|| Duration::from_secs(model_seconds + reply_seconds)));
+        }
+        // 主窗口负责普通操作的期限，桥接额外留出 2 秒用于回包。
+        Ok((host_seconds != 0).then(|| Duration::from_secs(host_seconds + 2)))
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PluginWindowReply {
@@ -155,6 +193,7 @@ struct Session {
     pending: BTreeMap<String, PendingRequest>,
     seen_requests: BTreeSet<String>,
     replica_status_requests: usize,
+    ui_slice_crop_requests: usize,
     close_requested: bool,
     confirming_close: bool,
 }
@@ -167,6 +206,13 @@ struct WindowSessions {
 
 static SESSIONS: LazyLock<Mutex<WindowSessions>> =
     LazyLock::new(|| Mutex::new(WindowSessions::default()));
+
+pub(crate) fn dialog_owner_label(
+    identity: &crate::plugin_host_effects::PluginHostIdentity,
+    native_window: bool,
+) -> Result<String, String> {
+    SESSIONS.lock().map_err(|_| CLOSED_ERROR)?.dialog_owner_label(identity, native_window).map(str::to_owned)
+}
 
 fn valid_uuid(value: &str) -> bool {
     value.len() == 36
@@ -239,6 +285,21 @@ fn caller_matches(session: &Session, label: &str, window_label: &str, url: &Url)
 }
 
 impl WindowSessions {
+    fn dialog_owner_label(&self, identity: &crate::plugin_host_effects::PluginHostIdentity, native_window: bool) -> Result<&str, String> {
+        let session = match (native_window, self.sessions.get(&identity.invocation_id)) {
+            (false, None) => return Ok("main"),
+            (true, Some(session)) => session,
+            _ => return Err(CLOSED_ERROR.into()),
+        };
+        let bound = &session.options.binding.identity;
+        if bound.plugin_id != identity.plugin_id || bound.tool_id != identity.tool_id
+            || bound.source_digest != identity.source_digest || bound.revision_digest != identity.revision_digest
+        {
+            return Err(CLOSED_ERROR.into());
+        }
+        Ok(&session.label)
+    }
+
     fn next_label(&mut self) -> Result<String, String> {
         self.next_label = self.next_label.checked_add(1).ok_or("插件窗口编号已耗尽")?;
         Ok(format!("plugin-window-{}", self.next_label))
@@ -299,19 +360,26 @@ fn enqueue(
     {
         return Err("插件请求无效、重复或超过大小限制".into());
     }
-    // 只拆分只读查询预算；绑定任务身份与查询间隔仍由主窗口 Broker 校验。
     let replica_status = is_replica_status_request(request);
+    let identity = &session.options.binding.identity;
+    let slice_crop = identity.plugin_id == "ai-canvas.ui-slice"
+        && identity.tool_id == "slice-image"
+        && request.kind == RequestKind::Effect
+        && request.payload.get("type").and_then(Value::as_str) == Some("model.generate")
+        && request.payload.get("uiSliceCrop").and_then(Value::as_bool) == Some(true);
     let ordinary_requests = session.seen_requests.len()
         - session.replica_status_requests
+        - session.ui_slice_crop_requests
         - usize::from(session.close_requested);
     let budget_exhausted = if replica_status {
         session.replica_status_requests >= MAX_REPLICA_STATUS_REQUESTS
+    } else if slice_crop {
+        session.ui_slice_crop_requests >= MAX_UI_SLICE_CROP_GENERATIONS
     } else {
         request.kind != RequestKind::Close && ordinary_requests >= MAX_REQUESTS
     };
     if session.pending.len() >= MAX_PENDING
         || budget_exhausted
-        || session.seen_requests.len() >= MAX_REQUESTS + MAX_REPLICA_STATUS_REQUESTS + 1
         || (request.kind == RequestKind::Close && session.close_requested)
         || (request.kind.exclusive() && session.pending.values().any(|pending| pending.exclusive))
     {
@@ -321,6 +389,9 @@ fn enqueue(
     session.seen_requests.insert(request.request_id.clone());
     if replica_status {
         session.replica_status_requests += 1;
+    }
+    if slice_crop {
+        session.ui_slice_crop_requests += 1;
     }
     session.close_requested |= request.kind == RequestKind::Close;
     session.pending.insert(
@@ -335,6 +406,9 @@ fn enqueue(
 
 fn dispose_sessions(sessions: Vec<Session>, reason: CloseReason) {
     for session in sessions {
+        crate::plugin_host_effects::revoke_ui_slice_session(
+            &session.options.binding.identity.plugin_id, &session.options.binding.session_id,
+        );
         for (_, pending) in session.pending {
             let _ = pending.sender.send(Err(CLOSED_ERROR.into()));
         }
@@ -477,6 +551,7 @@ pub async fn open_plugin_ui_window<R: Runtime>(
                     pending: BTreeMap::new(),
                     seen_requests: BTreeSet::new(),
                     replica_status_requests: 0,
+                    ui_slice_crop_requests: 0,
                     close_requested: false,
                     confirming_close: false,
                 },
@@ -484,10 +559,11 @@ pub async fn open_plugin_ui_window<R: Runtime>(
             Ok((options.binding.clone(), label, false))
         })?;
     if reused {
-        if let Some(window) = app.get_webview_window(&label) {
+        let window = app.get_webview_window(&label).ok_or(CLOSED_ERROR)?;
+        if window.is_minimized().unwrap_or(true) {
             let _ = window.unminimize();
-            let _ = window.set_focus();
         }
+        let _ = window.set_focus();
         return Ok(OpenPluginWindowResult { binding, reused });
     }
     let build_result = (|| {
@@ -500,7 +576,11 @@ pub async fn open_plugin_ui_window<R: Runtime>(
                 .inner_size(1280.0, 860.0)
                 .min_inner_size(760.0, 540.0)
                 .resizable(true)
+                .minimizable(true)
+                .maximizable(true)
+                .skip_taskbar(false)
                 .decorations(true)
+                .prevent_overflow()
                 .center()
                 .visible(false)
                 .data_directory(profile)
@@ -564,14 +644,15 @@ pub async fn plugin_ui_window_request<R: Runtime>(
         }
     }
     let private_dir = plugin_private_dir(&app)?;
-    let (receiver, channel) =
+    let (receiver, channel, timeout) =
         with_active_window_ui(&private_dir, &request.binding.identity, |_| {
             let mut sessions = SESSIONS.lock().map_err(|_| CLOSED_ERROR)?;
             let session = sessions.bound_mut(&request.binding)?;
             if !caller_matches(session, webview.label(), webview.window().label(), &url) {
                 return Err("插件窗口调用方不匹配".into());
             }
-            Ok((enqueue(session, &request)?, session.channel.clone()))
+            let timeout = request.timeout()?;
+            Ok((enqueue(session, &request)?, session.channel.clone(), timeout))
         })?;
     if channel
         .send(PluginWindowEvent::Request {
@@ -585,7 +666,11 @@ pub async fn plugin_ui_window_request<R: Runtime>(
         revoke_session(&request.binding, CloseReason::HostDisconnected);
         return Err("主窗口桥接已断开".into());
     }
-    match tokio::time::timeout(request.kind.timeout(), receiver).await {
+    let reply = match timeout {
+        Some(timeout) => tokio::time::timeout(timeout, receiver).await,
+        None => Ok(receiver.await),
+    };
+    match reply {
         Ok(Ok(result)) => {
             let serialized = result?;
             // 主窗口发送回包与本任务恢复之间也可能发生撤销，不能返回已过期的数据。
@@ -722,7 +807,11 @@ pub fn handle_protocol<R: Runtime>(
 }
 
 pub(crate) fn on_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
+    if !matches!(event, WindowEvent::Destroyed | WindowEvent::CloseRequested { .. }) {
+        return;
+    }
     if window.label() == "main" && matches!(event, WindowEvent::Destroyed) {
+        crate::plugin_host_effects::revoke_all_ui_slice_sessions();
         revoke_all_sessions();
         return;
     }
@@ -817,6 +906,7 @@ mod tests {
             pending: BTreeMap::new(),
             seen_requests: BTreeSet::new(),
             replica_status_requests: 0,
+            ui_slice_crop_requests: 0,
             close_requested: false,
             confirming_close: false,
         }
@@ -829,6 +919,60 @@ mod tests {
             kind,
             payload: Value::Null,
         }
+    }
+
+    #[test]
+    fn ui_slice_request_timeout_respects_custom_and_unlimited_values() {
+        let mut request = request(RequestKind::Effect, 1);
+        request.payload = json!({ "type": "model.generate" });
+        assert_eq!(request.timeout().unwrap(), Some(Duration::from_secs(180)));
+        request.binding.identity.plugin_id = "ai-canvas.ui-slice".into();
+        assert_eq!(request.timeout().unwrap(), Some(Duration::from_secs(180)));
+        request.binding.identity.tool_id = "slice-image".into();
+        assert_eq!(request.timeout().unwrap(), Some(Duration::from_secs(330)));
+        request.payload["uiSliceWait"] = json!({ "hostSeconds": 17, "modelSeconds": 400, "replySeconds": 8 });
+        assert_eq!(request.timeout().unwrap(), Some(Duration::from_secs(408)));
+        request.payload["uiSliceWait"]["modelSeconds"] = json!(0);
+        assert_eq!(request.timeout().unwrap(), None);
+        request.payload["uiSliceWait"]["modelSeconds"] = json!(400);
+        request.payload["uiSliceWait"]["replySeconds"] = json!(0);
+        assert_eq!(request.timeout().unwrap(), None);
+        request.kind = RequestKind::Submit;
+        request.payload = json!({ "data": { "uiSliceWait": { "hostSeconds": 0, "modelSeconds": 300, "replySeconds": 30 } } });
+        assert_eq!(request.timeout().unwrap(), None);
+        request.kind = RequestKind::Effect;
+        request.payload = json!({ "type": "image.uiSlice.inspect", "uiSliceWait": { "hostSeconds": 17, "modelSeconds": 400, "replySeconds": 8 } });
+        assert_eq!(request.timeout().unwrap(), Some(Duration::from_secs(19)));
+        request.payload["uiSliceWait"]["hostSeconds"] = json!(1_073_742);
+        assert!(request.timeout().is_err());
+    }
+
+    #[test]
+    fn dialog_owner_follows_the_invocation_and_checks_its_revision() {
+        let mut sessions = WindowSessions::default();
+        let first = session();
+        let binding = first.options.binding.clone();
+        let mut identity = crate::plugin_host_effects::PluginHostIdentity {
+            invocation_id: binding.session_id.clone(),
+            plugin_id: binding.identity.plugin_id,
+            tool_id: binding.identity.tool_id,
+            source_digest: binding.identity.source_digest,
+            revision_digest: binding.identity.revision_digest,
+        };
+        assert_eq!(sessions.dialog_owner_label(&identity, false).unwrap(), "main");
+        assert!(sessions.dialog_owner_label(&identity, true).is_err());
+        sessions.sessions.insert(binding.session_id, first);
+        let mut second = session();
+        second.options.binding.session_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into();
+        second.label = "plugin-window-2".into();
+        let second_id = second.options.binding.session_id.clone();
+        sessions.sessions.insert(second_id.clone(), second);
+        assert_eq!(sessions.dialog_owner_label(&identity, true).unwrap(), "plugin-window-1");
+        assert!(sessions.dialog_owner_label(&identity, false).is_err());
+        identity.invocation_id = second_id;
+        assert_eq!(sessions.dialog_owner_label(&identity, true).unwrap(), "plugin-window-2");
+        identity.revision_digest = "d".repeat(64);
+        assert!(sessions.dialog_owner_label(&identity, true).is_err());
     }
 
     #[test]
@@ -1062,6 +1206,40 @@ mod tests {
         assert!(enqueue(&mut session, &request(RequestKind::Context, 999)).is_err());
         assert!(enqueue(&mut session, &request(RequestKind::Close, 1000)).is_ok());
         assert!(enqueue(&mut session, &request(RequestKind::Close, 1001)).is_err());
+    }
+
+    #[test]
+    fn slice_crop_budget_is_bound_and_independent_of_ordinary_requests() {
+        let mut ordinary = session();
+        let mut slicing = session();
+        slicing.options.binding.identity.plugin_id = "ai-canvas.ui-slice".into();
+        slicing.options.binding.identity.tool_id = "slice-image".into();
+        for number in 0..MAX_REQUESTS {
+            let context = request(RequestKind::Context, number);
+            assert!(enqueue(&mut ordinary, &context).is_ok());
+            assert!(enqueue(&mut slicing, &context).is_ok());
+            ordinary.pending.clear();
+            slicing.pending.clear();
+        }
+        let crop = |number| {
+            let mut request = request(RequestKind::Effect, number);
+            request.payload = json!({"type": "model.generate", "uiSliceCrop": true});
+            request
+        };
+        assert!(enqueue(&mut ordinary, &crop(500)).is_err());
+        assert!(enqueue(&mut slicing, &crop(500)).is_ok());
+        assert!(enqueue(&mut slicing, &crop(501)).is_err());
+        slicing.pending.clear();
+        assert!(enqueue(&mut slicing, &crop(500)).is_err());
+        for number in 501..500 + MAX_UI_SLICE_CROP_GENERATIONS {
+            assert!(enqueue(&mut slicing, &crop(number)).is_ok());
+            slicing.pending.clear();
+        }
+        assert_eq!(slicing.ui_slice_crop_requests, 2048);
+        let next = 500 + MAX_UI_SLICE_CROP_GENERATIONS;
+        assert!(enqueue(&mut slicing, &crop(next)).is_err());
+        assert!(enqueue(&mut slicing, &request(RequestKind::Context, next + 1)).is_err());
+        assert!(enqueue(&mut slicing, &request(RequestKind::Close, next + 2)).is_ok());
     }
 
     #[test]
