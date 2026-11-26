@@ -506,10 +506,14 @@ fn folder_plan_rejects_symlinks_before_copying() {
 
 struct GeneratedReader {
     remaining: u64,
+    buffer_address: Option<usize>,
 }
 
 impl Read for GeneratedReader {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        assert_eq!(buffer.len(), BUFFER_SIZE);
+        let address = buffer.as_ptr() as usize;
+        assert_eq!(*self.buffer_address.get_or_insert(address), address);
         let read = self.remaining.min(buffer.len() as u64) as usize;
         buffer[..read].fill(0x5a);
         self.remaining -= read as u64;
@@ -832,6 +836,7 @@ fn streams_176_mib_without_allocating_the_model_in_memory() {
     let total_bytes = 176 * 1024 * 1024_u64;
     let mut reader = GeneratedReader {
         remaining: total_bytes,
+        buffer_address: None,
     };
 
     let transferred = stream_to_file(
