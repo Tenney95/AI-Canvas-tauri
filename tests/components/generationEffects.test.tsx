@@ -213,7 +213,6 @@ describe('内置生成特效', () => {
     env.document.dispatchEvent(new Event('visibilitychange'));
     const callbacks = env.callbacks(), reads = env.layoutReads();
     cursor.setCursorLightConfig({ enabled: true });
-    cursor.setCursorSprite(null);
     env.frames(60);
     expect(env.callbacks()).toBe(callbacks);
     expect(env.layoutReads()).toBe(reads);

@@ -68,9 +68,7 @@ export {
   CURSOR_LIGHT_DEFAULTS,
   setCursorLightConfig,
   resetCursorLightConfig,
-  setCursorSprite,
   type CursorLightConfig,
-  type CursorSprite,
 } from './engine/cursor/light';
 
 // Cursor-as-occluder for proximity reflections.
