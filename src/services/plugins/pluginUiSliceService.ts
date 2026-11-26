@@ -15,7 +15,6 @@ interface ImageSnapshot {
   sourceSha256: string;
   width: number;
   height: number;
-  assumeSrgb: boolean;
 }
 
 interface DraftFile {
@@ -24,8 +23,13 @@ interface DraftFile {
 }
 
 export interface UiSliceSessionState {
-  snapshot?: ImageSnapshot;
+  snapshot?: ImageSnapshot & { verifiedColorInterpretations: Set<boolean> };
   drafts?: Map<string, DraftFile>;
+}
+
+function rememberSnapshot(state: UiSliceSessionState, snapshot: ImageSnapshot, assumeSrgb: boolean) {
+  if (state.snapshot?.sourceSha256 === snapshot.sourceSha256) state.snapshot.verifiedColorInterpretations.add(assumeSrgb);
+  else state.snapshot = { ...snapshot, verifiedColorInterpretations: new Set([assumeSrgb]) };
 }
 
 interface Options {
@@ -122,18 +126,18 @@ export async function executePluginUiSlice(options: Options) {
   };
   if (type === 'image.uiSlice.inspect') {
     if (typeof input.assumeSrgb !== 'boolean') throw new Error('色彩确认参数无效');
-    const info = await execute<Omit<ImageSnapshot, 'assumeSrgb'> & { previewPngBase64: string }>(
+    const info = await execute<ImageSnapshot & { previewPngBase64: string }>(
       { type, sourcePath, assumeSrgb: input.assumeSrgb },
     );
     assertActive();
-    state.snapshot = { sourceSha256: info.sourceSha256, width: info.width, height: info.height, assumeSrgb: input.assumeSrgb };
+    rememberSnapshot(state, { sourceSha256: info.sourceSha256, width: info.width, height: info.height }, input.assumeSrgb);
     return { ...info, supportsDraftSaveAs: true };
   }
   if (type === 'image.uiSlice.openDraft') {
     if (typeof input.assumeSrgb !== 'boolean') throw new Error('色彩确认参数无效');
     const archivePath = await execute<string | null>({ type: 'image.uiSlice.pick', purpose: 'openDraft', nativeWindow: options.nativeWindow });
     if (typeof archivePath !== 'string') return { cancelled: true };
-    const { draft, ...info } = await execute<Omit<ImageSnapshot, 'assumeSrgb'> & {
+    const { draft, ...info } = await execute<ImageSnapshot & {
       previewPngBase64: string; items: unknown; missing: unknown; draft: DraftFile;
     }>(
       { type, sourcePath, archivePath, assumeSrgb: input.assumeSrgb },
@@ -142,19 +146,21 @@ export async function executePluginUiSlice(options: Options) {
     const currentPath = await resolvePluginUiSliceSource(context, resources);
     assertActive();
     if (currentPath !== sourcePath) throw new Error('源图已改变，请重新打开切图界面');
-    const snapshot = { sourceSha256: info.sourceSha256, width: info.width, height: info.height, assumeSrgb: input.assumeSrgb };
+    const snapshot = { sourceSha256: info.sourceSha256, width: info.width, height: info.height };
     if (!Array.isArray(info.items)) throw new Error('工作稿选区无效');
     const items = readItems(info.items.map((item: unknown) => {
       const entry = object(item);
       return { ...entry, rings: entry.rings ?? [] };
     }), snapshot);
     const missing = readMissing(info.missing);
-    state.snapshot = snapshot;
+    rememberSnapshot(state, snapshot, input.assumeSrgb);
     (state.drafts ??= new Map()).set(requestId, draft);
     return { ...info, items, missing, draftRef: requestId, supportsDraftSaveAs: true };
   }
   const snapshot = state.snapshot;
-  if (!snapshot || input.sourceSha256 !== snapshot.sourceSha256 || input.assumeSrgb !== snapshot.assumeSrgb) {
+  const { assumeSrgb } = input;
+  if (!snapshot || snapshot.sourceSha256 !== input.sourceSha256 || typeof assumeSrgb !== 'boolean'
+    || !snapshot.verifiedColorInterpretations.has(assumeSrgb)) {
     throw new Error('图片或色彩解释已变化，请重新分析并审核选区');
   }
   const items = readItems(input.items, snapshot);
@@ -178,7 +184,7 @@ export async function executePluginUiSlice(options: Options) {
   });
   const { draft, ...receipt } = await execute<{ draft?: DraftFile; fileName: string; assetCount: number }>(
     { type, sourcePath, directory, items, missing, includeSource, newDraft, overwriteDraft,
-      sourceSha256: snapshot.sourceSha256, assumeSrgb: snapshot.assumeSrgb },
+      sourceSha256: snapshot.sourceSha256, assumeSrgb },
   );
   assertActive();
   if (!draft) return receipt;

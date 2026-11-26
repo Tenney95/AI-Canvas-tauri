@@ -440,6 +440,7 @@ async function dispatchRequest(
           value: {
             host: uiSliceTool ? {
               ...PLUGIN_HOST, uiSliceWait: UI_SLICE_WAIT_DEFAULTS, uiSliceDraft: true,
+              uiSliceRetainsSnapshots: true,
               uiSliceCropGenerationLimit: MAX_UI_SLICE_CROP_GENERATIONS, uiSliceOriginalImages: true,
             } : PLUGIN_HOST,
             surface: session.surface,

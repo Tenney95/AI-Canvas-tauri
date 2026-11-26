@@ -12,6 +12,9 @@ import type {
 
 const mocks = vi.hoisted(() => ({
   getState: vi.fn(),
+  isTauri: vi.fn(() => false),
+  invoke: vi.fn(),
+  resolveUiSliceSource: vi.fn(),
   subscribers: new Set<() => void>(),
   registerCanvasDerivation: vi.fn(),
   isCanvasDerivationFresh: vi.fn(),
@@ -34,6 +37,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@tauri-apps/api/core', () => ({
   convertFileSrc: (path: string, protocol: string) => `http://${protocol}.localhost/${path}`,
+  isTauri: mocks.isTauri,
+  invoke: mocks.invoke,
 }));
 vi.mock('../../src/store/useAppStore', () => ({
   useAppStore: {
@@ -57,6 +62,7 @@ vi.mock('../../src/services/plugins/pluginModelCatalog', () => ({
 vi.mock('../../src/services/plugins/pluginResourceService', () => ({
   mintPluginInvocationResources: mocks.mintResources,
   clearPluginInvocationResources: mocks.clearResources,
+  resolvePluginUiSliceSource: mocks.resolveUiSliceSource,
 }));
 vi.mock('../../src/services/plugins/pluginRuntime', () => ({
   collectTrustedNodeMediaReferences: mocks.collectMedia,
@@ -332,6 +338,49 @@ describe('pluginUiSessionService', () => {
     } finally {
       session.dispose();
       vi.useRealTimers();
+    }
+  });
+
+  it('can publish a restored selection in either verified color interpretation of the same source', async () => {
+    const sliceTool = { ...tool, id: 'slice-image' };
+    const installed: InstalledPlugin = { ...plugin, id: 'ai-canvas.ui-slice',
+      manifest: { ...plugin.manifest, id: 'ai-canvas.ui-slice', apiVersion: 2,
+        requiredCapabilities: ['image.uiSlice'], contributes: { nodeTools: [sliceTool] } } };
+    mocks.getState().installedPlugins = [installed];
+    const session = await createPluginUiNativeSession({
+      plugin: installed, tool: sliceTool, nodeId: 'target', exportName: 'dialog', onClose: vi.fn(),
+    });
+    const sourceSha256 = '1'.repeat(64);
+    const snapshot = { sourceSha256, width: 8, height: 8, previewPngBase64: 'AA==' };
+    const inspect = (assumeSrgb: boolean) => session.request('effect', { type: 'image.uiSlice.inspect', assumeSrgb });
+    const publish = (assumeSrgb: boolean) => session.request('effect', {
+      type: 'image.uiSlice.publish', sourceSha256, assumeSrgb,
+      items: [{ label: '按钮', rect: { x0: 0, y0: 0, x1: 1, y1: 1 }, rings: [] }],
+    });
+    mocks.isTauri.mockReturnValue(true);
+    mocks.resolveUiSliceSource.mockResolvedValue('G:\\project\\image.png');
+    try {
+      expect(await session.request('context', null)).toMatchObject({ ok: true, value: { host: { uiSliceRetainsSnapshots: true } } });
+      mocks.invoke.mockResolvedValueOnce(snapshot);
+      expect(await inspect(true)).toMatchObject({ ok: true });
+      expect(await publish(false)).toMatchObject({ ok: false, error: expect.stringContaining('色彩解释') });
+      mocks.invoke.mockResolvedValueOnce(snapshot);
+      expect(await inspect(false)).toMatchObject({ ok: true });
+
+      mocks.invoke.mockResolvedValueOnce('G:\\export').mockResolvedValueOnce({ fileName: 'slice.zip', assetCount: 1 });
+      expect(await publish(true)).toMatchObject({ ok: true, value: { value: { fileName: 'slice.zip' } } });
+      expect(mocks.invoke).toHaveBeenLastCalledWith('execute_plugin_host_effect', expect.objectContaining({
+        effect: expect.objectContaining({ type: 'image.uiSlice.publish', sourceSha256, assumeSrgb: true }),
+      }));
+
+      mocks.invoke.mockResolvedValueOnce({ ...snapshot, sourceSha256: '2'.repeat(64) });
+      expect(await inspect(false)).toMatchObject({ ok: true });
+      expect(await publish(true)).toMatchObject({ ok: false, error: expect.stringContaining('图片') });
+    } finally {
+      session.dispose();
+      mocks.isTauri.mockReturnValue(false);
+      mocks.resolveUiSliceSource.mockReset();
+      mocks.invoke.mockReset();
     }
   });
 
