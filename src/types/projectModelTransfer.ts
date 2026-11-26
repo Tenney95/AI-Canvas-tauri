@@ -147,11 +147,3 @@ export interface ProjectModelTransferExportJournal {
   packageDigest?: string;
   outputRef?: string;
 }
-
-/** 只在内存由受信编排器装配；字面量 verified/opaque ID 从不代替原生读回校验。 */
-export interface ProjectModelTransferSafety {
-  verifyRestoreBackup?: (proof: ProjectModelVerifiedRestoreProof, capture: ProjectModelTransferCapture) => Promise<void>;
-  verifyRestoreCommit?: (proof: ProjectModelVerifiedRestoreProof, capture: ProjectModelTransferCapture, journal: ProjectModelTransferImportJournal) => Promise<void>;
-  verifyMediaPublication?: (journal: ProjectModelTransferImportJournal, mediaPublicationRef: string) => Promise<void>;
-  verifyExportPublication?: (journal: ProjectModelTransferExportJournal, receipt: { packageDigest: string; outputRef: string }) => Promise<void>;
-}
