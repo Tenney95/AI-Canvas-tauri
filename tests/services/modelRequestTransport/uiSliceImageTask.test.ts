@@ -195,3 +195,44 @@ it('异步任务首次查询失败，下一次点击只查询原 ID 并保存对
   ]);
   expect(mocks.persist).toHaveBeenCalledWith('https://cdn.example/original.png', 'canvas', expect.anything());
 });
+
+it('RunningHub 切图用模型站点凭据提交并续查，换 Key 后不发送原任务 ID', async () => {
+  const baseUrl = 'https://www.runninghub.cn';
+  const credentialId = 'runninghub-credential-cn-model';
+  const original = useAppStore.getState().config;
+  const config = { ...original, providers: { ...original.providers,
+    runninghub: { name: '工作流', apiKey: 'workflow-key', baseUrl },
+    'runninghub-model': { name: '模型', apiKey: '', baseUrl, runninghubSiteCredentials: true },
+    [credentialId]: { name: '国内站模型', apiKey: 'model-key', baseUrl },
+  } };
+  useAppStore.setState({ config });
+  const model = 'rhart-image-n-g31-flash-lite-official/image-to-image';
+  const generateRunningHubSlice = () => generateUiSliceImage({ ...params, model: `runninghub/${model}`, provider: 'runninghub' },
+    sourceNode, target(), new AbortController().signal, () => {});
+  const changed = { ...config, providers: { ...config.providers, [credentialId]: {
+    ...config.providers[credentialId], apiKey: 'another-model-key',
+  } } };
+  vi.mocked(fetch).mockResolvedValueOnce(new Response('image', { headers: { 'Content-Type': 'image/gif' } }));
+  mocks.fetch.mockResolvedValueOnce(jsonResponse({ code: 0, data: { fileName: 'reference.gif', download_url: 'https://cdn.example/reference.gif' } }))
+    .mockImplementationOnce(async () => {
+      useAppStore.setState({ config: changed });
+      return jsonResponse({ code: 0, data: { taskId: '1904152026220003329' } });
+    });
+  await expect(generateRunningHubSlice()).rejects.toThrow('切图模型连接已变化');
+  await expect(generateRunningHubSlice()).rejects.toThrow('提交时的连接凭据');
+  expect(mocks.fetch).toHaveBeenCalledTimes(2);
+
+  useAppStore.setState({ config });
+  mocks.fetch.mockResolvedValueOnce(new Response('query interrupted', { status: 401 }));
+  await expect(generateRunningHubSlice()).rejects.toThrow('HTTP 401');
+  mocks.fetch.mockResolvedValueOnce(jsonResponse({ code: 0, data: { status: 'SUCCESS',
+    results: [{ url: 'https://cdn.example/original.png' }] } }));
+  await expect(generateRunningHubSlice()).resolves.toMatchObject({ url: preview });
+  expect(mocks.fetch.mock.calls.map(([url, init]) => [url, new Headers(init.headers).get('Authorization')])).toEqual([
+    [`${baseUrl}/openapi/v2/media/upload/binary`, 'Bearer model-key'],
+    [`${baseUrl}/openapi/v2/${model}`, 'Bearer model-key'],
+    [`${baseUrl}/openapi/v2/query`, 'Bearer model-key'],
+    [`${baseUrl}/openapi/v2/query`, 'Bearer model-key'],
+  ]);
+  expect(JSON.parse(mocks.fetch.mock.calls[3][1].body)).toEqual({ taskId: '1904152026220003329' });
+});

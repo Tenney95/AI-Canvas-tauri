@@ -19,6 +19,8 @@ import { nativeQueryCredentialProof } from '../nativeProtocolRecovery';
 import { PollTaskFailedError } from '../pollTask';
 import { captureLegacyCanvasContext } from '../projectExecutionContext';
 import { readRasterImageDimensions } from '../rasterImageDimensions';
+import { resolveRunningHubCredential, runningHubSiteId } from '../runninghubSiteCredentials';
+import { mediaProviderConfigId } from '../workflowExecutionService';
 
 interface SliceReceipt {
   id: string;
@@ -133,7 +135,7 @@ async function previewOriginal(imageUrl: string, signal: AbortSignal) {
 }
 
 export async function generateUiSliceImage(params: AIImageGenParams, sourceNodeId: string, destination: UiSliceImageDestination,
-  signal: AbortSignal, assertFresh: () => void) {
+  sessionSignal: AbortSignal, assertFresh: () => void) {
   const state = useAppStore.getState(), context = captureLegacyCanvasContext(state);
   if (!context || params.nodeId || params.image_urls?.length !== 1 || !params.prompt.trim()) {
     throw new Error('切图生图需要当前项目、单张参考图和素材描述');
@@ -141,9 +143,23 @@ export async function generateUiSliceImage(params: AIImageGenParams, sourceNodeI
   const config = state.config;
   const selectedModel = params.provider === 'general'
     ? config.generalModels?.find((item) => 'general/' + item.id === params.model) : undefined;
-  const connectionId = params.provider === 'general' ? selectedModel?.providerConfigId : params.provider;
+  const connectionId = params.provider === 'general' ? selectedModel?.providerConfigId : mediaProviderConfigId(params.provider);
   if (!connectionId) throw new Error('切图模型连接已变化，请重新选择');
   const connection = config.providers[connectionId];
+  const runningHubModel = params.provider === 'runninghub';
+  const runningHubCredential = runningHubModel ? resolveRunningHubCredential(config.providers, 'runninghub-model') : undefined;
+  const apiKey = runningHubModel ? runningHubCredential?.apiKey?.trim() : connection?.apiKey;
+  const runningHubSite = runningHubModel ? runningHubSiteId(runningHubCredential?.baseUrl) : undefined;
+  const queryCredential = runningHubSite ? resolveRunningHubCredential(config.providers, 'runninghub-model', runningHubSite) : runningHubCredential;
+  if (runningHubModel && queryCredential?.apiKey?.trim() !== apiKey) {
+    throw new Error('RunningHub 提交与查询的模型凭据不一致，请核对当前站点设置');
+  }
+  const connectionAbort = runningHubModel ? new AbortController() : undefined;
+  const signal = connectionAbort ? AbortSignal.any([sessionSignal, connectionAbort.signal]) : sessionSignal;
+  const connectionChanged = (current: typeof config) => current.providers[connectionId] !== connection
+    || runningHubModel && resolveRunningHubCredential(current.providers, 'runninghub-model') !== runningHubCredential
+    || runningHubSite && resolveRunningHubCredential(current.providers, 'runninghub-model', runningHubSite) !== queryCredential;
+  const connectionError = () => new Error('切图模型连接已变化，请重新打开后续查');
   const capability = resolveImageParameterCapability(params.model, params.provider, config);
   if (capability?.supportsImageReference === false || capability?.maxImageReferences === 0) throw new Error('所选模型不支持参考图');
   if (resolveImageOutputsPerJob(params.model, params.provider, config) > 1 || (capability?.minBatchCount ?? 1) > 1
@@ -152,9 +168,9 @@ export async function generateUiSliceImage(params: AIImageGenParams, sourceNodeI
     signal.throwIfAborted();
     assertFresh();
     const current = useAppStore.getState().config;
-    if (current.providers[connectionId] !== connection || selectedModel && current.generalModels !== config.generalModels
+    if (connectionChanged(current) || selectedModel && current.generalModels !== config.generalModels
       && current.generalModels?.find((item) => item.id === selectedModel.id) !== selectedModel) {
-      throw new Error('切图模型连接已变化，请重新打开后续查');
+      throw connectionError();
     }
   };
   const digest = await sha256BytesHex(encoder.encode(JSON.stringify([
@@ -165,6 +181,10 @@ export async function generateUiSliceImage(params: AIImageGenParams, sourceNodeI
   assertCurrent();
   if (active.has(key)) throw new Error('该切图的生成或续查正在进行');
   active.add(key);
+  // 续查会重新读取站点凭据。设置变化时先停止轮询，避免把原任务 ID 发送给另一个账户。
+  const unsubscribe = connectionAbort && useAppStore.subscribe((current) => {
+    if (connectionChanged(current.config)) connectionAbort.abort(connectionError());
+  });
   try {
     const prior = await receiptTransaction(key);
     const configurationDigest = await characterImageConfigurationDigest(params.model, connectionId);
@@ -198,7 +218,7 @@ export async function generateUiSliceImage(params: AIImageGenParams, sourceNodeI
         if (prior.recovery.configurationDigest !== configurationDigest || prior.recovery.connectionId !== connectionId
           || prior.recovery.modelRef !== params.model) throw new Error('请恢复该切图原先的模型连接再续查');
         if (!prior.recovery.tasks.length) throw new Error('原请求的提交结果未知，请先到模型服务商核对；未重复提交');
-        if (prior.credentialProof !== await nativeQueryCredentialProof(operationId, connectionId, connection?.apiKey ?? '')) {
+        if (prior.credentialProof !== await nativeQueryCredentialProof(operationId, connectionId, apiKey ?? '')) {
           throw new Error('请恢复该切图提交时的连接凭据再续查');
         }
         assertCurrent();
@@ -217,8 +237,8 @@ export async function generateUiSliceImage(params: AIImageGenParams, sourceNodeI
           const recovery: CharacterImageTaskRecovery = { ...plan.recovery, version: 1, expectedCount: 1, connectionId,
             modelRef: params.model, providerBase: base.replace(/\/+$/, ''), configurationDigest, tasks: [],
             ...(plan.mediaDownloadAccess ? { mediaDownloadAccess: plan.mediaDownloadAccess } : {}) };
-          const credentialProof = await nativeQueryCredentialProof(operationId, connectionId, connection?.apiKey ?? '');
-          if (recovery.query?.serverId && connection?.apiKey) recovery.query = { ...recovery.query, credentialProof };
+          const credentialProof = await nativeQueryCredentialProof(operationId, connectionId, apiKey ?? '');
+          if (recovery.query?.serverId && apiKey) recovery.query = { ...recovery.query, credentialProof };
           validateCharacterImageTaskRecovery(recovery, secrets);
           const row: SliceReceipt = { id: key, operationId, recovery, credentialProof, status: 'submitted' };
           let claimed = false;
@@ -268,5 +288,8 @@ export async function generateUiSliceImage(params: AIImageGenParams, sourceNodeI
       provider: params.provider, selection: destination.selection, sourceSha256: destination.sourceSha256,
       sourceWidth: destination.sourceWidth, sourceHeight: destination.sourceHeight, description: destination.description });
     return { url: preview, width, height, uiSliceCandidateId: operationId };
-  } finally { active.delete(key); }
+  } finally {
+    unsubscribe?.();
+    active.delete(key);
+  }
 }
