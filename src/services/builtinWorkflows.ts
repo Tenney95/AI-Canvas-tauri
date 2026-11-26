@@ -8,7 +8,6 @@ import { extractComfyUIIONodes } from './comfyUIWindowService';
 const WORKFLOW_FILES = import.meta.glob([
   '../assets/comfyWorkflows/*.json',
   '!../assets/comfyWorkflows/minimax-h3-t2v.json',
-  '!../assets/comfyWorkflows/minimax-h3-t2v-turbo.json',
   '!../assets/comfyWorkflows/minimax-h3-r2v.json',
   '!../assets/comfyWorkflows/minimax-h3-r2v-turbo.json',
 ], {
@@ -20,8 +19,6 @@ const WORKFLOW_FILES = import.meta.glob([
 /** ComfyUI 界面格式的同名工作流；有它才能在 ComfyUI 里正常打开编辑 */
 const WORKFLOW_UI_FILES = import.meta.glob([
   '../assets/comfyWorkflows/ui/*.json',
-  '!../assets/comfyWorkflows/ui/minimax-h3-t2v.json',
-  '!../assets/comfyWorkflows/ui/minimax-h3-r2v.json',
 ], {
   query: '?raw',
   import: 'default',
