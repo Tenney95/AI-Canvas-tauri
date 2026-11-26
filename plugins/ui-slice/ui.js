@@ -5,6 +5,7 @@
   const MAX_SLICE_PIXELS = 8_000_000;
   const MAX_BATCH_PIXELS = 64_000_000;
   const VERTEX_EDIT_HINT = '可拖动顶点、选中后删除，或点击「添加顶点」后点轮廓边。';
+  class UiSliceQueuePaused extends Error {}
   const ROLES = Object.freeze({
     background: '背景', panel: '面板', button: '按钮', icon: '图标',
     text: '文字', decoration: '装饰', image: '图像', other: '其他',
@@ -934,6 +935,7 @@
       cleanup.signal.throwIfAborted();
       const result = await props.runEffect(input);
       cleanup.signal.throwIfAborted();
+      if (!result.ok && result.uiSliceQueuePaused) throw new UiSliceQueuePaused(result.error);
       if (!result.ok) throw new Error(result.error || '宿主切图操作失败');
       return result.value;
     }
@@ -1698,6 +1700,7 @@
             const message = error instanceof Error ? error.message : String(error);
             generatedSlices.set(item, { ...previous, state: 'failed', message: '生图失败 · ' + message
               + (previous?.candidate ? ' · 已保留上次结果' : '') });
+            if (error instanceof UiSliceQueuePaused) queue.stopped = true;
           }
           processed++;
           previousGenerations[index] = undefined;

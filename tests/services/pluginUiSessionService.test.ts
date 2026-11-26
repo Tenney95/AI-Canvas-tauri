@@ -261,9 +261,11 @@ describe('pluginUiSessionService', () => {
       ...plugin,
       id: 'ai-canvas.ui-slice',
       manifest: { ...plugin.manifest, apiVersion: 2, id: 'ai-canvas.ui-slice',
+        permissions: [...plugin.manifest.permissions, 'models.read', 'models.invoke'],
         requiredCapabilities: ['image.uiSlice'], contributes: { nodeTools: [sliceTool] } },
     };
     mocks.getState().installedPlugins = [slicePlugin];
+    mocks.modelCatalog.mockReturnValue([{ id: 'image', category: 'image' }]);
     const session = await createPluginUiNativeSession({
       plugin: slicePlugin, tool: sliceTool, nodeId: 'target', exportName: 'dialog', onClose: vi.fn(),
     });
@@ -297,6 +299,22 @@ describe('pluginUiSessionService', () => {
       await Promise.resolve();
       mocks.executeEffect.mockResolvedValueOnce(success);
       expect(await requestModel()).toEqual({ ok: true, value: success });
+
+      const requestCrop = () => session.request('effect', { type: 'model.generate', uiSliceCrop: true,
+        modelId: 'image', prompt: '生成裁片', imageUrls: ['data:image/png;base64,AA=='],
+        uiSliceWait: { hostSeconds: 10, modelSeconds: 1, replySeconds: 1 } });
+      mocks.executeEffect.mockImplementationOnce(() => new Promise((resolve) => {
+        finishLate = () => resolve(success);
+      }));
+      const crop = requestCrop();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await crop).toMatchObject({ ok: true, value: { ok: false, uiSliceQueuePaused: true, error: expect.stringContaining('1 秒') } });
+      expect(await requestCrop()).toMatchObject({ ok: true, value: { ok: false, uiSliceQueuePaused: true, error: expect.stringContaining('正在执行') } });
+      expect(mocks.executeEffect).toHaveBeenCalledTimes(4);
+      finishLate();
+      await Promise.resolve();
+      mocks.executeEffect.mockResolvedValueOnce(success);
+      expect(await requestCrop()).toEqual({ ok: true, value: success });
 
       mocks.executeEffect.mockImplementationOnce(() => new Promise((resolve) => {
         finishLate = () => resolve(success);

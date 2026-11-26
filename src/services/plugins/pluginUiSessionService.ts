@@ -350,6 +350,12 @@ function readUiSliceWait(value: unknown) {
   return { hostSeconds: seconds('hostSeconds'), modelSeconds: seconds('modelSeconds'), replySeconds: seconds('replySeconds') };
 }
 
+class UiSliceOperationTimeout extends Error {}
+
+function pauseUiSliceCropQueue(error: string) {
+  return { ok: true as const, value: { type: 'model.generate', ok: false, error, uiSliceQueuePaused: true } };
+}
+
 async function waitForUiSliceOperation<T>(
   operation: Promise<T>, controller: AbortController, seconds: number, label: string,
 ): Promise<T> {
@@ -361,7 +367,7 @@ async function waitForUiSliceOperation<T>(
     else signal.addEventListener('abort', rejectOnAbort, { once: true });
   });
   const timer = seconds === 0 ? undefined : setTimeout(() => {
-    controller.abort(new Error(`${label}在 ${seconds} 秒内未完成，已停止等待。`));
+    controller.abort(new UiSliceOperationTimeout(`${label}在 ${seconds} 秒内未完成，已停止等待。`));
   }, seconds * 1_000);
   try {
     return await Promise.race([aborted, operation]);
@@ -395,7 +401,8 @@ async function dispatchRequest(
     || request.kind === 'set-parameters'
     || request.kind === 'submit';
   if (exclusive && session.requestInFlight) {
-    return { ok: false, error: '插件界面已有操作正在执行' };
+    const error = '插件界面已有操作正在执行';
+    return sliceCropRequest ? pauseUiSliceCropQueue(error) : { ok: false, error };
   }
   if (ordinaryRequest) session.requestCount += 1;
   if (exclusive) session.requestInFlight = true;
@@ -704,6 +711,7 @@ async function dispatchRequest(
         throw new Error(`未知请求: ${request.kind}`);
     }
   } catch (error) {
+    if (sliceCropRequest && error instanceof UiSliceOperationTimeout) return pauseUiSliceCropQueue(error.message);
     if (playbackRead) session.playbackReadFailures = (session.playbackReadFailures ?? 0) + 1;
     return {
       ok: false,
