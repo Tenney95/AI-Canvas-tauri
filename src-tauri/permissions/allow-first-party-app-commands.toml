@@ -63,7 +63,6 @@ commands.allow = [
   "copy_files_to_clipboard",
   "read_canvas_clipboard",
   "read_asset_folder_clipboard",
-  "dreamina_login",
   "dreamina_login_start",
   "dreamina_login_runtime",
   "dreamina_logout",
