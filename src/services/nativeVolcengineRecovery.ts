@@ -24,6 +24,8 @@ import { retainNativeMediaOutputs } from './indexedDb/nativeMediaCollectionRepos
 import { nativeBuiltinVideoProtocolDigest } from './nativeBuiltinVideoProtocol';
 import { getProviderPolicy, resolveProviderCatalogId } from './ai/providerPolicies';
 import { assertMinimaxQueryResponse, usesMinimaxModelProtocol } from './ai/providers/minimaxModelManifest';
+import { assertSandOrigin, sandSite } from './ai/providers/sandVideoContract';
+import { assertMagiGatewayOrigin, magiVideoGateway } from './ai/providers/magiVideoGateways';
 import { RELAYON_VIDEO_RESULT_URL_PATHS, usesRelayonModelProtocol } from './ai/providers/relayonModelManifest';
 import { isSafeNativeProtocolTaskId } from './nativeProtocolContext';
 import { assertImageOutputCount, assertModelProtocolResult } from './ai/modelCapabilityValidation';
@@ -147,9 +149,15 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
   const isGrsai = !generalExpected && record.providerConfigId === 'grsai';
   if (record.recovery?.kind === 'builtin-video' && (await nativeBuiltinVideoProtocolDigest(record.providerConfigId) !== record.protocolDigest
     || record.recovery.digest !== record.protocolDigest)) throw new Error('原内置视频查询合同已变化，未重新提交生成');
-  const baseUrl = general?.baseUrl || provider.baseUrl?.trim()
+  const configuredBaseUrl = general?.baseUrl || provider.baseUrl?.trim()
     || (frozenProtocol ? getProviderDefinition(record.providerConfigId, provider)?.defaultBaseUrl : undefined)
     || (isVolcengine ? VOLCENGINE_BASE_URL : isGrsai ? GRSAI_BASE_URL : APIMART_BASE_URL);
+  const frozenModelId = frozenProtocol ? binding?.modelId : undefined;
+  const sand = frozenModelId ? sandSite(catalogId, frozenModelId) : undefined;
+  const gateway = frozenModelId ? magiVideoGateway(catalogId, frozenModelId) : undefined;
+  if ((sand || gateway) && !binding?.credentialProof) throw new Error('MAGI-2 原任务缺少凭据证明，请到原平台核对');
+  const baseUrl = sand ? assertSandOrigin(sand.id, configuredBaseUrl)
+    : gateway ? assertMagiGatewayOrigin(gateway, configuredBaseUrl) : configuredBaseUrl;
   if (isGrsai && await sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(GRSAI_H3_PROTOCOL))) !== record.protocolDigest) {
     throw new Error('原视频查询协议已变化，请核对原任务，不会自动重投');
   }
@@ -244,7 +252,8 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
     const files = [];
     for (const url of urls) {
       const saved = await persistMediaUrlToProjectData(url, record.canvasId, `ai-${record.category}`, label,
-      { signal: controller.signal, assertCurrent, ...(isVolcengine ? {} : { mediaDownloadAccess: createMediaDownloadAccess(record.providerConfigId, baseUrl, generalProtocol?.auth ?? { type: 'bearer' }) }) });
+      { signal: controller.signal, assertCurrent, ...(isVolcengine ? {} : { mediaDownloadAccess: createMediaDownloadAccess(record.providerConfigId,
+        baseUrl, sand || gateway ? { type: 'none' } : generalProtocol?.auth ?? { type: 'bearer' }) }) });
       assertCurrent();
       if (!saved.filePath || !await isNativeMediaLeaseCurrent(record)) throw new Error('原媒体租约已变化或文件未保存，结果已保留');
       files.push({ ...await captureNativeMediaLocalResult(record.canvasId, saved.filePath), category: record.category });

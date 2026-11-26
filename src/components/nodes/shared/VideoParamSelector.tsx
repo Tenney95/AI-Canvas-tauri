@@ -258,10 +258,11 @@ export function resolveEffectiveVideoParameterCapability(
   const operationOverride = capability.operationCapabilities?.[operation];
   const automaticDurationOnly = inputOverride?.automaticDurationOnly === true
     || operationOverride?.automaticDurationOnly === true;
+  const ratioFromFirstFrame = inputMode === 'keyframe' && (inputOverride?.ratioFromFirstFrame ?? operationOverride?.ratioFromFirstFrame);
   return {
     ...capability,
-    ratios: inputOverride?.ratios ?? operationOverride?.ratios ?? capability.ratios,
-    defaultRatio: inputOverride?.defaultRatio
+    ratios: ratioFromFirstFrame ? undefined : inputOverride?.ratios ?? operationOverride?.ratios ?? capability.ratios,
+    defaultRatio: ratioFromFirstFrame ? undefined : inputOverride?.defaultRatio
       ?? operationOverride?.defaultRatio
       ?? capability.defaultRatio,
     ...(automaticDurationOnly ? { defaultDuration: undefined } : {}),
@@ -370,8 +371,10 @@ export default function VideoParamSelector({
       return;
     }
     if (references.some((item) => item.id === option.id && item.kind === kind)) return;
-    const role: VideoReferenceItem['role'] = frameReferences.some((item) => item.role === 'first_frame')
-      ? provider === 'muse' ? 'reference' : 'last_frame' : 'first_frame';
+    const role: VideoReferenceItem['role'] = supportsKeyframes
+      ? frameReferences.some((item) => item.role === 'first_frame')
+        ? provider === 'muse' ? 'reference' : 'last_frame' : 'first_frame'
+      : 'reference';
     onChangeVideoReferences?.([...references, {
       id: option.id, kind, role, url: option.url, label: option.label,
       sourceNodeId: option.id.startsWith('character:') ? undefined : option.id,
@@ -470,6 +473,7 @@ export default function VideoParamSelector({
     ?? grsaiCapability
     ?? workflowApiCapability
     ?? generalCapability;
+  const supportsKeyframes = baseParameterCapability?.supportsKeyframes !== false;
   const selectedInputMode = resolveVideoParameterInputMode(
     frameReferences,
     characterReferences.length,
@@ -802,8 +806,10 @@ export default function VideoParamSelector({
     <div className="img-rp-quality-area mb-2">
       <div className="img-rp-section-label rh-video-ref-head">
         <span>
-          {t('参考帧')}
-          <span className="rh-tip" data-tooltip={`${t('可选：指定某张图作为视频的首帧或尾帧，其余作为中间参考帧。不添加时按连线顺序交给模型。')}${referenceLimitTip ? `
+          {t(supportsKeyframes ? '参考帧' : '参考图')}
+          <span className="rh-tip" data-tooltip={`${t(supportsKeyframes
+            ? '可选：指定某张图作为视频的首帧或尾帧，其余作为中间参考帧。不添加时按连线顺序交给模型。'
+            : '普通参考图')}${referenceLimitTip ? `
 ${t('该模型：{limits}（连线带入的素材一并计数）。', { limits: referenceLimitTip })}` : ''}`}>!</span>
         </span>
         <button type="button" className="rh-video-ref-add" onClick={() => setPickerFor(pickerFor === 'frame' ? null : 'frame')}>
@@ -816,14 +822,16 @@ ${t('该模型：{limits}（连线带入的素材一并计数）。', { limits: 
             <div key={item.id} className="rh-video-frame-row">
               <ViewportImage className="rh-video-frame-thumb" src={getReferencePreviewUrl(item)} alt={item.label || t('参考帧')} title={item.label} loading="lazy" />
               <div className="img-rp-quality-segmented rh-video-frame-seg">
-                {FRAME_ROLE_OPTIONS.filter((option) => provider !== 'muse' || option.value !== 'last_frame').map((option) => (
+                {FRAME_ROLE_OPTIONS.filter((option) => option.value === 'reference'
+                  || (supportsKeyframes || option.value === item.role) && (provider !== 'muse' || option.value !== 'last_frame')).map((option) => (
                   <AnimatedButton
                     key={option.value}
                     type="button"
                     className={`img-rp-quality-item rh-v5-res-btn ui-schema-option ${item.role === option.value ? 'active' : ''}`}
+                    disabled={!supportsKeyframes && option.value !== 'reference'}
                     onClick={() => setFrameRole(item.id, option.value)}
                   >
-                    {t(provider === 'muse' && option.value === 'reference' ? '参考图' : option.label)}
+                    {t((!supportsKeyframes || provider === 'muse') && option.value === 'reference' ? '参考图' : option.label)}
                   </AnimatedButton>
                 ))}
               </div>

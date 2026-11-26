@@ -7,7 +7,11 @@ import type { ImageOutputCountRange, ResolvedModelProtocolPoll } from '../../typ
 import { PollTaskFailedError } from '../pollTask';
 import { ModelProtocolHttpError } from './modelProtocolHttp';
 import { pollResolvedModelProtocol, submitModelProtocol } from './modelProtocol';
+import { buildSameOriginUrl } from './modelProtocolRequest';
 import { assertImageOutputCount, assertModelProtocolResult } from './modelCapabilityValidation';
+import { nativeQueryCredentialProof } from '../nativeProtocolRecovery';
+import { SAND_SITES, sandTaskRequest } from './providers/sandVideoContract';
+import { MAGI_VIDEO_GATEWAYS, magiGatewayTaskRequest } from './providers/magiVideoGateways';
 import type {
   ExecuteModelProtocolResult,
   SubmitModelProtocolOptions,
@@ -38,7 +42,8 @@ export type ProtocolTestSessionErrorCode =
   | 'busy'
   | 'paused'
   | 'submission-uncertain'
-  | 'different-origin';
+  | 'different-origin'
+  | 'different-credential';
 
 /** 界面按 code 提供本地化提示，不把凭据或请求内容拼入会话错误。 */
 export class ProtocolTestSessionError extends Error {
@@ -57,6 +62,7 @@ interface ProtocolTestSession {
   imageOutputCountRange?: ImageOutputCountRange;
   taskId?: string;
   poll?: ResolvedModelProtocolPoll;
+  credential?: { nonce: string; proof: string };
   pauseReason?: ProtocolTestSessionSnapshot['pauseReason'];
   controller: AbortController;
   busy: boolean;
@@ -177,6 +183,13 @@ async function querySession(
   try {
     // 每次续查重新验证；查询入口本身还会复核 Header、鉴权和结果下载同源。
     assertSameOrigin(poll, context.baseUrl);
+    if (sandTaskRequest(poll.url, poll.method) || poll.magiGateway === true) {
+      const credential = session.credential;
+      if (!credential || credential.proof !== await nativeQueryCredentialProof(credential.nonce, context.key, apiKey)) {
+        throw new ProtocolTestSessionError('different-credential');
+      }
+    }
+    session.controller.signal.throwIfAborted();
     const result = await pollResolvedModelProtocol(poll, apiKey, session.controller.signal, context.baseUrl, undefined, undefined, session.taskId);
     if (!isCurrent(context.key, session) || session.controller.signal.aborted) {
       throw new ProtocolTestSessionError('paused');
@@ -211,14 +224,30 @@ export async function startProtocolTestSession(options: StartProtocolTestSession
   };
   sessions.set(context.key, session);
   notify(context.key);
-  let submitting = true;
+  let submitting = false;
   try {
+    let idempotencyKey: string | undefined;
+    const origin = new URL(context.baseUrl).origin;
+    if (SAND_SITES.some((site) => site.origin === origin) || MAGI_VIDEO_GATEWAYS.some((gateway) => gateway.origin === origin)) {
+      const { submit } = options.protocol;
+      const url = buildSameOriginUrl(context.baseUrl, submit, { ...options.variables });
+      const gateway = options.protocol.version === 2 && options.protocol.poll?.magiGateway === true
+        ? magiGatewayTaskRequest(url, submit.method) : undefined;
+      if (sandTaskRequest(url, submit.method) || gateway) {
+        const nonce = crypto.randomUUID();
+        session.credential = { nonce, proof: await nativeQueryCredentialProof(nonce, context.key, options.apiKey) };
+        if (gateway?.gateway.id === 'beatapi') idempotencyKey = nonce;
+      }
+    }
+    session.controller.signal.throwIfAborted();
+    submitting = true;
     const submitted = await submitModelProtocol({
       apiKey: options.apiKey,
       baseUrl: context.baseUrl,
       protocol: options.protocol,
       variables: options.variables,
       validateResponse: options.validateResponse,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
       signal: session.controller.signal,
     });
     if (!isCurrent(context.key, session)) throw new ProtocolTestSessionError('paused');
@@ -252,9 +281,13 @@ export async function startProtocolTestSession(options: StartProtocolTestSession
     notify(context.key);
     return result;
   } catch (error) {
-    if (isCurrent(context.key, session) && submitting) {
-      session.status = error instanceof ModelProtocolHttpError && error.status >= 400 && error.status < 500
-        && !session.controller.signal.aborted && ![408, 429].includes(error.status) ? 'failed' : 'uncertain';
+    if (isCurrent(context.key, session)) {
+      if (submitting) {
+        session.status = error instanceof ModelProtocolHttpError && error.definitiveFailure && error.status >= 400 && error.status < 500
+          && !session.controller.signal.aborted && ![408, 429].includes(error.status) ? 'failed' : 'uncertain';
+      } else if (!session.poll && (session.status === 'submitting' || session.status === 'uncertain')) {
+        session.status = 'failed';
+      }
     }
     throw redactError(error, options.apiKey);
   } finally {

@@ -88,12 +88,11 @@ describe('protocol variable table', () => {
       },
     ]);
     // 反过来，模型设置里列给用户的可用变量必须都是运行时真的会给值的。
-    // parameters 是工作流 API 声明的自定义参数，只由 RunningHub / 通用工作流等
-    // 工作流路径注入，普通视频运行时不产出，因此不参与这条覆盖断言。
-    const WORKFLOW_ONLY_VARIABLES = new Set(['parameters']);
+    // 工作流和内置渠道各自的变量由对应协议夹具覆盖。
+    const SPECIALIZED_VARIABLES = new Set(['parameters', 'sandContent', 'gatewayVideoBody']);
     expect(
       getCategoryProtocolVariables('video')
-        .filter((name) => !WORKFLOW_ONLY_VARIABLES.has(name))
+        .filter((name) => !SPECIALIZED_VARIABLES.has(name))
         .sort(),
     ).toEqual(Object.keys(variables).sort());
     // 参考素材变量在视频类别下也必须都有值

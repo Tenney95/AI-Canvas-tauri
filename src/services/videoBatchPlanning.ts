@@ -5,7 +5,12 @@ import type { Node } from '@xyflow/react';
 import type { BaseNodeData } from '../types';
 import type { AppState } from '../store/useAppStore';
 import type { VideoPreflightItem } from '../types/videoBatch';
-import { resolveVideoSubmissionControls } from './ai/videoRequestResolver';
+import { resolveCanonicalVideoRequest, resolveVideoSubmissionControls } from './ai/videoRequestResolver';
+import { resolveProviderCatalogId } from './ai/providerPolicies';
+import { assertSandOrigin, sandSite } from './ai/providers/sandVideoContract';
+import { assertMagiGatewayOrigin, magiVideoGateway } from './ai/providers/magiVideoGateways';
+import { resolveConfiguredVideoCapability } from './ai/videoModelCapabilityResolver';
+import { collectConnectedReferenceMedia } from './ai/connectedReferenceMedia';
 import { parseProjectModelRef } from './projectSettingsService';
 import { comfyBaseUrlFor, probeComfyServer } from './comfyServers';
 import { isComfyH3Workflow, resolveComfyH3MemorySettings } from './comfyH3Memory';
@@ -93,7 +98,6 @@ export function inspectVideoNode(node: Node<BaseNodeData>, state: Workspace): Vi
   const d = videoInputData(node, state);
   const issues: string[] = [];
   if (d.type !== 'ai-video') issues.push('不是视频生成节点');
-  if (!d.prompt?.trim()) issues.push('缺少提示词');
   if (!d.model || !d.provider) issues.push('未选择视频模型');
   if (d.status === 'loading') issues.push('节点正在生成，请等待完成');
   if (d.workflowId && !state.workflows.some((w) => w.id === d.workflowId)) issues.push('工作流已删除或未载入');
@@ -103,6 +107,37 @@ export function inspectVideoNode(node: Node<BaseNodeData>, state: Workspace): Vi
   if (duration !== undefined && (!Number.isFinite(duration) || duration <= 0)) issues.push('视频时长无效');
   const input = referencedInput(d, state, node.id);
   if (input.error) issues.push(input.error);
+  const model = d.provider === 'general' && d.model
+    ? state.config.generalModels?.find((entry) => entry.id === d.model?.replace(/^general\//, '')) : undefined;
+  const connection = model && state.config.providers[model.providerConfigId];
+  const catalogId = model && connection ? resolveProviderCatalogId(model.providerConfigId, connection) : undefined;
+  const sand = sandSite(catalogId, model?.modelId);
+  const gateway = magiVideoGateway(catalogId, model?.modelId);
+  if (model && connection && (sand || gateway)) {
+    try {
+      const origin = sand?.origin ?? gateway!.origin;
+      const baseUrl = connection.baseUrl?.trim() || origin;
+      if (sand) assertSandOrigin(sand.id, baseUrl);
+      else assertMagiGatewayOrigin(gateway!, baseUrl);
+      if (!connection.apiKey?.trim()) throw new Error('请填写当前连接的 API Key');
+      if (!d.prompt?.trim() && (sand?.variant === 'v2' || gateway?.id === 'beatapi' || (!d.videoReferences?.some((entry) => entry.url.trim())
+        && !collectConnectedReferenceMedia(node.id, state).references.length))) {
+        throw new Error('请填写 MAGI-2 提示词');
+      }
+      if (sand?.variant === 'v2' && d.videoReferences?.some((entry) => entry.role === 'first_frame' || entry.role === 'last_frame')) {
+        throw new Error('MAGI-2 原生 v2 只接受普通参考素材，请调整素材角色');
+      }
+      // 角色、数量及提示词长度由生成入口在素材定位与提示词展开后校验。
+      const capability = resolveConfiguredVideoCapability(catalogId, model.modelId, model.executionProfile, model.videoCapability);
+      const firstFrame = d.videoReferences?.find((entry) => entry.role === 'first_frame' && entry.url.trim());
+      resolveCanonicalVideoRequest({ ...controls, model: model.modelId, provider: 'general', prompt: '' }, {
+        ...(firstFrame ? { references: [{ kind: 'image', role: 'first_frame', origin: 'connection', url: firstFrame.url }] } : {}),
+        capability: capability && { ...capability, inputConstraints: { ...capability.inputConstraints, promptMinCharacters: undefined } },
+      });
+    } catch (error) { issues.push(error instanceof Error ? error.message : 'MAGI-2 配置无效'); }
+  } else if (!d.prompt?.trim()) {
+    issues.push('缺少提示词');
+  }
   for (const id of input.ids) {
     const sourceId = id.replace(/\/cell\/\d+$/, '');
     const ref = state.nodes.find((n) => n.id === sourceId);

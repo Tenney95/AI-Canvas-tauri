@@ -90,10 +90,13 @@ export function pushUniqueUrl(urls: string[], seen: Set<string>, value: unknown)
   urls.push(url);
 }
 
-export function collectConnectedReferenceMedia(nodeId: string | undefined): ConnectedReferenceMedia {
+export function collectConnectedReferenceMedia(
+  nodeId: string | undefined,
+  state?: Pick<ReturnType<typeof useAppStore.getState>, 'nodes' | 'edges'>,
+): ConnectedReferenceMedia {
   const empty: ConnectedReferenceMedia = { references: [], imageUrls: [], videoUrls: [], audioUrls: [] };
   if (!nodeId) return empty;
-  const { nodes, edges } = useAppStore.getState();
+  const { nodes, edges } = state ?? useAppStore.getState();
   const sourceIds = edges.filter((e) => e.target === nodeId).map((e) => e.source);
   const references: MediaReference[] = [];
 

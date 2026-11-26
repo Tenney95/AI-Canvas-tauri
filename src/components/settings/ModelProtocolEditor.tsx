@@ -281,7 +281,7 @@ export default function ModelProtocolEditor({
   const invalidFormFieldsRef = useRef(new Set<string>());
   const {
     previewVariablesJson, setPreviewVariablesJson, testVariablesJson, setTestVariablesJson,
-    testScenario, setTestScenario, klingVideoContract, klingFrameMode, activeTestScenario, testReferences, setTestReferences, session, responseSampleJson,
+    setTestScenario, klingVideoContract, klingFrameMode, activeTestScenario, supportsTestKeyframes, testReferences, setTestReferences, session, responseSampleJson,
     setResponseSampleJson, testRun, previewState, supportsStructuredResponse, responsePreviewState,
     runProtocolTest, resumeProtocolTest, cancelProtocolTest, trialRunning, sessionMessage,
     testRunDisabledReason, discardTrial, resetTrialForTemplate,
@@ -624,9 +624,9 @@ export default function ModelProtocolEditor({
           <p className="my-2 text-xs text-canvas-text-muted">{t('试跑变量与本地预览分开；只有点击试跑才会发送真实请求。')}</p>
           {!workflowMode && model.category === 'video' ? <div className="mb-2 grid gap-2 sm:grid-cols-2">
             {!klingVideoContract ? <label className="ui-field sm:col-span-2"><span className="ui-label">{t('试跑场景')}</span>
-              <Select fixedMenu disabled={trialRunning} value={testScenario} onChange={(value) => setTestScenario(value as VideoTestScenario)}>
+              <Select fixedMenu disabled={trialRunning} value={activeTestScenario} onChange={(value) => setTestScenario(value as VideoTestScenario)}>
                 <option value="text">{t('文生视频（无参考素材）')}</option>
-                <option value="keyframe">{t('首尾帧（不混用参考素材）')}</option>
+                {supportsTestKeyframes ? <option value="keyframe">{t('首尾帧（不混用参考素材）')}</option> : null}
                 <option value="reference">{t('多参考素材（不使用首尾帧）')}</option>
               </Select>
             </label> : null}
@@ -684,7 +684,8 @@ export default function ModelProtocolEditor({
         {session?.taskId ? <p className="mt-1 break-all text-xs text-canvas-text-muted">{t('任务 ID {id}', { id: session.taskId })}</p> : null}
         {session ? <p className="mt-1 text-xs text-canvas-text-muted">{t('查询记录仅保留到应用关闭或刷新。')}</p> : null}
         {testRun.message ? (
-          <div className={`provider-catalog-message is-${testRun.status === 'error' ? 'error' : 'ready'} mt-2`}>
+          <div role={testRun.status === 'error' ? 'alert' : 'status'}
+            className={`provider-catalog-message is-${testRun.status === 'error' ? 'error' : 'ready'} mt-2`}>
             <Icon
               icon={testRun.status === 'error' ? 'mdi:alert-circle-outline' : 'mdi:check-circle-outline'}
               width="14"
@@ -1362,7 +1363,8 @@ export default function ModelProtocolEditor({
       {readOnlyProtocol && preset === 'custom' ? (
         <details className="text-xs text-canvas-text-secondary">
           <summary className="cursor-pointer">{t('声明式协议 JSON')}</summary>
-          <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-all p-2 font-mono">{protocolJson}</pre>
+          <pre tabIndex={0} role="region" aria-label={t('声明式协议 JSON')}
+            className="max-h-80 overflow-auto whitespace-pre-wrap break-all p-2 font-mono"><code>{protocolJson}</code></pre>
         </details>
       ) : null}
 

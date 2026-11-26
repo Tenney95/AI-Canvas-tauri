@@ -32,6 +32,7 @@ import { maybeAutoReleaseComfyMemory } from '../../comfyMemory';
 import { COMFY_QUERY_TIMEOUT_MS } from '../../comfyQuery';
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../../canvasDerivationGuard';
 import { pollResolvedModelProtocol } from '../modelProtocol';
+import { resolvePoll } from '../modelProtocolPoll';
 import { assertMinimaxQueryResponse, usesMinimaxResolvedVideoPoll } from '../providers/minimaxModelManifest';
 import { assertImageOutputCount, assertModelProtocolResult } from '../modelCapabilityValidation';
 import {
@@ -42,6 +43,11 @@ import {
 import type { BaseNodeData } from '../../../types';
 import type { MediaDownloadAccess } from '../../../types/aiTypes';
 import { createMediaDownloadAccess, sanitizeMediaResultUrls } from '../mediaDownloadAccess';
+import { resolveProviderCatalogId } from '../providerPolicies';
+import { assertSandOrigin, isSandId, sandProtocolFor, SAND_SITES, sandSite, sandTaskRequest } from '../providers/sandVideoContract';
+import { nativeQueryCredentialProof } from '../../nativeProtocolRecovery';
+import { nativeProtocolTaskIdContext } from '../../nativeModelProtocolTask';
+import { assertMagiGatewayOrigin, MAGI_VIDEO_GATEWAYS, magiGatewayProtocol, magiGatewayTaskRequest, magiVideoGateway } from '../providers/magiVideoGateways';
 import {
   APIMART_BASE_URL,
   RUNNINGHUB_MODEL_BASE_URL,
@@ -771,7 +777,7 @@ async function resumeCustomProtocol(task: PendingTask, parentSignal?: AbortSigna
     await handleResumeError(task, new Error('任务恢复失败：原结果的连接身份已丢失'));
     return;
   }
-  const polls = task.protocolPolls?.length ? task.protocolPolls : protocolPoll ? [protocolPoll] : [];
+  let polls = task.protocolPolls?.length ? task.protocolPolls : protocolPoll ? [protocolPoll] : [];
   if (!providerConfig.apiKey && polls.some((poll) => poll.auth?.type !== 'none')) {
     await handleResumeError(task, new Error('任务恢复失败：连接尚未填写 API Key'));
     return;
@@ -786,7 +792,49 @@ async function resumeCustomProtocol(task: PendingTask, parentSignal?: AbortSigna
 
   const signal = registerNodePolling(nodeId, parentSignal);
   const query = guardVideoTaskQuery(task, signal);
+  let stopWatchingConnection: (() => void) | undefined;
   try {
+    const firstPoll = polls[0];
+    const originalSand = firstPoll && SAND_SITES.some((site) => site.origin === task.mediaDownloadAccess?.origin)
+      ? sandTaskRequest(firstPoll.url, firstPoll.method)?.site : undefined;
+    const originalGateway = firstPoll?.magiGateway === true
+      ? MAGI_VIDEO_GATEWAYS.find((gateway) => gateway.origin === task.mediaDownloadAccess?.origin) : undefined;
+    const catalogId = resolveProviderCatalogId(providerConfigId!, providerConfig);
+    const activeSand = sandSite(catalogId);
+    const activeGateway = magiVideoGateway(catalogId);
+    let queryBase = providerConfig.baseUrl;
+    let querySignal = signal;
+    if (originalSand || firstPoll?.magiGateway === true || task.credentialProof) {
+      if (polls.length !== 1 || !task.attemptId || !task.credentialProof
+        || task.credentialProof !== await nativeQueryCredentialProof(task.attemptId, providerConfigId!, providerConfig.apiKey)) {
+        throw new Error('MAGI-2 原任务的连接或密钥已变化，请恢复原连接后续查');
+      }
+      if (originalSand && activeSand && originalSand.id === activeSand.id && isSandId(task.taskId)) {
+        const originalQuery = sandTaskRequest(firstPoll.url, firstPoll.method);
+        if (originalQuery?.taskId !== task.taskId || originalQuery?.site.id !== activeSand.id) throw new Error('Sand AI 原任务查询身份已变化');
+        queryBase = assertSandOrigin(activeSand.id, providerConfig.baseUrl?.trim() || activeSand.origin);
+        const protocol = sandProtocolFor(activeSand.id);
+        polls = [resolvePoll(queryBase, protocol.poll!, protocol.auth, { submit: { id: task.taskId } })];
+      } else if (originalGateway && originalGateway === activeGateway) {
+        const originalQuery = magiGatewayTaskRequest(polls[0].url, polls[0].method);
+        if (originalQuery?.taskId !== task.taskId || originalQuery?.gateway !== originalGateway) throw new Error('MAGI-2 原任务查询身份已变化');
+        queryBase = assertMagiGatewayOrigin(originalGateway, providerConfig.baseUrl?.trim() || originalGateway.origin);
+        const protocol = magiGatewayProtocol(originalGateway);
+        polls = [resolvePoll(queryBase, protocol.poll!, protocol.auth, nativeProtocolTaskIdContext(protocol, task.taskId))];
+      } else {
+        throw new Error('MAGI-2 原任务的连接已变化，请恢复原连接后续查');
+      }
+      const controller = new AbortController();
+      const check = () => {
+        if (useAppStore.getState().config.providers[providerConfigId!] !== providerConfig) {
+          controller.abort(new Error('MAGI-2 原连接已变化，请恢复后续查'));
+        }
+      };
+      stopWatchingConnection = useAppStore.subscribe(check);
+      check();
+      querySignal = AbortSignal.any([signal, controller.signal]);
+      querySignal.throwIfAborted();
+    }
     // 旧异步记录在恢复时补齐无密钥下载描述，仍绑定原查询地址与连接。
     const mediaDownloadAccess = task.mediaDownloadAccess ?? (protocolPoll && providerConfigId
       ? createMediaDownloadAccess(providerConfigId, protocolPoll.url, protocolPoll.auth) : undefined);
@@ -796,13 +844,14 @@ async function resumeCustomProtocol(task: PendingTask, parentSignal?: AbortSigna
     }
     const settled = await settleMediaTaskQueries(polls.map((poll, index) => (querySignal: AbortSignal) => pollResolvedModelProtocol(
       { ...poll, maxDurationMs: poll.maxDurationMs ?? MEDIA_POLL_MAX_DURATION_MS },
-      providerConfig.apiKey || '', querySignal, providerConfig.baseUrl,
+      providerConfig.apiKey || '', querySignal, queryBase,
       // 原任务只按已保存的查询合同识别，不借用连接现在的模型或自定义协议。
       usesMinimaxResolvedVideoPoll(poll, task.taskId, task.mediaDownloadAccess?.origin)
         ? assertMinimaxQueryResponse : undefined,
       undefined,
       polls.length === 1 ? task.taskId : task.taskIds?.[index] ?? '',
-    )), signal);
+    )), querySignal);
+    querySignal.throwIfAborted();
     const uncertain = settled.find((result) => result.status === 'rejected' && !(result.reason instanceof PollTaskFailedError));
     if (uncertain?.status === 'rejected') throw uncertain.reason;
     // 可查询的原任务使用本轮结果，旧缓存不能覆盖刚刷新的签名地址。
@@ -864,6 +913,7 @@ async function resumeCustomProtocol(task: PendingTask, parentSignal?: AbortSigna
   } catch (error) {
     await handleResumeError(task, error, signal);
   } finally {
+    stopWatchingConnection?.();
     cleanupNodePolling(nodeId, signal);
     query.complete();
   }

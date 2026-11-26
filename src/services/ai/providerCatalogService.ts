@@ -41,6 +41,8 @@ import { LIBAPI_MODEL_MANIFEST, matchLibapiCatalog, resolveLibapiModelId } from 
 import { RELAYON_BASE_URL, RELAYON_MODEL_MANIFEST, matchRelayonCatalog, resolveRelayonImageModelContract } from './providers/relayonModelManifest';
 import { AIGCSI_BASE_URL, AIGCSI_MODEL_MANIFEST, matchAigcsiCatalog, normalizeAigcsiCatalogItems } from './providers/aigcsiModelManifest';
 import { MINIMAX_BASE_URL, MINIMAX_MODEL_MANIFEST } from './providers/minimaxModelManifest';
+import { SAND_CONNECTIONS, sandModelManifest, sandSite } from './providers/sandVideoContract';
+import { MAGI_VIDEO_GATEWAYS, magiGatewayManifest, magiVideoGateway } from './providers/magiVideoGateways';
 import { assertImageModelCapability, isModelProtocolPresetId } from './modelCapabilityValidation';
 import { validateModelExecutionProtocol } from './modelProtocolValidation';
 import { comparableProtocol } from './modelProtocol';
@@ -550,6 +552,21 @@ const BUILT_IN_PROVIDER_ENTRIES: Omit<ProviderDefinition, 'policy'>[] = [
       { key: 'baseUrl', label: '接口地址', required: false, placeholder: MINIMAX_BASE_URL }],
     models: MINIMAX_MODEL_MANIFEST,
   },
+  ...SAND_CONNECTIONS.map((site): Omit<ProviderDefinition, 'policy'> => ({
+    id: site.id, name: site.name, badgeText: 'SA', authType: 'api-key', catalogAdapter: 'local-manifest',
+    description: 'MAGI-2 官方视频生成，使用本站点的 Sand AI API Key。',
+    defaultBaseUrl: site.origin, allowCustomBaseUrl: false, externalUrl: site.docs,
+    credentials: [{ ...API_KEY_FIELD, placeholder: '填写本站点的 Sand AI API Key' }],
+    models: sandModelManifest(site.id),
+  })),
+  ...MAGI_VIDEO_GATEWAYS.map((gateway): Omit<ProviderDefinition, 'policy'> => ({
+    id: gateway.id, name: gateway.name, badgeText: gateway.badgeText,
+    authType: 'api-key', catalogAdapter: 'local-manifest',
+    description: 'MAGI-2 视频生成，按当前平台的接口与账户计费。',
+    defaultBaseUrl: gateway.origin, allowCustomBaseUrl: false, externalUrl: gateway.docs,
+    credentials: [{ ...API_KEY_FIELD, placeholder: gateway.keyHint }],
+    models: magiGatewayManifest(gateway),
+  })),
   {
     id: 'xai',
     name: 'xAI / Grok 官方',
@@ -1351,9 +1368,10 @@ export async function fetchProviderModelCatalog(
   }
   if (definition.catalogAdapter === 'local-manifest') {
     // 即梦与 MiniMax 使用已核实的本地合同；过期的界面 fallback 不能隐藏新型号，也不代表 Key 已验证。
-    if (['dreamina', 'minimax', 'muse', 'kling', 'replicate'].includes(definition.id)) {
+    const fixedMagi = sandSite(definition.id) || magiVideoGateway(definition.id);
+    if (fixedMagi || ['dreamina', 'minimax', 'muse', 'kling', 'replicate'].includes(definition.id)) {
       return { models: normalizeModels([...(definition.models ?? [])], providerId), source: 'local-manifest',
-        ...(['minimax', 'kling', 'replicate'].includes(definition.id) ? { warning: '当前展示内置候选模型，未验证 API Key 或模型权限。' } : {}) };
+        ...(fixedMagi || ['minimax', 'kling', 'replicate'].includes(definition.id) ? { warning: '当前展示内置候选模型，未验证 API Key 或模型权限。' } : {}) };
     }
     return { models: definition.id === 'grsai'
       ? mergeRemoteCatalogMetadata(normalizedFallback, [...GRSAI_ADDED_MODELS])

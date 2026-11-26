@@ -81,6 +81,8 @@ export const IMAGE_SINGLE_FIELDS = [
 
 export const PROTOCOL_VARIABLES: readonly ProtocolVariableSpec[] = [
   { name: 'parameters', supplied: MEDIA },
+  { name: 'sandContent', supplied: VIDEO },
+  { name: 'gatewayVideoBody', supplied: VIDEO },
   { name: 'model', supplied: ALL, fields: ['model', 'modelid', 'modelname', 'modelcode'] },
   {
     name: 'prompt', supplied: ALL,
@@ -297,6 +299,8 @@ const PROTOCOL_VARIABLE_DESCRIPTIONS: Readonly<Record<string, string>> = {
   musicBpm: '音乐速度（每分钟节拍数）',
   imageWithRoles: '带角色的参考图数组，元素包含 url 和 role',
   seedanceContent: '火山 Seedance 原生 content 数组，包含提示词及带类型和角色的参考素材',
+  sandContent: 'Sand AI 的文本及有序媒体，由 MAGI-2 适配器按连接协议生成',
+  gatewayVideoBody: '由内置视频渠道适配器生成的请求体',
   firstImage: '视频首帧图片 URL',
   lastImage: '视频尾帧图片 URL',
   referenceImageUrls: '普通参考图 URL 数组（不含首尾帧）',

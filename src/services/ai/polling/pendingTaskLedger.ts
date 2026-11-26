@@ -282,6 +282,7 @@ export interface PendingTask {
   /** 是否已取得远端任务 ID；false 不能证明请求未被上游接收。 */
   submitted: boolean;
   attemptId?: string;
+  credentialProof?: string;
   mediaContext?: MediaTaskContext;
   mediaRecoveryState?: 'query_paused' | 'delivery_pending' | 'submit_unknown';
   mediaRecoveryReason?: MediaTaskPauseReason;
@@ -1311,7 +1312,7 @@ function inferLegacyProviderConfigId(task: LegacyPendingTask): string | undefine
 
 function sanitizePendingTask(task: LegacyPendingTask): PendingTask {
   const { baseUrl: legacyBaseUrl, comfyQueryHttpStatus, comfyOutputFile, comfyTextOutputNodeIds, mediaDownloadAccess, resultUrls, mediaFailureDiagnostic, terminalFailure,
-    imageOutputNodeIds, imageOutputCountRange, ...safeTask } = task;
+    imageOutputNodeIds, imageOutputCountRange, credentialProof, ...safeTask } = task;
   delete safeTask.apiKey;
   const providerConfigId = inferLegacyProviderConfigId(task);
   const parameters = sanitizeMediaParameters(task.mediaContext?.parameters);
@@ -1328,6 +1329,8 @@ function sanitizePendingTask(task: LegacyPendingTask): PendingTask {
     ...safeTask,
     nodeType: getGenerationNodeType(safeTask.nodeType),
     providerConfigId,
+    ...(task.taskType === 'custom-protocol' && typeof credentialProof === 'string'
+      && /^[a-f0-9]{64}$/.test(credentialProof) ? { credentialProof } : {}),
     ...(safeAccess ? { mediaDownloadAccess: safeAccess } : {}),
     ...(urls ? { resultUrls: urls } : {}),
     ...(outputFile ? { comfyOutputFile: outputFile } : {}),

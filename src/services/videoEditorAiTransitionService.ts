@@ -9,6 +9,8 @@ import { useAppStore } from '../store/useAppStore';
 import { getMediaModelOptions } from '../components/nodes/shared/defaultModels';
 import { generateVideo } from './ai/generateVideo';
 import { resolveGeneralModel, resolveGeneralModelConnection } from './ai/helpers';
+import { sandSite } from './ai/providers/sandVideoContract';
+import { magiVideoGateway } from './ai/providers/magiVideoGateways';
 import { resolveModelExecutionProfile } from './ai/modelProtocol';
 import { resolveProviderCatalogId } from './ai/providerPolicies';
 import { resolveMinimaxExecutionProfile } from './ai/providers/minimaxModelManifest';
@@ -25,7 +27,12 @@ import type {
 /** 编辑器模型下拉的数据源：与画布视频节点用同一份模型目录 */
 export function listVideoEditorVideoModels(): VideoEditorModelOption[] {
   const config = useAppStore.getState().config;
-  return getMediaModelOptions(config.generalModels ?? [], config)
+  const models = (config.generalModels ?? []).filter(({ providerConfigId, modelId }) => {
+    const catalogId = resolveProviderCatalogId(providerConfigId, config.providers[providerConfigId]);
+    const gateway = magiVideoGateway(catalogId, modelId);
+    return sandSite(catalogId, modelId)?.variant !== 'v2' && (!gateway || gateway.id === 'beatapi');
+  });
+  return getMediaModelOptions(models, config)
     .filter((option) => option.mediaKind === 'video')
     .map((option) => ({
       value: option.value,
@@ -147,6 +154,12 @@ export async function runVideoEditorAiTransition(
   const prompt = request.prompt.trim();
   if (!prompt) throw new Error('转场提示词不能为空');
   if (!request.model || !request.provider) throw new Error('请先选择用于生成转场的视频模型');
+  const generalConnection = request.provider === 'general' ? resolveGeneralModelConnection(request.model) : undefined;
+  const catalogId = generalConnection && resolveProviderCatalogId(generalConnection.providerConfigId, generalConnection.provider);
+  const sand = sandSite(catalogId, generalConnection?.model.modelId);
+  if (sand?.variant === 'v2') throw new Error('请使用 Sand AI Ark 连接生成首尾帧转场');
+  const gateway = magiVideoGateway(catalogId, generalConnection?.model.modelId);
+  if (gateway && gateway.id !== 'beatapi') throw new Error('当前连接的首尾帧需要公开 HTTPS 素材。剪辑转场请使用支持项目本地素材的连接');
 
   const references = buildFrameReferences(request);
   if (references.length < 2) throw new Error('缺少首帧或尾帧，无法生成转场');
@@ -203,7 +216,7 @@ export async function runVideoEditorAiTransition(
       assertCurrent?.();
       signal?.throwIfAborted();
       // 同步协议尚无远端 ID 时，也在真实提交边界保留 unknown，禁止重启后误当新请求。
-      if (!getPendingTasksForProject(projectId).some((task) => task.nodeId === trackingId)) {
+      if (!sand && !getPendingTasksForProject(projectId).some((task) => task.nodeId === trackingId)) {
         receipt = savePendingTask({ projectId, nodeId: trackingId, nodeType: 'ai-video', provider: request.provider,
           taskType: 'general', taskId: '', submitted: false, mediaRecoveryState: 'submit_unknown' });
       }

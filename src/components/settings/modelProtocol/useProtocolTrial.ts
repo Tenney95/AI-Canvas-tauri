@@ -54,6 +54,8 @@ import { useAppStore } from '../../../store/useAppStore';
 import type { PluginModelProtocolReference } from '../../../types/plugin';
 import { resolvePluginModelProtocol } from '../../../services/ai/pluginModelProtocol';
 import { isJsonObject, serializeJson } from './protocolFormMappings';
+import { assertSandOrigin, sandProtocolFor, sandSite } from '../../../services/ai/providers/sandVideoContract';
+import { assertMagiGatewayOrigin, magiGatewayProtocol, magiVideoGateway } from '../../../services/ai/providers/magiVideoGateways';
 
 interface ProtocolPreviewState {
   preview?: ModelProtocolRequestPreview;
@@ -112,8 +114,13 @@ export function createPreviewVariables(model: ProviderModelSelection): ModelProt
     };
   }
   if (model.category === 'video') {
+    const gateway = magiVideoGateway(model.provider, model.id);
     return {
       ...common,
+      ...(sandSite(model.provider, model.id) ? { sandContent: [{ type: 'text', text: common.prompt }] } : {}),
+      ...(gateway ? { gatewayVideoBody: { prompt: common.prompt, duration: model.videoCapability?.defaultDuration ?? 5,
+        aspect_ratio: model.videoCapability?.defaultRatio ?? '16:9', resolution: '1080p',
+        ...(gateway.id === 'beatapi' ? { model: model.id } : {}) } } : {}),
       duration: model.videoCapability?.defaultDuration ?? model.videoCapability?.durations?.[0] ?? model.videoCapability?.minDuration,
       aspectRatio: model.videoCapability?.defaultRatio ?? model.videoCapability?.ratios?.[0],
       seedanceResolution: model.videoCapability?.defaultResolution ?? model.videoCapability?.resolutions?.[0],
@@ -194,7 +201,11 @@ export function useProtocolTrial({
     } catch { return undefined; }
   }, [catalogId, workflowMode, model.category, model.id, preset, protocolJson]);
   const klingFrameMode = klingVideoContract?.videoFrameMode;
-  const activeTestScenario = klingVideoContract ? defaultVideoTestScenario(klingVideoContract) : testScenario;
+  const sand = workflowMode ? undefined : sandSite(catalogId, model.id);
+  const gateway = workflowMode ? undefined : magiVideoGateway(catalogId, model.id);
+  const supportsTestKeyframes = sand?.variant !== 'v2';
+  const activeTestScenario = klingVideoContract ? defaultVideoTestScenario(klingVideoContract)
+    : !supportsTestKeyframes && testScenario === 'keyframe' ? 'reference' : testScenario;
   const [testReferences, setTestReferences] = useState<VideoTestReferences>({ firstImage: '', lastImage: '', images: '', videos: '', audios: '' });
   const sessionIdentity = useMemo(() => ({
     scopeId: testSessionScope ?? (model.provider || 'protocol-editor'), modelId: model.id, baseUrl,
@@ -205,7 +216,10 @@ export function useProtocolTrial({
   }), [sessionIdentity]);
   const session = useSyncExternalStore(sessionObserver.subscribe, sessionObserver.getSnapshot, () => undefined);
   const [responseSampleJson, setResponseSampleJson] = useState(
-    () => serializeJson(createResponseSample()),
+    () => serializeJson(sand?.variant === 'v2'
+      ? { id: '9223372036854775807', status: 'succeeded', output: { videoUrl: 'https://cdn.example/result.mp4' } }
+      : sand ? { id: '9223372036854775807', model: 'magi-2', status: 'succeeded', content: { video_url: 'https://cdn.example/result.mp4' } }
+        : createResponseSample()),
   );
   const testRunContext = useMemo(() => ({ identity: sessionIdentity, authenticated: !!apiKey.trim() }), [sessionIdentity, apiKey]);
   const [testRunState, setTestRunState] = useState<{ context: object; value: ProtocolTestRunState }>(
@@ -277,6 +291,7 @@ export function useProtocolTrial({
         paused: '查询已暂停',
         'submission-uncertain': '提交状态不确定，请先到厂商后台确认',
         'different-origin': '任务查询地址与当前连接不同源',
+        'different-credential': '原任务的 API Key 已变化，请恢复原 Key 后继续查询',
       };
       return t(messages[testError.code]);
     }
@@ -339,18 +354,23 @@ export function useProtocolTrial({
         await lease?.assertCurrent();
         result = { text: parseChatApiResponse(payload, nativeChatProtocol).text };
       } else {
-        const currentProtocol = resolveProtocolTestRunDraft(
+        if (sand) assertSandOrigin(sand.id, baseUrl.trim());
+        if (gateway) assertMagiGatewayOrigin(gateway, baseUrl.trim());
+        const currentProtocol = sand ? sandProtocolFor(sand.id)
+          : gateway ? magiGatewayProtocol(gateway, activeTestScenario === 'keyframe' ? 'image-to-video'
+            : activeTestScenario === 'reference' ? 'reference-to-video' : 'text-to-video')
+          : resolveProtocolTestRunDraft(
           preset, protocol, protocolJson, invalidFormFieldsRef.current.size > 0,
         );
         assertModelProtocolResultMapping(model.category, currentProtocol);
         const kling = !workflowMode && catalogId === 'kling'
           ? resolveKlingModelContract(model.id, { preset: 'custom', protocol: currentProtocol }) : undefined;
         if (!workflowMode && model.category === 'video') {
-          const testModel = kling ? { ...model, videoCapability: resolveConfiguredVideoCapability(
+          const testModel = kling || sand || gateway ? { ...model, videoCapability: resolveConfiguredVideoCapability(
             catalogId, model.id, { preset: 'custom', protocol: currentProtocol }, model.videoCapability,
           ) } : model;
           const references = kling?.videoFrameMode === 'single' ? { ...testReferences, lastImage: '' } : testReferences;
-          variables = await buildVideoTestVariables(testModel, activeTestScenario, references, variables, kling?.videoFrameMode);
+          variables = await buildVideoTestVariables(testModel, activeTestScenario, references, variables, kling?.videoFrameMode, sand?.variant, gateway);
         } else if (!workflowMode && model.category === 'image') {
           const verified = kling?.imageCapability;
           const testModel = verified ? {
@@ -457,7 +477,7 @@ export function useProtocolTrial({
 
   return {
     previewVariablesJson, setPreviewVariablesJson, testVariablesJson, setTestVariablesJson,
-    testScenario, setTestScenario, klingVideoContract, klingFrameMode, activeTestScenario,
+    setTestScenario, klingVideoContract, klingFrameMode, activeTestScenario, supportsTestKeyframes,
     testReferences, setTestReferences, session, responseSampleJson,
     setResponseSampleJson, testRun, previewState, supportsStructuredResponse, responsePreviewState,
     runProtocolTest, resumeProtocolTest, cancelProtocolTest, trialRunning, sessionMessage,

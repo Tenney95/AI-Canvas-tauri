@@ -371,8 +371,8 @@ describe('model protocol editor interactions', () => {
     driver.execute.mockResolvedValue({ urls: ['https://cdn.example/result.mp4'] });
     render();
     expect(elements(tree).some((element) => element.type === 'option' && element.props.value === 'custom')).toBe(false);
-    const protocolJson = find((element) => element.type === 'pre' && typeof element.props.children === 'string'
-      && element.props.children.includes('/image-to-video/kling-4.0-flash'));
+    const protocolJson = find((element) => element.type === 'pre' && elements(element.props.children)
+      .some((child) => child.type === 'code' && String(child.props.children).includes('/image-to-video/kling-4.0-flash')));
     expect(protocolJson.props.contentEditable).toBeUndefined();
     find((element) => element.type === 'summary' && element.props.children === '本地请求预览');
     const label = find((element) => element.type === 'label'

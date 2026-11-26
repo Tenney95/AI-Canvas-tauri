@@ -5,8 +5,47 @@ use std::net::{TcpListener, TcpStream};
 fn test_request(url: String, method: &str) -> ProxyFetchRequest {
     ProxyFetchRequest {
         request_id: None, upload_diagnostic_id: None, url, method: method.into(), headers: Vec::new(),
-        body: None, text_body: None,
+        body: None, text_body: None, magi_gateway: false,
     }
+}
+
+#[test]
+fn sand_task_transport_is_scoped_to_official_routes() {
+    for origin in ["https://api.sand.ai", "https://api.sandai.cn"] {
+        for path in ["/compatible/ark/api/v3/contents/generations/tasks", "/v2/generations"] {
+            let url = format!("{origin}{path}");
+            assert!(is_sand_task_request(&test_request(url.clone(), "POST")));
+            assert_eq!(proxy_response_limit(&test_request(url.clone(), "POST")).0, 128 * 1024);
+            assert!(is_sand_task_request(&test_request(format!("{url}/9223372036854775807"), "GET")));
+            assert!(!is_sand_task_request(&test_request(format!("{url}/9223372036854775808"), "GET")));
+            assert!(!is_sand_task_request(&test_request(format!("{url}?other=1"), "POST")));
+        }
+    }
+    let relay = "https://api.sand.ai.example/compatible/ark/api/v3/contents/generations/tasks";
+    assert!(!is_sand_task_request(&test_request(relay.into(), "POST")));
+}
+
+#[test]
+fn magi_gateway_task_transport_is_scoped_to_model_routes() {
+    for (url, method) in [
+        ("https://api.higgsfield.ai/sand/magi-2/reference-to-video", "POST"),
+        ("https://api.higgsfield.ai/requests/71b37e19-ccd8-4e43-b015-3644b596c348/status", "GET"),
+        ("https://api.beatapi.io/v1/videos/tasks", "POST"),
+        ("https://api.beatapi.io/v1/tasks/task_7Qm2Xc9LpR4vT8sKa1Nf6YbH3eWdJ0uZ", "GET"),
+        ("https://api.nereo.io/api/v1/sand/magi-2/image-to-video", "POST"),
+        ("https://api.nereo.io/api/v1/requests/7c1k2n0q8x4m3v9d5a6b/status", "GET"),
+    ] {
+        let mut request = test_request(url.into(), method);
+        assert!(!is_magi_gateway_task_request(&request));
+        request.magi_gateway = true;
+        assert!(is_magi_gateway_task_request(&request));
+        assert_eq!(proxy_response_limit(&request).0, 128 * 1024);
+        request.url = format!("{url}?other=1");
+        assert!(!is_magi_gateway_task_request(&request));
+    }
+    assert!(!is_magi_gateway_task_request(&test_request(
+        "https://api.higgsfield.ai.example/requests/71b37e19-ccd8-4e43-b015-3644b596c348/status".into(), "GET"
+    )));
 }
 
 #[test]

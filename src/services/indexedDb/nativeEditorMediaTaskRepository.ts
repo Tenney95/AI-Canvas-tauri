@@ -23,6 +23,7 @@ export interface NativeEditorMediaTask {
   editorId: string; beforeClipId: string; expectedEditor: VideoEditorProjectRecord;
   modelRef: string; providerConfigId: string; providerBase: string; protocolDigest: string;
   queryDigest?: string; submissionKind?: 'async' | 'sync'; pollContext?: Record<string, unknown>; localResults?: NativeMediaLocalOutput[];
+  credentialProof?: string;
   completion?: { taskCount: number; failedTasks: number };
   status: 'prepared' | 'submitted' | 'outcome-unknown' | 'failed' | 'delivered' | 'reviewed'; remoteTaskId?: string;
   lease: string; submissionLease: string; revision: number; resultPath?: string; resultDuration?: number; createdAt: number; updatedAt: number;
@@ -45,6 +46,7 @@ function validate(row: NativeEditorMediaTask): NativeEditorMediaTask {
       || row.expectedEditor.automationRevision < 0 || row.expectedEditor.automationRevision >= Number.MAX_SAFE_INTEGER)
     || row.remoteTaskId !== undefined && !isSafeNativeProtocolTaskId(row.remoteTaskId)
     || row.queryDigest !== undefined && !/^[a-f0-9]{64}$/.test(row.queryDigest)
+    || row.credentialProof !== undefined && !/^[a-f0-9]{64}$/.test(row.credentialProof)
     || row.submissionKind !== undefined && !['async', 'sync'].includes(row.submissionKind)
     || row.submissionKind === 'sync' && row.remoteTaskId !== undefined
     || row.status === 'submitted' && !(row.remoteTaskId || row.submissionKind === 'sync' && row.localResults?.length)
@@ -53,7 +55,7 @@ function validate(row: NativeEditorMediaTask): NativeEditorMediaTask {
     || Object.keys(row).some((key) => !['projectId', 'kind', 'ownerProjectId', 'canvasId', 'episodeId', 'projectEpoch', 'canvasEpoch', 'operationId',
       'requestId', 'anchorNodeId', 'editorId', 'beforeClipId', 'expectedEditor', 'modelRef', 'providerConfigId', 'providerBase', 'protocolDigest',
       'status', 'remoteTaskId', 'lease', 'submissionLease', 'revision', 'resultPath', 'resultDuration', 'createdAt', 'updatedAt',
-      'queryDigest', 'submissionKind', 'pollContext', 'localResults', 'completion'].includes(key))) throw new Error('原转场回执损坏，不能自动续接');
+      'queryDigest', 'submissionKind', 'pollContext', 'localResults', 'completion', 'credentialProof'].includes(key))) throw new Error('原转场回执损坏，不能自动续接');
   if (row.pollContext) validateNativeProtocolContext(row.pollContext);
   if (row.localResults) {
     validateNativeMediaLocalOutputs(row.localResults);
@@ -99,7 +101,8 @@ export async function listNativeEditorMediaTasks(context: Readonly<CanvasContext
   }, options);
 }
 export async function prepareNativeEditorMediaTask(input: { context: Readonly<CanvasContext>; requestId: string; anchorNodeId: string;
-  beforeClipId: string; modelRef: string; providerConfigId: string; providerBase: string; protocolDigest: string; queryDigest?: string; submissionKind?: 'async' | 'sync' },
+  beforeClipId: string; modelRef: string; providerConfigId: string; providerBase: string; protocolDigest: string; queryDigest?: string;
+  submissionKind?: 'async' | 'sync'; credentialProof?: string },
 options: NativeProjectOptions = {}): Promise<NativeEditorMediaTask> {
   const fixed = structuredClone(input), operationId = crypto.randomUUID(), now = Date.now();
   return withDb('readwrite', async (tx) => {
@@ -117,6 +120,7 @@ options: NativeProjectOptions = {}): Promise<NativeEditorMediaTask> {
       canvasEpoch: fixed.context.canvasEpoch, operationId, requestId: fixed.requestId, anchorNodeId: fixed.anchorNodeId,
       editorId, beforeClipId: fixed.beforeClipId, expectedEditor, modelRef: fixed.modelRef, providerConfigId: fixed.providerConfigId,
       providerBase: fixed.providerBase, protocolDigest: fixed.protocolDigest, ...(fixed.queryDigest ? { queryDigest: fixed.queryDigest } : {}),
+      ...(fixed.credentialProof ? { credentialProof: fixed.credentialProof } : {}),
       ...(fixed.submissionKind ? { submissionKind: fixed.submissionKind } : {}), status: 'prepared', lease: crypto.randomUUID(), submissionLease: crypto.randomUUID(), revision: 0, createdAt: now, updatedAt: now });
     await request(store.add(row)); return row;
   }, options);

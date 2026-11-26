@@ -168,6 +168,7 @@ export interface LegacyModelProtocolPollTemplate extends ModelProtocolRequestTem
 
 export interface ModelProtocolPollTemplate extends ModelProtocolRequestTemplate {
   response: ModelProtocolPollResponseConfig;
+  magiGateway?: boolean;
   intervalMs?: number;
   maxAttempts?: number;
   maxDurationMs?: number;
@@ -257,6 +258,8 @@ export interface VideoParameterCapabilityOverride {
   defaultRatio?: string;
   /** 当前输入模式是否必须最终得到一个比例。 */
   requiresRatio?: boolean;
+  /** 输出比例由首帧决定，不发送用户选择的比例。 */
+  ratioFromFirstFrame?: boolean;
   /** 当前任务是否只允许模型自动决定时长。 */
   automaticDurationOnly?: boolean;
 }
@@ -323,6 +326,7 @@ export interface VideoModelCapability {
   supportsAudio?: boolean;
   /** 是否支持纯音频参考（无图/视频）。 */
   supportsStandaloneAudio?: boolean;
+  supportsKeyframes?: boolean;
   /**
    * 是否允许首/尾帧角色与普通图片、视频或音频参考同时出现。
    * 缺省保持旧配置兼容；明确为 false 时由提交前 resolver 拒绝混用。
@@ -422,6 +426,7 @@ export interface AudioModelCapability {
 
 /** 异步任务提交后解析出的轮询描述；不包含 API Key。 */
 export interface ResolvedModelProtocolPoll {
+  magiGateway?: boolean;
   method: ModelProtocolHttpMethod;
   url: string;
   /** 原提交运行时的隐私标记，恢复查询时继续禁止记录请求；不含素材或凭据。 */

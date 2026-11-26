@@ -12,6 +12,8 @@ import { resolveProviderCatalogId } from './providerPolicies';
 import { resolveRelayonVideoCapability } from './providers/relayonModelManifest';
 import { resolveKlingModelContract } from './providerCatalogService';
 import { resolveEffectivePromptLimits } from './imagePromptLimits';
+import { sandVideoCapability, SAND_VIDEO_MODEL_ID, sandSite } from './providers/sandVideoContract';
+import { magiGatewayCapability, magiVideoGateway } from './providers/magiVideoGateways';
 
 function withVerifiedVideoLimits(verified: VideoModelCapability, configured: VideoModelCapability | undefined): VideoModelCapability {
   if (!configured || !verified.durations?.length) return verified;
@@ -41,6 +43,11 @@ export function resolveConfiguredVideoCapability(
   capability?: VideoModelCapability,
 ): VideoModelCapability | undefined {
   const configured = capability ?? getModelProtocolPresetVideoCapability(profile);
+  const sand = sandSite(catalogId);
+  if (sand && modelId === SAND_VIDEO_MODEL_ID) return withVerifiedVideoLimits(sandVideoCapability(sand.variant), configured);
+  const gateway = magiVideoGateway(catalogId);
+  const verifiedGateway = gateway && magiGatewayCapability(gateway, modelId);
+  if (verifiedGateway) return withVerifiedVideoLimits(verifiedGateway, configured);
   if (catalogId === 'relayonapi') return resolveRelayonVideoCapability(modelId, profile, configured);
   if (catalogId === 'kling') {
     const verified = resolveKlingModelContract(modelId, profile)?.videoCapability;
@@ -58,7 +65,7 @@ function safeRange(range: NumericInputConstraint | undefined): NumericInputConst
 function safeOverride(override: VideoParameterCapabilityOverride | undefined): VideoParameterCapabilityOverride | undefined {
   return override === undefined ? undefined : {
     ratios: override.ratios ? [...override.ratios] : undefined,
-    defaultRatio: override.defaultRatio, requiresRatio: override.requiresRatio,
+    defaultRatio: override.defaultRatio, requiresRatio: override.requiresRatio, ratioFromFirstFrame: override.ratioFromFirstFrame,
     automaticDurationOnly: override.automaticDurationOnly,
   };
 }
@@ -92,6 +99,7 @@ function safeCapability(capability: VideoModelCapability): VideoModelCapability 
     minDuration: capability.minDuration, maxDuration: capability.maxDuration,
     defaultDuration: capability.defaultDuration, automaticDurationValue: capability.automaticDurationValue,
     supportsAudio: capability.supportsAudio, supportsStandaloneAudio: capability.supportsStandaloneAudio,
+    supportsKeyframes: capability.supportsKeyframes,
     allowFrameAndReferenceMix: capability.allowFrameAndReferenceMix,
     maxImageReferences: capability.maxImageReferences, maxVideoReferences: capability.maxVideoReferences,
     maxAudioReferences: capability.maxAudioReferences,

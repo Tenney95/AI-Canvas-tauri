@@ -11,6 +11,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { isTauriEnv } from './fs/core';
 import { pollTask, PollTimeoutError } from './pollTask';
 import { assertMinimaxResponse, resolveMinimaxBaseUrl } from './ai/providers/minimaxModelManifest';
+import { assertSandOrigin, sandSite } from './ai/providers/sandVideoContract';
+import { assertMagiGatewayOrigin, magiVideoGateway } from './ai/providers/magiVideoGateways';
 
 export interface TestResult {
   success: boolean;
@@ -371,6 +373,16 @@ export async function testProviderConnection(
   if (!apiKey && getProviderDefinition(provider)?.kind !== 'workflow-api') return { success: false, error: '请先填写 API 密钥' };
   const fn = testFns[provider as ProviderTestKey];
   try {
+    const sand = sandSite(provider);
+    if (sand) {
+      assertSandOrigin(sand.id, baseUrl?.trim() || sand.origin);
+      return { success: false, unsupported: true, error: '已核对 Sand AI 站点。API Key 与模型权限可通过模型协议试跑验证，试跑可能计费。' };
+    }
+    const gateway = magiVideoGateway(provider);
+    if (gateway) {
+      assertMagiGatewayOrigin(gateway, baseUrl?.trim() || gateway.origin);
+      return { success: false, unsupported: true, error: '接口地址有效，API Key 和模型权限需在生成时验证。' };
+    }
     if (fn) return await fn(apiKey, baseUrl);
     const definition = getProviderDefinition(provider);
     if (definition?.authType === 'oauth') {

@@ -10,6 +10,9 @@ import { assertConfiguredImageReferences, resolveConfiguredImageParameters } fro
 import { assertImagePromptLength, imagePromptCharacterLimit } from '../../services/ai/imagePromptLimits';
 import { klingImageReferenceValue, klingKeyframeVariables, resolveKlingInlineReferences } from '../../services/ai/providers/klingImageResponse';
 import type { ChatApiMessage } from '../../services/ai/chatApiProtocol';
+import { resolveCanonicalVideoRequest } from '../../services/ai/videoRequestResolver';
+import { sandVariables, type SandVariant } from '../../services/ai/providers/sandVideoContract';
+import { compileMagiGatewayRequest, type magiVideoGateway } from '../../services/ai/providers/magiVideoGateways';
 
 export type ProtocolChoice = ModelProtocolPresetId | 'legacy';
 
@@ -116,6 +119,8 @@ export async function buildVideoTestVariables(
   input: VideoTestReferences,
   overrides: ModelProtocolVariables,
   klingFrameMode?: 'single' | 'keyframes',
+  sand?: SandVariant,
+  gateway?: NonNullable<ReturnType<typeof magiVideoGateway>>,
 ): Promise<ModelProtocolVariables> {
   const references = videoTestReferences(scenario, input, klingFrameMode === 'keyframes');
   for (const key of ['duration', 'seedanceDuration', 'fps', 'videoFps', 'frames', 'videoFrames', 'videoResolution']) {
@@ -123,11 +128,10 @@ export async function buildVideoTestVariables(
       throw new Error('试跑的视频数值参数必须是有限数值，请检查时长、帧率、帧数和长边像素');
     }
   }
-  const { buildGeneralVideoProtocolVariables } = await import('../../services/ai/generateVideo');
   const stringValue = (...keys: string[]) => keys.map((key) => overrides[key]).find((value): value is string => typeof value === 'string');
   const numberValue = (...keys: string[]) => keys.map((key) => overrides[key]).find((value): value is number => typeof value === 'number');
   const prompt = typeof overrides.prompt === 'string' ? overrides.prompt : '';
-  const variables = buildGeneralVideoProtocolVariables(model.id, {
+  const params = {
     model: model.id, provider: model.provider, prompt,
     seedanceResolution: stringValue('seedanceResolution', 'resolution'),
     seedanceRatio: stringValue('aspectRatio', 'seedanceRatio'),
@@ -136,7 +140,12 @@ export async function buildVideoTestVariables(
     videoFrames: numberValue('frames', 'videoFrames'),
     videoResolution: numberValue('videoResolution'),
     generateAudio: typeof overrides.generateAudio === 'boolean' ? overrides.generateAudio : undefined,
-  }, {
+  };
+  if (sand) return sandVariables(resolveCanonicalVideoRequest(params, { references, capability: model.videoCapability }), sand);
+  if (gateway) return compileMagiGatewayRequest(gateway,
+    resolveCanonicalVideoRequest(params, { references, capability: model.videoCapability })).variables;
+  const { buildGeneralVideoProtocolVariables } = await import('../../services/ai/generateVideo');
+  const variables = buildGeneralVideoProtocolVariables(model.id, params, {
     prompt, references,
     imageUrls: references.filter((reference) => reference.kind === 'image').map((reference) => reference.url),
     videoUrls: references.filter((reference) => reference.kind === 'video').map((reference) => reference.url),

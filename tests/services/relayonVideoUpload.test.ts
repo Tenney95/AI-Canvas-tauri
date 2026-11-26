@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { MediaReference } from '../../src/types/aiTypes';
 import { prepareRelayonVideoUpload } from '../../src/services/ai/providers/relayonVideoUpload';
+import { prepareBeatApiReferences } from '../../src/services/ai/providers/sandAssetUpload';
 
 const native = vi.hoisted(() => ({ invoke: vi.fn(), desktop: false }));
 vi.mock('@tauri-apps/api/core', async (load) => ({
@@ -22,6 +23,27 @@ it('纯 HTTPS 参考沿用 URL 协议，全程不下载文件', async () => {
   expect(await prepareRelayonVideoUpload([reference('video', 'https://media.example/clip.mp4')])).toBeUndefined();
   expect(network).not.toHaveBeenCalled();
   expect(native.invoke).not.toHaveBeenCalled();
+});
+
+it('BeatAPI 只上传同一个本地文件一次并保留首尾帧角色', async () => {
+  native.desktop = true;
+  const url = 'https://files.beatapi.io/u/image.png';
+  native.invoke.mockImplementation(async (command: string) => {
+    if (command === 'seal_relayon_video_upload') return [{ mimeType: 'image/png', bytes: 9, sha256: digest('image') }];
+    if (command === 'submit_relayon_video_upload') {
+      return { status: 201, body: JSON.stringify({ data: { url } }), headers: [] };
+    }
+  });
+  const source = reference('image', 'file:///fixture/source.png');
+  const prepared = await prepareBeatApiReferences([
+    { ...source, role: 'first_frame' }, { ...source, role: 'last_frame' },
+  ], 'fixture-key', () => {});
+  expect(prepared.map((entry) => [entry.role, entry.url])).toEqual([['first_frame', url], ['last_frame', url]]);
+  expect(native.invoke.mock.calls.filter(([name]) => name === 'submit_relayon_video_upload')).toEqual([
+    ['submit_relayon_video_upload', expect.objectContaining({ url: 'https://api.beatapi.io/v1/files',
+      parts: [{ name: 'file', fileIndex: 0, filename: 'reference.png' }] })],
+  ]);
+  expect(native.invoke.mock.calls.filter(([name]) => name === 'append_relayon_video_upload')).toHaveLength(0);
 });
 
 it('Web 表单按原序交付文件，其他类型的 HTTPS 引用保留单个 JSON 字段', async () => {

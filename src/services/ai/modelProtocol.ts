@@ -18,6 +18,8 @@ import {
   fetchSameOriginResultUrls,
   normalizeBase64Result,
   readJsonResponse,
+  readSandTaskResponse,
+  readMagiGatewayTaskResponse,
   readBinaryModelProtocolResult,
   redactModelProtocolError,
   throwIfDefinitiveModelResponseFailure,
@@ -39,6 +41,9 @@ import {
 } from './modelProtocolShared';
 import { parseModelExecutionProtocol } from './modelProtocolValidation';
 import { isSafeNativeProtocolTaskId } from '../nativeProtocolContext';
+import { sandTaskRequest, validateSandTask } from './providers/sandVideoContract';
+import { waitForSandRequest } from './providers/sandRateLimit';
+import { magiGatewayTaskRequest, validateMagiGatewayTask } from './providers/magiVideoGateways';
 import type {
   BuiltModelProtocolRequest,
   ExecuteModelProtocolOptions,
@@ -171,12 +176,22 @@ export async function submitModelProtocol(options: SubmitModelProtocolOptions): 
 
 async function submitBuiltModelProtocol(options: SubmitModelProtocolOptions, built: BuiltModelProtocolRequest): Promise<SubmittedModelProtocol> {
   const protocol = built.protocol;
+  const sand = sandTaskRequest(built.url, built.init.method);
+  const gateway = protocol.poll?.magiGateway === true ? magiGatewayTaskRequest(built.url, built.init.method)?.gateway : undefined;
+  if (protocol.poll?.magiGateway === true && (!gateway || protocol.mode !== 'async'
+    || protocol.response.taskIdPath !== gateway.idPath || options.relayonUpload)) {
+    throw new Error('MAGI-2 需要匹配的异步 JSON 任务协议');
+  }
+  if (sand) {
+    if (protocol.mode !== 'async' || protocol.response.taskIdPath !== 'id' || options.relayonUpload) throw new Error('Sand AI 需要异步 JSON 任务协议');
+    await waitForSandRequest(sand.site.origin, 'create', options.signal);
+  }
   const context: Record<string, unknown> = { ...options.variables };
   if (options.beforeSubmit) {
     await options.beforeSubmit();
     options.signal?.throwIfAborted();
   }
-  const traceId = import.meta.env.DEV && !options.sensitive
+  const traceId = import.meta.env.DEV && !options.sensitive && !sand && !gateway
     ? globalThis.crypto?.randomUUID?.() ?? `ai-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}` : undefined;
   const debug: AiResponseLogContext = { url: built.url, method: built.init.method,
     source: 'Model Protocol', traceId, apiKey: options.apiKey, sensitive: options.sensitive };
@@ -189,6 +204,10 @@ async function submitBuiltModelProtocol(options: SubmitModelProtocolOptions, bui
   if (options.relayonUpload && built.renderedBody !== undefined) {
     if (requestDebug) logAiRequest(built.url, built.init, 'Model Protocol', requestDebug);
     response = await options.relayonUpload.submit(built.url, built.init, built.renderedBody, options.signal);
+  } else if (sand || gateway) {
+    response = await corsSafeFetch(built.url, { ...built.init, redirect: 'error', credentials: 'omit',
+      signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000) },
+    { sensitive: true, ...(gateway ? { magiGateway: true } : {}) });
   } else {
     response = await (options.sensitive ? corsSafeFetch(built.url, built.init, { sensitive: true })
       : requestDebug ? corsSafeFetch(built.url, built.init, { debug: requestDebug })
@@ -250,8 +269,12 @@ async function submitBuiltModelProtocol(options: SubmitModelProtocolOptions, bui
     };
   }
 
-  let payload: unknown = await readJsonResponse(response, '模型请求失败', responseConfig.errorPath, options.apiKey, debug);
+  let payload: unknown = sand ? await readSandTaskResponse(response, 'create', sand.createStatus)
+    : gateway ? await readMagiGatewayTaskResponse(response, gateway.name, gateway.createStatuses)
+    : await readJsonResponse(response, '模型请求失败', responseConfig.errorPath, options.apiKey, debug);
   try {
+    if (sand) validateSandTask(payload, undefined, options.apiKey);
+    if (gateway) validateMagiGatewayTask(gateway, payload, undefined, options.apiKey);
     options.validateResponse?.(payload);
     if (options.normalizeSubmitResponse) payload = options.normalizeSubmitResponse(payload);
   } catch (error) {
