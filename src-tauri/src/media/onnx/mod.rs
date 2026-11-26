@@ -943,6 +943,47 @@ async fn run_in_worker(
     }
 }
 
+async fn run_in_worker_with_cpu_fallback(
+    app: &tauri::AppHandle,
+    mut config: OnnxGpuConfig,
+    request_type: &str,
+    model_path: &Path,
+    extra: &Value,
+    task_id: &str,
+    progress_event: Option<&str>,
+    timeout_secs: u64,
+) -> Result<Value, String> {
+    loop {
+        let result = run_in_worker(
+            app,
+            &config,
+            request_type,
+            model_path,
+            extra,
+            task_id,
+            progress_event,
+            timeout_secs,
+        )
+        .await;
+        match result {
+            Err((true, error)) if config.ep == "directml" => {
+                let worker = match request_type {
+                    "matting" => "Matting Worker",
+                    "asr" => "ASR Worker",
+                    _ => "Worker",
+                };
+                eprintln!("[onnxrt] DirectML {worker} 失败: {error} → 标记 CPU 并重试");
+                // 切到 CPU 后，下一次的结果直接返回。
+                config.ep = "cpu".to_string();
+                config.device_id = None;
+                config.device_name = None;
+                let _ = config.save();
+            }
+            result => return result.map_err(|(_, error)| error),
+        }
+    }
+}
+
 // ════════════════════════════════════════════════
 // Tauri 命令：图像超分
 // ════════════════════════════════════════════════
@@ -984,16 +1025,16 @@ pub async fn image_upscale(
         ));
     }
 
-    let mut config = get_or_probe_gpu_config(&model_path).await?;
+    let config = get_or_probe_gpu_config(&model_path).await?;
 
     let extra = json!({
         "input_path": input_path,
         "output_path": output_path,
     });
 
-    match run_in_worker(
+    let value = run_in_worker_with_cpu_fallback(
         &app,
-        &config,
+        config,
         "upscale",
         &model_path,
         &extra,
@@ -1001,61 +1042,22 @@ pub async fn image_upscale(
         Some("image-upscale-progress"),
         300,
     )
-    .await
-    {
-        Ok(v) => {
-            let result = v.get("result").ok_or("超分响应缺少 result 字段")?;
-            let input_size = result
-                .get("input_size")
-                .and_then(|s| s.as_str())
-                .unwrap_or("?x?");
-            let output_size = result
-                .get("output_size")
-                .and_then(|s| s.as_str())
-                .unwrap_or("?x?");
-            let j = json!({
-                "output_path": output_path,
-                "input_size": input_size,
-                "output_size": output_size,
-            });
-            Ok(j.to_string())
-        }
-        Err((is_worker_err, e)) => {
-            if is_worker_err && config.ep == "directml" {
-                eprintln!("[onnxrt] DirectML Worker 失败: {e} → 标记 CPU 并重试");
-                config.ep = "cpu".to_string();
-                config.device_id = None;
-                config.device_name = None;
-                let _ = config.save();
-
-                match run_in_worker(
-                    &app,
-                    &config,
-                    "upscale",
-                    &model_path,
-                    &extra,
-                    &task_id,
-                    Some("image-upscale-progress"),
-                    300,
-                )
-                .await
-                {
-                    Ok(v) => {
-                        let result = v.get("result").ok_or("超分响应缺少 result 字段")?;
-                        let j = json!({
-                            "output_path": output_path,
-                            "input_size": result.get("input_size").and_then(|s| s.as_str()).unwrap_or("?x?"),
-                            "output_size": result.get("output_size").and_then(|s| s.as_str()).unwrap_or("?x?"),
-                        });
-                        Ok(j.to_string())
-                    }
-                    Err((_, e2)) => Err(e2),
-                }
-            } else {
-                Err(e)
-            }
-        }
-    }
+    .await?;
+    let result = value.get("result").ok_or("超分响应缺少 result 字段")?;
+    let input_size = result
+        .get("input_size")
+        .and_then(|s| s.as_str())
+        .unwrap_or("?x?");
+    let output_size = result
+        .get("output_size")
+        .and_then(|s| s.as_str())
+        .unwrap_or("?x?");
+    Ok(json!({
+        "output_path": output_path,
+        "input_size": input_size,
+        "output_size": output_size,
+    })
+    .to_string())
 }
 
 // ════════════════════════════════════════════════
@@ -1101,16 +1103,16 @@ pub async fn subject_matting(
         ));
     }
 
-    let mut config = get_or_probe_gpu_config(&model_path).await?;
+    let config = get_or_probe_gpu_config(&model_path).await?;
 
     let extra = json!({
         "input_path": input_path,
         "output_path": output_path,
     });
 
-    match run_in_worker(
+    let value = run_in_worker_with_cpu_fallback(
         &app,
-        &config,
+        config,
         "matting",
         &model_path,
         &extra,
@@ -1118,63 +1120,21 @@ pub async fn subject_matting(
         None, // matting 无需进度（单次推理，很快）
         120,
     )
-    .await
-    {
-        Ok(v) => {
-            let result = v.get("result").ok_or("主体识别响应缺少 result 字段")?;
-            let subject_path = result
-                .get("subject_path")
-                .and_then(|s| s.as_str())
-                .unwrap_or(&output_path);
-            let input_size = result
-                .get("input_size")
-                .and_then(|s| s.as_str())
-                .unwrap_or("?x?");
-            let j = json!({
-                "subject_path": subject_path,
-                "input_size": input_size,
-            });
-            Ok(j.to_string())
-        }
-        Err((is_worker_err, e)) => {
-            if is_worker_err && config.ep == "directml" {
-                eprintln!("[onnxrt] DirectML Matting Worker 失败: {e} → 标记 CPU 并重试");
-                config.ep = "cpu".to_string();
-                config.device_id = None;
-                config.device_name = None;
-                let _ = config.save();
-
-                match run_in_worker(
-                    &app,
-                    &config,
-                    "matting",
-                    &model_path,
-                    &extra,
-                    &task_id,
-                    None,
-                    120,
-                )
-                .await
-                {
-                    Ok(v) => {
-                        let result = v.get("result").ok_or("主体识别响应缺少 result 字段")?;
-                        let subject_path = result
-                            .get("subject_path")
-                            .and_then(|s| s.as_str())
-                            .unwrap_or(&output_path);
-                        let j = json!({
-                            "subject_path": subject_path,
-                            "input_size": result.get("input_size").and_then(|s| s.as_str()).unwrap_or("?x?"),
-                        });
-                        Ok(j.to_string())
-                    }
-                    Err((_, e2)) => Err(e2),
-                }
-            } else {
-                Err(e)
-            }
-        }
-    }
+    .await?;
+    let result = value.get("result").ok_or("主体识别响应缺少 result 字段")?;
+    let subject_path = result
+        .get("subject_path")
+        .and_then(|s| s.as_str())
+        .unwrap_or(&output_path);
+    let input_size = result
+        .get("input_size")
+        .and_then(|s| s.as_str())
+        .unwrap_or("?x?");
+    Ok(json!({
+        "subject_path": subject_path,
+        "input_size": input_size,
+    })
+    .to_string())
 }
 
 // ════════════════════════════════════════════════
@@ -1236,7 +1196,7 @@ pub async fn speech_to_text(
         }
     }
 
-    let mut config = get_or_probe_gpu_config(&model_path).await?;
+    let config = get_or_probe_gpu_config(&model_path).await?;
 
     let extra = json!({
         "input_path": input_path,
@@ -1244,9 +1204,9 @@ pub async fn speech_to_text(
         "language": language.unwrap_or_default(),
     });
 
-    match run_in_worker(
+    let value = run_in_worker_with_cpu_fallback(
         &app,
-        &config,
+        config,
         "asr",
         &model_path,
         &extra,
@@ -1254,37 +1214,8 @@ pub async fn speech_to_text(
         Some("speech-to-text-progress"),
         ASR_TIMEOUT_SECS,
     )
-    .await
-    {
-        Ok(value) => parse_asr_result(&value),
-        Err((is_worker_err, error)) => {
-            if is_worker_err && config.ep == "directml" {
-                eprintln!("[onnxrt] DirectML ASR Worker 失败: {error} → 标记 CPU 并重试");
-                config.ep = "cpu".to_string();
-                config.device_id = None;
-                config.device_name = None;
-                let _ = config.save();
-
-                match run_in_worker(
-                    &app,
-                    &config,
-                    "asr",
-                    &model_path,
-                    &extra,
-                    &task_id,
-                    Some("speech-to-text-progress"),
-                    ASR_TIMEOUT_SECS,
-                )
-                .await
-                {
-                    Ok(value) => parse_asr_result(&value),
-                    Err((_, retry_error)) => Err(retry_error),
-                }
-            } else {
-                Err(error)
-            }
-        }
-    }
+    .await?;
+    parse_asr_result(&value)
 }
 
 // ════════════════════════════════════════════════
