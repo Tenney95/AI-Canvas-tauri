@@ -219,6 +219,16 @@ describe('项目模型本地备份', () => {
     expect(original.stores[0].records[0].value).toMatchObject({ episodeScript: '保留中文稿件' });
   });
 
+  it('旧画布损坏时仍可备份和读回原值', async () => {
+    const record = { id: 'legacy-canvas', name: '旧项目', nodes: null, edges: [] };
+    const memory = memoryPort();
+    const bundle = await createProjectModelBackup(source(record), { operationId: 'legacy-broken-canvas' });
+    const verified = await writeVerifiedProjectModelBackup(bundle, memory.port);
+    expect(verified.manifest.format).toBe('project-model-backup-v1');
+    expect(verified.source.stores[0].records[0].value).toEqual(record);
+    expect((await readVerifiedProjectModelBackup(memory.port)).source).toEqual(verified.source);
+  });
+
   it('保留undefined、稀疏数组、非有限数、日期、共享buffer/view和Blob', async () => {
     const buffer = new Uint8Array([10, 20, 30, 40]).buffer, child = { chinese: '原文' };
     const sparse = new Array(3); sparse[1] = undefined;

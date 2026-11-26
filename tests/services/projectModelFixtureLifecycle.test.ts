@@ -26,7 +26,6 @@ import { readVerifiedProjectModelBackup } from '../../src/services/projectModelB
 import { stageProjectModelFixture, rollbackProjectModelFixtureStaging, PROJECT_MODEL_STAGING_CAPABILITIES } from '../../src/services/projectModelStaging';
 import { seedHistoricalBusinessMarker } from './projectModelFixtureMarkers';
 import { assertLegacyProjectWritesAllowed } from '../../src/services/indexedDb/legacyProjectWriteGuard';
-import { PROJECT_MODEL_PREPARATION_CAPABILITIES } from '../../src/services/projectModelMigration';
 import { PROJECT_ARCHIVE_V4_CONTRACT } from '../../src/types/projectArchiveV4';
 import { PROJECT_MODEL_GENERATION_STORES, PROJECT_MODEL_SOURCE_FREEZE_KEY } from '../../src/types/projectModelJournal';
 import { sha256BytesHex } from '../../src/services/mediaDataUrl';
@@ -206,7 +205,6 @@ describe('P6 fixture迁移生命周期前置演练', () => {
     }
     expect(opening).not.toHaveBeenCalled(); expect(native.getLease).not.toHaveBeenCalled(); expect(backups.size).toBe(0);
     expect(PROJECT_MODEL_STAGING_CAPABILITIES).toMatchObject({ productionMigration: false, automaticMigration: false, activation: false, restoreWrites: false });
-    expect(PROJECT_MODEL_PREPARATION_CAPABILITIES).toMatchObject({ dataModel: 'legacy', activation: false, restoreWrites: false });
     expect(PROJECT_ARCHIVE_V4_CONTRACT.runtimeEnabled).toBe(false);
   });
 });

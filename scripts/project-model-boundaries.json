@@ -44,7 +44,6 @@
     { "file": "src/services/indexedDb/projectModelStagingRepository.ts", "category": "fixture-source-retained", "allowed": ["table"], "priority": "P3", "reason": "仅fixture新表暂存，反复核旧源未变化且拒activeDataModel。", "removeAfter": "正式activation/恢复合同具等价源证明；不得以P7清理删除旧源或未知generation。" },
     { "file": "src/services/indexedDb/projectRepository.ts", "category": "legacy-readonly-adapter", "allowed": ["table"], "priority": "P3", "reason": "P1旧projects只读领域投影；不是正式新模型仓储。", "removeAfter": "所有正式消费者显式选择新仓储；旧源审查和恢复可继续使用独立只读适配。" },
     { "file": "src/services/projectModelBackup.ts", "category": "backup-audit-retained", "allowed": ["table", "material"], "priority": "P3", "reason": "旧backup-v1与fixture-backup-v2完整覆盖、凭据过滤及旧projects来源要求。", "removeAfter": "旧备份格式有明确弃用周期和可验证转换/恢复；不放宽旧白名单或自动删备份。" },
-    { "file": "src/services/projectModelMigration.ts", "category": "legacy-readonly-adapter", "allowed": ["table"], "priority": "P3", "reason": "P1只读备份和恢复准备，明确不授权正式激活或恢复写入。", "removeAfter": "正式冷启动/专用恢复入口完整替代准备合同，同时仍识别旧备份。" },
     { "file": "src/services/projectModelStaging.ts", "category": "fixture-source-retained", "allowed": ["table"], "priority": "P3", "reason": "fixture耐久备份、源比较和P2暂存协调，不能改成正式默认迁移。", "removeAfter": "P6经过另行评审的正式协调器与原生证据接线完成；保留fixture隔离演练入口。" },
     { "file": "src/projectModelFixtureHost.ts", "category": "fixture-source-retained", "allowed": ["table"], "priority": "P3", "reason": "仅隔离的合成fixture创建和读取旧projects样本以演练迁移恢复，不接入正式项目或真实用户数据库。", "removeAfter": "隔离故障续接和回滚有等价验证入口；不得因此清理真实旧源或备份。" }
   ],

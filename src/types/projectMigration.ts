@@ -34,7 +34,6 @@ export interface LegacyProjectProjection {
 export type ProjectModelMigrationStage =
   | 'preflight' | 'backed_up' | 'schema_ready' | 'staging' | 'verifying'
   | 'ready' | 'activated' | 'failed' | 'quarantined';
-export type ProjectModelRestoreScope = { kind: 'project'; projectId: string } | { kind: 'all-projects' };
 export type ProjectModelRestoreStage =
   | 'prepared' | 'staged' | 'idb_committed' | 'side_stores_reconciled' | 'ready' | 'failed';
 export interface ProjectModelMigrationManifestEntry {
