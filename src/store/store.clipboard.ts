@@ -548,12 +548,18 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
           }).catch((err) => {
             get().updateNodeDataTransient(nodeId, { status: 'error', error: err instanceof Error ? err.message : '复制失败' });
           }), nodeId);
-        } else if (FILE_EXT_VIDEO.includes(extLower)) {
+        } else {
+          const isVideo = FILE_EXT_VIDEO.includes(extLower);
+          if (!isVideo && !FILE_EXT_AUDIO.includes(extLower)) continue;
+          const type = isVideo ? 'ai-video' : 'ai-audio';
           const nodeId = `node-${generateId()}`;
           const newNode: Node<BaseNodeData> = {
-            id: nodeId, type: 'ai-video',
+            id: nodeId, type,
             position: { x: position.x + off.x, y: position.y + off.y },
-            data: { label: fileName, type: 'ai-video', role: 'source', status: 'loading', nodeWidth: 280, nodeHeight: 160 },
+            data: {
+              label: fileName, type, role: 'source', status: 'loading',
+              ...(isVideo ? { nodeWidth: 280, nodeHeight: 160 } : PASTED_AUDIO_DIMENSIONS),
+            },
           };
           addPastedNode(newNode);
           pastedCount++;
@@ -561,29 +567,7 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
           void trackCanvasMediaImport(projectId, fileService.copyFileToProjectData(filePath, projectId).then((result) => {
             if (result?.assetUrl) {
               get().updateNodeDataTransient(nodeId, {
-                label: result.fileName, videoUrl: result.assetUrl, filePath: result.filePath,
-                fileName: result.fileName, status: 'success',
-              });
-            } else {
-              get().updateNodeDataTransient(nodeId, { status: 'error', error: '无法读取文件' });
-            }
-          }).catch((err) => {
-            get().updateNodeDataTransient(nodeId, { status: 'error', error: err instanceof Error ? err.message : '复制失败' });
-          }), nodeId);
-        } else if (FILE_EXT_AUDIO.includes(extLower)) {
-          const nodeId = `node-${generateId()}`;
-          const newNode: Node<BaseNodeData> = {
-            id: nodeId, type: 'ai-audio',
-            position: { x: position.x + off.x, y: position.y + off.y },
-            data: { label: fileName, type: 'ai-audio', role: 'source', status: 'loading', nodeWidth: 260, nodeHeight: 140 },
-          };
-          addPastedNode(newNode);
-          pastedCount++;
-
-          void trackCanvasMediaImport(projectId, fileService.copyFileToProjectData(filePath, projectId).then((result) => {
-            if (result?.assetUrl) {
-              get().updateNodeDataTransient(nodeId, {
-                label: result.fileName, audioUrl: result.assetUrl, filePath: result.filePath,
+                label: result.fileName, [PASTED_MEDIA_URL_FIELD[type]]: result.assetUrl, filePath: result.filePath,
                 fileName: result.fileName, status: 'success',
               });
             } else {
