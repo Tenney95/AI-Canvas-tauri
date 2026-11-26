@@ -11,11 +11,11 @@ import {
 import { sha256BytesHex } from '../../src/services/mediaDataUrl';
 import { IDBFactory } from 'fake-indexeddb';
 import { openProjectModelFixtureDatabase, createProjectModelStagingRepository } from '../../src/services/indexedDb/projectModelStagingRepository';
-import { beginProjectModelFixtureBusinessSession } from '../../src/services/indexedDb/projectModelBusinessRepository';
 import { readLegacyMigrationSnapshot } from '../../src/services/indexedDb/projectModelMigrationRepository';
 import { projectModelSourceToken, readProjectModelSourceToken } from '../../src/services/projectModelComparisonMaterial';
 import { fingerprintProjectModelSource } from '../../src/services/projectModelSourceFingerprint';
 import type { ProjectModelStagingJournal } from '../../src/types/projectModelJournal';
+import { seedHistoricalBusinessMarker } from './projectModelFixtureMarkers';
 
 beforeEach(() => vi.stubGlobal('crypto', webcrypto));
 afterEach(() => vi.unstubAllGlobals());
@@ -71,8 +71,9 @@ async function fixtureSource(options: { empty?: boolean; business?: boolean } = 
   try {
     await staging.prepare({ operationId: 'old-journal', generation: 1, source: snapshot.source,
       sourceDigest: await fingerprintProjectModelSource(backup.manifest), backupOperationId: 'original-backup', backupManifestDigest: 'a'.repeat(64) });
-    await staging.stageNextBatch({ operationId: 'old-journal', batchSize: 500 }); await staging.verify({ operationId: 'old-journal' });
-    if (options.business) await beginProjectModelFixtureBusinessSession(database, { operationId: 'old-journal', generation: 1, sessionId: 'business-session' });
+    await staging.stageNextBatch({ operationId: 'old-journal', batchSize: 500 });
+    const verified = await staging.verify({ operationId: 'old-journal' });
+    if (options.business) await seedHistoricalBusinessMarker(database, verified);
     const names = Array.from(database.objectStoreNames);
     const captured = await new Promise<ProjectModelBackupSource['stores']>((resolve, reject) => {
       const tx = database.transaction(names, 'readonly');

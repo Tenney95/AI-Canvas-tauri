@@ -1,4 +1,4 @@
-/** P6 前置演练：真实fixture IDB/适配/迁移/业务仓储；仅原生备份I/O与租约使用内存替身。 */
+/** P6 前置演练：真实 fixture IDB、适配和迁移；仅原生备份I/O与租约使用内存替身。 */
 import { webcrypto } from 'node:crypto';
 import { IDBFactory as FixtureIDBFactory, IDBKeyRange as FixtureIDBKeyRange, IDBObjectStore as FixtureIDBObjectStore } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -24,7 +24,7 @@ import { readLegacyMigrationSnapshot } from '../../src/services/indexedDb/projec
 import { createLegacyProjectRepository } from '../../src/services/indexedDb/projectRepository';
 import { readVerifiedProjectModelBackup } from '../../src/services/projectModelBackup';
 import { stageProjectModelFixture, rollbackProjectModelFixtureStaging, PROJECT_MODEL_STAGING_CAPABILITIES } from '../../src/services/projectModelStaging';
-import { beginProjectModelFixtureBusinessSession, createProjectModelBusinessRepository } from '../../src/services/indexedDb/projectModelBusinessRepository';
+import { seedHistoricalBusinessMarker } from './projectModelFixtureMarkers';
 import { assertLegacyProjectWritesAllowed } from '../../src/services/indexedDb/legacyProjectWriteGuard';
 import { PROJECT_MODEL_PREPARATION_CAPABILITIES } from '../../src/services/projectModelMigration';
 import { PROJECT_ARCHIVE_V4_CONTRACT } from '../../src/types/projectArchiveV4';
@@ -181,30 +181,12 @@ describe('P6 fixture迁移生命周期前置演练', () => {
     expect(opening.mock.calls.every(([name]) => name === databaseName)).toBe(true);
   });
 
-  it('真实P3接管后拒绝P2回滚和旧写入，保根转换/删末集只动新模型工作稿', async () => {
+  it('已有业务标记的旧夹具拒绝 P2 续接、回滚和旧写入', async () => {
     const operationId = 'p6-business-session'; await stageProjectModelFixture(input(operationId));
     const database = await open();
     try {
-      const session = await beginProjectModelFixtureBusinessSession(database, { operationId, generation: 1, sessionId: 'p6-business-session' });
       const originalJournal = await journal(database, operationId);
-      const business = createProjectModelBusinessRepository(database, session);
-      expect((await business.listProjects()).map((entry) => entry.id)).toEqual(['P', 'S']);
-      expect(await business.readProjectContent('S')).toMatchObject({ script: '共享全剧稿' });
-      expect(await business.readEpisodeContent('S', 'E1')).toMatchObject({ script: '第一集原稿', outline: '第一集大纲' });
-      expect(await business.readEpisodeContent('S', 'E2')).toMatchObject({ script: '第二集原稿' });
-      const ordinary = (await business.readProject('P')).project, oldCanvas = await business.readCanvas('P', 'P');
-      await business.convertStandaloneToSeries({ projectId: 'P', expectedProjectEpoch: ordinary.epoch, episodeId: 'P-first', name: '原画布第一集' });
-      expect(await business.readCanvas('P', 'P')).toMatchObject({ id: oldCanvas.id, episodeId: 'P-first', nodes: oldCanvas.nodes });
-      expect(await business.readEpisodeContent('P', 'P-first')).toMatchObject({ script: '普通旧稿', outline: '普通旧大纲' });
-      for (const episodeId of ['E1', 'E2']) {
-        const project = (await business.readProject('S')).project, episode = await business.readEpisode('S', episodeId), canvas = await business.readCanvas('S', episode.canvasId);
-        await business.deleteEpisode({ projectId: 'S', expectedProjectEpoch: project.epoch, episodeId,
-          expectedEpisodeRevision: episode.revision, expectedCanvasEpoch: canvas.epoch, expectedCanvasRevision: canvas.revision });
-      }
-      expect(await business.openProject('S')).toMatchObject({ activeProjectId: 'S', activeCanvasId: null, contextKind: 'project' });
-      expect(await business.listEpisodes('S')).toEqual([]); expect((await business.readProject('S')).project.kind).toBe('series');
-      expect(await business.readProjectContent('S')).toMatchObject({ script: '共享全剧稿' });
-      expect((await business.listProjects()).map((entry) => entry.id)).toEqual(['P', 'S']);
+      await seedHistoricalBusinessMarker(database, originalJournal);
       const working = await targetRows(database), audit = await all(database, 'agentTasks');
       await expect(stageProjectModelFixture({ ...input(operationId), resume: true })).rejects.toMatchObject({ code: 'business-session-present' });
       await expect(rollbackProjectModelFixtureStaging(input(operationId))).rejects.toMatchObject({ code: 'business-session-present' });
