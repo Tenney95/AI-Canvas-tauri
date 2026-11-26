@@ -24,7 +24,7 @@
   ],
   "ui": {
     "entry": "ui.js",
-    "integrity": "sha256-24096c582e0b419a896d2b0903675f62334abce0561b4b80f24dd735fa13d4aa",
+    "integrity": "sha256-9d0f4f695895c0b4fec7ecff06a9733f07ded463f523d39294474d54e4b71eb9",
     "exports": {
       "sliceDialog": "UiSliceDialog"
     }

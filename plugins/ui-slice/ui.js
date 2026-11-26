@@ -1921,12 +1921,14 @@
             for (const item of previous.selectedItems) selectedItems.add(item);
             field('srgb').checked = batch.assumeSrgb;
             let restoreMessage = '';
-            try {
-              const restored = await effect(withWaitSettings({ type: 'image.uiSlice.inspect', assumeSrgb: batch.assumeSrgb }));
-              if (restored.sourceSha256 !== batch.snapshot.sourceSha256) throw new Error('当前源图已改变');
-            } catch (restoreError) {
-              if (cleanup.signal.aborted) return;
-              restoreMessage = ' · 恢复源图绑定失败：' + String(restoreError);
+            if (!props.host?.uiSliceRetainsSnapshots) {
+              try {
+                const restored = await effect(withWaitSettings({ type: 'image.uiSlice.inspect', assumeSrgb: batch.assumeSrgb }));
+                if (restored.sourceSha256 !== batch.snapshot.sourceSha256) throw new Error('当前源图已改变');
+              } catch (restoreError) {
+                if (cleanup.signal.aborted) return;
+                restoreMessage = ' · 恢复源图绑定失败：' + String(restoreError);
+              }
             }
             renderOriginal(batch.snapshot, previewImage);
             gapRows = previous.gapRows;
