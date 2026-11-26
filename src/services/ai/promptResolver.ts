@@ -37,6 +37,20 @@ interface PromptImageEntry {
   sourceUrl?: string;
 }
 
+function createPromptImageRegistry() {
+  const imageEntries: PromptImageEntry[] = [];
+  const imageKeyToIndex = new Map<string, number>();
+  const appendImage = (key: string, entry: PromptImageEntry): number => {
+    const index = imageEntries.length + 1;
+    imageKeyToIndex.set(key, index);
+    imageEntries.push(entry);
+    return index;
+  };
+  const addImage = (key: string, entry: PromptImageEntry): number =>
+    imageKeyToIndex.get(key) ?? appendImage(key, entry);
+  return { imageEntries, imageKeyToIndex, appendImage, addImage };
+}
+
 async function mergePromptImageOverlays(url: string, entry: PromptImageEntry): Promise<string> {
   let annotation = entry.annotation;
   const annotations = (entry.annotationLayer as { annotations?: unknown } | undefined)?.annotations;
@@ -178,8 +192,7 @@ export async function resolvePromptToChatContent(rawPrompt: string, options?: { 
   signal?.throwIfAborted();
   // groups: 1=@asset  2,3=@drama  4,5=@node
   const chipRegex = /@asset\{([^}]+)\}|@drama\{([^:]+):([^}]+)\}|@\{([^:]+):([^}]+)\}|@image\{(chat-ref-[a-f0-9-]{36}\.(?:png|jpg|webp))\|([^}\r\n]*)\}/g;
-  const imageEntries: PromptImageEntry[] = [];
-  const imageKeyToIndex = new Map<string, number>();
+  const { imageEntries, imageKeyToIndex, appendImage, addImage } = createPromptImageRegistry();
   const parts: string[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -197,9 +210,7 @@ export async function resolvePromptToChatContent(rawPrompt: string, options?: { 
         const projectId = options?.projectId === undefined ? store.currentProjectId : options.projectId;
         if (!projectId) throw new Error('缺少参考图所属项目');
         const dataUrl = await readChatImageReference(projectId, match[6], signal);
-        idx = imageEntries.length + 1;
-        imageKeyToIndex.set(key, idx);
-        imageEntries.push({ url: dataUrl });
+        idx = appendImage(key, { url: dataUrl });
       }
       // 保留无路径引用，助手调用媒体工具时可以原样传递同一张参考图。
       parts.push(`图片${idx}（参考图引用：${match[0]}）`);
@@ -216,11 +227,7 @@ export async function resolvePromptToChatContent(rawPrompt: string, options?: { 
         let idx = imageKeyToIndex.get(key);
         if (idx === undefined) {
           const dataUrl = await readFileToDataUrl(assetPath, signal ? { signal } : undefined);
-          if (dataUrl) {
-            idx = imageEntries.length + 1;
-            imageKeyToIndex.set(key, idx);
-            imageEntries.push({ url: dataUrl });
-          }
+          if (dataUrl) idx = appendImage(key, { url: dataUrl });
         }
         if (idx !== undefined) parts.push(`图片${idx}`);
       }
@@ -249,12 +256,7 @@ export async function resolvePromptToChatContent(rawPrompt: string, options?: { 
           parts.push(`${media.label}（${media.url}）`);
         } else {
           const key = `drama:${dramaId}`;
-          let idx = imageKeyToIndex.get(key);
-          if (idx === undefined) {
-            idx = imageEntries.length + 1;
-            imageKeyToIndex.set(key, idx);
-            imageEntries.push({ url: media.url, filePath: media.filePath });
-          }
+          const idx = imageKeyToIndex.get(key) ?? appendImage(key, { url: media.url, filePath: media.filePath });
           parts.push(`图片${idx}（${media.label}）`);
         }
         lastIndex = chipRegex.lastIndex;
@@ -268,12 +270,7 @@ export async function resolvePromptToChatContent(rawPrompt: string, options?: { 
         : null;
       if (dramaAsset && mergedUrl) {
         const key = `drama:${dramaId}`;
-        let idx = imageKeyToIndex.get(key);
-        if (idx === undefined) {
-          idx = imageEntries.length + 1;
-          imageKeyToIndex.set(key, idx);
-          imageEntries.push({ url: mergedUrl });
-        }
+        const idx = imageKeyToIndex.get(key) ?? appendImage(key, { url: mergedUrl });
         parts.push(`图片${idx}（${dramaAsset.name || dramaName} 全部参考图）`);
         lastIndex = chipRegex.lastIndex;
         continue;
@@ -288,18 +285,13 @@ export async function resolvePromptToChatContent(rawPrompt: string, options?: { 
         if (imgRef) {
           const imgNode = nodes.find((n) => n.id === imgRef.imageNodeId);
           const key = `drama:${dramaId}`;
-          let idx = imageKeyToIndex.get(key);
-          if (idx === undefined) {
-            idx = imageEntries.length + 1;
-            imageKeyToIndex.set(key, idx);
-            imageEntries.push({
-              url: imgRef.imageUrl,
-              mattingMask: (imgNode?.data?.mattingMask as string | undefined) || undefined,
-              annotation: (imgNode?.data?.annotation as string | undefined) || undefined,
-              annotationLayer: imgNode?.data?.annotationLayer,
-              filePath: (imgNode?.data?.filePath as string | undefined) || undefined,
-            });
-          }
+          const idx = imageKeyToIndex.get(key) ?? appendImage(key, {
+            url: imgRef.imageUrl,
+            mattingMask: (imgNode?.data?.mattingMask as string | undefined) || undefined,
+            annotation: (imgNode?.data?.annotation as string | undefined) || undefined,
+            annotationLayer: imgNode?.data?.annotationLayer,
+            filePath: (imgNode?.data?.filePath as string | undefined) || undefined,
+          });
           parts.push(`图片${idx}（${dramaAsset.name || dramaName}）`);
         } else {
           parts.push(formatDramaAssetTextBrief(dramaAsset));
@@ -320,10 +312,7 @@ export async function resolvePromptToChatContent(rawPrompt: string, options?: { 
     if (cellIdx !== null && node && (node.data.type as string) === 'ai-storyboard') {
       const sbImage = await resolveStoryboardCellImage(node.data as BaseNodeData, cellIdx);
       if (sbImage) {
-        const key = `sbcell:${rawNodeId}`;
-        const idx = imageEntries.length + 1;
-        imageKeyToIndex.set(key, idx);
-        imageEntries.push({ url: sbImage });
+        const idx = appendImage(`sbcell:${rawNodeId}`, { url: sbImage });
         parts.push(`图片${idx}`);
       }
       lastIndex = chipRegex.lastIndex;
@@ -335,15 +324,7 @@ export async function resolvePromptToChatContent(rawPrompt: string, options?: { 
     } else {
       const nodeType = (node.data.type as string) || '';
       if (nodeType === 'ai-shotlist') {
-        parts.push(resolveShotlistMention(node.data as BaseNodeData, nodes, (key, entry) => {
-          let idx = imageKeyToIndex.get(key);
-          if (idx === undefined) {
-            idx = imageEntries.length + 1;
-            imageKeyToIndex.set(key, idx);
-            imageEntries.push(entry);
-          }
-          return idx;
-        }));
+        parts.push(resolveShotlistMention(node.data as BaseNodeData, nodes, addImage));
         lastIndex = chipRegex.lastIndex;
         continue;
       }
@@ -360,30 +341,20 @@ export async function resolvePromptToChatContent(rawPrompt: string, options?: { 
         );
         if (typeof imageUrl === 'string' && imageUrl.trim()) {
           const key = `node:${nodeId}`;
-          let idx = imageKeyToIndex.get(key);
-          if (idx === undefined) {
-            idx = imageEntries.length + 1;
-            imageKeyToIndex.set(key, idx);
-            imageEntries.push({
-              url: imageUrl,
-              mattingMask: (node.data.mattingMask as string | undefined) || undefined,
-              annotation: (node.data.annotation as string | undefined) || undefined,
-              annotationLayer: node.data.annotationLayer,
-              filePath: (node.data.filePath as string | undefined) || undefined,
-            });
-          }
+          const idx = imageKeyToIndex.get(key) ?? appendImage(key, {
+            url: imageUrl,
+            mattingMask: (node.data.mattingMask as string | undefined) || undefined,
+            annotation: (node.data.annotation as string | undefined) || undefined,
+            annotationLayer: node.data.annotationLayer,
+            filePath: (node.data.filePath as string | undefined) || undefined,
+          });
           parts.push(`图片${idx}`);
         }
         if (nodeType === 'ai-director' && Array.isArray(node.data.directorCaptureUrls)) {
           for (const [i, url] of (node.data.directorCaptureUrls as string[]).entries()) {
             if (typeof url !== 'string' || !url.trim() || url === imageUrl) continue;
             const key = `node:${nodeId}:cap:${i}`;
-            let idx = imageKeyToIndex.get(key);
-            if (idx === undefined) {
-              idx = imageEntries.length + 1;
-              imageKeyToIndex.set(key, idx);
-              imageEntries.push({ url });
-            }
+            const idx = imageKeyToIndex.get(key) ?? appendImage(key, { url });
             parts.push(`图片${idx}`);
           }
         }
@@ -541,7 +512,7 @@ async function resolvePromptReferences(
   assertNoComfyRefmodMentions(rawPrompt);
   const globalAssets = await loadGlobalDramaAssetsForPrompt(rawPrompt, store);
   signal?.throwIfAborted();
-  const imageEntries: PromptImageEntry[] = [];
+  const { imageEntries, imageKeyToIndex, appendImage, addImage } = createPromptImageRegistry();
   const mediaReferences: MediaReference[] = [];
   // groups: 1=@asset  2,3=@drama  4,5=@node
   const chipRegex = /@asset\{([^}]+)\}|@drama\{([^:]+):([^}]+)\}|@\{([^:]+):([^}]+)\}|@image\{(chat-ref-[a-f0-9-]{36}\.(?:png|jpg|webp))\|([^}\r\n]*)\}/g;
@@ -604,7 +575,6 @@ async function resolvePromptReferences(
     if (merged) dramaMergedMap.set(m[1], merged);
   }
 
-  const imageKeyToIndex = new Map<string, number>();
   const videoKeyToIndex = new Map<string, number>();
   const audioKeyToIndex = new Map<string, number>();
 
@@ -615,17 +585,6 @@ async function resolvePromptReferences(
     if (!preserveBindings) return `${kind === 'image' ? '图片' : kind === 'video' ? '视频' : '音频'}${index}`;
     tokens.push({ kind, index, character });
     return `${tokenPrefix}${tokens.length - 1}\uE001`;
-  };
-
-  /** 登记一张参考图并返回它的「图片N」序号；同一张图重复引用只占一个位置 */
-  const addImage = (key: string, entry: PromptImageEntry): number => {
-    let idx = imageKeyToIndex.get(key);
-    if (idx === undefined) {
-      idx = imageEntries.length + 1;
-      imageKeyToIndex.set(key, idx);
-      imageEntries.push(entry);
-    }
-    return idx;
   };
 
   const prompt = rawPrompt.replace(
@@ -662,12 +621,7 @@ async function resolvePromptReferences(
       const dataUrl = assetImageMap.get(assetEnc);
       if (!dataUrl) return '';
       const key = `asset:${assetEnc}`;
-      let idx = imageKeyToIndex.get(key);
-      if (idx === undefined) {
-        idx = imageEntries.length + 1;
-        imageKeyToIndex.set(key, idx);
-        imageEntries.push({ url: dataUrl });
-      }
+      const idx = imageKeyToIndex.get(key) ?? appendImage(key, { url: dataUrl });
       return mediaLabel('image', idx);
     }
 
@@ -708,12 +662,7 @@ async function resolvePromptReferences(
       const mergedUrl = dramaMergedMap.get(dramaId);
       if (mergedUrl) {
         const key = `drama:${dramaId}`;
-        let idx = imageKeyToIndex.get(key);
-        if (idx === undefined) {
-          idx = imageEntries.length + 1;
-          imageKeyToIndex.set(key, idx);
-          imageEntries.push({ url: mergedUrl });
-        }
+        const idx = imageKeyToIndex.get(key) ?? appendImage(key, { url: mergedUrl });
         return mediaLabel('image', idx, characterBinding('appearance'));
       }
       const dramaAsset = asset;
@@ -727,20 +676,15 @@ async function resolvePromptReferences(
         if (imgRef) {
           const imgNode = nodes.find((n) => n.id === imgRef.imageNodeId);
           const key = `drama:${dramaId}`;
-          let idx = imageKeyToIndex.get(key);
-          if (idx === undefined) {
-            idx = imageEntries.length + 1;
-            imageKeyToIndex.set(key, idx);
-            imageEntries.push({
-              url: imgRef.imageUrl,
-              mattingMask: (imgNode?.data?.mattingMask as string | undefined) || undefined,
-              annotation: (imgNode?.data?.annotation as string | undefined) || undefined,
-              annotationLayer: imgNode?.data?.annotationLayer,
-              filePath: (imgNode?.data?.filePath as string | undefined) || undefined,
-              sourceNodeId: imgRef.imageNodeId,
-              sourceUrl: (imgNode?.data?.sourceUrl as string | undefined) || undefined,
-            });
-          }
+          const idx = imageKeyToIndex.get(key) ?? appendImage(key, {
+            url: imgRef.imageUrl,
+            mattingMask: (imgNode?.data?.mattingMask as string | undefined) || undefined,
+            annotation: (imgNode?.data?.annotation as string | undefined) || undefined,
+            annotationLayer: imgNode?.data?.annotationLayer,
+            filePath: (imgNode?.data?.filePath as string | undefined) || undefined,
+            sourceNodeId: imgRef.imageNodeId,
+            sourceUrl: (imgNode?.data?.sourceUrl as string | undefined) || undefined,
+          });
           return mediaLabel('image', idx, characterBinding('appearance'));
         }
         return formatDramaAssetTextBrief(dramaAsset);
@@ -756,12 +700,7 @@ async function resolvePromptReferences(
       const sbUrl = sbCellImageMap.get(rawNodeId);
       if (sbUrl) {
         const key = `sbcell:${rawNodeId}`;
-        let idx = imageKeyToIndex.get(key);
-        if (idx === undefined) {
-          idx = imageEntries.length + 1;
-          imageKeyToIndex.set(key, idx);
-          imageEntries.push({ url: sbUrl, sourceNodeId: rawNodeId });
-        }
+        const idx = imageKeyToIndex.get(key) ?? appendImage(key, { url: sbUrl, sourceNodeId: rawNodeId });
         return mediaLabel('image', idx);
       }
       return '';
@@ -792,39 +731,28 @@ async function resolvePromptReferences(
           const first = (node.data.directorCaptureUrls as string[]).find((u) => typeof u === 'string' && u.trim());
           if (first) {
             const key = `node:${rawNodeId}:cap0`;
-            let idx = imageKeyToIndex.get(key);
-            if (idx === undefined) {
-              idx = imageEntries.length + 1;
-              imageKeyToIndex.set(key, idx);
-              imageEntries.push({ url: first, sourceNodeId: rawNodeId });
-            }
+            const idx = imageKeyToIndex.get(key) ?? appendImage(key, { url: first, sourceNodeId: rawNodeId });
             return mediaLabel('image', idx);
           }
         }
         return '';
       }
       const key = `node:${rawNodeId}`;
-      let idx = imageKeyToIndex.get(key);
-      if (idx === undefined) {
-        idx = imageEntries.length + 1;
-        imageKeyToIndex.set(key, idx);
-        imageEntries.push({
-          url: imageUrl,
-          mattingMask: (node.data.mattingMask as string | undefined) || undefined,
-          annotation: (node.data.annotation as string | undefined) || undefined,
-          annotationLayer: node.data.annotationLayer,
-          filePath: (node.data.filePath as string | undefined) || undefined,
-          sourceNodeId: rawNodeId,
-          sourceUrl: (node.data.sourceUrl as string | undefined) || undefined,
-        });
-      }
+      const idx = imageKeyToIndex.get(key) ?? appendImage(key, {
+        url: imageUrl,
+        mattingMask: (node.data.mattingMask as string | undefined) || undefined,
+        annotation: (node.data.annotation as string | undefined) || undefined,
+        annotationLayer: node.data.annotationLayer,
+        filePath: (node.data.filePath as string | undefined) || undefined,
+        sourceNodeId: rawNodeId,
+        sourceUrl: (node.data.sourceUrl as string | undefined) || undefined,
+      });
       if (nodeType === 'ai-director' && Array.isArray(node.data.directorCaptureUrls)) {
         for (const [i, url] of (node.data.directorCaptureUrls as string[]).entries()) {
           if (typeof url !== 'string' || !url.trim() || url === imageUrl) continue;
           const capKey = `node:${rawNodeId}:cap:${i}`;
           if (!imageKeyToIndex.has(capKey)) {
-            imageKeyToIndex.set(capKey, imageEntries.length + 1);
-            imageEntries.push({ url, sourceNodeId: rawNodeId });
+            appendImage(capKey, { url, sourceNodeId: rawNodeId });
           }
         }
       }
