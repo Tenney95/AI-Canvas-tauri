@@ -126,11 +126,6 @@ pub mod onnx {
     }
 
     #[tauri::command]
-    pub fn get_onnx_gpu_status() -> Result<String, String> {
-        unsupported()
-    }
-
-    #[tauri::command]
     pub async fn image_upscale(
         _app: tauri::AppHandle,
         _webview: tauri::Webview,
@@ -1040,7 +1035,6 @@ pub fn run() {
             sprite_export::export_sprite_frames,
             sprite_processing::preview_sprite_sheet,
             onnx::download_onnx_model,
-            onnx::get_onnx_gpu_status,
             mcp_bridge::mcp_bridge_start,
             mcp_bridge::mcp_bridge_stop,
             mcp_bridge::mcp_bridge_status,

@@ -482,19 +482,6 @@ async fn download_to_models_dir(
     })?
 }
 
-// ── Tauri 命令：GPU 状态查询 ──
-
-#[tauri::command]
-pub fn get_onnx_gpu_status() -> Result<String, String> {
-    let config = OnnxGpuConfig::get_or_default();
-    let j = json!({
-        "ep": config.ep,
-        "device_name": config.device_name,
-        "probed_at": config.probed_at,
-    });
-    Ok(j.to_string())
-}
-
 // ════════════════════════════════════════════════
 // Worker 进程管理
 // ════════════════════════════════════════════════

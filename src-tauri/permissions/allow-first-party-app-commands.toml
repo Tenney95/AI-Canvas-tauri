@@ -118,7 +118,6 @@ commands.allow = [
   "export_sprite_frames",
   "preview_sprite_sheet",
   "download_onnx_model",
-  "get_onnx_gpu_status",
   "mcp_bridge_start",
   "mcp_bridge_stop",
   "mcp_bridge_status",
