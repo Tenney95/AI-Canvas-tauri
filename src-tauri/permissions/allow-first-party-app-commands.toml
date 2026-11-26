@@ -35,7 +35,6 @@ commands.allow = [
   "collect_blender_job_result",
   "agent_source_link",
   "agent_package_import_archive",
-  "agent_source_probe",
   "agent_source_remove",
   "agent_source_read_text",
   "pack_project_archive",

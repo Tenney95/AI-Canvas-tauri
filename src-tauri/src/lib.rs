@@ -916,7 +916,6 @@ pub fn run() {
             blender_runtime::collect_blender_job_result,
             agent_package::agent_source_link,
             agent_package::agent_package_import_archive,
-            agent_package::agent_source_probe,
             agent_package::agent_source_remove,
             agent_package::agent_source_read_text,
             project_archive::pack_project_archive,

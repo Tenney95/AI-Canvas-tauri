@@ -1131,46 +1131,6 @@ fn import_archive(app: &AppHandle, archive_path: PathBuf) -> Result<AgentSourceP
     result
 }
 
-fn probe_source(app: &AppHandle, source_id: &str) -> Result<AgentSourcePreview, String> {
-    let stored = load_source(app, source_id)?;
-    let root = PathBuf::from(&stored.root_path);
-    if !root.exists() {
-        let mut missing = stored.preview;
-        missing.health = "missing".to_string();
-        missing
-            .warnings
-            .push("智能体来源当前不可访问，普通助手功能不受影响".to_string());
-        return Ok(missing);
-    }
-
-    match inspect_source(
-        &root,
-        &stored.source_id,
-        stored.source_type,
-        &stored.preview.name,
-    ) {
-        Ok(preview) => {
-            upsert_source(
-                app,
-                StoredSource {
-                    preview: preview_for_registry(&preview),
-                    updated_at: unix_now_millis(),
-                    ..stored
-                },
-            )?;
-            Ok(preview)
-        }
-        Err(_) => {
-            let mut invalid = stored.preview;
-            invalid.health = "invalid".to_string();
-            invalid
-                .warnings
-                .push("智能体来源校验失败，请重新选择或修复来源".to_string());
-            Ok(invalid)
-        }
-    }
-}
-
 fn validate_managed_container<R: Runtime>(
     app: &AppHandle<R>,
     source: &StoredSource,
@@ -1351,19 +1311,6 @@ pub async fn agent_package_import_archive(
     tauri::async_runtime::spawn_blocking(move || import_archive(&worker_app, archive))
         .await
         .map_err(|_| "智能体压缩包导入任务异常结束".to_string())?
-}
-
-#[tauri::command]
-pub async fn agent_source_probe(
-    webview: Webview,
-    app: AppHandle,
-    source_id: String,
-) -> Result<AgentSourcePreview, String> {
-    ensure_trusted_caller(&webview)?;
-    let worker_app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || probe_source(&worker_app, &source_id))
-        .await
-        .map_err(|_| "智能体来源检查任务异常结束".to_string())?
 }
 
 #[tauri::command]
