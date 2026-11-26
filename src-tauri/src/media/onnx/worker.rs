@@ -70,6 +70,27 @@ fn emit(v: &Value) {
     println!("{}", v);
 }
 
+fn emit_success(id: &Value, result: Value) {
+    let mut response = json!({ "id": id, "type": "ok" });
+    response["result"] = result;
+    emit(&response);
+}
+
+fn emit_error(id: &Value, error: String) {
+    emit(&json!({ "id": id, "type": "error", "error": error }));
+}
+
+// 在当前 handler 内回包，让 Session 等推理资源在终止帧发出后再释放。
+fn value_or_emit_error<T>(id: &Value, result: Result<T, String>) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(error) => {
+            emit_error(id, error);
+            None
+        }
+    }
+}
+
 // ════════════════════════════════════════════════
 // Probe handler
 // ════════════════════════════════════════════════
@@ -152,64 +173,22 @@ const PAD: u32 = 8;
 const STEP: u32 = TILE - 2 * PAD;
 
 fn handle_upscale(request: &Value, id: &Value) {
-    let model_path = request.get("model_path").and_then(|v| v.as_str()).unwrap_or("");
-    let input_path = request.get("input_path").and_then(|v| v.as_str()).unwrap_or("");
-    let output_path = request.get("output_path").and_then(|v| v.as_str()).unwrap_or("");
-    let ep = request.get("ep").and_then(|v| v.as_str()).unwrap_or("cpu");
-    let device_id: Option<i32> = request.get("device_id").and_then(|v| v.as_i64()).map(|v| v as i32);
-
-    let mp = Path::new(model_path);
-    let input = Path::new(input_path);
+    let Some((model, src_img, output_path)) = value_or_emit_error(id, read_image_request(request))
+    else {
+        return;
+    };
     let output = Path::new(output_path);
-
-    if !mp.is_file() {
-        emit(&json!({"id":id,"type":"error","error":format!("模型文件不存在: {model_path}")}));
-        return;
-    }
-    if !input.is_file() {
-        emit(&json!({"id":id,"type":"error","error":format!("输入文件不存在: {input_path}")}));
-        return;
-    }
-
-    let src_img = match image::open(input) {
-        Ok(im) => im.to_rgb8(),
-        Err(e) => {
-            emit(&json!({"id":id,"type":"error","error":format!("读取输入图像失败: {e}")}));
-            return;
-        }
-    };
     let input_dims = src_img.dimensions();
-
-    let session_result = if ep == "directml" {
-        create_dml_session(mp, device_id)
-    } else {
-        create_cpu_session(mp)
+    let Some(mut session) = value_or_emit_error(id, create_inference_session(request, model)) else {
+        return;
+    };
+    let Some(out_img) = value_or_emit_error(id, run_upscale_tiled(&mut session, &src_img, id)) else {
+        return;
     };
 
-    let mut session = match session_result {
-        Ok(s) => s,
-        Err(e) => {
-            emit(&json!({"id":id,"type":"error","error":e}));
-            return;
-        }
-    };
-
-    let out_img = match run_upscale_tiled(&mut session, &src_img, id) {
-        Ok(im) => im,
-        Err(e) => {
-            emit(&json!({"id":id,"type":"error","error":e}));
-            return;
-        }
-    };
-
-    if let Some(parent) = output.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            emit(&json!({"id":id,"type":"error","error":format!("创建输出目录失败: {e}")}));
-            return;
-        }
-    }
-    if let Err(e) = out_img.save(output) {
-        emit(&json!({"id":id,"type":"error","error":format!("保存输出图像失败: {e}")}));
+    let saved = create_output_directory(output)
+        .and_then(|()| out_img.save(output).map_err(|e| format!("保存输出图像失败: {e}")));
+    if value_or_emit_error(id, saved).is_none() {
         return;
     }
 
@@ -221,14 +200,48 @@ fn handle_upscale(request: &Value, id: &Value) {
         out_dims.1
     );
 
-    emit(&json!({
-        "id": id,
-        "type": "ok",
-        "result": {
-            "input_size": format!("{}x{}", input_dims.0, input_dims.1),
-            "output_size": format!("{}x{}", out_dims.0, out_dims.1)
-        }
+    emit_success(id, json!({
+        "input_size": format!("{}x{}", input_dims.0, input_dims.1),
+        "output_size": format!("{}x{}", out_dims.0, out_dims.1)
     }));
+}
+
+fn request_text<'a>(request: &'a Value, field: &str) -> &'a str {
+    request.get(field).and_then(Value::as_str).unwrap_or("")
+}
+
+fn require_request_file<'a>(request: &'a Value, field: &str, label: &str) -> Result<&'a Path, String> {
+    let value = request_text(request, field);
+    let path = Path::new(value);
+    if !path.is_file() {
+        return Err(format!("{label}文件不存在: {value}"));
+    }
+    Ok(path)
+}
+
+fn read_image_request(request: &Value) -> Result<(&Path, image::RgbImage, &str), String> {
+    let model = require_request_file(request, "model_path", "模型")?;
+    let input = require_request_file(request, "input_path", "输入")?;
+    let output = request_text(request, "output_path");
+    let image = image::open(input).map_err(|e| format!("读取输入图像失败: {e}"))?;
+    Ok((model, image.to_rgb8(), output))
+}
+
+fn create_output_directory(output: &Path) -> Result<(), String> {
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建输出目录失败: {e}"))?;
+    }
+    Ok(())
+}
+
+fn create_inference_session(request: &Value, model_path: &Path) -> Result<ort::session::Session, String> {
+    let ep = request.get("ep").and_then(Value::as_str).unwrap_or("cpu");
+    if ep == "directml" {
+        let device_id = request.get("device_id").and_then(Value::as_i64).map(|v| v as i32);
+        create_dml_session(model_path, device_id)
+    } else {
+        create_cpu_session(model_path)
+    }
 }
 
 fn create_cpu_session(model_path: &Path) -> Result<ort::session::Session, String> {
@@ -280,33 +293,12 @@ fn create_dml_session(
 const MATTING_INPUT_SIZE: u32 = 1024;
 
 fn handle_matting(request: &Value, id: &Value) {
-    let model_path = request.get("model_path").and_then(|v| v.as_str()).unwrap_or("");
-    let input_path = request.get("input_path").and_then(|v| v.as_str()).unwrap_or("");
-    let output_path = request.get("output_path").and_then(|v| v.as_str()).unwrap_or("");
-    let ep = request.get("ep").and_then(|v| v.as_str()).unwrap_or("cpu");
-    let device_id: Option<i32> = request.get("device_id").and_then(|v| v.as_i64()).map(|v| v as i32);
-
-    let mp = Path::new(model_path);
-    let input = Path::new(input_path);
-    let output = Path::new(output_path);
-
-    if !mp.is_file() {
-        emit(&json!({"id":id,"type":"error","error":format!("模型文件不存在: {model_path}")}));
-        return;
-    }
-    if !input.is_file() {
-        emit(&json!({"id":id,"type":"error","error":format!("输入文件不存在: {input_path}")}));
-        return;
-    }
-
     // 1. 读取并记录原图尺寸
-    let src_img = match image::open(input) {
-        Ok(im) => im.to_rgb8(),
-        Err(e) => {
-            emit(&json!({"id":id,"type":"error","error":format!("读取输入图像失败: {e}")}));
-            return;
-        }
+    let Some((model, src_img, output_path)) = value_or_emit_error(id, read_image_request(request))
+    else {
+        return;
     };
+    let output = Path::new(output_path);
     let (orig_w, orig_h) = src_img.dimensions();
     eprintln!(
         "[onnx-worker] 主体识别: 原图 {}x{}, 缩放到 {}x{}",
@@ -322,80 +314,44 @@ fn handle_matting(request: &Value, id: &Value) {
     );
 
     // 3. 创建 Session
-    let session_result = if ep == "directml" {
-        create_dml_session(mp, device_id)
-    } else {
-        create_cpu_session(mp)
-    };
-    let mut session = match session_result {
-        Ok(s) => s,
-        Err(e) => {
-            emit(&json!({"id":id,"type":"error","error":e}));
-            return;
-        }
+    let Some(mut session) = value_or_emit_error(id, create_inference_session(request, model)) else {
+        return;
     };
 
     // 4. 转 NCHW [0,1]
-    let in_name = match session.inputs().first() {
-        Some(i) => i.name().to_string(),
-        None => {
-            emit(&json!({"id":id,"type":"error","error":"模型没有输入节点"}));
-            return;
-        }
+    let Some((in_name, out_name)) = value_or_emit_error(id, first_tensor_names(&session)) else {
+        return;
     };
-    let out_name = match session.outputs().first() {
-        Some(o) => o.name().to_string(),
-        None => {
-            emit(&json!({"id":id,"type":"error","error":"模型没有输出节点"}));
-            return;
-        }
-    };
-
-    let plane = (MATTING_INPUT_SIZE * MATTING_INPUT_SIZE) as usize;
-    let mut data = vec![0f32; plane * 3];
-    for (i, px) in resized.pixels().enumerate() {
-        data[i] = px[0] as f32 / 255.0;
-        data[plane + i] = px[1] as f32 / 255.0;
-        data[2 * plane + i] = px[2] as f32 / 255.0;
-    }
-    let shape = vec![1i64, 3, MATTING_INPUT_SIZE as i64, MATTING_INPUT_SIZE as i64];
-
-    let tensor = match ort::value::Tensor::from_array((shape, data)) {
-        Ok(t) => t,
-        Err(e) => {
-            emit(&json!({"id":id,"type":"error","error":format!("创建输入 Tensor 失败: {e}")}));
-            return;
-        }
+    let (shape, data) = rgb_to_nchw(&resized);
+    let tensor = ort::value::Tensor::from_array((shape, data))
+        .map_err(|e| format!("创建输入 Tensor 失败: {e}"));
+    let Some(tensor) = value_or_emit_error(id, tensor) else {
+        return;
     };
 
     // 5. 推理
-    let outputs = match session.run(ort::inputs![in_name => tensor]) {
-        Ok(o) => o,
-        Err(e) => {
-            emit(&json!({"id":id,"type":"error","error":format!("主体识别推理失败: {e}")}));
-            return;
-        }
+    let outputs = session
+        .run(ort::inputs![in_name => tensor])
+        .map_err(|e| format!("主体识别推理失败: {e}"));
+    let Some(outputs) = value_or_emit_error(id, outputs) else {
+        return;
     };
-
-    let val = match outputs.get(&*out_name) {
-        Some(v) => v,
-        None => {
-            emit(&json!({"id":id,"type":"error","error":format!("推理结果缺少输出 '{out_name}'")}));
-            return;
-        }
+    let val = outputs
+        .get(&*out_name)
+        .ok_or_else(|| format!("推理结果缺少输出 '{out_name}'"));
+    let Some(val) = value_or_emit_error(id, val) else {
+        return;
     };
-
-    let (oshape, odata) = match val.try_extract_tensor::<f32>() {
-        Ok(v) => v,
-        Err(e) => {
-            emit(&json!({"id":id,"type":"error","error":format!("提取输出 Tensor 失败: {e}")}));
-            return;
-        }
+    let extracted = val
+        .try_extract_tensor::<f32>()
+        .map_err(|e| format!("提取输出 Tensor 失败: {e}"));
+    let Some((oshape, odata)) = value_or_emit_error(id, extracted) else {
+        return;
     };
 
     // 输出形状: [1, 1, 1024, 1024] — 单通道 alpha mask
     if oshape.len() < 4 {
-        emit(&json!({"id":id,"type":"error","error":format!("输出形状异常: {oshape:?}")}));
+        emit_error(id, format!("输出形状异常: {oshape:?}"));
         return;
     }
     let mask_w = oshape[3] as u32;
@@ -435,14 +391,9 @@ fn handle_matting(request: &Value, id: &Value) {
         }
     }
 
-    if let Some(parent) = output.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            emit(&json!({"id":id,"type":"error","error":format!("创建输出目录失败: {e}")}));
-            return;
-        }
-    }
-    if let Err(e) = subject.save(output) {
-        emit(&json!({"id":id,"type":"error","error":format!("保存主体图失败: {e}")}));
+    let saved = create_output_directory(output)
+        .and_then(|()| subject.save(output).map_err(|e| format!("保存主体图失败: {e}")));
+    if value_or_emit_error(id, saved).is_none() {
         return;
     }
 
@@ -453,14 +404,10 @@ fn handle_matting(request: &Value, id: &Value) {
         orig_h
     );
 
-    emit(&json!({
-        "id": id,
-        "type": "ok",
-        "result": {
-            "input_size": format!("{}x{}", orig_w, orig_h),
-            "output_size": format!("{}x{}", orig_w, orig_h),
-            "subject_path": output_path
-        }
+    emit_success(id, json!({
+        "input_size": format!("{}x{}", orig_w, orig_h),
+        "output_size": format!("{}x{}", orig_w, orig_h),
+        "subject_path": output_path
     }));
 }
 
@@ -469,55 +416,32 @@ fn handle_matting(request: &Value, id: &Value) {
 // ════════════════════════════════════════════════
 
 fn handle_asr(request: &Value, id: &Value) {
-    let model_path = request.get("model_path").and_then(|v| v.as_str()).unwrap_or("");
-    let vocab_path = request.get("vocab_path").and_then(|v| v.as_str()).unwrap_or("");
-    let input_path = request.get("input_path").and_then(|v| v.as_str()).unwrap_or("");
-    let language = request.get("language").and_then(|v| v.as_str());
-    let ep = request.get("ep").and_then(|v| v.as_str()).unwrap_or("cpu");
-    let device_id: Option<i32> = request.get("device_id").and_then(|v| v.as_i64()).map(|v| v as i32);
-
-    let mp = Path::new(model_path);
-    let vp = Path::new(vocab_path);
-    let input = Path::new(input_path);
-
-    if !mp.is_file() {
-        emit(&json!({"id":id,"type":"error","error":format!("模型文件不存在: {model_path}")}));
+    let Some(model) = value_or_emit_error(id, require_request_file(request, "model_path", "模型"))
+    else {
         return;
-    }
-    if !vp.is_file() {
-        emit(&json!({"id":id,"type":"error","error":format!("词表文件不存在: {vocab_path}")}));
+    };
+    let Some(vocab_path) =
+        value_or_emit_error(id, require_request_file(request, "vocab_path", "词表"))
+    else {
         return;
-    }
-    if !input.is_file() {
-        emit(&json!({"id":id,"type":"error","error":format!("输入文件不存在: {input_path}")}));
+    };
+    let Some(input) = value_or_emit_error(id, require_request_file(request, "input_path", "输入"))
+    else {
         return;
-    }
+    };
+    let language = request.get("language").and_then(Value::as_str);
 
-    let vocab = match asr::Vocab::load(vp) {
-        Ok(vocab) => vocab,
-        Err(error) => {
-            emit(&json!({"id":id,"type":"error","error":error}));
-            return;
-        }
+    let Some(vocab) = value_or_emit_error(id, asr::Vocab::load(vocab_path)) else {
+        return;
     };
     eprintln!(
         "[onnx-worker] 开始语音转文本（词表 {} 条）",
         vocab.len()
     );
 
-    let session_result = if ep == "directml" {
-        create_dml_session(mp, device_id)
-    } else {
-        create_cpu_session(mp)
+    let Some(mut session) = value_or_emit_error(id, create_inference_session(request, model)) else {
+        return;
     };
-    let mut session = match session_result {
-        Ok(session) => session,
-        Err(error) => {
-            emit(&json!({"id":id,"type":"error","error":error}));
-            return;
-        }
-    };
-
     let transcription = asr::transcribe(
         &mut session,
         &vocab,
@@ -527,44 +451,41 @@ fn handle_asr(request: &Value, id: &Value) {
             emit(&json!({"id":id,"type":"progress","done":done,"total":total}));
         },
     );
-
-    match transcription {
-        Ok(result) => {
-            eprintln!(
-                "[onnx-worker] 语音转文本完成: {:.1}s 音频，{} 字",
-                result.duration_seconds,
-                result.text.chars().count()
-            );
-            emit(&json!({
-                "id": id,
-                "type": "ok",
-                "result": {
-                    "text": result.text,
-                    "duration_seconds": result.duration_seconds
-                }
-            }));
-        }
-        Err(error) => {
-            emit(&json!({"id":id,"type":"error","error":error}));
-        }
-    }
+    let Some(result) = value_or_emit_error(id, transcription) else {
+        return;
+    };
+    eprintln!(
+        "[onnx-worker] 语音转文本完成: {:.1}s 音频，{} 字",
+        result.duration_seconds,
+        result.text.chars().count()
+    );
+    emit_success(id, json!({
+        "text": result.text,
+        "duration_seconds": result.duration_seconds
+    }));
 }
 
 // ════════════════════════════════════════════════
 // 分块超分推理核心
 // ════════════════════════════════════════════════
 
-fn tile_to_nchw(tile: &image::RgbImage) -> (Vec<i64>, Vec<f32>) {
-    let (w, h) = tile.dimensions();
+fn rgb_to_nchw(image: &image::RgbImage) -> (Vec<i64>, Vec<f32>) {
+    let (w, h) = image.dimensions();
     let (wu, hu) = (w as usize, h as usize);
     let plane = wu * hu;
     let mut data = vec![0f32; plane * 3];
-    for (i, px) in tile.pixels().enumerate() {
+    for (i, px) in image.pixels().enumerate() {
         data[i] = px[0] as f32 / 255.0;
         data[plane + i] = px[1] as f32 / 255.0;
         data[2 * plane + i] = px[2] as f32 / 255.0;
     }
     (vec![1, 3, hu as i64, wu as i64], data)
+}
+
+fn first_tensor_names(session: &ort::session::Session) -> Result<(String, String), String> {
+    let input = session.inputs().first().ok_or("模型没有输入节点")?;
+    let output = session.outputs().first().ok_or("模型没有输出节点")?;
+    Ok((input.name().to_string(), output.name().to_string()))
 }
 
 #[inline]
@@ -581,16 +502,7 @@ fn run_upscale_tiled(
 ) -> Result<image::RgbImage, String> {
     let (w, h) = src.dimensions();
 
-    let in_name = session
-        .inputs()
-        .first()
-        .map(|i| i.name().to_string())
-        .ok_or("模型没有输入节点".to_string())?;
-    let out_name = session
-        .outputs()
-        .first()
-        .map(|o| o.name().to_string())
-        .ok_or("模型没有输出节点".to_string())?;
+    let (in_name, out_name) = first_tensor_names(session)?;
 
     let mut scale: u32 = 0;
     let mut dst: Option<image::RgbImage> = None;
@@ -614,7 +526,7 @@ fn run_upscale_tiled(
                 }
             }
 
-            let (shape, data) = tile_to_nchw(&tile);
+            let (shape, data) = rgb_to_nchw(&tile);
             let tensor = ort::value::Tensor::from_array((shape, data))
                 .map_err(|e| format!("创建输入 Tensor 失败: {e}"))?;
 
