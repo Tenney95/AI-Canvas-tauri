@@ -1,11 +1,14 @@
 import { webcrypto } from 'node:crypto';
+import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { save } from '@tauri-apps/plugin-dialog';
 import type { ProjectModelTransferCapture } from '../../src/types/projectModelTransfer';
 import type { NativeMediaTaskRecord } from '../../src/services/indexedDb/nativeMediaTaskRepository';
 
 const io = vi.hoisted(() => ({ invoke: vi.fn(), index: vi.fn(), exists: vi.fn(), published: [] as Array<{ path: string; bytes: number; sha256: string }> }));
-vi.mock('@tauri-apps/api/core', () => ({ invoke: io.invoke }));
+vi.mock('@tauri-apps/api/core', async (original) => ({
+  ...await original<typeof import('@tauri-apps/api/core')>(), invoke: io.invoke,
+}));
 vi.mock('@tauri-apps/plugin-fs', async (original) => ({ ...await original<typeof import('@tauri-apps/plugin-fs')>(), exists: io.exists }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ save: vi.fn() }));
 vi.mock('../../src/services/indexedDbService', async (original) => ({
@@ -14,10 +17,14 @@ vi.mock('../../src/services/indexedDbService', async (original) => ({
 vi.mock('../../src/services/fs/assetLibrary', () => ({ getGlobalFilesDir: vi.fn(async () => 'C:/global') }));
 vi.mock('../../src/services/fs/assetIndex', () => ({ getRelativeAssetPath: (path: string, root: string) => path.startsWith(root + '/') ? path.slice(root.length + 1) : undefined }));
 vi.mock('../../src/services/projectModelArchiveNativePort', () => ({ createBoundProjectModelArchiveExportPort: vi.fn() }));
-vi.mock('../../src/services/indexedDb/nativeProjectRepository', () => ({ abandonNativeProjectExport: vi.fn(), advanceNativeProjectExport: vi.fn(), prepareNativeProjectExport: vi.fn(),
-  readNativeProjectCapture: vi.fn(), readNativeProjectExport: vi.fn(), listNativeRetiredCanvasIds: vi.fn() }));
+vi.mock('../../src/services/indexedDb/nativeProjectRepository', async (original) => {
+  const repository = await original<typeof import('../../src/services/indexedDb/nativeProjectRepository')>();
+  return { ...repository, abandonNativeProjectExport: vi.fn(), advanceNativeProjectExport: vi.fn(), prepareNativeProjectExport: vi.fn(),
+    readNativeProjectCapture: vi.fn(repository.readNativeProjectCapture), readNativeProjectExport: vi.fn() };
+});
 
-import { prepareNativeProjectExport, readNativeProjectCapture } from '../../src/services/indexedDb/nativeProjectRepository';
+import { createNativeEpisode, createNativeProject, prepareNativeProjectExport, readNativeProjectCapture } from '../../src/services/indexedDb/nativeProjectRepository';
+import { isEpisodeEditorWriteLocked, registerEpisodeEditorSession } from '../../src/services/episodeEditorSessionService';
 import { exportNativeProjectArchive, materializeNativeArchiveGlobalAssets, nativeMediaResultsForArchive,
   type NativeArchiveCopySource, type NativeGlobalRecoveryFile } from '../../src/services/nativeProjectArchiveService';
 
@@ -52,6 +59,32 @@ it('导出目标已有同名文件时在捕获素材和登记前提示换名', a
   expect(readNativeProjectCapture).toHaveBeenCalledTimes(1);
   expect(prepareNativeProjectExport).not.toHaveBeenCalled();
   expect(io.invoke).not.toHaveBeenCalled();
+});
+
+it('项目、分集或画布有脏稿时拒绝登记和发布', async () => {
+  vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+  vi.stubGlobal('indexedDB', new IDBFactory());
+  const root = await createNativeProject({ name: '待导出作品', kind: 'series' });
+  const { project, episodes: [episode], canvases: [canvas] } = await createNativeEpisode({
+    projectId: root.project.id, expectedProjectEpoch: root.project.epoch, name: '第一集',
+  });
+  const owners = { project: project.id, episode: episode.id, canvas: canvas.id };
+  for (const [scope, ownerId] of Object.entries(owners)) {
+    let dirty = true;
+    const release = registerEpisodeEditorSession(ownerId, () => ({ dirty, saving: false }));
+    try {
+      vi.mocked(save).mockResolvedValueOnce('C:/output/待导出作品.aicanvas');
+      await expect(exportNativeProjectArchive(project.id), scope).rejects.toMatchObject({
+        code: 'EPISODE_EDITOR_WRITE_BLOCKED', message: expect.stringContaining('未保存'),
+      });
+      expect(prepareNativeProjectExport, scope).not.toHaveBeenCalled();
+      expect(io.invoke, scope).not.toHaveBeenCalled();
+      expect(Object.values(owners).some(isEpisodeEditorWriteLocked), scope).toBe(false);
+    } finally {
+      dirty = false;
+      release();
+    }
+  }
 });
 
 describe('新项目包全局素材', () => {

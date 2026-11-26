@@ -144,6 +144,30 @@ describe('原新建导入耐久续接', () => {
     expect(io.commitImport).toHaveBeenCalledExactlyOnceWith(operationId, 5);
   });
 
+  it('发布回执丢失后继续原 journal，保留来源和文件清单，只提交一次', async () => {
+    const publishing = importJournal('media_publishing'), reference = `media_v1_${operationId}`;
+    const ready = { ...publishing, phase: 'media_ready' as const, sequence: 5 };
+    const committed = { ...ready, phase: 'db_committed' as const, sequence: 6 };
+    const finalized = { ...committed, phase: 'finalized' as const, sequence: 7, sourceRef: undefined };
+    io.readImport.mockResolvedValueOnce(publishing).mockResolvedValueOnce(structuredClone(publishing)).mockResolvedValueOnce(finalized);
+    io.publishMedia.mockRejectedValueOnce(new Error('发布回执丢失')).mockResolvedValueOnce(reference);
+    io.advanceImport.mockResolvedValueOnce(ready).mockResolvedValueOnce(finalized);
+    io.commitImport.mockResolvedValueOnce(committed);
+
+    await expect(resumeNativeProjectImport(operationId)).rejects.toThrow('发布回执丢失');
+    expect(io.advanceImport).not.toHaveBeenCalled();
+    expect(io.commitHistory).not.toHaveBeenCalled();
+    expect(io.commitImport).not.toHaveBeenCalled();
+
+    const result = await resumeNativeProjectImport(operationId);
+    expect(result).toMatchObject({ projectId, assetCount: 1 });
+    await expect(resumeNativeProjectImport(operationId)).resolves.toEqual(result);
+    expect(io.publishMedia.mock.calls).toEqual([[publishing], [publishing]]);
+    expect(io.advanceImport.mock.calls).toEqual([[operationId, 4, 'media_ready', reference], [operationId, 6, 'finalized']]);
+    expect(io.commitHistory).toHaveBeenCalledExactlyOnceWith(ready);
+    expect(io.commitImport).toHaveBeenCalledExactlyOnceWith(operationId, 5);
+  });
+
   it('发布后取消时保留原操作，停止推进日志和提交', async () => {
     const controller = new AbortController();
     io.readImport.mockResolvedValue(importJournal('media_publishing'));

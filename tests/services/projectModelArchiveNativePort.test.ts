@@ -1,25 +1,26 @@
-/** P5 原生 IPC 适配回归源；不触碰真实文件或原生服务，尚未运行。 */
+/** 用模拟 IPC 核对原生项目的归档文件边界。 */
 import { webcrypto } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createBoundProjectModelArchiveExportPort, createBoundProjectModelArchiveImportPort, createNativeProjectModelArchivePort, currentStoragePaths } from '../../src/services/projectModelArchiveNativePort';
+import { createBoundProjectModelArchiveExportPort, createBoundProjectModelArchiveImportPort, currentStoragePaths } from '../../src/services/projectModelArchiveNativePort';
 import { buildProjectExchangeSnapshotV2 } from '../../src/services/projectArchiveV4';
 import { createProjectExchangeRevisionV2 } from '../../src/services/projectExchangeV2Format';
 import type { ProjectArchiveBusinessV4, ValidatedProjectArchiveV4 } from '../../src/types/projectArchiveV4';
 import type { ProjectModelTransferCapture, ProjectModelTransferExchange, ProjectModelTransferImportJournal, ProjectModelTransferExportJournal } from '../../src/types/projectModelTransfer';
-import type { ProjectModelFixtureBusinessSession } from '../../src/types/projectModelBusiness';
 import { NATIVE_EPISODE_SCRIPT_VERSION_DIRECTORY } from '../../src/utils/manuscriptFileReference';
 
-const native = vi.hoisted(() => ({ invoke: vi.fn(), existing: new Set<string>(), loadSharedAssetSyncState: vi.fn() }));
+const native = vi.hoisted(() => ({ invoke: vi.fn(), inspect: vi.fn(), existing: new Set<string>(), loadSharedAssetSyncState: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: native.invoke }));
 vi.mock('@tauri-apps/plugin-fs', () => ({ exists: async (path: string) => native.existing.has(path) }));
-vi.mock('../../src/services/fileService', () => ({ projectArchiveFixtureDirectory: async (_db: string, relative: string) => `fixture/${relative}`,
-  getBaseDir: async () => 'authorized', joinPath: (...segments: string[]) => segments.join('/') }));
-vi.mock('../../src/services/fs/projectArchiveFixtureFiles', () => ({ createProjectArchiveFixturePreviewDirectory: vi.fn() }));
-vi.mock('../../src/services/projectModelPreRestoreBackup', () => ({ createProjectModelPreRestoreBackupService: () => ({ create: vi.fn(), verify: vi.fn(), verifyCommit: vi.fn() }) }));
+vi.mock('../../src/services/fileService', () => ({
+  getBaseDir: async () => '/authorized', joinPath: (...segments: string[]) => segments.join('/') }));
 vi.mock('../../src/services/indexedDb/sharedAssetSyncRepository', () => ({ loadSharedAssetSyncState: native.loadSharedAssetSyncState }));
 
-const hash = 'a'.repeat(64), database = { name: 'ai-canvas-model-fixture-transfer' } as IDBDatabase;
-const session = { operationId: 'migration', generation: 1, sessionId: 'session' } as ProjectModelFixtureBusinessSession;
+const hash = 'a'.repeat(64);
+const projectId = 'p2-00000000-0000-4000-8000-000000000001';
+const rootA = 'r2-00000000-0000-4000-8000-000000000002', rootB = 'r2-00000000-0000-4000-8000-000000000003';
+const logicalFolder = `project-${projectId}`;
+const physicalRoot = '/authorized/archive-project', physicalChild = `${physicalRoot}/roots/${rootB}`;
+const sourceRef = 'native-import-00000000-0000-4000-8000-000000000004';
 async function setup() {
   const business: ProjectArchiveBusinessV4 = { project: { id: 'P', name: '双根', kind: 'series', storageRoots: [
     { id: 'A', role: 'shared' }, { id: 'B', role: 'canvas' },
@@ -29,8 +30,8 @@ async function setup() {
   const snapshot = buildProjectExchangeSnapshotV2(business, 'lineage', [{ id: 'media-original', kind: 'image', extension: 'png', bytes: 3, sha256: hash }], files);
   const revision = await createProjectExchangeRevisionV2(snapshot);
   const exchange: ProjectModelTransferExchange = { lineageId: 'lineage', localHead: { canonicalVersion: 2, revisionId: revision.revisionId }, stateVersion: 1,
-    identities: [{ kind: 'project', sourceId: 'P', localId: 'local-project' },
-      { kind: 'storage-root', sourceId: 'A', localId: 'legacy-root:A' }, { kind: 'storage-root', sourceId: 'B', localId: 'legacy-root:B' }],
+    identities: [{ kind: 'project', sourceId: 'P', localId: projectId },
+      { kind: 'storage-root', sourceId: 'A', localId: rootA }, { kind: 'storage-root', sourceId: 'B', localId: rootB }],
     fileBindings: files.map((file, index) => ({ id: file.id, rootRef: file.rootRef, relativePath: file.relativePath,
       localRelativePath: `imports/import-op-root-${index}/same.png` })), published: [],
     bundle: { format: 'ai-canvas-project-exchange', version: 2, packageId: 'package', lineageId: 'lineage', head: { canonicalVersion: 2, revisionId: revision.revisionId },
@@ -39,15 +40,15 @@ async function setup() {
     assets: [{ path: 'original-payload.png', bytes: 3, sha256: hash }] } as unknown as ValidatedProjectArchiveV4;
   const operation: ProjectModelTransferImportJournal = { id: 'import-op', schemaVersion: 1, kind: 'project-model-import', operationId: 'import-op', generation: 1,
     sessionId: 'session', phase: 'media_publishing', sequence: 1, createdAt: 1, updatedAt: 1, cleanup: 'retain-until-unreferenced', mode: 'import-new',
-    packageDigest: hash, intentDigest: hash, targetProjectId: 'local-project', expected: null, exchange, idMap: exchange.identities, history: [],
-    sourceRef: 'unpacked/original/assets', sourceFiles: files.map((file) => ({ id: file.id, rootRef: file.rootRef, relativePath: file.relativePath,
+    packageDigest: hash, intentDigest: hash, targetProjectId: projectId, expected: null, exchange, idMap: exchange.identities, history: [],
+    sourceRef, sourceFiles: files.map((file) => ({ id: file.id, rootRef: file.rootRef, relativePath: file.relativePath,
       archivePath: 'assets/original-payload.png', bytes: 3, sha256: hash })),
     media: exchange.fileBindings.map((file) => ({ rootRef: exchange.identities.find((item) => item.kind === 'storage-root' && item.sourceId === file.rootRef)!.localId,
       relativePath: file.localRelativePath, bytes: 3, sha256: hash })),
-    next: { project: { id: 'local-project', name: '双根', kind: 'series', createdAt: 1, updatedAt: 1, epoch: 0, dataFolder: 'primary', storageRootRef: 'legacy-root:A',
-      storageBindings: [{ rootRef: 'legacy-root:A', folderName: 'primary', sourceRecordIds: [], source: 'project-managed' },
-        { rootRef: 'legacy-root:B', folderName: 'secondary', sourceRecordIds: [], source: 'project-managed' }] },
-    content: { projectId: 'local-project', revisions: { source: 0, script: 0, storyGraph: 0, assets: 0 } }, episodes: [], episodeContents: [], canvases: [], previews: [], bindings: [] },
+    next: { project: { id: projectId, name: '双根', kind: 'series', createdAt: 1, updatedAt: 1, epoch: 0, dataFolder: logicalFolder, storageRootRef: rootA,
+      storageBindings: [{ rootRef: rootA, folderName: logicalFolder, sourceRecordIds: [], source: 'project-managed' },
+        { rootRef: rootB, folderName: `${logicalFolder}/roots/${rootB}`, sourceRecordIds: [], source: 'project-managed' }] },
+    content: { projectId, revisions: { source: 0, script: 0, storyGraph: 0, assets: 0 } }, episodes: [], episodeContents: [], canvases: [], previews: [], bindings: [] },
   };
   const capture: ProjectModelTransferCapture = { schemaVersion: 1, generation: 1, sessionId: 'session', sessionRevision: 1, sourceToken: 'token', includesHistory: true,
     aggregate: operation.next, exchange, historyBindings: [], history: [] };
@@ -55,23 +56,26 @@ async function setup() {
 }
 beforeEach(() => {
   vi.clearAllMocks(); vi.stubGlobal('crypto', webcrypto); native.existing.clear();
+  native.inspect.mockImplementation((args: Record<string, unknown>) =>
+    ((args.selectedPaths ?? args.includeImportPaths) as string[]).map((path) => ({ path, bytes: 3, sha256: hash })));
   native.loadSharedAssetSyncState.mockResolvedValue({ mappings: [], outbox: [], conflicts: [] });
   native.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
-    if (command === 'inspect_project_archive_assets') return (args.selectedPaths as string[]).map((path) => ({ path, bytes: 3, sha256: hash }));
-    if (command === 'publish_project_import_assets') { native.existing.add(`${args.projectDir}/imports/${args.operationId}`); return; }
+    if (command === 'resolve_native_project_media_root' && args.projectId === projectId) return physicalRoot;
+    if (command === 'resolve_native_project_media_subroot' && args.projectId === projectId && args.rootRef === rootB) return physicalChild;
+    if (command === 'inspect_project_archive_assets') return native.inspect(args);
     if (command === 'pack_project_archive') return { operationId: args.operationId, publicationRef: 'opaque-ref', archiveSha256: hash };
     throw new Error('unexpected command');
   });
 });
-describe('P5 native file projection', () => {
+describe('原生项目归档文件端口', () => {
   it('扩图垫图按自身主根进入归档闭包，不沿结果画布子根定位', async () => {
     const { capture } = await setup();
     capture.aggregate.canvases = [{ id: 'canvas-pad', projectId: capture.aggregate.project.id, episodeId: null,
-      epoch: 0, revision: 0, revisionScope: 'project', storageRootRef: 'legacy-root:B', edges: [], groups: [], nodes: [{ id: 'expanded',
-        data: { outpaintInput: { relativePath: 'media/padding.png', storageRootRef: 'legacy-root:A', width: 1024, height: 768 } } }] }];
-    const paths = currentStoragePaths(capture, new Map([['legacy-root:A', 'fixture/primary'], ['legacy-root:B', 'fixture/secondary']]));
-    expect(paths.get('legacy-root:A')).toContain('media/padding.png');
-    expect(paths.get('legacy-root:B')).not.toContain('media/padding.png');
+      epoch: 0, revision: 0, revisionScope: 'project', storageRootRef: rootB, edges: [], groups: [], nodes: [{ id: 'expanded',
+        data: { outpaintInput: { relativePath: 'media/padding.png', storageRootRef: rootA, width: 1024, height: 768 } } }] }];
+    const paths = currentStoragePaths(capture, new Map([[rootA, physicalRoot], [rootB, physicalChild]]));
+    expect(paths.get(rootA)).toContain('media/padding.png');
+    expect(paths.get(rootB)).not.toContain('media/padding.png');
   });
 
   it('新项目导出只使用原生绑定的主根和逻辑子根，不接受其他目录', async () => {
@@ -329,58 +333,86 @@ describe('P5 native file projection', () => {
 
   it.each(['readable', 'existing-id'] as const)('bound导入%s物理目录沿原journal续接，逻辑目录不重算且重启不重发已发布子操作', async (binding) => {
     const { operation, source } = await setup();
-    const projectId = 'p2-00000000-0000-4000-8000-000000000001';
-    const rootA = 'r2-00000000-0000-4000-8000-000000000002', rootB = 'r2-00000000-0000-4000-8000-000000000003';
-    const logicalFolder = `project-${projectId}`, physicalRoot = `authorized/${binding === 'readable' ? '导入副本-00000000' : logicalFolder}`;
-    const physicalChild = `${physicalRoot}/roots/${rootB}`, sourceRef = 'native-import-00000000-0000-4000-8000-000000000004';
-    operation.targetProjectId = projectId; operation.sourceRef = sourceRef;
-    operation.next.project = { ...operation.next.project, id: projectId, dataFolder: logicalFolder, storageRootRef: rootA,
-      storageBindings: [{ rootRef: rootA, folderName: logicalFolder, sourceRecordIds: [], source: 'project-managed' },
-        { rootRef: rootB, folderName: `${logicalFolder}/roots/${rootB}`, sourceRecordIds: [], source: 'project-managed' }] };
-    operation.next.content.projectId = projectId;
-    operation.idMap.find((item) => item.kind === 'project')!.localId = projectId;
-    operation.idMap.find((item) => item.sourceId === 'A')!.localId = rootA;
-    operation.idMap.find((item) => item.sourceId === 'B')!.localId = rootB;
-    operation.media.forEach((item, ordinal) => { item.rootRef = ordinal ? rootB : rootA; });
-    let lost = false;
+    const physicalRoot = `/authorized/${binding === 'readable' ? '导入副本-00000000' : logicalFolder}`;
+    const physicalChild = `${physicalRoot}/roots/${rootB}`;
+    const incoming = `/authorized/${sourceRef}`;
+    const sourcePath = 'original-payload.png', destinationPath = 'same.png';
+    const firstChildDirectory = `${physicalRoot}/imports/import-op-root-0`;
+    const disk = new Map([
+      [incoming, new Set([sourcePath])],
+      [physicalRoot, new Set<string>()],
+      [physicalChild, new Set<string>()],
+    ]);
+    const lostResponse = new Error('lost response');
     native.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
-      if (command === 'resolve_native_project_media_root') return physicalRoot;
-      if (command === 'resolve_native_project_media_subroot') return physicalChild;
-      if (command === 'inspect_project_archive_assets') return (args.selectedPaths as string[]).map((path) => ({ path, bytes: 3, sha256: hash }));
+      if (command === 'resolve_native_project_media_root') {
+        expect(args).toEqual({ projectId });
+        return physicalRoot;
+      }
+      if (command === 'resolve_native_project_media_subroot') {
+        expect(args).toEqual({ projectId, rootRef: rootB, create: false });
+        return physicalChild;
+      }
+      if (command === 'inspect_project_archive_assets') {
+        const files = disk.get(args.assetsDir as string);
+        if (!files) throw new Error('未授权的扫描目录');
+        return (args.selectedPaths as string[]).filter((path) => files.has(path)).map((path) => ({ path, bytes: 3, sha256: hash }));
+      }
       if (command === 'publish_project_import_assets') {
-        native.existing.add(`${args.projectDir}/imports/${args.operationId}`);
-        if (!lost) { lost = true; throw new Error('lost response'); }
+        const firstChild = args.operationId === 'import-op-root-0';
+        expect(args.operationId).toBe(firstChild ? 'import-op-root-0' : 'import-op-root-1');
+        const root = firstChild ? physicalRoot : physicalChild;
+        expect(args.projectDir).toBe(root);
+        expect(args.stagingDir).toBe(incoming);
+        expect(args.sourceRoots).toEqual([{ rootRef: 'incoming', directory: incoming }]);
+        expect(args.assets).toEqual([{ path: sourcePath, sourceRootRef: 'incoming', destinationPath, bytes: 3, sha256: hash }]);
+        const relativeDir = `imports/${args.operationId}`;
+        const finalDir = `${root}/${relativeDir}`;
+        native.existing.add(finalDir);
+        disk.set(finalDir, new Set([destinationPath]));
+        disk.get(root)!.add(`${relativeDir}/${destinationPath}`);
+        if (firstChild) throw lostResponse;
         return;
       }
       throw new Error(`unexpected native command: ${command}`);
     });
     const original = createBoundProjectModelArchiveImportPort(projectId, sourceRef);
     expect(await original.captureImportSource!(source)).toEqual({ sourceRef, sourceFiles: operation.sourceFiles });
-    await expect(original.publishMedia(operation, source)).rejects.toThrow('lost response');
+    await expect(original.publishMedia(operation, source)).rejects.toBe(lostResponse);
+    const callsBeforeReplacement = native.invoke.mock.calls.length;
+    const replacement = createBoundProjectModelArchiveImportPort(projectId, 'native-import-00000000-0000-4000-8000-000000000005');
+    await expect(replacement.publishMedia(operation, source)).rejects.toThrow('素材目录不属于该新项目');
+    expect(native.invoke.mock.calls).toHaveLength(callsBeforeReplacement);
     const restarted = createBoundProjectModelArchiveImportPort(projectId, operation.sourceRef!);
+    disk.get(firstChildDirectory)!.delete(destinationPath);
+    await expect(restarted.publishMedia(operation, source)).rejects.toThrow('原媒体子操作已存在但无法核实，未重发');
+    expect(native.invoke.mock.calls.filter(([command]) => command === 'publish_project_import_assets')).toHaveLength(1);
+    disk.get(firstChildDirectory)!.add(destinationPath);
     expect(await restarted.publishMedia(operation, source)).toBe(`media_v1_${operation.operationId}`);
     await restarted.verifyMediaPublication(operation, `media_v1_${operation.operationId}`);
     const publishes = native.invoke.mock.calls.filter(([command]) => command === 'publish_project_import_assets');
     expect(publishes).toHaveLength(2);
     expect(publishes.map(([, args]) => args.projectDir)).toEqual([physicalRoot, physicalChild]);
     expect(publishes.map(([, args]) => args.operationId)).toEqual(['import-op-root-0', 'import-op-root-1']);
-    expect(publishes.every(([, args]) => args.sourceRoots[0].directory === `authorized/${sourceRef}`)).toBe(true);
     expect(operation.next.project.dataFolder).toBe(logicalFolder);
     expect(operation.next.project.storageBindings.map((root) => root.folderName)).toEqual([logicalFolder, `${logicalFolder}/roots/${rootB}`]);
     const inspectionRoots = native.invoke.mock.calls.filter(([command]) => command === 'inspect_project_archive_assets').map(([, args]) => args.assetsDir);
-    expect(inspectionRoots).toContain(`${physicalRoot}/imports/import-op-root-0`);
+    expect(inspectionRoots).toContain(firstChildDirectory);
     expect(inspectionRoots).toContain(physicalRoot); expect(inspectionRoots).toContain(physicalChild);
     expect(native.invoke.mock.calls.some(([command]) => command === 'claim_native_project_media_root')).toBe(false);
+    await expect(restarted.verifyMediaPublication(operation, 'another-op')).rejects.toThrow('回执');
   });
 
   it('扫描结果缺少当前正文引用时禁止打包', async () => {
     const { capture } = await setup();
     capture.exchange = null;
     capture.aggregate.project.storageBindings = capture.aggregate.project.storageBindings.slice(0, 1);
-    capture.aggregate.content.originalWork = { relativePath: 'missing.png' } as NonNullable<typeof capture.aggregate.content.originalWork>;
-    native.existing.add('fixture/primary');
-    native.invoke.mockResolvedValue([]);
-    await expect(createNativeProjectModelArchivePort(database, session).inspectAssets(capture)).rejects.toThrow('项目引用的素材缺失');
+    capture.aggregate.content.originalWork = { relativePath: 'missing.txt', fileName: 'missing.txt', addedAt: 1 };
+    native.existing.add(physicalRoot);
+    native.inspect.mockReturnValue([]);
+    await expect(createBoundProjectModelArchiveExportPort(projectId, 'chosen-output').inspectAssets(capture))
+      .rejects.toThrow('项目引用的素材缺失，无法安全导出：missing.txt');
+    expect(native.invoke.mock.calls.some(([command]) => command === 'pack_project_archive')).toBe(false);
   });
 
   it.each([
@@ -398,9 +430,9 @@ describe('P5 native file projection', () => {
       storageRootRef: capture.aggregate.project.storageRootRef, epoch: 0, revision: 0, revisionScope: 'project', edges: [], groups: [],
       nodes: [{ id: 'missing-image-node', type: 'source-image', data: { label: '角色定妆图', displayId: 42, ...data,
         prompt: '不得进入错误的完整正文' } }] }];
-    native.existing.add('fixture/primary'); native.invoke.mockResolvedValue([]);
+    native.existing.add(physicalRoot); native.inspect.mockReturnValue([]);
     const original = structuredClone(capture);
-    const failure = await createNativeProjectModelArchivePort(database, session).inspectAssets(capture).catch((error: unknown) => error);
+    const failure = await createBoundProjectModelArchiveExportPort(projectId, '').inspectAssets(capture).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(Error);
     const message = (failure as Error).message;
     expect(message).toContain('项目引用的素材缺失，无法安全导出：missing.png');
@@ -408,7 +440,7 @@ describe('P5 native file projection', () => {
     expect(message).toContain('节点 #42「角色定妆图」（ID：missing-image-node）');
     expect(message).toContain(`引用字段：${field}`);
     if (field.includes('shotlistRows')) expect(message).toContain('镜头「S003」（ID：shot-one）');
-    expect(message).not.toMatch(/fixture\/primary|不得进入错误的完整正文/);
+    expect(message).not.toMatch(/\/authorized\/archive-project|不得进入错误的完整正文/);
     expect(capture).toEqual(original);
   });
 
@@ -419,20 +451,20 @@ describe('P5 native file projection', () => {
       value: { id: 'out-one', projectId: capture.aggregate.project.id, name: '原输出', relativePath: 'missing.png' } }];
     else capture.assetMetadata = [{ assetId: 'asset-one', rootRef: capture.aggregate.project.storageRootRef,
       ownerId: capture.aggregate.project.id, path: 'missing.png', bytes: 3, sha256: hash }];
-    native.existing.add('fixture/primary'); native.invoke.mockResolvedValue([]);
-    const failure = await createNativeProjectModelArchivePort(database, session).inspectAssets(capture).catch((error: unknown) => error);
+    native.existing.add(physicalRoot); native.inspect.mockReturnValue([]);
+    const failure = await createBoundProjectModelArchiveExportPort(projectId, '').inspectAssets(capture).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(Error);
     const message = (failure as Error).message;
     expect(message).toContain('项目引用的素材缺失，无法安全导出：missing.png');
     expect(message).toContain(source === 'history' ? '输出历史「原输出」（ID：out-one）' : '素材「missing.png」（ID：asset-one）');
     expect(message).toContain(source === 'history' ? '引用字段：relativePath' : '引用字段：assetMetadata.path');
-    expect(message).not.toContain('fixture/primary');
+    expect(message).not.toContain(physicalRoot);
   });
 
   it('旧版本附件缺失指出冻结文件身份，不丢弃历史附件', async () => {
     const { capture } = await setup();
-    native.existing.add('fixture/primary'); native.existing.add('fixture/secondary'); native.invoke.mockResolvedValue([]);
-    const failure = await createNativeProjectModelArchivePort(database, session).inspectAssets(capture).catch((error: unknown) => error);
+    native.existing.add(physicalRoot); native.existing.add(physicalChild); native.inspect.mockReturnValue([]);
+    const failure = await createBoundProjectModelArchiveExportPort(projectId, '').inspectAssets(capture).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(Error);
     expect((failure as Error).message).toContain('旧版本附件（文件 ID：F1）');
     expect((failure as Error).message).toContain('引用字段：exchange.fileBindings.localRelativePath');
@@ -463,43 +495,21 @@ describe('P5 native file projection', () => {
     expect((failure as Error).message).not.toMatch(/\/Users\/private|不得进入错误的完整正文|chosen-output/);
   });
 
-  it('capture冻结原物理包映射；重启忽略新incomingFolder，逐root核原child后只补未发布root', async () => {
-    const { operation, source } = await setup();
-    const original = createNativeProjectModelArchivePort(database, session, { incomingFolder: 'unpacked/original/assets' });
-    expect(await original.captureImportSource!(source)).toEqual({ sourceRef: operation.sourceRef, sourceFiles: operation.sourceFiles });
-    const firstImplementation = native.invoke.getMockImplementation()!;
-    let lost = false;
-    native.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
-      const result = await firstImplementation(command, args);
-      if (command === 'publish_project_import_assets' && !lost) { lost = true; throw new Error('lost response'); } return result;
-    });
-    await expect(original.publishMedia(operation, source)).rejects.toThrow('lost response');
-    const restarted = createNativeProjectModelArchivePort(database, session, { incomingFolder: 'unpacked/replacement/assets' });
-    expect(await restarted.publishMedia(operation, source)).toBe(`media_v1_${operation.operationId}`);
-    const calls = native.invoke.mock.calls.filter(([command]) => command === 'publish_project_import_assets');
-    expect(calls.map(([, args]) => args.operationId)).toEqual(['import-op-root-0', 'import-op-root-1']);
-    expect(calls.map(([, args]) => args.projectDir)).toEqual(['fixture/primary', 'fixture/secondary']);
-    expect(calls.every(([, args]) => args.sourceRoots[0].directory === 'fixture/unpacked/original/assets')).toBe(true);
-    expect(calls.every(([, args]) => args.assets[0].path === 'original-payload.png' && args.assets[0].destinationPath === 'same.png')).toBe(true);
-    await restarted.verifyMediaPublication(operation, `media_v1_${operation.operationId}`);
-    await expect(restarted.verifyMediaPublication(operation, 'another-op')).rejects.toThrow('回执');
-  });
   it('inspect只包含当前bindings的imports，保普通附件并排除嵌套root重复扫描', async () => {
     const { capture } = await setup();
-    capture.aggregate.project.storageBindings[1].folderName = 'primary/roots/secondary';
     capture.aggregate.content.originalWork = { relativePath: 'imports/new-output/generated.png' } as NonNullable<typeof capture.aggregate.content.originalWork>;
     capture.exchange!.fileBindings.push({ id: 'stale-file', rootRef: 'A', relativePath: 'orphan.png', localRelativePath: 'imports/failed/orphan.png' });
-    native.existing.add('fixture/primary'); native.existing.add('fixture/primary/roots/secondary');
-    native.invoke.mockImplementation(async (_command: string, args: Record<string, unknown>) => args.assetsDir === 'fixture/primary'
-      ? [{ path: 'attachment.txt', bytes: 3, sha256: hash }, { path: 'roots/secondary/same.png', bytes: 3, sha256: hash },
+    native.existing.add(physicalRoot); native.existing.add(physicalChild);
+    native.inspect.mockImplementation((args: Record<string, unknown>) => args.assetsDir === physicalRoot
+      ? [{ path: 'attachment.txt', bytes: 3, sha256: hash }, { path: `roots/${rootB}/same.png`, bytes: 3, sha256: hash },
         { path: 'imports/import-op-root-0/same.png', bytes: 3, sha256: hash }, { path: 'imports/new-output/generated.png', bytes: 3, sha256: hash }]
       : [{ path: 'imports/import-op-root-1/same.png', bytes: 3, sha256: hash }]);
-    const result = await createNativeProjectModelArchivePort(database, session).inspectAssets(capture);
+    const result = await createBoundProjectModelArchiveExportPort(projectId, '').inspectAssets(capture);
     expect(result.map((item) => [item.rootRef, item.path])).toEqual([
-      ['legacy-root:A', 'attachment.txt'], ['legacy-root:A', 'imports/import-op-root-0/same.png'],
-      ['legacy-root:A', 'imports/new-output/generated.png'], ['legacy-root:B', 'imports/import-op-root-1/same.png'],
+      [rootA, 'attachment.txt'], [rootA, 'imports/import-op-root-0/same.png'],
+      [rootA, 'imports/new-output/generated.png'], [rootB, 'imports/import-op-root-1/same.png'],
     ]);
-    const calls = native.invoke.mock.calls.map(([, args]) => args);
+    const calls = native.inspect.mock.calls.map(([args]) => args);
     expect(calls.map((args) => args.includeImportPaths)).toEqual([
       ['imports/import-op-root-0/same.png', 'imports/new-output/generated.png'], ['imports/import-op-root-1/same.png'],
     ]);
@@ -510,40 +520,25 @@ describe('P5 native file projection', () => {
     const entries = [{ path: 'manifest.json', content: '{"formatVersion":4}' }];
     const assets = exchange.fileBindings.map((binding) => ({ rootRef: exchange.identities.find((item) => item.kind === 'storage-root' && item.sourceId === binding.rootRef)!.localId,
       path: binding.localRelativePath, bytes: 3, sha256: hash }));
-    const receipt = await createNativeProjectModelArchivePort(database, session, { outputPath: 'chosen-output.aicanvas' }).pack(operation, entries, capture, files, assets);
+    const receipt = await createBoundProjectModelArchiveExportPort(projectId, 'chosen-output.aicanvas').pack(operation, entries, capture, files, assets);
     expect(receipt).toEqual({ outputRef: 'opaque-ref', packageDigest: hash });
     const args = native.invoke.mock.calls.find(([command]) => command === 'pack_project_archive')![1];
     expect(args.expectedAssets).toEqual([{ path: 'original-payload.png', bytes: 3, sha256: hash,
       sourceRootRef: 'root-0', sourceRelativePath: 'imports/import-op-root-0/same.png' }]);
-    expect(args.sourceRoots.map((item: { rootRef: string }) => item.rootRef)).toEqual(['root-0', 'root-1']);
-    expect(JSON.stringify(args.entries)).not.toMatch(/fixture\/|sourceRootRef|sourceRelativePath|import-op/);
+    expect(args.sourceRoots).toEqual([{ rootRef: 'root-0', directory: physicalRoot }, { rootRef: 'root-1', directory: physicalChild }]);
+    expect(JSON.stringify(args.entries)).not.toMatch(/\/authorized\/|sourceRootRef|sourceRelativePath|import-op/);
     expect(JSON.stringify(operation)).not.toContain('chosen-output.aicanvas');
   });
   it('三类旧本机文件字段及截图数组只纳入所属受权root内的imports引用', async () => {
-    const { capture } = await setup(); native.existing.add('fixture/primary'); native.existing.add('fixture/secondary');
-    capture.aggregate.canvases.push({ id: 'C', projectId: 'local-project', episodeId: null, storageRootRef: 'legacy-root:A', revisionScope: 'project', epoch: 0, revision: 0,
-      nodes: [{ id: 'n', data: { filePath: 'fixture/primary/imports/file.png', imageFilePath: 'fixture/primary/imports/image.png',
-        directorCaptureFilePaths: ['fixture/primary/imports/frame.png', 'fixture/secondary/imports/wrong-root.png', 'fixture/primary-escape/imports/outside.png'],
-        prompt: 'fixture/primary/imports/prompt-only.png' } }], edges: [], groups: [] });
-    native.invoke.mockImplementation(async (_command: string, args: Record<string, unknown>) =>
-      (args.includeImportPaths as string[]).map((path) => ({ path, bytes: 3, sha256: hash })));
-    await createNativeProjectModelArchivePort(database, session).inspectAssets(capture);
-    const calls = native.invoke.mock.calls.map(([, args]) => args);
-    expect(calls[0].includeImportPaths).toEqual(['imports/import-op-root-0/same.png', 'imports/file.png', 'imports/image.png', 'imports/frame.png']);
-    expect(calls[1].includeImportPaths).toEqual(['imports/import-op-root-1/same.png']);
+    const { capture } = await setup(); native.existing.add(physicalRoot); native.existing.add(physicalChild);
+    capture.aggregate.canvases.push({ id: 'C', projectId, episodeId: null, storageRootRef: rootB, revisionScope: 'project', epoch: 0, revision: 0,
+      nodes: [{ id: 'n', data: { filePath: `${physicalChild}/imports/file.png`, imageFilePath: `${physicalChild}/imports/image.png`,
+        directorCaptureFilePaths: [`${physicalChild}/imports/frame.png`, `${physicalRoot}/imports/wrong-root.png`, `${physicalChild}-escape/imports/outside.png`],
+        prompt: `${physicalChild}/imports/prompt-only.png` } }], edges: [], groups: [] });
+    await createBoundProjectModelArchiveExportPort(projectId, '').inspectAssets(capture);
+    const calls = native.inspect.mock.calls.map(([args]) => args);
+    expect(calls[0].includeImportPaths).toEqual(['imports/import-op-root-0/same.png']);
+    expect(calls[1].includeImportPaths).toEqual(['imports/import-op-root-1/same.png', 'imports/file.png', 'imports/image.png', 'imports/frame.png']);
     expect(JSON.stringify(calls.map((args) => args.includeImportPaths))).not.toMatch(/wrong-root|outside|prompt-only/);
-  });
-  it('耐久备份前拒绝预览后媒体变化，也拒绝未出现在扫描结果的完整typed引用', async () => {
-    const { capture } = await setup(); native.existing.add('fixture/primary'); native.existing.add('fixture/secondary');
-    native.invoke.mockImplementation(async (_command: string, args: Record<string, unknown>) =>
-      ((args.selectedPaths ?? args.includeImportPaths) as string[]).map((path) => ({ path, bytes: 3, sha256: hash })));
-    const port = createNativeProjectModelArchivePort(database, session), expected = await port.inspectAssets(capture);
-    native.invoke.mockImplementation(async (_command: string, args: Record<string, unknown>) =>
-      ((args.selectedPaths ?? args.includeImportPaths) as string[]).map((path) => ({ path, bytes: 3, sha256: 'b'.repeat(64) })));
-    await expect(port.createRestoreBackup!(capture, expected)).rejects.toThrow('预览后旧素材');
-    native.invoke.mockImplementation(async (_command: string, args: Record<string, unknown>) =>
-      ((args.selectedPaths ?? args.includeImportPaths) as string[]).map((path) => ({ path, bytes: 3, sha256: hash })));
-    capture.aggregate.content.originalWork = { relativePath: 'missing.txt', fileName: 'missing.txt', addedAt: 1 };
-    await expect(port.createRestoreBackup!(capture, expected)).rejects.toThrow('项目引用的素材缺失，无法安全导出');
   });
 });

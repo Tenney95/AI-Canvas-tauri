@@ -2,6 +2,8 @@
 import { webcrypto } from 'node:crypto';
 import { IDBFactory, IDBIndex, IDBKeyRange, IDBObjectStore } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { save } from '@tauri-apps/plugin-dialog';
+import { exists } from '@tauri-apps/plugin-fs';
 import { createNativeProject, readNativeProject, readNativeProjectByCanvasId, listNativeProjectIdentities, readNativeProjectIdentityCatalog,
   listNativeEpisodes, convertNativeProjectToSeries, createNativeEpisode, appendNativeEpisodesInOrder, saveNativeCanvas, saveNativeEpisodeContent,
   reorderNativeEpisodes, deleteNativeEpisode, readNativeProjectCapture, readNativeProjectSelection, readNativeProjectContent,
@@ -18,6 +20,14 @@ import type { ProjectModelTransferCapture, ProjectModelTransferExchange } from '
 import { listNativeVideoEditorProjectsForProject } from '../../src/services/indexedDb/nativeVideoEditorRepository';
 import { readNativeProjectExchange, verifiedExchange } from '../../src/services/indexedDb/projectModelTransferRepository';
 import { readNativeProjectView } from '../../src/services/nativeProjectNavigation';
+import { exportNativeProjectArchive, reconcileNativeProjectArchiveExport } from '../../src/services/nativeProjectArchiveService';
+
+vi.mock('@tauri-apps/plugin-dialog', async (original) => ({
+  ...await original<typeof import('@tauri-apps/plugin-dialog')>(), save: vi.fn(),
+}));
+vi.mock('@tauri-apps/plugin-fs', async (original) => ({
+  ...await original<typeof import('@tauri-apps/plugin-fs')>(), exists: vi.fn(),
+}));
 
 const id = (prefix: 'p2' | 'e2' | 'c2', digit: string) => `${prefix}-${digit.repeat(8)}-${digit.repeat(4)}-4${digit.repeat(3)}-8${digit.repeat(3)}-${digit.repeat(12)}`;
 let factory: IDBFactory;
@@ -182,6 +192,46 @@ describe('独立新项目仓储', () => {
       .rejects.toThrow('export-journal-conflict');
     expect(await listNativeProjectPendingTransfers(root.project.id, { factory })).toEqual([]);
     expect((await readNativeProjectCapture(root.project.id, { factory }))?.exchange).toBeNull();
+  });
+
+  it('导出文件已发布但回执丢失时，按原操作核验登记且不重新打包', async () => {
+    vi.stubGlobal('indexedDB', factory);
+    const projectId = id('p2', '1'), outputPath = '/output/原作品.aicanvas', assetsDir = '/data/原作品';
+    const publicationRef = 'published-archive', archiveSha256 = 'b'.repeat(64);
+    let publishedOperation: string | undefined;
+    const invoke = vi.fn(async (command: string, args: Record<string, unknown>) => {
+      if (command === 'resolve_native_project_media_root') return assetsDir;
+      if (command === 'inspect_project_archive_assets') return [];
+      if (command === 'pack_project_archive' && args.outputPath === outputPath && typeof args.operationId === 'string') {
+        publishedOperation = args.operationId;
+        throw new Error('发布回执丢失');
+      }
+      if (command === 'verify_project_archive_publication' && publishedOperation && args.operationId === publishedOperation) {
+        return { status: 'published', publicationRef, archiveSha256 };
+      }
+      throw new Error(`unexpected ${command}`);
+    });
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: { invoke } });
+    vi.mocked(save).mockResolvedValueOnce(outputPath);
+    vi.mocked(exists).mockImplementation(async (path) => path === assetsDir);
+    await createNativeProject({ name: '原作品', kind: 'series', projectId }, { factory });
+
+    await expect(exportNativeProjectArchive(projectId)).rejects.toThrow('发布回执丢失');
+    const [pending] = await listNativeProjectPendingTransfers(projectId, { factory });
+    expect(pending).toMatchObject({ kind: 'export', phase: 'packing', operationId: publishedOperation });
+    expect((await readNativeProjectCapture(projectId, { factory }))?.exchange).toBeNull();
+
+    await reconcileNativeProjectArchiveExport(pending.operationId);
+    await reconcileNativeProjectArchiveExport(pending.operationId);
+    expect(invoke.mock.calls.filter(([command]) => command === 'pack_project_archive')).toHaveLength(1);
+    expect(invoke.mock.calls.filter(([command]) => command === 'verify_project_archive_publication').map(([, args]) => args)).toEqual([
+      { operationId: pending.operationId, publicationRef: undefined },
+    ]);
+    const receipt = { outputRef: publicationRef, packageDigest: archiveSha256 };
+    expect(await readNativeProjectExport(pending.operationId, { factory })).toMatchObject({ phase: 'registered', ...receipt });
+    expect((await readNativeProjectCapture(projectId, { factory }))?.exchange?.published).toEqual([
+      expect.objectContaining({ operationId: pending.operationId, ...receipt }),
+    ]);
   });
 
   it.each([false, true])('连续导出不保存原生统计字段；既有污染回执只读兼容，原操作可续接（旧回执=%s）', async (legacyReceipt) => {

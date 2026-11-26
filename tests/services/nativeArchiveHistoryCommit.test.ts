@@ -43,6 +43,33 @@ it('输出历史与提交marker同事务结算，原操作重试不重复，后�
   expect(await request(io.database.transaction('history').objectStore('history').count())).toBe(0);
 });
 
+it('新副本的对话、消息、记忆随原操作续接且只写一次，保留已有编辑', async () => {
+  const original = {
+    ...operation('copy-with-history'),
+    mode: 'import-new' as const,
+    history: [
+      { kind: 'conversation', sourceNamespace: 'lineage', archiveOriginId: 'b'.repeat(64),
+        value: { id: 'chat', projectId: 'canvas', title: '原会话' } },
+      { kind: 'message', sourceNamespace: 'lineage', archiveOriginId: 'c'.repeat(64),
+        value: { id: 'message', projectId: 'canvas', conversationId: 'chat', content: '原正文' } },
+      { kind: 'memory', sourceNamespace: 'lineage', archiveOriginId: 'd'.repeat(64),
+        value: { id: 'memory', projectId: 'project', content: '原记忆' } },
+    ] satisfies ProjectModelTransferHistoryRow[],
+  };
+  await commitNativeArchiveHistory(original);
+  await commitNativeArchiveHistory(original);
+  await expect(assertNativeArchiveHistoryCommitted(original)).resolves.toBeUndefined();
+
+  const read = io.database.transaction(['conversations', 'messages', 'memories']);
+  const history = await Promise.all(['conversations', 'messages', 'memories'].map((table) => request(read.objectStore(table).getAll())));
+  expect(history).toEqual(original.history.map((row) => [row.value]));
+
+  const edit = { ...original.history[0].value, title: '用户修改' };
+  await request(io.database.transaction('conversations', 'readwrite').objectStore('conversations').put(edit));
+  await expect(commitNativeArchiveHistory(original)).rejects.toThrow('已导入的历史记录发生变化');
+  expect(await request(io.database.transaction('conversations').objectStore('conversations').get('chat'))).toEqual(edit);
+});
+
 it('历史写入失败原子撤销数据和marker，修复冲突后沿原journal完整续接', async () => {
   const original = operation();
   original.history.push({ ...original.history[0], archiveOriginId: 'b'.repeat(64),

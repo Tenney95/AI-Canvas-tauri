@@ -1,30 +1,26 @@
-/** P5 新模型归档编排。只接受已登记的 fixture 仓储；正式 Store 不调用该工厂。 */
+/** 新项目归档的读取、内容转换和导出快照构造。 */
 import type { ProjectExchangeMedia, ProjectExchangeObject, ProjectExchangeState } from '../types/projectExchange';
 import type { ProjectArchiveBusinessV4, ProjectArchiveChatMediaV4, ProjectArchivePayloadV4, ProjectArchiveHistoryV4, ValidatedProjectArchiveV4,
   ProjectExchangeSnapshotV2, ProjectArchiveFileV4 } from '../types/projectArchiveV4';
-import type { ProjectModelFixtureBusinessSession } from '../types/projectModelBusiness';
 import type { ProjectModelTransferAggregate, ProjectModelTransferCapture, ProjectModelTransferExchange,
   ProjectModelTransferIdMapEntry, ProjectModelTransferImportJournal, ProjectModelTransferExportJournal,
-  ProjectModelTransferHistoryRow, ProjectModelVerifiedRestoreProof } from '../types/projectModelTransfer';
+  ProjectModelTransferHistoryRow } from '../types/projectModelTransfer';
 import type { ProjectArchiveTextEntry } from './projectArchiveSerialization';
 import type { ArchiveAssetDigest } from './projectExchangeDomain';
 import { safeExchangePath, remapStoryGraphBindings } from './projectExchangeDomain';
 import { captureProjectSnapshot } from './projectMergeWorkerClient';
 import { readProjectArchiveContents } from './projectImportService';
 import { portableArchiveChat, sanitizeLegacyArchiveProject } from './projectArchiveValidation';
-import { buildProjectExchangeBundleV2, createProjectExchangeRevisionV2, parseProjectExchangeBundleV2, findProjectExchangeBaseV2 } from './projectExchangeV2Format';
-import { adaptSnapshotV1ToV2, deriveLegacyExchangeIdentity, deriveLegacyProjectionProofFromRevisions } from './projectExchangeV2Domain';
+import { buildProjectExchangeBundleV2, createProjectExchangeRevisionV2, parseProjectExchangeBundleV2 } from './projectExchangeV2Format';
+import { adaptSnapshotV1ToV2, deriveLegacyExchangeIdentity } from './projectExchangeV2Domain';
 import { buildProjectExchangeSnapshotV2, projectArchivePayloadFromSnapshotV2, readProjectArchiveV4,
   readProjectArchiveV4Files, serializeProjectArchiveV4 } from './projectArchiveV4';
-import { buildProjectMergePlanV2, resolveProjectMergeV2, type ProjectMergePlanV2, type ProjectMergeSideV2 } from './projectMergeV2Service';
-import { createProjectModelTransferRepository } from './indexedDb/projectModelTransferRepository';
 import { sha256BytesHex } from './mediaDataUrl';
 import { buildProjectFolderName } from './fileService';
 import type { ProjectContent, EpisodeContent } from '../types/project';
 import type { StoryGraph } from '../types/storyGraph';
 import type { AudioOutputFormat } from '../types/aiTypes';
 import { storyGraphCanonicalSnapshot } from './storyGraphService';
-import { withEpisodeEditorWrite } from './episodeEditorSessionService';
 import { captureArchiveVideoEditorProjects } from './videoEditorArchive';
 import { captureArchiveAssetMetadata } from './projectArchiveAssetMetadata';
 import { captureArchiveOutputHistory, materializeArchiveOutputHistory } from './projectOutputHistoryArchive';
@@ -48,9 +44,6 @@ export interface ProjectModelArchivePort {
     files: ProjectArchiveFileV4[], assets: ProjectModelArchiveAsset[]): Promise<{ outputRef: string; packageDigest: string; archiveBytes?: number }>;
   verifyExportPublication(operation: ProjectModelTransferExportJournal, receipt: { outputRef: string; packageDigest: string }): Promise<void>;
   recoverExportPublication(operation: ProjectModelTransferExportJournal): Promise<{ outputRef: string; packageDigest: string }>;
-  createRestoreBackup?(capture: ProjectModelTransferCapture, expectedAssets?: ProjectModelArchiveAsset[]): Promise<ProjectModelVerifiedRestoreProof>;
-  verifyRestoreBackup?(proof: ProjectModelVerifiedRestoreProof, capture: ProjectModelTransferCapture): Promise<void>;
-  verifyRestoreCommit?(proof: ProjectModelVerifiedRestoreProof, capture: ProjectModelTransferCapture, journal: ProjectModelTransferImportJournal): Promise<void>;
 }
 const json = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const digest = (value: unknown) => sha256BytesHex(new TextEncoder().encode(JSON.stringify(value)));
@@ -127,13 +120,6 @@ function localFileReferences(value: unknown, rootRef: string, assets: ProjectMod
   }
   return result;
 }
-function withCaptureEditorLocks<T>(capture: ProjectModelTransferCapture, work: () => Promise<T>): Promise<T> {
-  const owners = [...new Set([capture.aggregate.project.id, ...capture.aggregate.episodes.map((item) => item.id),
-    ...capture.aggregate.bindings.map((item) => item.legacyId)])].sort();
-  const lock = (index: number): Promise<T> => index === owners.length ? work() : withEpisodeEditorWrite(owners[index], () => lock(index + 1));
-  return lock(0);
-}
-
 /** 旧包先由原接收器验证，原 canonical1 修订不改字节，只追加确定性迁移修订。 */
 export async function readProjectModelArchive(texts: Record<string, string>, assets: ArchiveAssetDigest[]): Promise<ValidatedProjectArchiveV4> {
   const version = (JSON.parse(texts['manifest.json'] ?? 'null') as { formatVersion?: unknown } | null)?.formatVersion;
@@ -655,155 +641,4 @@ export async function prepareProjectModelArchiveCapture(capture: ProjectModelTra
   const assetMetadata = captureArchiveAssetMetadata(capture.assetMetadata ?? [], exchange, files, snapshot.media);
   return { assets, files, snapshot, exchange, payload: { ...business, exchange: bundle, ...(archivedHistory ? { history: archivedHistory } : {}),
     ...(videoEditor ? { videoEditor } : {}), ...(assetMetadata ? { assetMetadata } : {}) } as ProjectArchivePayloadV4 };
-}
-
-export interface ProjectModelArchivePreview {
-  source: ValidatedProjectArchiveV4;
-  expected: ProjectModelTransferCapture | null;
-  plan: ProjectMergePlanV2 | null;
-  localSnapshot?: ProjectExchangeSnapshotV2;
-  localExchange?: ProjectModelTransferExchange;
-  localAssets?: ProjectModelArchiveAsset[];
-  packageDigest: string;
-}
-
-export function createProjectModelArchiveService(database: IDBDatabase, session: ProjectModelFixtureBusinessSession, port: ProjectModelArchivePort) {
-  const repository = createProjectModelTransferRepository(database, session, {
-    verifyMediaPublication: (operation, ref) => port.verifyMediaPublication(operation, ref),
-    verifyExportPublication: (operation, receipt) => port.verifyExportPublication(operation, receipt),
-    verifyRestoreBackup: (proof, capture) => {
-      if (!port.verifyRestoreBackup) throw new Error('没有专用耐久备份校验器，未恢复作品');
-      return port.verifyRestoreBackup(proof, capture);
-    },
-    verifyRestoreCommit: (proof, capture, journal) => {
-      if (!port.verifyRestoreCommit) throw new Error('没有恢复提交前耐久备份校验器，未恢复作品');
-      return port.verifyRestoreCommit(proof, capture, journal);
-    },
-  });
-  const current = async (capture: ProjectModelTransferCapture) => {
-    if ((await repository.capture(capture.aggregate.project.id, { history: capture.includesHistory }))?.sourceToken !== capture.sourceToken) throw new Error('项目或历史在归档期间变化，请重新预览');
-  };
-  async function prepareCapture(capture: ProjectModelTransferCapture) {
-    const assets = await port.inspectAssets(capture);
-    const prepared = await prepareProjectModelArchiveCapture(capture, assets);
-    await current(capture);
-    return prepared;
-  }
-  async function preview(source: ValidatedProjectArchiveV4, targetId?: string): Promise<ProjectModelArchivePreview> {
-    // 重新经过收件校验，不能拿任意伪造的 Validated 类型对象取得写入。
-    const entries = await serializeProjectArchiveV4(source.payload, source.manifest, source.assets);
-    source = await readProjectArchiveV4(Object.fromEntries(entries.map((entry) => [entry.path, entry.content])), source.assets);
-    if (source.payload.videoEditor?.records.length || source.payload.videoEditor?.retiredRecords?.length) {
-      throw new Error('隔离项目模型暂不支持剪辑工程导入，未写入项目');
-    }
-    const expected = targetId ? await repository.capture(targetId, { history: true }) : null;
-    if (targetId && !expected) throw new Error('更新目标已删除');
-    let plan: ProjectMergePlanV2 | null = null, localSnapshot: ProjectExchangeSnapshotV2 | undefined, localExchange: ProjectModelTransferExchange | undefined,
-      localAssets: ProjectModelArchiveAsset[] | undefined;
-    if (expected) {
-      if (!expected.exchange || expected.exchange.lineageId !== source.snapshot.lineageId) throw new Error('目标缺少可证明的共同来源，请导入为独立项目');
-      const prepared = await prepareCapture(expected); localSnapshot = prepared.snapshot; localExchange = prepared.exchange; localAssets = prepared.assets;
-      const graph = [...expected.exchange.bundle.revisions, ...source.payload.exchange.revisions];
-      const base = await findProjectExchangeBaseV2(expected.exchange.localHead, source.payload.exchange.head, graph,
-        [...expected.exchange.bundle.ancestors, ...source.payload.exchange.ancestors],
-        [...(expected.exchange.bundle.historyBoundary ?? []), ...(source.payload.exchange.historyBoundary ?? [])]);
-      if (base.status !== 'found') throw new Error(`无法自动合并：${base.status}，请补充完整基线材料`);
-      const baseProof = base.revision.canonicalVersion === 1 ? await deriveLegacyProjectionProofFromRevisions(base.revision, graph) : undefined;
-      plan = await buildProjectMergePlanV2(base.revision.snapshot, localSnapshot, source.snapshot, { base: baseProof });
-    }
-    return { source, expected, plan, localSnapshot, localExchange, localAssets, packageDigest: await digest([source.manifest, source.payload.exchange]) };
-  }
-  async function finishImport(operation: ProjectModelTransferImportJournal, signal?: AbortSignal) {
-    if (['db_committed', 'projected', 'finalized'].includes(operation.phase)) return operation;
-    if (operation.phase === 'prepared') operation = await repository.advanceImport(operation.operationId, operation.sequence, 'media_publishing', { signal });
-    if (operation.phase === 'media_publishing') {
-      const ref = await port.publishMedia(operation);
-      operation = await repository.advanceImport(operation.operationId, operation.sequence, 'media_ready', { mediaPublicationRef: ref, signal });
-    }
-    return repository.commitImport(operation.operationId, operation.sequence, { signal });
-  }
-  return { repository, preview,
-    async exportProject(projectId: string, operationId: string = crypto.randomUUID()) {
-      const capture = await repository.capture(projectId, { history: true }); if (!capture) throw new Error('项目不存在');
-      return withCaptureEditorLocks(capture, async () => {
-        const prepared = await prepareCapture(capture);
-        const entries = await serializeProjectArchiveV4(prepared.payload, { packageId: prepared.exchange.bundle.packageId, exportedAt: Date.now() },
-          prepared.exchange.bundle.files.map((file) => { const value = prepared.snapshot.media.find((media) => media.id === file.mediaId)!;
-            return { path: file.archivePath.slice(7), bytes: value.bytes, sha256: value.sha256 }; }));
-        await current(capture);
-        let operation = await repository.prepareExport({ operationId, capture, exchange: prepared.exchange });
-        if (operation.phase === 'aborted') throw new Error('该导出已撤销，请使用新操作选择输出');
-        if (operation.phase !== 'prepared') throw new Error('该导出已有发布尝试，请核对原操作，不重新打包');
-        operation = await repository.advanceExport(operationId, operation.sequence, 'packing');
-        const receipt = await port.pack(operation, entries, capture, prepared.files, prepared.assets);
-        operation = await repository.advanceExport(operationId, operation.sequence, 'published', receipt);
-        return repository.advanceExport(operationId, operation.sequence, 'registered', receipt);
-      });
-    },
-    async apply(previewed: ProjectModelArchivePreview, options: { operationId: string; mode: 'import-new' | 'update-existing' | 'independent-copy' | 'restore-content';
-      choices?: Readonly<Record<string, ProjectMergeSideV2>>; appendChat?: boolean; appendMemories?: boolean; signal?: AbortSignal }) {
-      options.signal?.throwIfAborted();
-      const intentDigest = await digest([previewed.packageDigest, previewed.expected?.sourceToken, options.mode, options.choices ?? {}, options.appendChat, options.appendMemories]);
-      const existingOperation = await repository.findImport(options.operationId);
-      if (existingOperation && (existingOperation.packageDigest !== previewed.packageDigest || existingOperation.intentDigest !== intentDigest
-        || existingOperation.mode !== options.mode)) throw new Error('原操作已绑定另一份预览或冲突选择');
-      // 已落 journal 就只推进第一次冻结的 next/映射/证明，不能重跑合并、随机ID分配或安全备份。
-      if (existingOperation) return finishImport(existingOperation, options.signal);
-      if (previewed.expected) await current(previewed.expected);
-      let snapshot = options.mode === 'restore-content' ? previewed.source.snapshot
-        : previewed.plan ? resolveProjectMergeV2(previewed.plan, options.choices ?? {}) : previewed.source.snapshot;
-      const expected = previewed.expected, targetId = expected?.aggregate.project.id ?? crypto.randomUUID();
-      if ((options.mode === 'update-existing' || options.mode === 'restore-content') !== !!expected) throw new Error('操作模式与所选更新目标不一致');
-      if (options.mode === 'independent-copy') snapshot = { ...snapshot, lineageId: crypto.randomUUID() };
-      const material = await materializeProjectModelArchiveBusiness(projectArchivePayloadFromSnapshotV2(snapshot), snapshot, expected, targetId, options.operationId,
-        previewed.localExchange && previewed.localSnapshot ? { exchange: previewed.localExchange, snapshot: previewed.localSnapshot } : undefined);
-      const source = port.captureImportSource ? await port.captureImportSource(previewed.source) : { sourceRef: undefined, sourceFiles: [] };
-      if (previewed.source.files.length && (!source.sourceRef || !source.sourceFiles?.length)) throw new Error('缺少可恢复的隔离素材来源，未准备导入');
-      let restoreProof: ProjectModelVerifiedRestoreProof | undefined;
-      if (options.mode === 'restore-content') {
-        if (!port.createRestoreBackup || !expected) throw new Error('没有恢复前安全备份入口，未恢复');
-        restoreProof = await port.createRestoreBackup(expected, previewed.localAssets); await current(expected);
-      }
-      const parents = options.mode === 'independent-copy' ? [] : expected
-        ? [expected.exchange!.localHead, previewed.source.payload.exchange.head] : [previewed.source.payload.exchange.head];
-      const head = await createProjectExchangeRevisionV2(snapshot, [...new Map(parents.map((ref) => [refKey(ref), ref])).values()]);
-      const sourceBundle = previewed.source.payload.exchange, old = expected?.exchange?.bundle;
-      const bundle = await buildProjectExchangeBundleV2({ packageId: crypto.randomUUID(), head,
-        sources: options.mode === 'independent-copy' ? [] : old ? [old, sourceBundle] : [sourceBundle] });
-      const exchange: ProjectModelTransferExchange = { lineageId: snapshot.lineageId, localHead: bundle.head, bundle,
-        identities: material.identities, fileBindings: material.fileBindings,
-        stateVersion: (expected?.exchange?.stateVersion ?? 0) + 1, published: expected?.exchange?.published ?? [] };
-      const history = options.mode === 'restore-content' ? [] : await importProjectModelArchiveHistory(previewed.source, targetId, snapshot.lineageId, expected,
-        { appendChat: options.appendChat === true, appendMemories: options.appendMemories === true });
-      const operation = await repository.prepareImport({ operationId: options.operationId, mode: options.mode, packageDigest: previewed.packageDigest,
-        intentDigest, sourceLineageId: previewed.source.snapshot.lineageId, ...source,
-        targetProjectId: targetId, expected, next: material.aggregate, exchange, idMap: material.identities, history, media: material.media, restoreProof, signal: options.signal });
-      return finishImport(operation, options.signal);
-    },
-    async recoverImport(operationId: string) { return repository.recoveryDisposition(operationId); },
-    async resumeImport(operationId: string, signal?: AbortSignal) {
-      signal?.throwIfAborted();
-      return finishImport(await repository.readImport(operationId), signal);
-    },
-    async recoverExport(operationId: string) {
-      let operation = await repository.readExport(operationId);
-      if (operation.phase === 'registered') return operation;
-      if (operation.phase === 'aborted') throw new Error('该导出已撤销，请使用新操作选择输出');
-      if (operation.phase === 'prepared') throw new Error('原操作尚未发布，请重新选择输出');
-      const receipt = await port.recoverExportPublication(operation);
-      if (operation.phase === 'packing') operation = await repository.advanceExport(operationId, operation.sequence, 'published', receipt);
-      return repository.advanceExport(operationId, operation.sequence, 'registered', receipt);
-    },
-    async abandonPreparedExport(operationId: string, signal?: AbortSignal) {
-      signal?.throwIfAborted();
-      const operation = await repository.readExport(operationId);
-      return repository.abandonPreparedExport(operationId, operation.sequence, { signal });
-    },
-    async markProjected(operationId: string) {
-      let operation = await repository.readImport(operationId);
-      if (operation.phase === 'db_committed') operation = await repository.advanceImport(operationId, operation.sequence, 'projected');
-      if (operation.phase === 'projected') operation = await repository.advanceImport(operationId, operation.sequence, 'finalized');
-      return operation;
-    },
-  };
 }

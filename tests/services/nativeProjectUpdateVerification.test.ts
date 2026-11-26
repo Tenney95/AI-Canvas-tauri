@@ -1,10 +1,11 @@
 /** 新项目提交前的权威读回编排；只使用隔离替身，不访问真实文件。 */
 import { beforeEach, expect, it, vi } from 'vitest';
+import type { ProjectModelArchiveAsset } from '../../src/services/projectModelArchiveService';
 import type { NativeProjectUpdateJournal } from '../../src/services/indexedDb/nativeProjectRepository';
 
 const legacyAudioMedia = [{ id: 'old-audio', kind: 'file', extension: 'pcm', bytes: 4, sha256: 'a'.repeat(64) }];
 
-const probes = vi.hoisted(() => ({ backup: vi.fn(async () => {}), capture: vi.fn(), inspect: vi.fn(async () => []),
+const probes = vi.hoisted(() => ({ backup: vi.fn(async () => {}), capture: vi.fn(), inspect: vi.fn<() => Promise<ProjectModelArchiveAsset[]>>(async () => []),
   publish: vi.fn(async () => {}), points: vi.fn(async () => [] as Array<{ operationId: string }>), restore: vi.fn(async () => {}),
   openBackup: vi.fn(), project: vi.fn(), remove: vi.fn(async () => {}) }));
 vi.mock('@tauri-apps/plugin-fs', () => ({ remove: probes.remove }));
@@ -49,6 +50,18 @@ it('先读回独立备份、原项目和媒体，再复核目标发布；缺任�
   expect(probes.publish).toHaveBeenCalledTimes(1);
   probes.publish.mockRejectedValueOnce(new Error('素材不完整'));
   await expect(verifyNativeProjectUpdateCommit(journal)).rejects.toThrow('素材不完整');
+});
+
+it('旧附件缺失或摘要变化时保留原更新，停止备份读回和目标发布', async () => {
+  const journal = operation();
+  const oldAsset = { rootRef: 'root', path: 'imports/original/附件.png', bytes: 1, sha256: 'a'.repeat(64) };
+  journal.oldAssets = [oldAsset];
+  probes.inspect.mockRejectedValueOnce(new Error('项目引用的素材缺失，无法安全导出'));
+  await expect(verifyNativeProjectUpdateCommit(journal)).rejects.toThrow('项目引用的素材缺失');
+  probes.inspect.mockResolvedValueOnce([{ ...oldAsset, sha256: 'b'.repeat(64) }]);
+  await expect(verifyNativeProjectUpdateCommit(journal)).rejects.toThrow('项目素材在更新期间变化');
+  expect(probes.openBackup).not.toHaveBeenCalled();
+  expect(probes.publish).not.toHaveBeenCalled();
 });
 
 it('全局素材在核验时使用已冻结的项目副本，不重新复制或读取今日全局版本', async () => {
