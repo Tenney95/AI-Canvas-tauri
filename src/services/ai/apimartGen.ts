@@ -4,8 +4,8 @@
 import { useAppStore } from '../../store/useAppStore';
 import { isCharacterImageTaskContext } from '../characterImageTaskContext';
 import { captureLegacyCanvasContext } from '../projectExecutionContext';
-import { assertNativeMediaPrepared, prepareNativeMediaTask, recordNativeMediaSubmission, type NativeMediaTaskRecord } from '../indexedDb/nativeMediaTaskRepository';
-import { assertNativeVideoSubmissionInput, captureNativeVideoSubmissionBaseline, isNativeVideoSubmissionGuard, type NativeMediaSubmissionPreparation } from '../nativeVideoSubmission';
+import { recordNativeMediaSubmission, type NativeMediaTaskRecord } from '../indexedDb/nativeMediaTaskRepository';
+import { assertNativeBuiltinVideoPrepared, assertNativeVideoSubmissionInput, isNativeVideoSubmissionGuard, prepareNativeBuiltinVideoTask, retainNativeVideoSubmissionFailure, type NativeMediaSubmissionPreparation } from '../nativeVideoSubmission';
 import { PollTaskFailedError } from '../pollTask';
 import { savePendingTask, updatePendingTask, removePendingTask, removeFailedMediaTask, registerNodePolling, cleanupNodePolling, pauseMediaTask, VIDEO_POLL_MAX_DURATION_MS } from '../pollManager';
 import { parseGeneralImageResponses, parseMultiPathResponse } from './helpers';
@@ -23,9 +23,6 @@ import { redactModelProtocolError, redactModelProtocolErrorText, throwIfDefiniti
 import { classifyHttpResponseFailure, getHttpResponseError, HttpResponseError } from './httpUtils';
 import { createMediaDownloadAccess } from './mediaDownloadAccess';
 import { continueNativeMediaTask, createNativeMediaPendingError } from '../nativeMediaTaskContinuation';
-import { nativeBuiltinVideoProtocolDigest } from '../nativeBuiltinVideoProtocol';
-import { sha256BytesHex } from '../mediaDataUrl';
-import { projectModelSourceToken } from '../projectModelComparisonMaterial';
 import { isSafeNativeProtocolTaskId } from '../nativeProtocolContext';
 import { queryApimartImageResult } from './apimartImageResult';
 import { queryApimartVideoResult } from './apimartVideoResult';
@@ -439,12 +436,9 @@ export async function generateApimartVideo(
       if (nativeContext?.modelGeneration !== 1) throw new Error('原生视频画布已切换，未提交请求');
       nativePreparation = await useAppStore.getState().beginNativeMediaSubmissionPreparation(nativeContext);
       signal?.throwIfAborted();
-      const baseline = await captureNativeVideoSubmissionBaseline(nativeContext, nodeId!, undefined, 'media-input-v3', { preparedReferences: true, preparation: nativePreparation });
-      const protocolDigest = await nativeBuiltinVideoProtocolDigest('apimart');
-      nativeTask = await prepareNativeMediaTask({ context: nativeContext, operationId: crypto.randomUUID(), nodeId: nodeId!,
-        inputFingerprint: baseline.inputFingerprint, sourceCanvasRevision: baseline.canvasRevision, fingerprintScheme: 'media-input-v3',
-        modelRef: `apimart/${model}`, protocolDigest, requestFingerprint: await sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(requestBody))),
-        recovery: { kind: 'builtin-video', modelId: model, digest: protocolDigest }, providerConfigId: 'apimart', providerBase: baseUrl, category: 'video' });
+      nativeTask = await prepareNativeBuiltinVideoTask(nativeContext, nodeId!, nativePreparation, {
+        providerConfigId: 'apimart', providerBase: baseUrl, modelId: model, requestMaterial: requestBody,
+      });
     }
 
     // 步骤 1: 提交视频生成任务
@@ -452,11 +446,9 @@ export async function generateApimartVideo(
     if (beforeSubmit) await beforeSubmit();
     signal?.throwIfAborted();
     if (nativeTask) {
-      if (!nativeContext) throw new Error('原媒体画布已变化');
-      await assertNativeVideoSubmissionInput(nativeTask, nativeContext);
-      await assertNativeMediaPrepared(nativeTask, { preparation: nativePreparation });
+      const context = await assertNativeBuiltinVideoPrepared(nativeTask, nativeContext, nativePreparation);
       await beforeSubmit?.();
-      await assertNativeVideoSubmissionInput(nativeTask, nativeContext);
+      await assertNativeVideoSubmissionInput(nativeTask, context);
       signal?.throwIfAborted();
     }
     nativePreparation?.assertCurrent(); requestSent = true; nativePreparation?.release();
@@ -507,8 +499,7 @@ export async function generateApimartVideo(
     const error = redactModelProtocolError(unsafeError, apiKey);
     const rejected = !receipt?.taskId && getHttpResponseError(error)?.definitiveFailure === true;
     if (nativeTask) {
-      await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease,
-        nativeRemoteId ? { taskId: nativeRemoteId } : !requestSent || rejected ? { notStarted: true } : { unknown: true }).catch(() => undefined);
+      await retainNativeVideoSubmissionFailure(nativeTask, nativeRemoteId, !requestSent || rejected);
       if (requestSent && !rejected) {
         // 原始异常可能回显连接凭据，只把脱敏后的异常保留为 cause。
         throw createNativeMediaPendingError(nativeTask, error);

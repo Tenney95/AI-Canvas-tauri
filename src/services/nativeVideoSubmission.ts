@@ -9,7 +9,9 @@ import { restoreProjectRecord } from './storageService';
 import { verifyNativeVideoImageReference, type NativeVideoImageReference } from './nativeVideoImageReference';
 import { sha256BytesHex } from './mediaDataUrl';
 import { readNativeMediaMessageInput } from './nativeMediaOrigin';
-import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
+import { assertNativeMediaPrepared, prepareNativeMediaTask, recordNativeMediaSubmission, type NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
+import { nativeBuiltinVideoProtocolDigest } from './nativeBuiltinVideoProtocol';
+import { projectModelSourceToken } from './projectModelComparisonMaterial';
 import { matchesNativeCanvasMediaInputFingerprint, nativeCanvasMediaInputMaterial } from './nativeMediaInput';
 import type { NativeMediaSubmissionPreparation } from '../types/media';
 export type { NativeMediaSubmissionPreparation } from '../types/media';
@@ -102,4 +104,34 @@ export async function assertNativeVideoSubmissionInput(record: NativeMediaTaskRe
   const latest = useAppStore.getState(), next = latest.nodes.find((item) => item.id === record.nodeId);
   if (!matches || !next || material !== nativeCanvasMediaInputMaterial(next, latest, scheme)
     || !isProjectExpectedContextCurrent(context, latest, { checkCanvasRevision: false })) throw new Error('原媒体输入或画布已变化');
+}
+
+export async function prepareNativeBuiltinVideoTask(context: CanvasContext, nodeId: string,
+  preparation: NativeMediaSubmissionPreparation, input: { providerConfigId: 'apimart' | 'volcengine' | 'grsai';
+    providerBase: string; modelId: string; requestMaterial: unknown; imageReference?: NativeVideoImageReference }): Promise<NativeMediaTaskRecord> {
+  const { providerConfigId, providerBase, modelId, requestMaterial, imageReference } = input;
+  const fingerprintScheme = 'media-input-v3';
+  const baseline = await captureNativeVideoSubmissionBaseline(context, nodeId, imageReference, fingerprintScheme, { preparedReferences: true, preparation });
+  const protocolDigest = await nativeBuiltinVideoProtocolDigest(providerConfigId);
+  return prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId,
+    inputFingerprint: baseline.inputFingerprint, sourceCanvasRevision: baseline.canvasRevision, fingerprintScheme,
+    modelRef: `${providerConfigId}/${modelId}`, protocolDigest,
+    requestFingerprint: await sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(requestMaterial))),
+    recovery: { kind: 'builtin-video', modelId, digest: protocolDigest },
+    ...(imageReference ? { imageReference } : {}), providerConfigId, providerBase, category: 'video' });
+}
+
+export async function assertNativeBuiltinVideoPrepared(record: NativeMediaTaskRecord, context: CanvasContext | undefined,
+  preparation: NativeMediaSubmissionPreparation | undefined): Promise<CanvasContext> {
+  if (!context) throw new Error('原媒体画布已变化');
+  await assertNativeVideoSubmissionInput(record, context);
+  if (record.imageReference) await verifyNativeVideoImageReference(context, record.nodeId, record.imageReference);
+  await assertNativeMediaPrepared(record, { preparation });
+  return context;
+}
+
+export function retainNativeVideoSubmissionFailure(record: NativeMediaTaskRecord, taskId: string | undefined,
+  notStarted: boolean): Promise<NativeMediaTaskRecord> {
+  return recordNativeMediaSubmission(record.operationId, record.lease,
+    taskId ? { taskId } : notStarted ? { notStarted: true } : { unknown: true }).catch(() => record);
 }

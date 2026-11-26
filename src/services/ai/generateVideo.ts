@@ -4,16 +4,13 @@
 import { isLocalMediaUrl, isRemoteMediaUrl } from '../../utils/mediaUrl';
 import { resolveComfyRefmodMentionInputs } from '../../utils/comfyRefmodMention';
 import { videoInputData, videoInputFingerprint } from '../videoBatchPlanning';
-import { assertNativeVideoSubmissionInput, captureNativeVideoSubmissionBaseline, isNativeVideoSubmissionGuard, registerNativeVideoSubmissionGuard, type NativeMediaSubmissionPreparation } from '../nativeVideoSubmission';
-import { verifyNativeVideoImageReference, type NativeVideoImageReference } from '../nativeVideoImageReference';
-import { nativeBuiltinVideoProtocolDigest } from '../nativeBuiltinVideoProtocol';
+import { assertNativeBuiltinVideoPrepared, assertNativeVideoSubmissionInput, isNativeVideoSubmissionGuard, prepareNativeBuiltinVideoTask, registerNativeVideoSubmissionGuard, retainNativeVideoSubmissionFailure, type NativeMediaSubmissionPreparation } from '../nativeVideoSubmission';
+import type { NativeVideoImageReference } from '../nativeVideoImageReference';
 import { continueNativeMediaTask, createNativeMediaPendingError } from '../nativeMediaTaskContinuation';
-import { sha256BytesHex } from '../mediaDataUrl';
-import { projectModelSourceToken } from '../projectModelComparisonMaterial';
 import { isSafeNativeProtocolTaskId } from '../nativeProtocolContext';
 import { useAppStore } from '../../store/useAppStore';
 import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from '../projectExecutionContext';
-import { assertNativeMediaPrepared, prepareNativeMediaTask, recordNativeMediaSubmission, type NativeMediaTaskRecord } from '../indexedDb/nativeMediaTaskRepository';
+import { recordNativeMediaSubmission, type NativeMediaTaskRecord } from '../indexedDb/nativeMediaTaskRepository';
 import { isRunningHubWorkflow } from '../workflowExecutionService';
 import { executeRunningHubWorkflow } from './providers/runninghubWorkflow';
 import { splitRunningHubPrompt, resolveRunningHubInputRouting } from './providers/runninghubWorkflowInputs';
@@ -1156,14 +1153,9 @@ async function generateVolcengineVideo(
       if (nativeContext?.modelGeneration !== 1) throw new Error('原生视频画布已切换，未提交请求');
       nativePreparation = await useAppStore.getState().beginNativeMediaSubmissionPreparation(nativeContext);
       signal?.throwIfAborted();
-      const baseline = await captureNativeVideoSubmissionBaseline(nativeContext, nodeId!, nativeImageReference, 'media-input-v3', { preparedReferences: true, preparation: nativePreparation });
-      const protocolDigest = await nativeBuiltinVideoProtocolDigest('volcengine');
-      nativeTask = await prepareNativeMediaTask({ context: nativeContext, operationId: crypto.randomUUID(), nodeId: nodeId!,
-        inputFingerprint: baseline.inputFingerprint, sourceCanvasRevision: baseline.canvasRevision,
-        fingerprintScheme: 'media-input-v3', modelRef: `volcengine/${modelName}`, protocolDigest,
-        requestFingerprint: await sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(requestBody))),
-        recovery: { kind: 'builtin-video', modelId: modelName, digest: protocolDigest },
-        ...(nativeImageReference ? { imageReference: nativeImageReference } : {}), providerConfigId: 'volcengine', providerBase: baseUrl, category: 'video' });
+      nativeTask = await prepareNativeBuiltinVideoTask(nativeContext, nodeId!, nativePreparation, {
+        providerConfigId: 'volcengine', providerBase: baseUrl, modelId: modelName, requestMaterial: requestBody, imageReference: nativeImageReference,
+      });
     }
     const durationSeconds = Number(requestBody.duration ?? -1);
     const resolution = String(requestBody.resolution ?? '720p');
@@ -1190,12 +1182,9 @@ async function generateVolcengineVideo(
     if (beforeSubmit) await beforeSubmit();
     if (signal?.aborted) throw signal.reason ?? new DOMException('请求已取消', 'AbortError');
     if (nativeTask) {
-      if (!nativeContext) throw new Error('原媒体画布已变化');
-      await assertNativeVideoSubmissionInput(nativeTask, nativeContext);
-      if (nativeTask.imageReference) await verifyNativeVideoImageReference(nativeContext, nativeTask.nodeId, nativeTask.imageReference);
-      await assertNativeMediaPrepared(nativeTask, { preparation: nativePreparation });
+      const context = await assertNativeBuiltinVideoPrepared(nativeTask, nativeContext, nativePreparation);
       await beforeSubmit?.();
-      await assertNativeVideoSubmissionInput(nativeTask, nativeContext);
+      await assertNativeVideoSubmissionInput(nativeTask, context);
       signal?.throwIfAborted();
     }
     nativePreparation?.assertCurrent(); requestSent = true; nativePreparation?.release();
@@ -1269,8 +1258,7 @@ async function generateVolcengineVideo(
     const safeError = redactVolcengineError(error, apiKey);
     let retainedNativeTask = nativeTask;
     if (nativeTask) {
-      retainedNativeTask = await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease,
-        nativeRemoteId ? { taskId: nativeRemoteId } : !requestSent || remoteFailed ? { notStarted: true } : { unknown: true }).catch(() => nativeTask);
+      retainedNativeTask = await retainNativeVideoSubmissionFailure(nativeTask, nativeRemoteId, !requestSent || remoteFailed);
     }
     await updateBillingRun(billingRun, {
       status: remoteCancelled ? 'cancelled' : remoteFailed || !requestSent ? 'failed' : 'unknown', finishedAt: Date.now(),
