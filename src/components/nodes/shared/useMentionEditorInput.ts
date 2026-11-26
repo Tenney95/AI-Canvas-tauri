@@ -182,7 +182,7 @@ export function useMentionInputState(editorRef: RefObject<HTMLDivElement | null>
   const lastFocusedWfValueRef = useRef<HTMLSpanElement | null>(null);
   const cancelChipDragRef = useRef<(() => void) | null>(null);
   const lastChipClickRef = useRef<{ chip: HTMLElement; time: number; x: number; y: number } | null>(null);
-  /** 把光标放回 @ 处，供插入芯片 */
+  /** 先聚焦编辑器，再把光标放回 @ 处，避免焦点从工作流芯片移出时清掉选区。 */
   const restoreMentionCursor = useCallback(() => {
     const el = editorRef.current;
     if (el) el.focus();
@@ -556,49 +556,25 @@ export function useMentionInputActions({
   const handleSelectCanvasMention = useCallback(
     (refNodeId: string, refLabel: string) => {
       if (useAppStore.getState().currentProjectId !== currentProjectId) return;
-      // Focus the editor FIRST so the selection we restore below
-      // survives across the contentEditable boundary (workflow chip value area).
-      const el = editorRef.current;
-      if (el) el.focus();
-      const saved = savedMentionRangeRef.current;
-      savedMentionRangeRef.current = null;
-      if (saved) {
-        const sel = window.getSelection();
-        if (sel) {
-          sel.removeAllRanges();
-          sel.addRange(saved);
-        }
-      }
+      restoreMentionCursor();
       if (!deleteAtChar()) return;
       insertChipAtCursor(refNodeId, refLabel);
       setShowMention(false);
       setMentionQuery('');
     },
-    [currentProjectId, deleteAtChar, editorRef, insertChipAtCursor, savedMentionRangeRef, setMentionQuery, setShowMention],
+    [currentProjectId, deleteAtChar, insertChipAtCursor, restoreMentionCursor, setMentionQuery, setShowMention],
   );
 
   const handleSelectWorkflowMention = useCallback(
     (ioNodeId: string, ioNodeTitle: string, ioNodeType: WorkflowIONodeType) => {
       if (useAppStore.getState().currentProjectId !== currentProjectId) return;
-      // Focus the editor FIRST so the selection we restore below
-      // survives across the contentEditable boundary (workflow chip value area).
-      const el = editorRef.current;
-      if (el) el.focus();
-      const saved = savedMentionRangeRef.current;
-      savedMentionRangeRef.current = null;
-      if (saved) {
-        const sel = window.getSelection();
-        if (sel) {
-          sel.removeAllRanges();
-          sel.addRange(saved);
-        }
-      }
+      restoreMentionCursor();
       if (!deleteAtChar()) return;
       insertWorkflowChipAtCursor(ioNodeId, ioNodeTitle, ioNodeType);
       setShowMention(false);
       setMentionQuery('');
     },
-    [currentProjectId, deleteAtChar, editorRef, insertWorkflowChipAtCursor, savedMentionRangeRef, setMentionQuery, setShowMention],
+    [currentProjectId, deleteAtChar, insertWorkflowChipAtCursor, restoreMentionCursor, setMentionQuery, setShowMention],
   );
 
   const insertDramaChipAtCursor = useCallback(
@@ -694,21 +670,14 @@ export function useMentionInputActions({
   const handleSelectAsset = useCallback(
     (file: AssetFileEntry) => {
       if (!isCurrentEditorOwner()) return;
-      const el = editorRef.current;
-      if (el) el.focus();
-      const saved = savedMentionRangeRef.current;
-      savedMentionRangeRef.current = null;
-      if (saved) {
-        const sel = window.getSelection();
-        if (sel) { sel.removeAllRanges(); sel.addRange(saved); }
-      }
+      restoreMentionCursor();
       if (!deleteAtChar()) return;
       insertAssetChipAtCursor(file.path, file.assetUrl);
       setShowAssetPicker(false);
       setShowMention(false);
       setMentionQuery('');
     },
-    [isCurrentEditorOwner, editorRef, savedMentionRangeRef, deleteAtChar, insertAssetChipAtCursor, setShowAssetPicker, setShowMention, setMentionQuery],
+    [isCurrentEditorOwner, restoreMentionCursor, deleteAtChar, insertAssetChipAtCursor, setShowAssetPicker, setShowMention, setMentionQuery],
   );
 
   // ── Input handler: detect @ and / ──
