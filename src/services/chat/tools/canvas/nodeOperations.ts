@@ -32,6 +32,7 @@ import {
   videoResolutionPatch,
   visibleVideoResolution,
   imageOutputNodePatch,
+  audioNodePatch,
   mediaSettingsIssue,
   DETAIL_TEXT_LIMIT,
   DETAIL_NODE_LIMIT,
@@ -915,18 +916,7 @@ export function createCanvasNode(
         ? { seedanceDuration: input.videoDuration < 0 ? input.videoDuration : resolveShotVideoDuration(input.videoDuration) } : {}),
       ...(input.videoFps !== undefined ? { videoFps: input.videoFps } : {}),
       ...(input.generateAudio !== undefined ? { generateAudio: input.generateAudio } : {}),
-      ...(type === 'ai-audio' ? {
-        ...(input.audioPurpose !== undefined ? { audioPurpose: input.audioPurpose } : {}),
-        ...(input.audioVoice !== undefined ? { audioVoice: input.audioVoice } : {}),
-        ...(input.audioFormat !== undefined ? { audioFormat: input.audioFormat } : {}),
-        ...(input.audioSpeed !== undefined ? { audioSpeed: input.audioSpeed } : {}),
-        ...(input.audioSpeechSettings !== undefined ? { audioSpeechSettings: input.audioSpeechSettings } : {}),
-        ...(input.musicDuration !== undefined ? { musicDuration: input.musicDuration } : {}),
-        ...(input.musicBpm !== undefined ? { musicBpm: input.musicBpm } : {}),
-        ...(input.musicTitle !== undefined ? { musicTitle: input.musicTitle } : {}),
-        ...(input.musicLyrics !== undefined ? { musicLyrics: input.musicLyrics } : {}),
-        ...(input.autoGenerateLyrics !== undefined ? { autoGenerateLyrics: input.autoGenerateLyrics } : {}),
-      } : {}),
+      ...(type === 'ai-audio' ? audioNodePatch(input) : {}),
       ...(input.aspectRatio && VISUAL_NODE_TYPES.has(type)
         ? { aspectRatio: input.aspectRatio, ...(type === 'ai-video' ? { seedanceRatio: input.aspectRatio } : {}) }
         : {}),
@@ -1081,16 +1071,7 @@ export async function prepareNodeUpdate(
       ? input.videoDuration : resolveShotVideoDuration(input.videoDuration) } : {}),
     ...(input.videoFps !== undefined ? { videoFps: input.videoFps } : {}),
     ...(input.generateAudio !== undefined ? { generateAudio: input.generateAudio } : {}),
-    ...(input.audioPurpose !== undefined ? { audioPurpose: input.audioPurpose } : {}),
-    ...(input.audioVoice !== undefined ? { audioVoice: input.audioVoice } : {}),
-    ...(input.audioFormat !== undefined ? { audioFormat: input.audioFormat } : {}),
-    ...(input.audioSpeed !== undefined ? { audioSpeed: input.audioSpeed } : {}),
-    ...(input.audioSpeechSettings !== undefined ? { audioSpeechSettings: input.audioSpeechSettings } : {}),
-    ...(input.musicDuration !== undefined ? { musicDuration: input.musicDuration } : {}),
-    ...(input.musicBpm !== undefined ? { musicBpm: input.musicBpm } : {}),
-    ...(input.musicTitle !== undefined ? { musicTitle: input.musicTitle } : {}),
-    ...(input.musicLyrics !== undefined ? { musicLyrics: input.musicLyrics } : {}),
-    ...(input.autoGenerateLyrics !== undefined ? { autoGenerateLyrics: input.autoGenerateLyrics } : {}),
+    ...audioNodePatch(input),
   };
   const promptEdits = new Map<string, { before: string; after: string }>();
   if (input.promptEdit !== undefined) {

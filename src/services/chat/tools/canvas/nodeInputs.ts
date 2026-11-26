@@ -71,8 +71,8 @@ export const TEXT_OUTPUT_NODE_TYPES = new Set<NodeType>([
 ]);
 export const TEXT_FILE_NODE_TYPES = new Set<NodeType>(['ai-text', 'ai-markdown', 'source-text']);
 const AUDIO_VOICES: AudioTtsVoice[] = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
-export const AUDIO_FORMATS: AudioOutputFormat[] = ['mp3', 'wav', 'opus', 'aac', 'flac', 'pcm'];
-export const SPEECH_STYLES: NonNullable<AudioSpeechSettings['voiceStyle']>[] = [
+const AUDIO_FORMATS: AudioOutputFormat[] = ['mp3', 'wav', 'opus', 'aac', 'flac', 'pcm'];
+const SPEECH_STYLES: NonNullable<AudioSpeechSettings['voiceStyle']>[] = [
   'male', 'female', 'shota', 'loli', 'girl', 'boy',
 ];
 
@@ -96,6 +96,21 @@ export function imageOutputNodePatch(input: ImageOutputParameters): ImageOutputP
   return { ...(input.imageOutputFormat !== undefined && input.imageOutputFormat !== 'gif'
     ? { imageFrameCount: undefined, imageFrameDurationMs: undefined, imageTransparent: undefined } : {}),
     ...pickImageOutputParameters(input) };
+}
+
+export function audioNodePatch(input: AudioNodeInput): AudioNodeInput {
+  return {
+    ...(input.audioPurpose !== undefined ? { audioPurpose: input.audioPurpose } : {}),
+    ...(input.audioVoice !== undefined ? { audioVoice: input.audioVoice } : {}),
+    ...(input.audioFormat !== undefined ? { audioFormat: input.audioFormat } : {}),
+    ...(input.audioSpeed !== undefined ? { audioSpeed: input.audioSpeed } : {}),
+    ...(input.audioSpeechSettings !== undefined ? { audioSpeechSettings: input.audioSpeechSettings } : {}),
+    ...(input.musicDuration !== undefined ? { musicDuration: input.musicDuration } : {}),
+    ...(input.musicBpm !== undefined ? { musicBpm: input.musicBpm } : {}),
+    ...(input.musicTitle !== undefined ? { musicTitle: input.musicTitle } : {}),
+    ...(input.musicLyrics !== undefined ? { musicLyrics: input.musicLyrics } : {}),
+    ...(input.autoGenerateLyrics !== undefined ? { autoGenerateLyrics: input.autoGenerateLyrics } : {}),
+  };
 }
 
 /** 创建和更新共用校验；错误必须在任何 Store 写入前返回，避免半批节点。 */
@@ -241,8 +256,21 @@ export interface NodeTargetInput {
   selected?: boolean;
 }
 
+interface AudioNodeInput {
+  audioPurpose?: AudioGenerationPurpose;
+  audioVoice?: AudioTtsVoice;
+  audioFormat?: AudioOutputFormat;
+  audioSpeed?: number;
+  audioSpeechSettings?: AudioSpeechSettings;
+  musicDuration?: number;
+  musicBpm?: number;
+  musicTitle?: string;
+  musicLyrics?: string;
+  autoGenerateLyrics?: boolean;
+}
+
 export interface CreateNodesInput {
-  nodes: Array<{
+  nodes: Array<AudioNodeInput & {
     type: NodeType;
     label: string;
     prompt?: string;
@@ -263,16 +291,6 @@ export interface CreateNodesInput {
     videoDuration?: number;
     videoFps?: number;
     generateAudio?: boolean;
-    audioPurpose?: AudioGenerationPurpose;
-    audioVoice?: AudioTtsVoice;
-    audioFormat?: AudioOutputFormat;
-    audioSpeed?: number;
-    audioSpeechSettings?: AudioSpeechSettings;
-    musicDuration?: number;
-    musicBpm?: number;
-    musicTitle?: string;
-    musicLyrics?: string;
-    autoGenerateLyrics?: boolean;
     x?: number;
     y?: number;
   }>;
@@ -307,7 +325,7 @@ export interface QueryNodesInput extends NodeTargetInput {
   textLimit?: number;
 }
 
-export interface NodeUpdatePatch {
+export interface NodeUpdatePatch extends AudioNodeInput {
   expectedNodeHash?: string;
   label?: string;
   prompt?: string;
@@ -336,16 +354,6 @@ export interface NodeUpdatePatch {
   videoDuration?: number;
   videoFps?: number;
   generateAudio?: boolean;
-  audioPurpose?: AudioGenerationPurpose;
-  audioVoice?: AudioTtsVoice;
-  audioFormat?: AudioOutputFormat;
-  audioSpeed?: number;
-  audioSpeechSettings?: AudioSpeechSettings;
-  musicDuration?: number;
-  musicBpm?: number;
-  musicTitle?: string;
-  musicLyrics?: string;
-  autoGenerateLyrics?: boolean;
 }
 
 export interface UpdateNodesInput extends NodeTargetInput, NodeUpdatePatch {
@@ -561,6 +569,25 @@ export const targetProperties = {
   selected: { type: 'boolean' as const },
 };
 
+export function createAudioNodeProperties(): Record<string, AgentToolSchema> {
+  return {
+    audioPurpose: { type: 'string', enum: ['music', 'speech'] },
+    audioVoice: { type: 'string', minLength: 1, maxLength: 256, description: '当前模型公布的音色 ID，不含控制字符。' },
+    audioFormat: { type: 'string', enum: AUDIO_FORMATS },
+    audioSpeed: { type: 'number', minimum: 0.25, maximum: 4 },
+    audioSpeechSettings: { type: 'object', additionalProperties: false, properties: {
+      voiceStyle: { type: 'string', enum: SPEECH_STYLES },
+      pace: { type: 'integer', minimum: 0, maximum: 4 },
+      duration: { type: 'integer', minimum: 1, maximum: 3600 },
+    } },
+    musicDuration: { type: 'integer', minimum: 1, maximum: 240 },
+    musicBpm: { type: 'integer', minimum: 1 },
+    musicTitle: { type: 'string', maxLength: 120 },
+    musicLyrics: { type: 'string', maxLength: 8000 },
+    autoGenerateLyrics: { type: 'boolean' },
+  };
+}
+
 export const nodeUpdateProperties: Record<string, AgentToolSchema> = {
   expectedNodeHash: { type: 'string', minLength: 64, maxLength: 64, description: '上次 canvas_query detail/textField 返回的 nodeHash。只用于恰好一个目标；内容、名称、位置或项目设置变化时整批拒绝。' },
   label: { type: 'string', minLength: 1, maxLength: 120 },
@@ -592,20 +619,7 @@ export const nodeUpdateProperties: Record<string, AgentToolSchema> = {
     description: '负数仅允许所选模型声明的自动时长值。' },
   videoFps: { type: 'number', minimum: 1, maximum: 240 },
   generateAudio: { type: 'boolean' },
-  audioPurpose: { type: 'string', enum: ['music', 'speech'] },
-  audioVoice: { type: 'string', minLength: 1, maxLength: 256, description: '当前模型公布的音色 ID，不含控制字符。' },
-  audioFormat: { type: 'string', enum: AUDIO_FORMATS },
-  audioSpeed: { type: 'number', minimum: 0.25, maximum: 4 },
-  audioSpeechSettings: { type: 'object', additionalProperties: false, properties: {
-    voiceStyle: { type: 'string', enum: SPEECH_STYLES },
-    pace: { type: 'integer', minimum: 0, maximum: 4 },
-    duration: { type: 'integer', minimum: 1, maximum: 3600 },
-  } },
-  musicDuration: { type: 'integer', minimum: 1, maximum: 240 },
-  musicBpm: { type: 'integer', minimum: 1 },
-  musicTitle: { type: 'string', maxLength: 120 },
-  musicLyrics: { type: 'string', maxLength: 8000 },
-  autoGenerateLyrics: { type: 'boolean' },
+  ...createAudioNodeProperties(),
 };
 export const nodeUpdatePatchSchema: AgentToolSchema = { type: 'object', properties: nodeUpdateProperties, additionalProperties: false };
 
