@@ -66,16 +66,8 @@ vi.mock('../../src/services/fs/core', () => ({
   joinPath: (...parts: string[]) => normalizePath(parts.join('/')),
 }));
 
-import {
-  loadDirectorResultManifest,
-  loadDirectorScene,
-  saveDirectorResultManifest,
-  saveDirectorScene,
-} from '../../src/services/directorSceneService';
-import {
-  DIRECTOR_RENDERER_VERIFY_MAX_BYTES,
-  buildDirectorArtifactRelativePath,
-} from '../../src/services/directorSceneSchema';
+import { loadDirectorScene, saveDirectorScene } from '../../src/services/directorSceneService';
+import { DIRECTOR_RENDERER_VERIFY_MAX_BYTES } from '../../src/services/directorSceneSchema';
 import {
   readVerifiedProjectFile,
   sha256Hex,
@@ -198,6 +190,20 @@ describe('directorSceneService', () => {
     expect(saved.reference.relativePath).not.toContain('/project');
     expect(mocks.writeCalls.at(-1)?.options).toEqual({ createNew: true });
     expect(await loadDirectorScene('project-a', saved.reference)).toEqual(saved.scene);
+  });
+
+  it('rejects a Scene whose declared asset sizes exceed the combined verification limit', async () => {
+    const halfLimit = DIRECTOR_RENDERER_VERIFY_MAX_BYTES / 2;
+    const hero = await putProjectFile('assets/hero.glb', new Uint8Array([1, 2, 3, 4]));
+    const environment = await putProjectFile('assets/environment.hdr', new Uint8Array([4, 3, 2, 1]));
+    const scene = sceneFixture({ ...hero, bytes: halfLimit });
+
+    await expect(saveDirectorScene('project-a', {
+      ...scene,
+      environment: { ...scene.environment, asset: { ...environment, bytes: halfLimit + 1 } },
+    })).rejects.toThrow(/64 MiB renderer 验证上限/);
+    expect(mocks.getProjectDataDir).not.toHaveBeenCalled();
+    expect(mocks.writeCalls).toHaveLength(0);
   });
 
   it('creates revision 2 only from the exact verified parent and keeps revision 1 immutable', async () => {
@@ -382,168 +388,5 @@ describe('directorSceneService', () => {
     expect(message).toContain('无法访问');
     expect(message).not.toContain('/project');
     expect(message).not.toContain('forbidden path');
-  });
-
-  it('writes and loads a Manifest only after verifying its bound Scene and artifacts', async () => {
-    const asset = await putProjectFile('assets/hero.glb', new Uint8Array([2, 4, 6, 8]));
-    const scene = await saveDirectorScene('project-a', sceneFixture(asset));
-    const artifactBytes = new Uint8Array([137, 80, 78, 71]);
-    const artifactHash = await sha256Hex(artifactBytes);
-    const artifactPath = buildDirectorArtifactRelativePath(
-      'scene-main',
-      'frame-a',
-      artifactHash,
-      'frame-image',
-    );
-    await putProjectFile(artifactPath, artifactBytes);
-    const manifest = {
-      schemaVersion: 1,
-      sceneId: 'scene-main',
-      sceneRevision: 1,
-      sceneSha256: scene.reference.sha256,
-      manifestRevision: 1,
-      producer: { runtime: 'lightweight-web', adapterVersion: '1.0.0' },
-      artifacts: [{
-        artifactId: 'frame-a',
-        kind: 'frame-image',
-        mimeType: 'image/png',
-        relativePath: artifactPath,
-        sha256: artifactHash,
-        bytes: artifactBytes.byteLength,
-        frame: 24,
-      }],
-    };
-
-    const saved = await saveDirectorResultManifest('project-a', manifest, {
-      sceneReference: scene.reference,
-    });
-    expect(saved.reference.relativePath).toMatch(/\/results\/manifest-r1-[a-f0-9]{64}\.json$/);
-    expect(await loadDirectorResultManifest('project-a', saved.reference, {
-      sceneReference: scene.reference,
-    })).toEqual(saved.manifest);
-
-    const nextArtifactBytes = new Uint8Array([137, 80, 78, 72]);
-    const nextArtifactHash = await sha256Hex(nextArtifactBytes);
-    const nextArtifactPath = buildDirectorArtifactRelativePath(
-      'scene-main',
-      'frame-b',
-      nextArtifactHash,
-      'frame-image',
-    );
-    await putProjectFile(nextArtifactPath, nextArtifactBytes);
-    const second = await saveDirectorResultManifest('project-a', {
-      ...saved.manifest,
-      manifestRevision: 2,
-      artifacts: [
-        ...saved.manifest.artifacts,
-        {
-          artifactId: 'frame-b',
-          kind: 'frame-image',
-          mimeType: 'image/png',
-          relativePath: nextArtifactPath,
-          sha256: nextArtifactHash,
-          bytes: nextArtifactBytes.byteLength,
-          frame: 48,
-        },
-      ],
-    }, {
-      sceneReference: scene.reference,
-      previousManifestReference: saved.reference,
-    });
-    expect(second.reference.manifestRevision).toBe(2);
-
-    const thirdHash = 'e'.repeat(64);
-    await expect(saveDirectorResultManifest('project-a', {
-      ...second.manifest,
-      manifestRevision: 3,
-      artifacts: [
-        ...second.manifest.artifacts,
-        {
-          artifactId: 'frame-c',
-          kind: 'frame-image',
-          mimeType: 'image/png',
-          relativePath: buildDirectorArtifactRelativePath(
-            'scene-main',
-            'frame-c',
-            thirdHash,
-            'frame-image',
-          ),
-          sha256: thirdHash,
-          bytes: 4,
-          frame: 72,
-        },
-      ],
-    }, {
-      sceneReference: scene.reference,
-      previousManifestReference: saved.reference,
-    })).rejects.toThrow(/上一清单引用不匹配/);
-
-    const replacementHash = 'f'.repeat(64);
-    await expect(saveDirectorResultManifest('project-a', {
-      ...saved.manifest,
-      manifestRevision: 2,
-      artifacts: [
-        {
-          ...saved.manifest.artifacts[0],
-          relativePath: buildDirectorArtifactRelativePath(
-            'scene-main',
-            'frame-a',
-            replacementHash,
-            'frame-image',
-          ),
-          sha256: replacementHash,
-        },
-        second.manifest.artifacts[1],
-      ],
-    }, {
-      sceneReference: scene.reference,
-      previousManifestReference: saved.reference,
-    })).rejects.toThrow(/不得在同一 Scene bundle 内改写/);
-
-    mocks.files.set(`/project/${artifactPath}`, new Uint8Array([0, 0, 0, 0]));
-    await expect(loadDirectorResultManifest('project-a', second.reference, {
-      sceneReference: scene.reference,
-    })).rejects.toThrow(/SHA-256 不匹配/);
-  });
-
-  it('rejects missing artifacts and renderer verification above 64 MiB', async () => {
-    const asset = await putProjectFile('assets/hero.glb', new Uint8Array([8, 6, 4, 2]));
-    const scene = await saveDirectorScene('project-a', sceneFixture(asset));
-    const artifactHash = 'e'.repeat(64);
-    const artifactPath = buildDirectorArtifactRelativePath(
-      'scene-main',
-      'video-a',
-      artifactHash,
-      'reference-video',
-    );
-    const manifest = {
-      schemaVersion: 1,
-      sceneId: 'scene-main',
-      sceneRevision: 1,
-      sceneSha256: scene.reference.sha256,
-      manifestRevision: 1,
-      producer: { runtime: 'lightweight-web', adapterVersion: '1.0.0' },
-      artifacts: [{
-        artifactId: 'video-a',
-        kind: 'reference-video',
-        mimeType: 'video/mp4',
-        relativePath: artifactPath,
-        sha256: artifactHash,
-        bytes: 4,
-        startFrame: 1,
-        endFrame: 120,
-        fps: 24,
-      }],
-    };
-    const writeCount = mocks.writeCalls.length;
-    await expect(saveDirectorResultManifest('project-a', manifest, {
-      sceneReference: scene.reference,
-    })).rejects.toThrow(/不存在/);
-    expect(mocks.writeCalls).toHaveLength(writeCount);
-
-    await expect(saveDirectorResultManifest('project-a', {
-      ...manifest,
-      artifacts: [{ ...manifest.artifacts[0], bytes: DIRECTOR_RENDERER_VERIFY_MAX_BYTES + 1 }],
-    }, { sceneReference: scene.reference })).rejects.toThrow(/64 MiB/);
   });
 });

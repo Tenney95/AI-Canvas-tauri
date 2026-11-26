@@ -39,6 +39,44 @@ fn collected_frame(frame: u64) -> BlenderResultArtifact {
 }
 
 #[test]
+fn existing_artifact_requires_matching_file_contents() {
+    struct TestDirectory(PathBuf);
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock should be available")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "ai-canvas-blender-artifact-{}-{nonce}",
+        std::process::id()
+    ));
+    fs::create_dir(&root).expect("test root should be created");
+    let root = TestDirectory(root);
+
+    let mut bytes = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1];
+    let mut artifact = collected_frame(42);
+    artifact.bytes = bytes.len() as u64;
+    artifact.sha256 = format!("{:x}", Sha256::digest(bytes));
+    artifact.relative_path = expected_artifact_relative_path("scene", &artifact);
+    let path = join_project_relative(&root.0, &artifact.relative_path).unwrap();
+    fs::create_dir_all(path.parent().unwrap()).expect("artifact directory should be created");
+    assert!(verify_artifact_file(&root.0, &path, &artifact).is_err());
+
+    fs::write(&path, bytes).expect("test artifact should be written");
+    verify_artifact_file(&root.0, &path, &artifact).expect("matching artifact should validate");
+
+    bytes[8] = 2;
+    fs::write(&path, bytes).expect("test artifact should be updated");
+    assert!(verify_artifact_file(&root.0, &path, &artifact).is_err());
+}
+
+#[test]
 fn open_editor_requires_exactly_one_current_frame_and_one_blend() {
     let valid = [
         candidate(BlenderResultArtifactKind::FrameImage, Some(42)),

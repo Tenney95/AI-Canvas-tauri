@@ -577,19 +577,67 @@ mod tests {
 
     #[test]
     fn validates_canonical_manifest_and_derives_reference() {
+        let binding = binding();
         let manifest = manifest();
         let candidate = BlenderCollectCandidate::new(
             canonical_manifest_bytes(&manifest).expect("manifest should serialize"),
         );
-        let validated = validate_blender_collect_candidate(&binding(), candidate)
+        let validated = validate_blender_collect_candidate(&binding, candidate)
             .expect("canonical manifest should validate");
+        let reference = &validated.collected().manifest_reference;
+        let bytes = validated.canonical_manifest_bytes();
+        let sha256 = format!("{:x}", Sha256::digest(bytes));
 
         assert_eq!(validated.collected().manifest, manifest);
-        assert_eq!(validated.collected().manifest_reference.schema_version, 1);
+        assert_eq!(reference.schema_version, 1);
+        assert_eq!(reference.bytes, bytes.len() as u64);
+        assert_eq!(reference.sha256, sha256);
         assert_eq!(
-            validated.collected().manifest_reference.bytes,
-            validated.canonical_manifest_bytes().len() as u64
+            reference.relative_path,
+            format!("director/scenes/scene-1/results/manifest-r1-{sha256}.json")
         );
+        assert_eq!(
+            validate_existing_blender_manifest(&binding, 1, &reference.sha256, bytes)
+                .expect("saved manifest should validate"),
+            manifest
+        );
+    }
+
+    #[test]
+    fn rejects_existing_manifest_with_mismatched_revision_scene_or_hash() {
+        let binding = binding();
+        let bytes = canonical_manifest_bytes(&manifest()).expect("manifest should serialize");
+        let sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let wrong_sha256 = "0".repeat(64);
+        let other_scene_revision = BlenderResultBinding {
+            scene_revision: 2,
+            ..binding.clone()
+        };
+
+        for (binding, revision, sha256, expected) in [
+            (
+                &binding,
+                2,
+                sha256.as_str(),
+                BlenderResultValidationErrorCode::ManifestRevisionMismatch,
+            ),
+            (
+                &other_scene_revision,
+                1,
+                sha256.as_str(),
+                BlenderResultValidationErrorCode::SceneBindingMismatch,
+            ),
+            (
+                &binding,
+                1,
+                wrong_sha256.as_str(),
+                BlenderResultValidationErrorCode::NonCanonicalManifest,
+            ),
+        ] {
+            let error = validate_existing_blender_manifest(binding, revision, sha256, &bytes)
+                .expect_err("mismatched manifest should be rejected");
+            assert_eq!(error.code, expected);
+        }
     }
 
     #[test]
