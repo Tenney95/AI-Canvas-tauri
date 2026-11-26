@@ -7,6 +7,7 @@ import { listGlobalDramaAssets, resolveDramaAssetImageRef } from '../dramaAssetP
 import { decodeDataUrlBytesAsync, sha256BytesHex } from '../mediaDataUrl';
 import { parseRasterImageDimensions, type RasterImageDimensions } from '../rasterImageDimensions';
 import { localMediaUrlToPath } from '../../utils/mediaUrl';
+import { assertStaticJpegHeader, assertStaticWebpHeader } from './pluginRasterHeader';
 import type { PluginResourceReadContext } from './pluginResourceService';
 
 const PAGE_SIZE = 20;
@@ -266,48 +267,20 @@ function previewImageHeader(bytes: Uint8Array): RasterImageDimensions & { mediaT
     if (!ended) throw new Error('PNG 图片容器不完整');
   } else if (bytes[0] === 0xff && bytes[1] === 0xd8) {
     mediaType = 'image/jpeg';
-    const sof = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
-    let frames = 0;
-    let offset = 2;
-    while (offset < bytes.length) {
-      if (bytes[offset++] !== 0xff) throw new Error('JPEG 图片头损坏');
-      while (bytes[offset] === 0xff) offset += 1;
-      const marker = bytes[offset++];
-      if (marker === 0xda || marker === 0xd9) break;
-      if (offset + 2 > bytes.length) throw new Error('JPEG 图片头不完整');
-      const length = view.getUint16(offset);
-      if (length < 2 || offset + length > bytes.length || (sof.has(marker) && ++frames > 1)) throw new Error('JPEG 图片帧头无效');
-      offset += length;
-    }
-    if (frames !== 1) throw new Error('JPEG 图片缺少尺寸头');
+    assertStaticJpegHeader(bytes, {
+      invalidSegment: 'JPEG 图片帧头无效',
+      multipleFrames: 'JPEG 图片帧头无效',
+      missingFrame: 'JPEG 图片缺少尺寸头',
+    });
   } else if (bytes.length >= 30 && imageAscii(bytes, 0) === 'RIFF' && imageAscii(bytes, 8) === 'WEBP') {
     mediaType = 'image/webp';
-    if (view.getUint32(4, true) + 8 !== bytes.length) throw new Error('WebP 容器大小无效');
-    let declared: RasterImageDimensions | null = null;
-    let encoded: RasterImageDimensions | null = null;
-    let offset = 12;
-    while (offset < bytes.length) {
-      if (offset + 8 > bytes.length) throw new Error('WebP 图片头不完整');
-      const kind = imageAscii(bytes, offset);
-      const length = view.getUint32(offset + 4, true);
-      const start = offset + 8;
-      const end = start + length;
-      if (end + length % 2 > bytes.length || kind === 'ANIM' || kind === 'ANMF') throw new Error('不支持动画或损坏的 WebP');
-      if (kind === 'VP8X') {
-        if (offset !== 12 || length !== 10 || (bytes[start] & 2)) throw new Error('WebP 扩展帧头无效');
-        declared = parseRasterImageDimensions(bytes);
-        assertPreviewDimensions(declared);
-      } else if (kind === 'VP8 ' || kind === 'VP8L') {
-        if (encoded || length < (kind === 'VP8 ' ? 10 : 5)) throw new Error('WebP 图像帧头无效');
-        const frame = new Uint8Array(30);
-        frame.set(bytes.subarray(0, 12));
-        frame.set(bytes.subarray(offset, Math.min(end, offset + 18)), 12);
-        encoded = parseRasterImageDimensions(frame);
-        assertPreviewDimensions(encoded);
-      }
-      offset = end + length % 2;
-    }
-    if (!encoded || (declared && (declared.width !== encoded.width || declared.height !== encoded.height))) throw new Error('WebP 图像尺寸不一致');
+    assertStaticWebpHeader(bytes, assertPreviewDimensions, {
+      invalidContainer: 'WebP 容器大小无效',
+      truncatedChunk: '不支持动画或损坏的 WebP',
+      animated: '不支持动画或损坏的 WebP',
+      invalidExtendedHeader: 'WebP 扩展帧头无效',
+      mismatchedDimensions: 'WebP 图像尺寸不一致',
+    });
   } else throw new Error('提示词预览仅支持静态 JPEG、PNG、WebP');
   const dimensions = parseRasterImageDimensions(bytes);
   assertPreviewDimensions(dimensions);
