@@ -138,7 +138,12 @@ try {
     catch { throw 'Another local build is using this workspace. Wait for it to finish.' }
 
     $node = (Get-Command node.exe -ErrorAction Stop).Source
-    $explicit = @(@($env:CARGO_HOME, $env:CARGO_TARGET_DIR, $env:CARGO_BUILD_BUILD_DIR) | Where-Object { $_ })
+    # Keep relative Cargo paths based on the .NET process directory, as in earlier builds.
+    $explicit = [ordered]@{}
+    foreach ($name in @('CARGO_HOME', 'CARGO_TARGET_DIR', 'CARGO_BUILD_BUILD_DIR')) {
+        $value = [Environment]::GetEnvironmentVariable($name, 'Process')
+        $explicit[$name] = if ($value) { [IO.Path]::GetFullPath($value) } else { $null }
+    }
     $resolvePaths = @'
 const fs = require('node:fs'), path = require('node:path');
 function physical(p) {
@@ -149,14 +154,15 @@ function physical(p) {
 }
 console.log(JSON.stringify(process.argv.slice(2).map(p => physical(path.resolve(p)))));
 '@
-    $locations = @($OutputRoot, $cacheRoot, (Join-Path $projectRoot 'dist'), (Join-Path $projectRoot 'node_modules')) + $explicit
+    $explicitPaths = @($explicit.Values | Where-Object { $_ })
+    $locations = @($OutputRoot, $cacheRoot, (Join-Path $projectRoot 'dist'), (Join-Path $projectRoot 'node_modules')) + $explicitPaths
     $resolved = $resolvePaths | & $node - @locations
     if ($LASTEXITCODE -ne 0) { throw 'Could not resolve the delivery and cache paths.' }
     $resolved = ConvertFrom-Json -InputObject $resolved
     foreach ($root in $resolved[1..3]) {
         if (Test-InDirectory $resolved[0] $root) { throw "Choose an output directory outside $root" }
     }
-    $protectedPaths = @($resolved | Select-Object -Skip 4)
+    $protectedPaths = $explicitPaths + @($resolved | Select-Object -Skip 4)
     foreach ($path in $protectedPaths) {
         if (Test-InDirectory $path (Join-Path $cacheRoot 'tmp')) { throw 'Explicit Cargo paths must be outside the packaging temp directory.' }
     }
@@ -171,7 +177,7 @@ console.log(JSON.stringify(process.argv.slice(2).map(p => physical(path.resolve(
 
     # Discover tools in newly installed Rust locations without requiring a reboot.
     $rustBins = @()
-    if ($env:CARGO_HOME) { $rustBins += Join-Path $env:CARGO_HOME 'bin' }
+    if ($explicit.CARGO_HOME) { $rustBins += Join-Path $explicit.CARGO_HOME 'bin' }
     $rustBins += Join-Path ([Environment]::GetFolderPath('UserProfile')) '.cargo\bin'
     foreach ($directory in $rustBins) { if (Test-Path -LiteralPath $directory -PathType Container) { $env:Path = $directory + ';' + $env:Path } }
     $cargo = (Get-Command cargo.exe -ErrorAction Stop).Source
@@ -206,6 +212,9 @@ console.log(JSON.stringify(process.argv.slice(2).map(p => physical(path.resolve(
 
     # Keep large downloads/build caches beside the checkout, off the system drive.
     # Respect an explicitly configured cache, but never change user/global settings.
+    foreach ($entry in $explicit.GetEnumerator()) {
+        [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process')
+    }
     if (!$env:CARGO_HOME) {
         $env:CARGO_HOME = Join-Path $cacheRoot 'cargo'
         Assert-OrdinaryBuildPath $env:CARGO_HOME
@@ -221,8 +230,6 @@ console.log(JSON.stringify(process.argv.slice(2).map(p => physical(path.resolve(
         Assert-OrdinaryBuildPath $env:CARGO_TARGET_DIR
         if (!$KeepBuildCache) { Add-CleanupPath $cacheRoot 'target' }
     }
-    $env:CARGO_HOME = [IO.Path]::GetFullPath($env:CARGO_HOME)
-    $env:CARGO_TARGET_DIR = [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)
     $env:CARGO_TERM_COLOR = 'never'
     $env:NO_COLOR = '1'
     $tempRelative = 'tmp\' + [Guid]::NewGuid().ToString('N')
@@ -266,7 +273,7 @@ console.log(JSON.stringify(process.argv.slice(2).map(p => physical(path.resolve(
     $target = 'x86_64-pc-windows-msvc'
     $releaseRoot = Join-Path $env:CARGO_TARGET_DIR "$target\release"
     $intermediateRoot = $env:CARGO_TARGET_DIR
-    if ($env:CARGO_BUILD_BUILD_DIR) { $intermediateRoot = [IO.Path]::GetFullPath($env:CARGO_BUILD_BUILD_DIR) }
+    if ($env:CARGO_BUILD_BUILD_DIR) { $intermediateRoot = $env:CARGO_BUILD_BUILD_DIR }
     $env:CARGO_BUILD_BUILD_DIR = $intermediateRoot
     $buildReleaseRoot = Join-Path $intermediateRoot "$target\release"
     # ort-sys rc.12 assumes the pre-Cargo-1.100 OUT_DIR depth. New Cargo places
