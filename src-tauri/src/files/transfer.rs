@@ -165,9 +165,11 @@ where
                 if cancelled()? {
                     return Err("文件传输已取消".to_string());
                 }
-                let read = reader
-                    .read(&mut buffer)
-                    .map_err(|e| format!("读取传输数据失败: {e}"))?;
+                let read = match reader.read(&mut buffer) {
+                    Ok(read) => read,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => return Err(format!("读取传输数据失败: {error}")),
+                };
                 if read == 0 {
                     break;
                 }

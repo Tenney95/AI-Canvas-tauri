@@ -828,6 +828,58 @@ fn removes_part_when_cancelled_mid_transfer() {
 }
 
 #[test]
+fn interrupted_read_resumes_or_cancels_without_publishing_partial_bytes() {
+    struct InterruptOnce<'a> {
+        bytes: Cursor<&'static [u8]>,
+        interrupted: &'a std::cell::Cell<bool>,
+    }
+
+    impl Read for InterruptOnce<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if self.bytes.position() == 0 {
+                return self.bytes.read(&mut buffer[..1]);
+            }
+            if !self.interrupted.replace(true) {
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            self.bytes.read(buffer)
+        }
+    }
+
+    let directory = test_directory("interrupted");
+    let task_id = "interrupt-task";
+    let bytes = b"complete result";
+    for cancel_after_interrupt in [false, true] {
+        let destination = directory.join(format!("result-{cancel_after_interrupt}.bin"));
+        let interrupted = std::cell::Cell::new(false);
+        let mut reader = InterruptOnce { bytes: Cursor::new(bytes.as_slice()), interrupted: &interrupted };
+        let result = stream_to_file(
+            task_id,
+            &mut reader,
+            &destination,
+            Some(bytes.len() as u64),
+            None,
+            None,
+            || Ok(cancel_after_interrupt && interrupted.get()),
+            |_| {},
+            |_| Ok(()),
+        );
+
+        assert!(interrupted.get());
+        assert!(!part_path(&destination, task_id).exists());
+        if cancel_after_interrupt {
+            assert!(result.unwrap_err().contains("已取消"));
+            assert_eq!(reader.bytes.position(), 1);
+            assert!(!destination.exists());
+        } else {
+            assert_eq!(result.unwrap(), bytes.len() as u64);
+            assert_eq!(fs::read(destination).unwrap(), bytes);
+        }
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 #[ignore = "176 MiB 磁盘与内存压力验收"]
 fn streams_176_mib_without_allocating_the_model_in_memory() {
     let directory = test_directory("176-mib");
@@ -858,5 +910,12 @@ fn streams_176_mib_without_allocating_the_model_in_memory() {
         total_bytes
     );
     assert!(!part_path(&destination, task_id).exists());
+    let mut output = File::open(&destination).expect("应打开正式文件");
+    let mut verified = vec![0; BUFFER_SIZE];
+    for _ in 0..total_bytes / BUFFER_SIZE as u64 {
+        output.read_exact(&mut verified).expect("应完整读回每个分块");
+        assert!(verified.iter().all(|&value| value == 0x5a));
+    }
+    drop(output);
     fs::remove_dir_all(directory).expect("应清理测试目录");
 }
