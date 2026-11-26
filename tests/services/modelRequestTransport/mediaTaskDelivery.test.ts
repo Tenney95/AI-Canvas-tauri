@@ -24,6 +24,7 @@ import { MINIMAX_BASE_URL, MINIMAX_MODEL_MANIFEST } from '../../../src/services/
 import { pollResolvedModelProtocol, resolveModelExecutionProfile } from '../../../src/services/ai/modelProtocol';
 import { executeRunningHubModel } from '../../../src/services/ai/providers/runninghubMedia';
 import { KLING_BASE_URL } from '../../../src/services/ai/providerCatalogService';
+import { resolveMediaDownloadRequest } from '../../../src/services/ai/mediaDownloadAccess';
 import * as mediaPersistence from '../../../src/services/fileService';
 import { registerCharacterImageTaskContext } from '../../../src/services/characterImageTaskContext';
 import { recoverCharacterImageTask } from '../../../src/services/characterImageTaskRecovery';
@@ -39,6 +40,69 @@ import { configureKling } from './klingImageFixture';
 import { jsonResponse, setupTransportFixture } from './transportFixture';
 
 setupTransportFixture(transportMocks.corsSafeFetch);
+
+describe('同渠道自定义视频合同', () => {
+  it.each([
+    { catalogId: 'beatapi', modelId: 'other-video-model', origin: 'https://api.beatapi.io',
+      createPath: '/v1/videos/tasks', pollPath: '/v1/tasks/{{submit.data.id}}', idPath: 'data.id',
+      statusPath: 'data.status', success: 'succeeded', urlPath: 'data.url', createStatus: 200,
+      submitted: { data: { id: 'custom-task' } }, finished: { data: { status: 'succeeded', url: 'https://cdn.example/video.mp4' } },
+      queryPath: '/v1/tasks/custom-task', resultUrl: 'https://cdn.example/video.mp4' },
+    { catalogId: 'custom-openai', modelId: 'google/veo-3.1', origin: 'https://openrouter.ai',
+      createPath: '/api/v1/videos', pollPath: '/api/v1/videos/{{submit.id}}', idPath: 'id',
+      statusPath: 'status', success: 'completed', urlPath: 'unsigned_urls.0', createStatus: 202,
+      submitted: { id: 'custom-task', polling_url: 'https://example.invalid/untrusted', status: 'pending' },
+      finished: { id: 'custom-task', status: 'completed', unsigned_urls: ['https://openrouter.ai/api/v1/videos/custom-task/content?index=0'] },
+      queryPath: '/api/v1/videos/custom-task', resultUrl: 'https://openrouter.ai/api/v1/videos/custom-task/content?index=0' },
+  ])('$modelId 通过原协议提交并续查', async (fixture) => {
+    const { catalogId, modelId, origin, resultUrl } = fixture;
+    const projectId = `${catalogId}-custom-recovery`;
+    const nodeId = `${catalogId}-custom-node`;
+    const connectionId = `${catalogId}-custom-fixture`;
+    clearProjectTasks(projectId);
+    useAppStore.getState().saveProviderConfig(connectionId, {
+      name: 'Custom video', catalogId, apiKey: 'video-fixture-key', baseUrl: origin,
+      selectedModels: [{ id: modelId, name: 'Custom video', provider: catalogId, category: 'video', executionProfile: {
+        preset: 'custom', protocol: { version: 2, mode: 'async', auth: { type: 'bearer' },
+          submit: { method: 'POST', path: fixture.createPath, pathMode: 'origin', body: { model: '{{model}}', prompt: '{{prompt}}' } },
+          response: { type: 'json', taskIdPath: fixture.idPath },
+          poll: { method: 'GET', path: fixture.pollPath, pathMode: 'origin',
+            response: { statusPath: fixture.statusPath, successValues: [fixture.success], failureValues: ['failed', 'cancelled', 'expired'],
+              result: { urlPath: fixture.urlPath, mimeType: 'video/mp4' } } },
+        },
+      } }],
+    });
+    const model = useAppStore.getState().config.generalModels!.find((item) => item.providerConfigId === connectionId)!;
+    useAppStore.setState({ currentProjectId: projectId, projectLoadStatus: 'ready',
+      projects: [{ id: projectId, name: 'BeatAPI custom recovery', createdAt: 1, updatedAt: 1 }],
+      nodes: [{ id: nodeId, type: 'ai-video', position: { x: 0, y: 0 },
+        data: { type: 'ai-video', label: '视频', status: 'loading' } }] });
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(new Response(JSON.stringify(fixture.submitted), { status: fixture.createStatus }))
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(jsonResponse(fixture.finished));
+    try {
+      await expect(generateVideo({ provider: 'general', model: `general/${model.id}`, nodeId, prompt: '镜头平移' }))
+        .rejects.toThrow('原任务已保留');
+      const [receipt] = getPendingTasksForProject(projectId);
+      expect(receipt).toMatchObject({ taskId: 'custom-task', submitted: true });
+      expect(receipt.credentialProof).toBeUndefined();
+      expect(receipt.protocolPoll?.magiGateway).toBeUndefined();
+      const [submitUrl, init] = transportMocks.corsSafeFetch.mock.calls[0];
+      expect(submitUrl).toBe(`${origin}${fixture.createPath}`);
+      expect(JSON.parse(String(init.body))).toEqual({ model: modelId, prompt: '镜头平移' });
+      expect(new Headers(init.headers).has('Idempotency-Key')).toBe(false);
+      const download = await resolveMediaDownloadRequest(resultUrl, receipt.mediaDownloadAccess);
+      expect(download.downloadAccess?.headers.Authorization).toBe(new URL(resultUrl).origin === origin ? 'Bearer video-fixture-key' : undefined);
+      vi.spyOn(mediaPersistence, 'persistMediaUrlToProjectData').mockResolvedValue({ mediaUrl: resultUrl, sourceUrl: resultUrl });
+      await resumeMediaNodeTask(nodeId);
+      expect(transportMocks.corsSafeFetch.mock.calls.map(([url, request]) => [url, request.method])).toEqual([
+        [`${origin}${fixture.createPath}`, 'POST'], [`${origin}${fixture.queryPath}`, 'GET'], [`${origin}${fixture.queryPath}`, 'GET'],
+      ]);
+      expect(useAppStore.getState().nodes.find((node) => node.id === nodeId)?.data.videoUrl).toBe(resultUrl);
+      expect(getPendingTasksForProject(projectId)).toHaveLength(0);
+    } finally { clearProjectTasks(projectId); }
+  });
+});
 
 describe('MiniMax 官方素材直传与媒体交付', () => {
   function configureMinimax(id = 'speech-2.8-hd') {
