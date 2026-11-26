@@ -6,10 +6,9 @@
  *
  *   • runtime — read every frame inside `updateGlow`. Changing one takes
  *     effect on the next frame with no DOM work.
- *   • markup — baked into the SVG (`buildSvgMarkup`) at inject time: stroke
- *     widths, blur radii, per-layer opacities, blob lengths. Changing one
- *     requires the SVG to be rebuilt, which `setGlowConfig` signals through
- *     `subscribeGlowConfig` so MetalFx can re-inject.
+ *   • markup — stroke widths, blur radii, opacity and lengths are baked into
+ *     Canvas sprites when the glow is installed. `setGlowConfig` tells
+ *     `subscribeGlowConfig` subscribers when those sprites need rebuilding.
  *
  * `GLOW_DEFAULTS` are the values that shipped before this file existed, so
  * `resetGlowConfig()` is an exact restore.
@@ -25,9 +24,9 @@ export interface GlowConfig {
   peakOp: number;
   /** Glow opacity at a dark perimeter point. */
   baseOp: number;
-  /** Perpendicular inset of the halo from the ring, SVG units at 1×. */
+  /** Perpendicular inset of the halo from the ring, in CSS px at 1×. */
   inset: number;
-  /** Extra outward offset for the catch-light, SVG units at 1×. */
+  /** Extra outward offset for the catch-light, in CSS px at 1×. */
   extraOutward: number;
   /** Random wander amplitude along the perimeter, at the 140×40 reference. */
   wanderRange: number;
@@ -88,7 +87,7 @@ export const GLOW_MARKUP_KEYS: ReadonlySet<keyof GlowConfig> = new Set<keyof Glo
 
 // The `/ 3` values were `EXTRA_SCALE = 1 / 3` applied to the original
 // constants (4.0, 2.0, 2.0, 1.35, 13.0, 9.13952). Stored pre-multiplied so a
-// slider moves the number the SVG actually receives.
+// slider moves the value the Canvas renderer uses.
 export const GLOW_DEFAULTS: Readonly<GlowConfig> = Object.freeze({
   haloOpMul: 2.0,
   extraIntensity: 3.51,
@@ -137,7 +136,7 @@ const listeners = new Set<Listener>();
 /**
  * Merge a partial config. Notifies subscribers, flagging whether any markup
  * key changed so they can decide between "next frame picks it up" and
- * "rebuild the SVG".
+ * "rebuild the glow sprites".
  */
 export function setGlowConfig(patch: Partial<GlowConfig>): void {
   let markupChanged = false;

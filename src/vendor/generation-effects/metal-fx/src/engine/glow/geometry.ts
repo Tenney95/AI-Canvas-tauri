@@ -1,14 +1,10 @@
 /**
- * Pure geometry + SVG markup for the glow overlay.
- *
- * Perimeter math (rounded-rect / circle arc-length sampling), blob path
- * generation, SVG filter/mask construction, and HSV colour helpers.
- * No state — every function is a pure transform.
+ * Perimeter geometry for the Canvas glow overlay. Sample rounded rectangles
+ * and circles to place the halo and its catch-light.
  */
 import { PERIM_SAMPLES } from '../perfConfig';
 
 import { GLOW } from './config';
-import { outlinePathD, roundRectOutline } from '../renderer/outline';
 
 export { PERIM_SAMPLES };
 
@@ -17,10 +13,8 @@ export interface GlowOptions {
   height: number;
   cornerRadius: number;
   kind: 'pill' | 'circle';
-  /** Master multiplier for absolute SVG units (stroke widths, blur,
-   *  fade-circle radius). 1 is the canonical 1× rendering. Set to 2 when
-   *  the host element is rendered at a 2× layout (e.g. CSS zoom: 2) so
-   *  the glow grows proportionally. */
+  /** Scales glow distances such as stroke widths, blur and fade radius.
+   *  Use 2 for a 2× layout so the glow grows with the host element. */
   scale?: number;
   /**
    * Point mode (custom-mask instances). `samplePoints` are box-local CSS-px
@@ -124,16 +118,6 @@ export function arcAtPoint(x: number, y: number, w: number, h: number, r: number
   return s7 + ((t + Math.PI) / Q) * arcLen;
 }
 
-export function buildStaticBlobPath(halfLen: number, segments: number): string {
-  const step = (halfLen * 2) / segments;
-  let d = '';
-  for (let i = 0; i <= segments; i++) {
-    const x = -halfLen + i * step;
-    d += (i === 0 ? 'M ' : 'L ') + x.toFixed(3) + ' 0 ';
-  }
-  return d;
-}
-
 const _ta: Pt = { x: 0, y: 0 };
 const _tb: Pt = { x: 0, y: 0 };
 
@@ -165,57 +149,4 @@ export function buildPerimTable(opts: GlowOptions): PerimSample[] {
     table.push({ x: pt.x, y: pt.y, arc });
   }
   return table;
-}
-
-export function buildSvgMarkup(opts: GlowOptions, p: string): string {
-  const { width: W, height: H, cornerRadius: R } = opts;
-  const s = opts.scale ?? 1;
-  const ringInset = opts.kind === 'circle' ? 2 : 1;
-  const innerR = Math.max(0, R - ringInset);
-  // Filter region grows with scale so blurred strokes don't get clipped at
-  // bigger sizes. The 200/540/440 baseline matches the canonical 1× pill.
-  const fX = (-200 * s).toFixed(0), fY = fX;
-  const fW = (540 * s).toFixed(0), fH = (440 * s).toFixed(0);
-  const fRect = `x="${fX}" y="${fY}" width="${fW}" height="${fH}"`;
-  const fr = `${fRect} filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB"`;
-  // Stroke widths and blur stdDeviations are absolute SVG units; multiply
-  // by `s` so they remain proportional when viewBox grows with the host.
-  const sw = (n: number) => (n * s).toFixed(3);
-  const sd = (n: number) => (n * s).toFixed(3);
-  return [
-    '<defs>',
-    `<filter id="${p}_bXl" ${fr}><feGaussianBlur stdDeviation="${sd(GLOW.haloBlurXl)}"/></filter>`,
-    `<filter id="${p}_bLg" ${fr}><feGaussianBlur stdDeviation="${sd(GLOW.haloBlurLg)}"/></filter>`,
-    `<filter id="${p}_bMd" ${fr}><feGaussianBlur stdDeviation="${sd(GLOW.haloBlurMd)}"/></filter>`,
-    `<filter id="${p}_bSm" ${fr}><feGaussianBlur stdDeviation="${sd(GLOW.haloBlurSm)}"/></filter>`,
-    `<filter id="${p}_ebO" ${fr}><feGaussianBlur stdDeviation="${sd(GLOW.extraBlurOuter)}"/></filter>`,
-    `<filter id="${p}_ebC" ${fr}><feGaussianBlur stdDeviation="${sd(GLOW.extraBlurCore)}"/></filter>`,
-    `<radialGradient id="${p}_fg" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="white"/><stop offset="0.30" stop-color="white"/><stop offset="0.65" stop-color="#404040"/><stop offset="1" stop-color="black"/></radialGradient>`,
-    `<mask id="${p}_fm" maskUnits="userSpaceOnUse" ${fRect}><rect ${fRect} fill="black"/><circle id="${p}_fc" cx="0" cy="0" r="${(GLOW.extraFadeR * s).toFixed(3)}" fill="url(#${p}_fg)"/></mask>`,
-    opts.maskDataUrl
-      // Point mode clips hard to the glyphs (black surround); the halo's
-      // blurred energy outside the strokes is discarded, so `pointGain`
-      // compensates inside them.
-      ? `<mask id="${p}_rm" maskUnits="userSpaceOnUse" ${fRect}><rect ${fRect} fill="black"/><image href="${opts.maskDataUrl}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="none"/></mask>`
-      : `<mask id="${p}_rm" maskUnits="userSpaceOnUse" ${fRect}><rect ${fRect} fill="#808080"/><path id="${p}_rmO" d="${outlinePathD(roundRectOutline(0, 0, W, H, R, null))}" fill="white"/><path id="${p}_rmI" d="${outlinePathD(roundRectOutline(ringInset, ringInset, W - ringInset * 2, H - ringInset * 2, innerR, null))}" fill="black"/></mask>`,
-    '</defs>',
-    // Safari clips mask to the masked element's bbox; our horizontal strokes
-    // have zero height, so the mask becomes a sliver. These spacer rects
-    // inflate the bbox to the full filter region.
-    `<g id="${p}_h" mask="url(#${p}_rm)" opacity="0">`,
-    `<rect ${fRect} fill="none" pointer-events="none"/>`,
-    `<g id="${p}_hI" stroke="white">`,
-    `<path id="${p}_pXl" stroke-width="${sw(GLOW.haloStrokeXl)}" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="${GLOW.haloOpXl}" filter="url(#${p}_bXl)"/>`,
-    `<path id="${p}_pLg" stroke-width="${sw(GLOW.haloStrokeLg)}" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="${GLOW.haloOpLg}" filter="url(#${p}_bLg)"/>`,
-    `<path id="${p}_pMd" stroke-width="${sw(GLOW.haloStrokeMd)}" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="${GLOW.haloOpMd}" filter="url(#${p}_bMd)"/>`,
-    `<path id="${p}_pSm" stroke-width="${sw(GLOW.haloStrokeSm)}" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="${GLOW.haloOpSm}" filter="url(#${p}_bSm)"/>`,
-    '</g></g>',
-    `<g id="${p}_e" mask="url(#${p}_rm)" opacity="0">`,
-    `<rect ${fRect} fill="none" pointer-events="none"/>`,
-    `<g mask="url(#${p}_fm)">`,
-    `<g id="${p}_eI" stroke="white">`,
-    `<path id="${p}_eO" stroke-width="${sw(GLOW.extraStrokeOuter)}" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="${GLOW.extraOpOuter}" filter="url(#${p}_ebO)"/>`,
-    `<path id="${p}_eC" stroke-width="${sw(GLOW.extraStrokeCore)}" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="1.0" filter="url(#${p}_ebC)"/>`,
-    '</g></g></g>',
-  ].join('');
 }

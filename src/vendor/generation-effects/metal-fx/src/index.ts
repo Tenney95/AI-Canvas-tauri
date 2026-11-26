@@ -3,8 +3,7 @@ export { MetalText, METAL_TEXT_DEFAULTS, type TextInnerShadow } from './MetalTex
 export { MetalBadge, METAL_BADGE_DEFAULTS, type MetalBadgeCore } from './MetalBadge';
 export { useMetalBend } from './useMetalBend';
 export { BEND, BEND_DEFAULTS, setBendConfig, resetBendConfig, type BendConfig } from './engine/bend/config';
-export { useMetalTextReflection } from './useMetalTextReflection';
-export { paintTextRun, textMaskDataUrl } from './engine/textMask';
+export { paintTextRun } from './engine/textMask';
 
 export type {
   MetalFxProps,

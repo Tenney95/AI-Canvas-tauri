@@ -1,6 +1,6 @@
 /**
- * Rounded-rect outline sampling shared by the canvas ring mask and the glow's
- * SVG mask, so both see the *same* deformed shape.
+ * The renderer, rim and glow sample the same rounded-rect outline so their
+ * masks follow the same deformed shape.
  *
  * Points go into a reusable flat `Float32Array` (x0,y0,x1,y1,…) — a bend
  * traces 6–8 outlines per frame at display rate, and allocating ~150 point
@@ -60,13 +60,4 @@ export function roundRectOutline(
   arc(x + r, y + r, Math.PI, 1.5 * Math.PI);
   buf.n = n;
   return buf;
-}
-
-/** SVG path data for an outline (closed). */
-export function outlinePathD(buf: OutlineBuf): string {
-  const { xy, n } = buf;
-  if (n === 0) return '';
-  let d = `M${xy[0].toFixed(2)} ${xy[1].toFixed(2)}`;
-  for (let i = 1; i < n; i++) d += `L${xy[i * 2].toFixed(2)} ${xy[i * 2 + 1].toFixed(2)}`;
-  return d + 'Z';
 }

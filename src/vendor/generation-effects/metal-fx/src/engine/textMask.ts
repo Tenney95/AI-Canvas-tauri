@@ -1,7 +1,7 @@
 /**
  * Paint an element's text run onto a canvas with the DOM's own font and
  * metrics, so canvas glyphs land on the DOM glyphs to within a device px.
- * Shared by the Pro badge's metal fill and the text reflection mask.
+ * Shared by MetalText's fill mask and inner shadow.
  *
  * `ctx` is expected in device px with origin at `root`'s top-left; the
  * function scales by `dpr` internally.
@@ -31,18 +31,4 @@ export function paintTextRun(
   const baseline = tr.top - rr.top + (tr.height - (asc + desc)) / 2 + asc;
   ctx.fillText(text, x, baseline);
   ctx.restore();
-}
-
-/** Render `textEl`'s glyphs white-on-transparent over `root`'s box → data URL. */
-export function textMaskDataUrl(root: HTMLElement, textEl: HTMLElement): string | null {
-  const dpr = window.devicePixelRatio || 1;
-  const rr = root.getBoundingClientRect();
-  const c = document.createElement('canvas');
-  c.width = Math.max(1, Math.round(rr.width * dpr));
-  c.height = Math.max(1, Math.round(rr.height * dpr));
-  const g = c.getContext('2d');
-  if (!g) return null;
-  g.fillStyle = '#fff';
-  paintTextRun(g, root, textEl, dpr);
-  return c.toDataURL('image/png');
 }
