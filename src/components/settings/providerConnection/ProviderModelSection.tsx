@@ -25,6 +25,8 @@ import { useT } from '../../../i18n';
 import AnimatedButton from '../../shared/AnimatedButton';
 import PopupCloseButton from '../../shared/PopupCloseButton';
 import ModelProtocolEditor from '../ModelProtocolEditor';
+import { SAND_VIDEO_MODEL_ID, sandProfile, sandSite } from '../../../services/ai/providers/sandVideoContract';
+import { magiGatewayProtocol, magiVideoGateway } from '../../../services/ai/providers/magiVideoGateways';
 import VideoCapabilityEditor from './VideoCapabilityEditor';
 import ImageCapabilityEditor from './ImageCapabilityEditor';
 import { describeModelParameterGaps } from '../../../services/ai/modelCapabilityValidation';
@@ -230,6 +232,12 @@ export default function ProviderModelSection({
   const t = useT();
   const isMagpie = definition.id === 'magpie';
   const editableProtocols = definition.id === 'custom-openai' || isMagpie;
+  const sand = sandSite(definition.id);
+  const gateway = magiVideoGateway(definition.id);
+  const fixedMagi = sand || gateway;
+  const magiProtocolModel = fixedMagi && protocolModel?.id === SAND_VIDEO_MODEL_ID
+    ? { ...protocolModel, provider: fixedMagi.id, executionProfile: sand
+      ? sandProfile(sand.id, protocolModel.id) : { preset: 'custom' as const, protocol: magiGatewayProtocol(gateway!) } } : undefined;
   const klingContracts = new Map<string, ProviderModelSelection>();
   if (definition.id === 'kling') {
     for (const model of selectedModels) {
@@ -415,7 +423,7 @@ export default function ProviderModelSection({
                       <small>{t(describeModelParameterGaps(model))}</small> : null}
                   </span>
                 </label>
-                {(editableProtocols || klingContracts.has(model.id)) && selectedIds.has(model.id) ? (
+                {(editableProtocols || klingContracts.has(model.id) || fixedMagi && model.id === SAND_VIDEO_MODEL_ID) && selectedIds.has(model.id) ? (
                   <>
                     {model.category === 'image' ? (
                       <AnimatedButton type="button"
@@ -426,7 +434,7 @@ export default function ProviderModelSection({
                           void onOpenModelSettings(model.id, 'image').then((opened) => { if (opened) scrollToSettings(); });
                         }}><Icon icon="lucide:image" width="16" /></AnimatedButton>
                     ) : null}
-                    {model.category === 'video' ? (
+                    {model.category === 'video' && !fixedMagi ? (
                       <AnimatedButton
                         type="button"
                         className={`ui-btn ui-icon-btn ui-icon-btn--sm${videoSettingsId === model.id ? ' is-active' : ''}`}
@@ -443,7 +451,7 @@ export default function ProviderModelSection({
                     <AnimatedButton
                       type="button"
                       className={`ui-btn ui-icon-btn ui-icon-btn--sm${protocolSettingsId === model.id ? ' is-active' : ''}`}
-                      aria-label={t('配置 {name} 调用协议', { name: model.name })}
+                      aria-label={fixedMagi ? `${model.name} · ${t('调用协议')}` : t('配置 {name} 调用协议', { name: model.name })}
                       title={t("调用协议")}
                       aria-pressed={protocolSettingsId === model.id}
                       onClick={() => {
@@ -577,12 +585,12 @@ export default function ProviderModelSection({
                 />
               ) : null}
 
-            {protocolModel && (editableProtocols || klingContracts.has(protocolModel.id))
+            {protocolModel && (editableProtocols || klingContracts.has(protocolModel.id) || magiProtocolModel)
               && selectedIds.has(protocolModel.id) ? (
                 <ModelProtocolEditor
-                  key={protocolModel.id}
-                  model={protocolModel}
-                  readOnlyProtocol={klingContracts.has(protocolModel.id)}
+                  key={magiProtocolModel ? `${fixedMagi?.id}/${protocolModel.id}` : protocolModel.id}
+                  model={magiProtocolModel ?? protocolModel}
+                  readOnlyProtocol={Boolean(magiProtocolModel) || klingContracts.has(protocolModel.id)}
                   inheritanceLabel={protocolModel.category === 'text'
                     ? '跟随连接对话协议'
                     : undefined}

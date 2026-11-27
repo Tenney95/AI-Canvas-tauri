@@ -13,6 +13,7 @@ import { applyQueryAuthentication } from './modelProtocolRequest';
 import { PollTaskFailedError, PollTimeoutError, withPollRequestDeadline } from '../pollTask';
 import { parseRasterImageDimensions } from '../rasterImageDimensions';
 import { classifyHttpResponseFailure, getHttpResponseError, HttpResponseError } from './httpUtils';
+import { isSandId } from './providers/sandVideoContract';
 
 const RESULT_MAX_BYTES = 64 * 1024 * 1024;
 const RESULT_TOTAL_MAX_BYTES = 128 * 1024 * 1024;
@@ -70,13 +71,67 @@ export function redactModelProtocolError(error: unknown, apiKey: string): unknow
   return safeError;
 }
 
-function parseRetryAfterMs(value: string | null): number | undefined {
+export function parseRetryAfterMs(value: string | null): number | undefined {
   if (!value) return undefined;
   const seconds = Number(value);
   if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) return undefined;
   return Math.max(0, timestamp - Date.now());
+}
+
+/** Sand 响应只保留任务所需的小型 JSON。上游错误可能回显私有提示词或素材地址。 */
+export async function readSandTaskResponse(response: Response, action: 'create' | 'query', expectedStatus = 200): Promise<unknown> {
+  if (response.status !== expectedStatus) {
+    const status = response.status;
+    let uncertain = false;
+    if (action === 'create' && expectedStatus === 202 && status >= 400 && status <= 599) {
+      const payload = await readBoundedVideoTaskJson(response, 'Sand AI').catch(() => undefined);
+      const details = isRecord(payload) && isRecord(payload.details) ? payload.details : undefined;
+      if (isSandId(details?.generation_id)) return { id: details.generation_id };
+      uncertain = payload === undefined || Boolean(details && Object.hasOwn(details, 'generation_id'));
+    } else {
+      await response.body?.cancel().catch(() => undefined);
+    }
+    const rejected = action === 'create' && !uncertain && [400, 401, 402, 403, 404, 413, 415, 422, 429].includes(status);
+    throw new ModelProtocolHttpError(status, `Sand AI ${action === 'create' ? '创建' : '查询'}任务失败（HTTP ${status}）`,
+      parseRetryAfterMs(response.headers.get('Retry-After')), rejected);
+  }
+  return readBoundedVideoTaskJson(response, 'Sand AI');
+}
+
+export async function readMagiGatewayTaskResponse(
+  response: Response, providerName: string, createStatuses?: readonly number[],
+): Promise<unknown> {
+  if ((createStatuses ?? [200]).includes(response.status)) return readBoundedVideoTaskJson(response, providerName);
+  await response.body?.cancel().catch(() => undefined);
+  const definitiveFailure = !!createStatuses && [400, 401, 402, 403, 404, 413, 415, 422, 429].includes(response.status);
+  throw new ModelProtocolHttpError(response.status,
+    `${providerName} ${createStatuses ? '创建' : '查询'}任务失败（HTTP ${response.status}）`,
+    parseRetryAfterMs(response.headers.get('Retry-After')), definitiveFailure);
+}
+
+async function readBoundedVideoTaskJson(response: Response, providerName: string): Promise<unknown> {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error(`${providerName} 未返回任务数据`);
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  let text = '', bytes = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > 128 * 1024) throw new Error('任务响应超过安全上限');
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    text += decoder.decode();
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new Error(`${providerName} 任务响应无效或超过安全上限，请核对原任务`);
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
 }
 
 /** 仅在提交没有交付结果或任务 ID 时调用，不能把可用结果旁的诊断字段当成拒绝。 */

@@ -58,6 +58,7 @@ struct Snapshot {
     kind: Kind,
     mime_hint: Option<String>,
     accepts_chunks: bool,
+    byte_limit: u64,
 }
 
 fn random_token() -> Result<String, String> {
@@ -146,13 +147,15 @@ impl Snapshot {
     fn new(source: &Source) -> Result<Self, String> {
         Ok(Self { file: tokio::fs::File::from_std(anonymous_file()?), hash: Sha256::new(), bytes: 0,
             prefix: Vec::new(), kind: source.kind, mime_hint: source.mime_type.clone(),
-            accepts_chunks: source.path.is_none() && source.remote_url.is_none() })
+            accepts_chunks: source.path.is_none() && source.remote_url.is_none(), byte_limit: u64::MAX })
     }
 
     async fn append(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let total = self.bytes.checked_add(bytes.len() as u64).ok_or(TEMP)?;
+        if total > self.byte_limit { return Err("Sand AI 参考素材超过该媒体类型的文件大小上限".into()); }
         self.file.write_all(bytes).await.map_err(|_| TEMP)?;
         self.hash.update(bytes);
-        self.bytes = self.bytes.checked_add(bytes.len() as u64).ok_or(TEMP)?;
+        self.bytes = total;
         let n = bytes.len().min(4096 - self.prefix.len());
         self.prefix.extend_from_slice(&bytes[..n]);
         Ok(())
@@ -175,6 +178,7 @@ struct Session {
     phase: tokio::sync::Mutex<Phase>,
     last_active: Mutex<Instant>,
     cancel: CancellationToken,
+    sand_origin: Option<String>,
 }
 impl Session {
     fn touch(&self) {
@@ -217,14 +221,17 @@ fn validate_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn register(id: &str) -> Result<Arc<Session>, String> {
+fn register(id: &str, sand_origin: Option<String>) -> Result<Arc<Session>, String> {
     validate_id(id)?;
     let mut map = SESSIONS.lock().map_err(|_| STALE)?;
     map.early_cancels.retain(|_, time| time.elapsed() < Duration::from_secs(30));
     if map.early_cancels.remove(id).is_some() { return Err(CANCELLED.into()); }
     if map.active.len() >= 32 || map.active.contains_key(id) { return Err("万象视频上传准备繁忙或请求重复".into()); }
+    if sand_origin.is_some() && map.active.values().filter(|session| session.sand_origin.is_some()).count() >= 2 {
+        return Err("视频素材上传繁忙，请等待当前上传完成".into());
+    }
     let session = Arc::new(Session { phase: tokio::sync::Mutex::new(Phase::Preparing),
-        last_active: Mutex::new(Instant::now()), cancel: CancellationToken::new() });
+        last_active: Mutex::new(Instant::now()), cancel: CancellationToken::new(), sand_origin });
     map.active.insert(id.to_owned(), session.clone());
     let id = id.to_owned();
     let active = session.clone();
@@ -276,6 +283,7 @@ async fn copy_local(app: &AppHandle, raw: &str, dest: &mut Snapshot, session: &S
     }
     let input = options.open(&path).map_err(|_| SOURCE)?;
     let original = input.metadata().map_err(|_| SOURCE)?;
+    if original.len() > dest.byte_limit { return Err("Sand AI 参考素材超过该媒体类型的文件大小上限".into()); }
     let verify = || -> Result<(), String> {
         if authorize()? != path { return Err(SOURCE.into()); }
         let current = std::fs::symlink_metadata(&path).map_err(|_| SOURCE)?;
@@ -342,14 +350,32 @@ async fn copy_remote(raw: &str, dest: &mut Snapshot, session: &Session) -> Resul
 
 #[tauri::command]
 pub async fn prepare_relayon_video_upload(app: AppHandle, webview: Webview, request_id: String,
-    sources: Vec<Source>) -> Result<(), String> {
+    sources: Vec<Source>, sand_origin: Option<String>) -> Result<(), String> {
     ensure_main(&webview)?;
     if sources.is_empty() { return Err(INVALID.into()); }
-    let session = register(&request_id)?;
+    let asset_upload = sand_origin.is_some();
+    let beatapi = sand_origin.as_deref() == Some("https://api.beatapi.io");
+    if asset_upload && (!matches!(sand_origin.as_deref(), Some("https://api.sand.ai" | "https://api.sandai.cn" | "https://api.beatapi.io"))
+        || sources.len() != 1 || sources[0].remote_url.is_some()) {
+        return Err("视频素材上传参数无效".into());
+    }
+    let session = register(&request_id, sand_origin)?;
     let prepare = async {
         let mut files = Vec::with_capacity(sources.len());
         for source in sources {
             let mut snapshot = Snapshot::new(&source)?;
+            if beatapi {
+                snapshot.byte_limit = match source.kind {
+                    Kind::Video => 100_000_000,
+                    Kind::Image | Kind::Audio => 50_000_000,
+                };
+            } else if asset_upload {
+                snapshot.byte_limit = match source.kind {
+                    Kind::Image => 29_999_999,
+                    Kind::Video => 200_000_000,
+                    Kind::Audio => 15_000_000,
+                };
+            }
             match (source.path.as_deref(), source.remote_url.as_deref()) {
                 (Some(path), None) => copy_local(&app, path, &mut snapshot, &session).await?,
                 (None, Some(url)) => copy_remote(url, &mut snapshot, &session).await?,
@@ -418,7 +444,7 @@ struct Multipart {
 }
 
 impl Multipart {
-    fn build(parts: Vec<Part>, files: &[FileInfo], boundary: &str) -> Result<Self, String> {
+    fn build(parts: Vec<Part>, files: &[FileInfo], boundary: &str, sand: bool) -> Result<Self, String> {
         let mut form = Self { segments: VecDeque::new(), length: 0 };
         let mut used = vec![false; files.len()];
         for part in parts {
@@ -433,7 +459,7 @@ impl Multipart {
                 Part::File { name, file_index, filename } => {
                     let info = files.get(file_index).ok_or(INVALID)?;
                     let kind = info.mime_type.split('/').next().ok_or(INVALID)?;
-                    if !(name == kind || name == format!("{kind}s")) || filename.is_empty()
+                    if !(if sand { name == "file" } else { name == kind || name == format!("{kind}s") }) || filename.is_empty()
                         || !filename.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)) {
                         return Err(INVALID.into());
                     }
@@ -482,17 +508,35 @@ impl UploadBody {
 
 async fn submit(url: String, headers: Vec<(String, String)>, parts: Vec<Part>, files: Vec<Snapshot>,
     infos: &[FileInfo], session: Arc<Session>) -> Result<Response, String> {
-    if !endpoint(&url) { return Err("万象文件上传地址无效".into()); }
+    let asset_upload = session.sand_origin.is_some();
+    let beatapi = session.sand_origin.as_deref() == Some("https://api.beatapi.io");
+    if let Some(origin) = &session.sand_origin {
+        let path = if beatapi { "/v1/files" } else { "/v1/assets" };
+        if url != format!("{origin}{path}") || parts.len() != 1 || infos.len() != 1
+            || !matches!(&parts[0], Part::File { name, file_index: 0, .. } if name == "file")
+            || !matches!(infos[0].mime_type.as_str(), "image/jpeg" | "image/png" | "image/webp" | "image/bmp"
+                | "image/tiff" | "image/gif" | "image/heic" | "video/mp4" | "video/quicktime" | "audio/wav" | "audio/mpeg") {
+            return Err("视频素材上传地址或媒体格式无效".into());
+        }
+        if beatapi && !matches!(infos[0].mime_type.as_str(), "image/jpeg" | "image/png" | "image/webp"
+            | "video/mp4" | "video/quicktime" | "audio/wav" | "audio/mpeg") {
+            return Err("BeatAPI MAGI-2 素材格式无效".into());
+        }
+    } else if !endpoint(&url) { return Err("万象文件上传地址无效".into()); }
     let boundary = format!("ai-canvas-{}", random_token()?);
-    let form = Multipart::build(parts, infos, &boundary)?;
+    let form = Multipart::build(parts, infos, &boundary, asset_upload)?;
+    if asset_upload && form.length > 201_048_576 { return Err("视频素材上传请求超过上限".into()); }
+    let network = if asset_upload { "素材上传连接中断，请核对素材上传状态后再试" } else { NETWORK };
     // 使用单次不可重放的请求。服务商若要求跳转，由调用方核对这次的任务状态。
-    let client = reqwest::Client::builder().https_only(true).user_agent("AI-Canvas/0.1").redirect(reqwest::redirect::Policy::none())
-        .retry(reqwest::retry::never()).connect_timeout(Duration::from_secs(20))
-        .build().map_err(|_| NETWORK)?;
+    let builder = reqwest::Client::builder().https_only(true).user_agent("AI-Canvas/0.1").redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never()).connect_timeout(Duration::from_secs(20));
+    let client = if asset_upload { builder.timeout(Duration::from_secs(600)) } else { builder }
+        .build().map_err(|_| network)?;
     let mut request = client.post(url);
     for (name, value) in headers {
         match name.to_ascii_lowercase().as_str() {
-            "authorization" | "accept" | "idempotency-key" => { request = request.header(name, value); }
+            "authorization" | "accept" => { request = request.header(name, value); }
+            "idempotency-key" if !asset_upload => { request = request.header(name, value); }
             "content-type" => {}, // 包含本次随机 boundary 的 Content-Type 由原生端填写。
             _ => return Err("万象视频请求头无效".into()),
         }
@@ -504,17 +548,34 @@ async fn submit(url: String, headers: Vec<(String, String)>, parts: Vec<Part>, f
     });
     let mut response = request.header(reqwest::header::CONTENT_TYPE, format!("multipart/form-data; boundary={boundary}"))
         .header(reqwest::header::CONTENT_LENGTH, form.length)
-        .body(reqwest::Body::wrap_stream(stream)).send().await.map_err(|_| NETWORK)?;
+        .body(reqwest::Body::wrap_stream(stream)).send().await.map_err(|_| network)?;
     let status = response.status().as_u16();
     let headers = ["content-type", "retry-after"].iter().filter_map(|&key| response.headers().get(key)
         .and_then(|value| value.to_str().ok()).map(|value| (key.to_owned(), value.to_owned()))).collect();
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|_| NETWORK)? {
-        if chunk.len() > MAX_RESPONSE - bytes.len() { return Err("万象视频提交响应过大，请核对平台任务记录".into()); }
+    let limit = if asset_upload { 32 * 1024 } else { MAX_RESPONSE };
+    while let Some(chunk) = response.chunk().await.map_err(|_| network)? {
+        if chunk.len() > limit - bytes.len() { return Err("上传响应超过安全上限，请核对平台记录".into()); }
         bytes.extend_from_slice(&chunk);
         session.touch();
     }
-    Ok(Response { status, headers, body: String::from_utf8_lossy(&bytes).into_owned() })
+    let body = if beatapi {
+        if (200..300).contains(&status) {
+            let payload: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| "BeatAPI 上传未返回有效 JSON")?;
+            let url = payload.pointer("/data/url").and_then(serde_json::Value::as_str)
+                .filter(|url| url.len() <= 8192 && url.starts_with("https://"))
+                .ok_or("BeatAPI 上传未返回有效素材地址")?;
+            serde_json::json!({ "data": { "url": url } }).to_string()
+        } else { String::new() }
+    } else if asset_upload {
+        if status == 200 {
+            let payload: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| "Sand AI 上传未返回有效 JSON")?;
+            let id = payload.get("id").and_then(serde_json::Value::as_i64).filter(|id| *id > 0)
+                .ok_or("Sand AI 上传未返回有效素材 ID")?;
+            serde_json::json!({ "id": id.to_string() }).to_string()
+        } else { String::new() }
+    } else { String::from_utf8_lossy(&bytes).into_owned() };
+    Ok(Response { status, headers, body })
 }
 
 #[tauri::command]
@@ -590,7 +651,7 @@ mod tests {
         assert_eq!(info.mime_type, "image/gif");
         let picture = || Part::File { name: "images".into(), file_index: 0, filename: "one.gif".into() };
         let form = Multipart::build(vec![Part::Text { name: "prompt".into(), value: "test".into() },
-            picture(), picture()], &[info], "fixture").unwrap();
+            picture(), picture()], &[info], "fixture", false).unwrap();
         let mut wire = UploadBody { segments: form.segments, files: vec![file] };
         let mut received = Vec::new();
         while let Some(bytes) = wire.next().await.unwrap() { received.extend(bytes); }
@@ -605,9 +666,9 @@ mod tests {
     fn file_parts_bind_to_media_kinds_and_fit_beyond_old_proxy_budget() {
         let info = FileInfo { mime_type: "video/mp4".into(), bytes: 5_000_000_000, sha256: "a".repeat(64) };
         let part = |name: &str, filename: &str| Part::File { name: name.into(), file_index: 0, filename: filename.into() };
-        assert!(Multipart::build(vec![part("video", "ref.mp4")], std::slice::from_ref(&info), "fixture").unwrap().length > info.bytes);
-        assert!(Multipart::build(vec![part("audio", "wrong.mp4")], std::slice::from_ref(&info), "fixture").is_err());
-        assert!(Multipart::build(vec![part("video", "bad\r\nx.mp4")], &[info], "fixture").is_err());
+        assert!(Multipart::build(vec![part("video", "ref.mp4")], std::slice::from_ref(&info), "fixture", false).unwrap().length > info.bytes);
+        assert!(Multipart::build(vec![part("audio", "wrong.mp4")], std::slice::from_ref(&info), "fixture", false).is_err());
+        assert!(Multipart::build(vec![part("video", "bad\r\nx.mp4")], &[info], "fixture", false).is_err());
         assert!(media_mime(Kind::Image, b"arbitrary contents", Some("image/png")).is_err());
     }
 }

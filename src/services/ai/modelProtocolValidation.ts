@@ -479,6 +479,9 @@ export function validateModelExecutionProtocol(value: unknown): string[] {
     }
     validatePathExpression(response.taskIdPath, '任务 ID 路径', errors);
     if (validateRequest(protocol.poll, '轮询请求', true, errors) && isRecord(protocol.poll)) {
+      if (protocol.poll.magiGateway !== undefined && typeof protocol.poll.magiGateway !== 'boolean') {
+        errors.push('轮询任务响应校验标记必须是布尔值');
+      }
       if (protocol.poll.maxBodyBytes !== undefined) {
         errors.push('轮询请求不支持 maxBodyBytes；该限制当前只支持提交请求');
       }

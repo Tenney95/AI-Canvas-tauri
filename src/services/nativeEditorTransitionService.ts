@@ -52,9 +52,12 @@ import { libapiVideoVariables, usesLibapiModelProtocol } from './ai/providers/li
 import { toapisVideoVariables } from './ai/providers/toapisModelManifest';
 import { relayonVideoVariables, usesRelayonModelProtocol, resolveRelayonVideoExecutionProfile, RELAYON_VIDEO_RESULT_URL_PATHS } from './ai/providers/relayonModelManifest';
 import { normalizeRelayonVideoSubmitResponse } from './ai/providers/relayonTaskIdentity';
-import { resolveNativeRecoveryProtocol } from './nativeProtocolRecovery';
+import { nativeQueryCredentialProof, resolveNativeRecoveryProtocol } from './nativeProtocolRecovery';
 import { aigcsiVideoVariables, usesAigcsiModelProtocol } from './ai/providers/aigcsiModelManifest';
 import { minimaxVideoVariables, resolveMinimaxExecutionProfile, usesMinimaxModelProtocol, assertMinimaxQueryResponse } from './ai/providers/minimaxModelManifest';
+import { assertSandOrigin, assertSandReferenceLayout, sandProfile, sandVariables, sandSite } from './ai/providers/sandVideoContract';
+import { prepareBeatApiReferences, prepareSandAssets } from './ai/providers/sandAssetUpload';
+import { assertMagiGatewayOrigin, compileMagiGatewayRequest, magiGatewayProtocol, magiVideoGateway } from './ai/providers/magiVideoGateways';
 import { buildDreaminaVideoParams } from './dreaminaService';
 import { queryDreaminaResult } from './dreaminaResult';
 import { getDreaminaVideoCapability } from './ai/dreaminaModels';
@@ -142,18 +145,25 @@ function connection(modelRef: string, providerHint = 'general', forRecovery = fa
   const base = new URL(found.baseUrl);
   if (!['https:', 'http:'].includes(base.protocol) || base.search || base.hash || base.username || base.password) throw new Error('连接地址无法安全恢复');
   const catalogId = found.definition?.id ?? resolveProviderCatalogId(found.providerConfigId, found.provider);
-  const profile = catalogId === 'minimax' ? resolveMinimaxExecutionProfile(found.model.modelId, found.model.executionProfile)
+  const sand = sandSite(catalogId, found.model.modelId);
+  const gateway = magiVideoGateway(catalogId, found.model.modelId);
+  if (sand?.variant === 'v2') throw new Error('请使用 Sand AI Ark 连接生成首尾帧转场');
+  if (gateway && gateway.id !== 'beatapi') throw new Error('当前连接需要公开 HTTPS 素材，请使用支持项目本地素材的转场连接');
+  const profile = sand ? sandProfile(sand.id, found.model.modelId)
+    : gateway ? { preset: 'custom' as const, protocol: magiGatewayProtocol(gateway, 'image-to-video') }
+    : catalogId === 'minimax' ? resolveMinimaxExecutionProfile(found.model.modelId, found.model.executionProfile)
     : catalogId === 'relayonapi' && !forRecovery ? resolveRelayonVideoExecutionProfile(found.model.modelId, found.model.executionProfile)
       : found.model.executionProfile;
   const protocol = resolveModelExecutionProfile(profile);
   if (!protocol || protocol.mode === 'async' && !protocol.poll) throw new Error('当前模型没有可恢复的媒体协议');
   if (protocol.mode === 'async') nativeProtocolQueryPaths(protocol);
-  const videoCapability = catalogId === 'relayonapi'
+  const videoCapability = catalogId === 'relayonapi' || sand || gateway
     ? resolveVideoModelCapability(modelRef, useAppStore.getState().config) ?? found.model.videoCapability
     : found.model.videoCapability ?? resolveVideoModelCapability(modelRef, useAppStore.getState().config);
-  return { ...found, kind: 'general' as const, sourceModel: found.model, catalogId, profile,
+  return { ...found, kind: 'general' as const, sourceModel: found.model, catalogId, profile, sand, gateway,
     model: { ...found.model, videoCapability },
-    baseUrl: base.href.replace(/\/$/, ''), protocol };
+    baseUrl: sand ? assertSandOrigin(sand.id, found.baseUrl)
+      : gateway ? assertMagiGatewayOrigin(gateway, found.baseUrl) : base.href.replace(/\/$/, ''), protocol };
 }
 type EditorConnection = ReturnType<typeof connection>;
 const connectionDigest = (selected: EditorConnection) => digest(selected.kind === 'general' ? selected.protocol
@@ -176,7 +186,8 @@ async function saveOutputs(row: NativeEditorMediaTask, urls: readonly string[], 
     outputs.push(await persistNativeMediaResult(url, row.canvasId, { category: 'video',
       label: `AI转场-${row.operationId}-${index + 1}`, missingFileMessage: '原转场结果未保存为本机文件',
       ...(signal ? { signal } : {}), ...(guard ? { assertCurrent: guard } : {}),
-      mediaDownloadAccess: createMediaDownloadAccess(row.providerConfigId, selected.baseUrl, selected.protocol.auth) }));
+      mediaDownloadAccess: createMediaDownloadAccess(row.providerConfigId, selected.baseUrl,
+        selected.kind === 'general' && (selected.sand || selected.gateway) ? { type: 'none' } : selected.protocol.auth) }));
   }
   return retainNativeEditorMediaOutputs(row, outputs, completion ? { completion } : {});
 }
@@ -208,7 +219,27 @@ export async function submitNativeEditorTransition(request: VideoEditorAiTransit
   const canonical = resolveCanonicalVideoRequest(params, { references, capability: selected.model.videoCapability });
   if (selected.kind !== 'runninghub') await assertVideoInputConstraints(referenceInput, selected.model.videoCapability, '所选转场模型', { signal });
   let variables: ModelProtocolVariables, requestBody: Record<string, unknown> | undefined;
-  if (selected.kind === 'general') {
+  const sand = selected.kind === 'general' && selected.sand;
+  const beatapi = selected.kind === 'general' ? selected.gateway : undefined;
+  if (selected.kind === 'general' && (sand || beatapi)) {
+    const assertSelected = () => {
+      signal?.throwIfAborted();
+      assertCurrent(context, anchorNodeId); assertWindowCurrent?.();
+      const current = connection(request.model, request.provider);
+      if (current.kind !== 'general' || current.provider !== selected.provider || current.sourceModel !== selected.sourceModel) {
+        throw new Error('MAGI-2 原模型或连接已变化');
+      }
+    };
+    if (sand) {
+      assertSandReferenceLayout(canonical.prompt, canonical.references.all, sand.variant);
+      const assets = await prepareSandAssets(canonical.references.all, selected.baseUrl, selected.apiKey, assertSelected, signal);
+      variables = sandVariables(canonical, sand.variant, assets);
+    } else {
+      const uploaded = await prepareBeatApiReferences(canonical.references.all, selected.apiKey, assertSelected, signal);
+      variables = compileMagiGatewayRequest(beatapi!, resolveCanonicalVideoRequest(params,
+        { references: uploaded, capability: selected.model.videoCapability })).variables;
+    }
+  } else if (selected.kind === 'general') {
     variables = generalVariables(selected, canonical);
     const conflicts = findModelProtocolForEachCapabilityConflicts(selected.protocol, selected.model.videoCapability);
     if (conflicts.length || findUnusedReferenceVariables(JSON.stringify(selected.protocol), variables).length) throw new Error('模型协议未完整接收首尾帧，未提交任务');
@@ -242,6 +273,7 @@ export async function submitNativeEditorTransition(request: VideoEditorAiTransit
   const options = { apiKey: selected.apiKey, baseUrl: selected.baseUrl, protocol: selected.protocol, variables, signal,
     ...(selected.kind === 'general' && selected.catalogId === 'relayonapi' && usesRelayonModelProtocol(selected.model.modelId, selected.profile)
       ? { normalizeSubmitResponse: normalizeRelayonVideoSubmitResponse, idempotencyKey: crypto.randomUUID() } : {}),
+    ...(beatapi ? { idempotencyKey: crypto.randomUUID() } : {}),
     ...(selected.protocol.mode === 'async' ? { captureRecoveryContext: (payload: unknown) => ({
       ...captureNativeProtocolContext(selected.protocol, payload, variables, [selected.apiKey]),
       ...(selected.kind === 'apimart' ? { taskIds: apimartEditorTaskIds(payload, selected.apiKey) } : {}),
@@ -250,18 +282,11 @@ export async function submitNativeEditorTransition(request: VideoEditorAiTransit
   let row = await prepareNativeEditorMediaTask({ context, requestId: request.requestId, anchorNodeId, beforeClipId: request.beforeClipId,
     modelRef: selected.kind === 'general' ? `general/${selected.sourceModel.id}` : `${selected.kind}/${selected.model.modelId}`,
     providerConfigId: selected.providerConfigId, providerBase: selected.baseUrl, protocolDigest: await connectionDigest(selected),
+    ...(sand || beatapi ? { credentialProof: await nativeQueryCredentialProof(request.requestId, selected.providerConfigId, selected.apiKey) } : {}),
     submissionKind: selected.protocol.mode, ...(selected.protocol.mode === 'async' ? { queryDigest: await nativeProtocolQueryDigest(selected.model.modelId, selected.protocol) } : {}) });
   let sent = false, remoteId: string | undefined, pollContext: Record<string, unknown> | undefined;
   let billingRun: BillingRun | null = null;
-  try {
-    assertCurrent(context, anchorNodeId); assertWindowCurrent?.(); signal?.throwIfAborted();
-    if (selected.kind === 'volcengine' && requestBody) {
-      const details = { referenceType: 'frame-reference', referenceCount: 2, durationSeconds: Number(requestBody.duration ?? -1),
-        resolution: String(requestBody.resolution ?? '720p'), ratio: String(requestBody.ratio ?? '16:9') };
-      billingRun = await createBillingRun({ nodeId: anchorNodeId, modelType: 'video', modelId: selected.model.modelId, prompt: request.prompt,
-        details, quote: quoteVolcengineVideo({ modelId: selected.model.modelId, ...details }) });
-    }
-    await Promise.all([readNativeVideoImageReference(context.projectId, first.reference), readNativeVideoImageReference(context.projectId, last.reference)]);
+  const beforeSend = async () => {
     await assertNativeEditorMediaPrepared(context, row);
     const latest = connection(request.model, request.provider);
     if (latest.providerConfigId !== selected.providerConfigId || latest.baseUrl !== selected.baseUrl || latest.apiKey !== selected.apiKey
@@ -275,6 +300,17 @@ export async function submitNativeEditorTransition(request: VideoEditorAiTransit
     if (sendingConnection.provider !== selected.provider || sendingConnection.apiKey !== selected.apiKey || sendingConnection.baseUrl !== selected.baseUrl
       || selected.kind === 'general' && (sendingConnection.kind !== 'general' || sendingConnection.sourceModel !== selected.sourceModel)) throw new Error('模型连接在停写确认后已变化，未提交任务');
     sent = true;
+  };
+  try {
+    assertCurrent(context, anchorNodeId); assertWindowCurrent?.(); signal?.throwIfAborted();
+    if (selected.kind === 'volcengine' && requestBody) {
+      const details = { referenceType: 'frame-reference', referenceCount: 2, durationSeconds: Number(requestBody.duration ?? -1),
+        resolution: String(requestBody.resolution ?? '720p'), ratio: String(requestBody.ratio ?? '16:9') };
+      billingRun = await createBillingRun({ nodeId: anchorNodeId, modelType: 'video', modelId: selected.model.modelId, prompt: request.prompt,
+        details, quote: quoteVolcengineVideo({ modelId: selected.model.modelId, ...details }) });
+    }
+    await Promise.all([readNativeVideoImageReference(context.projectId, first.reference), readNativeVideoImageReference(context.projectId, last.reference)]);
+    if (!sand) await beforeSend();
     if (selected.kind === 'dreamina') {
       // 原生提交不可取消；真实返回ID始终先写原账本，再响应切集/关窗。
       const submitted = await invoke<{ submitId: string }>('dreamina_generate', { params: requestBody });
@@ -285,7 +321,7 @@ export async function submitNativeEditorTransition(request: VideoEditorAiTransit
       remoteId = await submitPreparedRunningHubModel(selected.rawConnection, selected.definition.id, requestBody!, signal);
       pollContext = captureNativeProtocolContext(selected.protocol, { taskId: remoteId }, variables, [selected.apiKey]);
     } else {
-      const submitted = await submitModelProtocol(options);
+      const submitted = await submitModelProtocol(sand ? { ...options, beforeSubmit: beforeSend } : options);
       if (selected.protocol.mode === 'sync') {
         assertModelProtocolResult('video', submitted);
         // 同步付费返回后先保存原根；切集/关窗只暂停后续投递。
@@ -336,7 +372,11 @@ export async function recoverNativeEditorTransition(operationId: string, anchorN
   const builtinVolcengine = row.providerConfigId === 'volcengine' && !row.modelRef.startsWith('general/');
   const controller = new AbortController();
   const activeSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
-  const unsubscribe = useAppStore.subscribe(() => { try { assertCurrent(context, anchorNodeId); } catch { controller.abort(); } });
+  let assertConnectionCurrent: (() => void) | undefined;
+  const unsubscribe = useAppStore.subscribe(() => {
+    try { assertCurrent(context, anchorNodeId); assertConnectionCurrent?.(); }
+    catch (error) { controller.abort(error); }
+  });
   const guard = () => { activeSignal.throwIfAborted(); assertCurrent(context, anchorNodeId); };
   let remoteFailed: 'failed' | 'cancelled' | undefined;
   let completion: NativeEditorMediaTask['completion'];
@@ -366,6 +406,20 @@ export async function recoverNativeEditorTransition(operationId: string, anchorN
     if (selected.providerConfigId !== row.providerConfigId || selected.baseUrl !== row.providerBase || await connectionDigest(selected) !== row.protocolDigest
       || row.queryDigest && await nativeProtocolQueryDigest(selected.model.modelId, selected.protocol) !== row.queryDigest) {
       throw new Error('原模型连接或协议已变化，请恢复原配置后取回原任务');
+    }
+    if (selected.kind === 'general' && (selected.sand || selected.gateway)) {
+      if (!row.credentialProof || row.credentialProof !== await nativeQueryCredentialProof(row.requestId, row.providerConfigId, selected.apiKey)) {
+        throw new Error('MAGI-2 原账户的 API Key 已变化，请恢复原凭据后续查');
+      }
+      assertConnectionCurrent = () => {
+        const configuration = useAppStore.getState().config;
+        if (configuration.providers[selected.providerConfigId] !== selected.provider
+          || !configuration.generalModels?.includes(selected.sourceModel)) {
+          throw new Error('MAGI-2 原模型或连接已变化');
+        }
+      };
+      assertConnectionCurrent();
+      guard();
     }
     const result = selected.kind === 'volcengine' ? await (async () => {
       const completed = await pollVolcengineVideoTask({ apiKey: selected.apiKey, baseUrl: selected.baseUrl, taskId: row.remoteTaskId!,
@@ -416,7 +470,7 @@ export async function recoverNativeEditorTransition(operationId: string, anchorN
         if (selected.catalogId === 'relayonapi' && usesRelayonModelProtocol(selected.model.modelId, selected.profile)) poll.resultUrlFallbackPaths = [...RELAYON_VIDEO_RESULT_URL_PATHS];
         return pollResolvedModelProtocol(poll, selected.apiKey, activeSignal, selected.baseUrl,
           selected.catalogId === 'minimax' && usesMinimaxModelProtocol(selected.model.modelId, selected.profile) ? assertMinimaxQueryResponse : undefined,
-          getProviderPolicy(selected.catalogId).upload === 'volcengine-tos');
+          getProviderPolicy(selected.catalogId).upload === 'volcengine-tos', row.remoteTaskId);
       })();
     assertModelProtocolResult('video', result);
     if (!result.urls?.[0]) throw new Error('原任务尚未取得视频结果');

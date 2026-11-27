@@ -450,6 +450,10 @@ export function assertVideoModelCapability(capability: VideoModelCapability | un
           `${field}.${mode}.requiresRatio`,
         );
       }
+      if (modeCapability.ratioFromFirstFrame !== undefined && typeof modeCapability.ratioFromFirstFrame !== 'boolean') {
+        fail('INVALID_CAPABILITY', `模型能力 ${field}.${mode}.ratioFromFirstFrame 必须是布尔值`,
+          `${field}.${mode}.ratioFromFirstFrame`);
+      }
       if (modeCapability.automaticDurationOnly !== undefined
         && typeof modeCapability.automaticDurationOnly !== 'boolean') {
         fail(
@@ -941,6 +945,10 @@ export function resolveCanonicalVideoRequest(
   const references = normalizeReferences(options.references ?? params.referenceMedia ?? []);
   const operation = resolveCanonicalVideoOperation(references);
   const inputMode = resolveCanonicalVideoInputMode(references);
+  if (capability?.supportsKeyframes === false && references.all.some((reference) =>
+    reference.role === 'first_frame' || reference.role === 'last_frame')) {
+    fail('INVALID_PARAMETER', '当前模型只接受普通参考素材，请调整素材角色或切换模型', 'references');
+  }
   assertReferenceCapabilities(references, capability, params.model);
   assertOperationSupported(operation, capability, params.model);
   assertReferenceCombinationSupported(references, capability, params.model);
@@ -968,11 +976,12 @@ export function resolveCanonicalVideoRequest(
 
   const inputModeCapability = capability?.inputModeCapabilities?.[inputMode];
   const operationCapability = capability?.operationCapabilities?.[operation];
+  const ratioFromFirstFrame = inputMode === 'keyframe'
+    && (inputModeCapability?.ratioFromFirstFrame ?? operationCapability?.ratioFromFirstFrame);
   const aspectRatio = resolveOptionalString(
-    params.seedanceRatio,
-    inputModeCapability?.defaultRatio
-      ?? operationCapability?.defaultRatio
-      ?? capability?.defaultRatio,
+    ratioFromFirstFrame ? undefined : params.seedanceRatio,
+    ratioFromFirstFrame ? undefined : inputModeCapability?.defaultRatio
+      ?? operationCapability?.defaultRatio ?? capability?.defaultRatio,
   );
   const resolutionPreset = resolveOptionalString(
     params.seedanceResolution,
@@ -985,7 +994,7 @@ export function resolveCanonicalVideoRequest(
     'aspectRatio',
     '宽高比',
   );
-  if (inputModeCapability?.requiresRatio && aspectRatio.value === null) {
+  if (!ratioFromFirstFrame && inputModeCapability?.requiresRatio && aspectRatio.value === null) {
     fail(
       'INVALID_PARAMETER',
       `当前 ${inputMode} 输入模式必须指定宽高比`,

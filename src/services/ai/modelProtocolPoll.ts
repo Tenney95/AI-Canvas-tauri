@@ -19,6 +19,8 @@ import {
   fetchSameOriginResultUrls,
   normalizeBase64Result,
   readJsonResponse,
+  readSandTaskResponse,
+  readMagiGatewayTaskResponse,
   redactModelProtocolError,
   redactModelProtocolErrorText,
 } from './modelProtocolHttp';
@@ -43,6 +45,9 @@ import { validateAuthentication } from './modelProtocolValidation';
 import { isReplicatePredictionStatus, replicatePredictionIdFromPoll } from './providers/replicateModelManifest';
 import { getKlingImageQueryTaskId, selectKlingImageQueryTask } from './providers/klingImageResponse';
 import { redactVolcengineError } from './providers/volcengineError';
+import { sandTaskRequest, validateSandTask } from './providers/sandVideoContract';
+import { waitForSandRequest } from './providers/sandRateLimit';
+import { magiGatewayTaskRequest, validateMagiGatewayTask } from './providers/magiVideoGateways';
 
 export function resolvePoll(
   baseUrl: string,
@@ -62,6 +67,7 @@ export function resolvePoll(
   const response = poll.response;
   const result = response.result;
   return {
+    ...(poll.magiGateway === true ? { magiGateway: true } : {}),
     method: poll.method,
     url: buildSameOriginUrl(baseUrl, poll, context),
     auth: structuredClone(resolveAuthentication(auth)),
@@ -214,6 +220,12 @@ async function pollResolvedModelProtocolRequest(
     throw new Error('Kling 查询地址与原任务回执的 ID 不一致，请核对原任务');
   }
   const predictionId = replicatePredictionIdFromPoll(poll);
+  const sand = sandTaskRequest(poll.url, poll.method);
+  const gateway = poll.magiGateway === true ? magiGatewayTaskRequest(poll.url, poll.method) : undefined;
+  if (poll.magiGateway === true && (!gateway?.taskId || expectedTaskId !== undefined && gateway.taskId !== expectedTaskId)) {
+    throw new Error('MAGI-2 查询地址与原任务 ID 不一致');
+  }
+  if (sand && expectedTaskId !== undefined && sand.taskId !== expectedTaskId) throw new Error('Sand AI 查询地址与原任务 ID 不一致');
   if (predictionId && expectedTaskId !== undefined && predictionId !== expectedTaskId) {
     throw new Error('Replicate 查询地址与原任务 ID 不一致');
   }
@@ -234,6 +246,19 @@ async function pollResolvedModelProtocolRequest(
     try {
       const requestUrl = applyQueryAuthentication(poll.url, poll.auth, apiKey);
       const requestInit = { ...buildResolvedRequestInit(poll, apiKey), signal: querySignal };
+      if (sand || gateway) {
+        if (sand) await waitForSandRequest(sand.site.origin, 'query', querySignal);
+        const response = await corsSafeFetch(requestUrl, { ...requestInit, redirect: 'error', credentials: 'omit' },
+          { sensitive: true, ...(gateway ? { magiGateway: true } : {}) });
+        const payload = sand ? await readSandTaskResponse(response, 'query')
+          : await readMagiGatewayTaskResponse(response, gateway!.gateway.name);
+        querySignal.throwIfAborted();
+        queryMayRetry = false;
+        if (sand) validateSandTask(payload, sand.taskId, apiKey, sand.site.variant);
+        if (gateway) validateMagiGatewayTask(gateway.gateway, payload, gateway.taskId, apiKey);
+        consecutiveErrors = 0;
+        return payload as ProtocolJsonValue;
+      }
       const traceId = import.meta.env.DEV && !sensitive
         ? globalThis.crypto?.randomUUID?.() ?? `ai-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}` : undefined;
       const debug = traceId ? { body: poll.method === 'GET' ? undefined : poll.body, bodyEncoding: poll.bodyEncoding ?? 'json',

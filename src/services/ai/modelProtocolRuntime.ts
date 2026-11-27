@@ -55,6 +55,8 @@ import { persistNativeMediaResult } from '../nativeMediaResultPersistence';
 import { prepareNativeSyncDownload, saveNativeSyncDownload } from '../nativeSyncMediaDownload';
 import { continueNativeMediaTask, createNativeMediaPendingError } from '../nativeMediaTaskContinuation';
 import { redactVolcengineError, redactVolcengineErrorText } from './providers/volcengineError';
+import { assertSandOrigin, sandSite } from './providers/sandVideoContract';
+import { assertMagiGatewayOrigin, magiVideoGateway } from './providers/magiVideoGateways';
 
 interface RunConfiguredModelProtocolOptions {
   model: GeneralModelConfig;
@@ -69,6 +71,7 @@ interface RunConfiguredModelProtocolOptions {
   expectedImageOutputs?: number;
   imageOutputCountRange?: ImageOutputCountRange;
   beforeSubmit?: () => void | Promise<void>;
+  assertConnectionCurrent?: () => void;
 }
 
 const NODE_TYPE_BY_CATEGORY: Record<Exclude<GeneralModelCategory, 'text'>, NodeType> = {
@@ -411,6 +414,10 @@ export async function runConfiguredModelProtocol(
   const provider = useAppStore.getState().config.providers[options.model.providerConfigId];
   if (!provider) throw new Error(`模型“${options.model.name}”的连接配置不存在`);
   const catalogId = resolveProviderCatalogId(options.model.providerConfigId, provider);
+  const sand = sandSite(catalogId, options.model.modelId);
+  const gateway = magiVideoGateway(catalogId, options.model.modelId);
+  const fixedMagi = sand || gateway;
+  if (fixedMagi && (!options.assertConnectionCurrent || options.category !== 'video')) throw new Error('请通过 MAGI-2 视频入口调用当前连接');
   const usesVolcengineTos = getProviderPolicy(catalogId).upload === 'volcengine-tos';
   const usesRelayonProtocol = catalogId === 'relayonapi' && options.category === 'video'
     && usesRelayonModelProtocol(options.model.modelId, options.model.executionProfile);
@@ -429,7 +436,9 @@ export async function runConfiguredModelProtocol(
     || '';
   const usesMinimaxImageProtocol = catalogId === 'minimax' && options.category === 'image'
     && usesMinimaxImageModelProtocol(options.model.modelId, profile);
-  const baseUrl = usesMinimaxImageProtocol ? resolveMinimaxBaseUrl(configuredBaseUrl)
+  const baseUrl = sand ? assertSandOrigin(sand.id, configuredBaseUrl)
+    : gateway ? assertMagiGatewayOrigin(gateway, configuredBaseUrl)
+    : usesMinimaxImageProtocol ? resolveMinimaxBaseUrl(configuredBaseUrl)
     : catalogId === 'relayonapi' && options.category === 'image' && options.useRelayonImageApi
       ? resolveRelayonImageBaseUrl(configuredBaseUrl) : configuredBaseUrl;
   if (!baseUrl) throw new Error(`模型“${options.model.name}”未配置接口地址`);
@@ -477,10 +486,11 @@ export async function runConfiguredModelProtocol(
   const validateResponse = usesMinimaxProtocol
     ? (payload: unknown) => assertMinimaxResponse(payload, options.category === 'audio')
     : usesKlingProtocol ? assertKlingImageResponse : undefined;
-  const mediaDownloadAccess = createMediaDownloadAccess(options.model.providerConfigId, baseUrl, protocol.auth);
+  const mediaDownloadAccess = createMediaDownloadAccess(options.model.providerConfigId, baseUrl, fixedMagi ? { type: 'none' } : protocol.auth);
   assertReferenceMediaDeliverable(options.model.name, JSON.stringify(protocol), options.variables);
 
   const projectId = useAppStore.getState().currentProjectId;
+  if (fixedMagi && (!options.nodeId || !projectId)) throw new Error('MAGI-2 需要可以保留原任务的项目，请从项目内生成');
   const sourceModel = useAppStore.getState().config.generalModels?.find((model) => model.id === options.model.id
     && model.providerConfigId === options.model.providerConfigId);
   const expectedOutputCount = options.category === 'image' && options.expectedImageOutputs !== undefined
@@ -503,10 +513,11 @@ export async function runConfiguredModelProtocol(
       ...(usesVolcengineTos ? { sensitive: true } : {}),
       ...(usesRelayonProtocol ? { normalizeSubmitResponse: normalizeRelayonVideoSubmitResponse } : {}),
       ...(nativeOperation && protocol.mode === 'async' ? { captureRecoveryContext: (payload: unknown) => captureNativeProtocolContext(protocol, payload, options.variables, [provider.apiKey || '']) } : {}),
-      ...(getProviderPolicy(catalogId).submitIdempotency ? { idempotencyKey: crypto.randomUUID() } : {}),
+      ...(gateway?.id === 'beatapi' || getProviderPolicy(catalogId).submitIdempotency ? { idempotencyKey: crypto.randomUUID() } : {}),
     };
     // 在请求完成构建后保存回执，同一请求体只构建一次。
     const beforeSend = async (): Promise<void> => {
+      options.assertConnectionCurrent?.();
       if (nativeOperation) {
         if (protocol.mode === 'async') nativeProtocolQueryPaths(protocol);
         const scheme = 'media-input-v3' as const;
@@ -517,6 +528,7 @@ export async function runConfiguredModelProtocol(
         const baseline = await captureNativeVideoSubmissionBaseline(nativeContext!, options.nodeId!, undefined, scheme, { preparedReferences: true, preparation: nativePreparation });
         const queryDigest = await nativeProtocolQueryDigest(options.model.modelId, protocol);
         const serverId = protocol.mode === 'async' ? await captureNativeQueryContractId(catalogId, options.category, options.model.modelId, queryDigest) : undefined;
+        if (fixedMagi && !serverId) throw new Error('MAGI-2 原生查询合同未登记，未提交请求');
         const operationId = crypto.randomUUID();
         const credentialProof = serverId ? await nativeQueryCredentialProof(operationId, options.model.providerConfigId, provider.apiKey) : undefined;
         nativeTask = await prepareNativeMediaTask({ context: nativeContext!, operationId, nodeId: options.nodeId!,
@@ -542,11 +554,19 @@ export async function runConfiguredModelProtocol(
         nativeTask = await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease, { unknown: true });
         const finalConfig = useAppStore.getState().config;
         if (finalConfig.providers[options.model.providerConfigId] !== provider || sourceModel && finalConfig.generalModels?.find((model) => model.id === options.model.id) !== sourceModel) throw new Error('原模型配置已变化');
+        options.assertConnectionCurrent?.();
         signal?.throwIfAborted(); nativePreparation.assertCurrent(); nativeSent = true; nativePreparation.release();
       } else if ((protocol.mode === 'async' || usesMinimaxProtocol && options.category === 'audio') && options.nodeId && projectId) {
+        const attemptId = fixedMagi ? crypto.randomUUID() : undefined;
+        const credentialProof = attemptId
+          ? await nativeQueryCredentialProof(attemptId, options.model.providerConfigId, provider.apiKey) : undefined;
+        if (fixedMagi) await options.beforeSubmit?.();
+        signal?.throwIfAborted();
+        options.assertConnectionCurrent?.();
         receipt = savePendingTask({ nodeId: options.nodeId, projectId,
           nodeType: NODE_TYPE_BY_CATEGORY[options.category], provider: 'general', providerConfigId: options.model.providerConfigId,
           taskId: '', taskType: 'custom-protocol', submitted: false, videoGeneration,
+          ...(attemptId ? { attemptId, credentialProof } : {}),
           mediaDownloadAccess,
           batchCount: expectedOutputCount, ...fixedImageOutputs, ...imageOutputBounds });
       }
@@ -616,15 +636,19 @@ export async function runConfiguredModelProtocol(
     }
     if (receipt) receipt = updatePendingTask(receipt.nodeId, { taskId: submitted.taskId, protocolPoll: poll, submitted: true }, receipt.taskId, receipt.attemptId);
 
-    const result = await pollResolvedModelProtocol(
-      poll,
-      provider.apiKey || '',
-      signal,
-      baseUrl,
-      usesMinimaxProtocol ? assertMinimaxQueryResponse : undefined,
-      usesVolcengineTos,
-      submitted.taskId,
-    );
+    const queryController = fixedMagi ? new AbortController() : undefined;
+    const unsubscribe = queryController && useAppStore.subscribe(() => {
+      try { options.assertConnectionCurrent?.(); }
+      catch (error) { queryController.abort(error); }
+    });
+    const result = await (async () => {
+      try {
+        options.assertConnectionCurrent?.();
+        return await pollResolvedModelProtocol(poll, provider.apiKey || '',
+          queryController && signal ? AbortSignal.any([signal, queryController.signal]) : queryController?.signal ?? signal,
+          baseUrl, usesMinimaxProtocol ? assertMinimaxQueryResponse : undefined, usesVolcengineTos, submitted.taskId);
+      } finally { unsubscribe?.(); }
+    })();
     assertModelProtocolResult(options.category, result);
     if (!result.urls) throw new Error('媒体模型任务完成但未返回结果 URL');
     assertImageOutputCount(range, result.urls.length);

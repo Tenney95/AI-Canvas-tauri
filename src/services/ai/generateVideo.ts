@@ -100,6 +100,9 @@ import { assertToapisVideoInput, toapisVideoVariables } from './providers/toapis
 import { assertLibapiVideoInput, libapiVideoVariables, usesLibapiModelProtocol } from './providers/libapiModelManifest';
 import { aigcsiVideoVariables, usesAigcsiModelProtocol } from './providers/aigcsiModelManifest';
 import { resolveConfiguredVideoCapability } from './videoModelCapabilityResolver';
+import { assertSandOrigin, assertSandReferenceLayout, mergeSandReferences, sandProfile, sandVariables, sandSite } from './providers/sandVideoContract';
+import { assertSandReferenceSources, prepareBeatApiReferences, prepareSandAssets } from './providers/sandAssetUpload';
+import { assertMagiGatewayOrigin, compileMagiGatewayRequest, magiVideoGateway } from './providers/magiVideoGateways';
 import { minimaxVideoVariables, resolveMinimaxBaseUrl, resolveMinimaxExecutionProfile, usesMinimaxModelProtocol } from './providers/minimaxModelManifest';
 
 export { compileVideoReferencePrompt } from './referencePrompt';
@@ -297,7 +300,7 @@ async function resolveVideoReferenceInput(
   nodeId: string | undefined,
   /** 调用方直接给定的参考媒体；排在最前，保证首/尾帧角色按调用方的顺序分配 */
   explicitReferences: readonly MediaReference[] = [],
-  options: { promptFirst?: boolean; preserveDeclaredRoles?: boolean; sortKeyframes?: boolean; klingFrameMode?: 'single' | 'keyframes'; target?: 'remote' | 'local'; apimartModel?: string; legacyPrompt?: string; provider?: string; suppressWarning?: boolean; preferLocalMedia?: boolean } = {},
+  options: { promptFirst?: boolean; preserveDeclaredRoles?: boolean; sortKeyframes?: boolean; klingFrameMode?: 'single' | 'keyframes'; target?: 'remote' | 'local'; apimartModel?: string; legacyPrompt?: string; provider?: string; suppressWarning?: boolean; preferLocalMedia?: boolean; roleAwareReferences?: boolean } = {},
 ): Promise<VideoGenerationReferenceInput> {
   const cameraSettings = useAppStore.getState().nodes.find((node) => node.id === nodeId)?.data.cameraSettings;
   const promptInput = await resolvePromptWithMediaRefs(rawPrompt, { preserveBindings: true,
@@ -329,7 +332,10 @@ async function resolveVideoReferenceInput(
     promptInput.references, connected.references.map(canonicalReference)];
   const [explicit, fromNode, fromPrompt, fromConnections] = options.provider === 'volcengine' || options.preferLocalMedia
     ? await Promise.all(groups.map((group) => Promise.all(group.map(localizeReference)))) : groups;
-  const regularReferences = mergeMediaReferences(
+  const regularReferences = options.roleAwareReferences
+    ? mergeSandReferences([...explicit, ...fromNode, ...fromPrompt, ...fromConnections].map((reference) =>
+      ({ ...reference, url: getMediaReferenceUrl(reference) })))
+    : mergeMediaReferences(
     // 节点上手动挑的参考帧/参考角色排在连线与提示词引用之前，重复的图按它们的角色去重
     mergeMediaReferences(explicit, fromNode),
     mergeMediaReferences(fromPrompt, fromConnections),
@@ -905,6 +911,53 @@ export async function generateVideo(
     if (!connection) throw new Error(`通用模型 "${gm.name}" 的连接配置不存在`);
     if (!connection.baseUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
     const catalogId = connection.definition?.id ?? resolveProviderCatalogId(connection.providerConfigId, connection.provider);
+    const sand = sandSite(catalogId, gm.modelId);
+    const gateway = magiVideoGateway(catalogId, gm.modelId);
+    if (sand || gateway) {
+      const origin = sand ? assertSandOrigin(catalogId, connection.baseUrl) : assertMagiGatewayOrigin(gateway!, connection.baseUrl);
+      const executionProfile = sand ? sandProfile(catalogId, gm.modelId) : gm.executionProfile;
+      const capability = resolveConfiguredVideoCapability(catalogId, gm.modelId, executionProfile, gm.videoCapability);
+      const sourceModel = gm;
+      const projectId = useAppStore.getState().currentProjectId;
+      if (!projectId || !params.nodeId) throw new Error('MAGI-2 需要可以保留原任务的项目，请从项目内生成');
+      const assertCurrent = () => {
+        signal?.throwIfAborted();
+        const current = useAppStore.getState();
+        if (current.currentProjectId !== projectId) throw new Error('MAGI-2 原项目已切换');
+        if (current.config.providers[connection.providerConfigId] !== connection.provider
+          || !current.config.generalModels?.includes(sourceModel)) throw new Error('MAGI-2 原模型或连接已变化');
+      };
+      const references = await resolveVideoReferenceInput(rawPrompt, params.nodeId, params.referenceMedia ?? [],
+        { preserveDeclaredRoles: true, provider, target: 'local', preferLocalMedia: true, roleAwareReferences: true });
+      const input = (references.references ?? referencesFromLegacyInput(references)).map((reference) =>
+        ({ ...reference, url: getMediaReferenceUrl(reference) }));
+      const request = resolveCanonicalVideoRequest({ ...params, model: gm.modelId, prompt: references.prompt },
+        { references: input, capability });
+      let compiled = gateway && gateway.id !== 'beatapi' ? compileMagiGatewayRequest(gateway, request) : undefined;
+      if (sand) {
+        assertSandReferenceLayout(request.prompt, request.references.all, sand.variant);
+        assertSandReferenceSources(request.references.all);
+      }
+      if (gateway?.id === 'beatapi') assertSandReferenceLayout(request.prompt, request.references.all, 'ark');
+      await assertVideoInputConstraints(references, capability, gm.name, { signal });
+      await beforeSubmit?.();
+      assertCurrent();
+      if (gateway?.id === 'beatapi') {
+        const uploaded = await prepareBeatApiReferences(request.references.all, connection.apiKey, assertCurrent, signal);
+        const canonical = resolveCanonicalVideoRequest({ ...params, model: gm.modelId, prompt: references.prompt },
+          { references: uploaded, capability });
+        compiled = compileMagiGatewayRequest(gateway, canonical);
+      }
+      const variables = compiled?.variables ?? sandVariables(request, sand!.variant,
+        await prepareSandAssets(request.references.all, origin, connection.apiKey, assertCurrent, signal));
+      assertCurrent();
+      const urls = await runConfiguredModelProtocol({
+        model: { ...gm, executionProfile: compiled?.executionProfile ?? executionProfile },
+        category: 'video', nodeId: params.nodeId, signal, beforeSubmit, variables, assertConnectionCurrent: assertCurrent,
+      });
+      if (!urls[0]) throw new Error('MAGI-2 未返回原任务的视频结果');
+      return { url: urls[0], taskReceipt: urls.taskReceipt, mediaDownloadAccess: urls.mediaDownloadAccess };
+    }
     if (catalogId === 'minimax') gm = { ...gm, executionProfile: resolveMinimaxExecutionProfile(gm.modelId, gm.executionProfile) };
     const usesMinimaxProtocol = catalogId === 'minimax' && usesMinimaxModelProtocol(gm.modelId, gm.executionProfile);
     if (usesMinimaxProtocol) resolveMinimaxBaseUrl(connection.baseUrl);

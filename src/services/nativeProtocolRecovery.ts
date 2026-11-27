@@ -7,6 +7,8 @@ import type { MediaKind } from '../types/media';
 import { nativeProtocolTaskDigest, nativeProtocolQueryDigest } from './nativeModelProtocolTask';
 import { sha256BytesHex } from './mediaDataUrl';
 import { projectModelSourceToken } from './projectModelComparisonMaterial';
+import { SAND_CONNECTIONS, SAND_VIDEO_MODEL_ID, sandProtocolFor } from './ai/providers/sandVideoContract';
+import { MAGI_VIDEO_GATEWAYS, magiGatewayProtocol } from './ai/providers/magiVideoGateways';
 
 // Published recovery revisions contain only query material. Keep them when the current model catalog changes.
 function queryOnly(auth: NormalizedModelExecutionProtocol['auth'], taskIdPath: string,
@@ -34,26 +36,40 @@ const xaiV1 = queryOnly({ type: 'bearer' }, 'request_id', {
 const replicateV1 = (outputPath: 'output' | 'output.*') => queryOnly({ type: 'bearer' }, 'id',
   replicatePredictionProtocolV1('vendor/recovery-only', {}, outputPath).poll!);
 
+interface NativeQueryContract {
+  id: string;
+  catalogId: string;
+  modelId?: string;
+  categories: readonly MediaKind[];
+  protocol: NormalizedModelExecutionProtocol;
+}
+
 const QUERY_CONTRACTS = ([
+  ...SAND_CONNECTIONS.map((site) => ({ id: site.queryId, catalogId: site.id,
+    modelId: SAND_VIDEO_MODEL_ID, categories: ['video' as const], protocol: sandProtocolFor(site.id) })),
+  ...MAGI_VIDEO_GATEWAYS.map((gateway) => ({ id: gateway.queryId, catalogId: gateway.id,
+    modelId: SAND_VIDEO_MODEL_ID, categories: ['video' as const], protocol: magiGatewayProtocol(gateway) })),
   { id: 'kling-tasks-v1', catalogId: 'kling', categories: ['image', 'video'], protocol: klingV1 },
   { id: 'xai-video-v1', catalogId: 'xai', categories: ['video'], protocol: xaiV1 },
   { id: 'replicate-image-v1', catalogId: 'replicate', categories: ['image'], protocol: replicateV1('output.*') },
   { id: 'replicate-video-v1', catalogId: 'replicate', categories: ['video'], protocol: replicateV1('output') },
-] satisfies Array<{ id: string; catalogId: string; categories: MediaKind[]; protocol: NormalizedModelExecutionProtocol }>)
-  .map((contract) => ({
-    ...contract, categories: contract.categories as readonly MediaKind[],
+] satisfies NativeQueryContract[])
+  .map((contract): NativeQueryContract => ({
+    ...contract,
     protocol: resolveModelExecutionProfile({ preset: 'custom', protocol: contract.protocol })!,
   }));
 
 export async function captureNativeQueryContractId(catalogId: string, category: MediaKind, modelId: string, queryDigest: string): Promise<string | undefined> {
-  const contract = QUERY_CONTRACTS.find((item) => item.catalogId === catalogId && item.categories.includes(category));
+  const contract = QUERY_CONTRACTS.find((item) => item.catalogId === catalogId && item.categories.includes(category)
+    && (!item.modelId || item.modelId === modelId));
   return contract && await nativeProtocolQueryDigest(modelId, contract.protocol) === queryDigest ? contract.id : undefined;
 }
 
 export async function resolveNativeQueryContract(
   contractId: string | undefined, catalogId: string, category: MediaKind, modelId: string, digest: string | undefined,
 ): Promise<NormalizedModelExecutionProtocol | undefined> {
-  const contract = QUERY_CONTRACTS.find((item) => item.id === contractId && item.catalogId === catalogId && item.categories.includes(category));
+  const contract = QUERY_CONTRACTS.find((item) => item.id === contractId && item.catalogId === catalogId && item.categories.includes(category)
+    && (!item.modelId || item.modelId === modelId));
   if (!contract) return undefined;
   return await nativeProtocolQueryDigest(modelId, contract.protocol) === digest ? structuredClone(contract.protocol) : undefined;
 }

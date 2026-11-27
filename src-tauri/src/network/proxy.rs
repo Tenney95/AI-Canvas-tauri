@@ -30,6 +30,8 @@ pub(super) struct ProxyFetchRequest {
     request_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     upload_diagnostic_id: Option<String>,
+    #[serde(default)]
+    magi_gateway: bool,
     url: String,
     method: String,
     headers: Vec<(String, String)>,
@@ -262,6 +264,7 @@ fn system_uguu_proxy(req: &ProxyFetchRequest) -> Option<reqwest::Proxy> {
 pub(super) struct ProxyHttpState {
     pub(super) client: reqwest::Client,
     download_client: reqwest::Client,
+    video_task_client: reqwest::Client,
     cancellations: ProxyFetchCancellations,
     body_slots: tokio::sync::Semaphore,
     upload_proxy_snapshot: UploadProxySnapshot,
@@ -274,6 +277,16 @@ impl ProxyHttpState {
         Ok(Self {
             client: build_proxy_http_client(true, None)?,
             download_client: build_proxy_http_client(false, None)?,
+            video_task_client: reqwest::Client::builder()
+                .user_agent("AI-Canvas/0.1")
+                .connect_timeout(PROXY_HTTP_CONNECT_TIMEOUT)
+                .pool_idle_timeout(PROXY_HTTP_POOL_IDLE_TIMEOUT)
+                .pool_max_idle_per_host(PROXY_HTTP_MAX_IDLE_PER_HOST)
+                .referer(false)
+                .redirect(reqwest::redirect::Policy::none())
+                .retry(reqwest::retry::never())
+                .build()
+                .map_err(|error| format!("创建 Sand AI HTTP 客户端失败: {error}"))?,
             cancellations: Mutex::default(),
             body_slots: tokio::sync::Semaphore::new(2),
             upload_proxy_snapshot,
@@ -433,6 +446,81 @@ fn proxy_transport_error(error: reqwest::Error) -> String {
     format!("请求失败：{kind}{detail}。未收到有效 HTTP 响应，提交结果尚未确认，请先检查服务商任务记录。")
 }
 
+const VIDEO_TASK_RESPONSE_MAX_BYTES: usize = 128 * 1024;
+
+fn is_sand_task_request(req: &ProxyFetchRequest) -> bool {
+    const ARK_TASKS: &str = "/compatible/ark/api/v3/contents/generations/tasks";
+    const NATIVE_TASKS: &str = "/v2/generations";
+    let Some(path) = req
+        .url
+        .strip_prefix("https://api.sand.ai")
+        .or_else(|| req.url.strip_prefix("https://api.sandai.cn"))
+        .and_then(|path| path.strip_prefix(ARK_TASKS).or_else(|| path.strip_prefix(NATIVE_TASKS)))
+    else {
+        return false;
+    };
+    match req.method.as_str() {
+        "POST" => path.is_empty(),
+        "GET" => path.strip_prefix('/').is_some_and(|id| {
+            !id.starts_with('0') && id.bytes().all(|byte| byte.is_ascii_digit())
+                && id.parse::<i64>().is_ok_and(|value| value > 0)
+        }),
+        _ => false,
+    }
+}
+
+fn proxy_response_limit(req: &ProxyFetchRequest) -> (usize, &'static str) {
+    if is_sand_task_request(req) {
+        (VIDEO_TASK_RESPONSE_MAX_BYTES, "Sand AI 任务响应")
+    } else if is_magi_gateway_task_request(req) {
+        (VIDEO_TASK_RESPONSE_MAX_BYTES, "MAGI-2 任务响应")
+    } else {
+        (PROXY_RESPONSE_MAX_BYTES, "代理响应体")
+    }
+}
+
+fn is_magi_gateway_task_request(req: &ProxyFetchRequest) -> bool {
+    if !req.magi_gateway {
+        return false;
+    }
+    if let Some(path) = req.url.strip_prefix("https://api.beatapi.io/") {
+        return match req.method.as_str() {
+            "POST" => path == "v1/videos/tasks",
+            "GET" => path.strip_prefix("v1/tasks/task_").is_some_and(|id| {
+                id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            }),
+            _ => false,
+        };
+    }
+    let (path, is_nereo) = if let Some(path) = req.url.strip_prefix("https://api.nereo.io/api/v1/") {
+        (path, true)
+    } else if let Some(path) = req.url.strip_prefix("https://api.higgsfield.ai/") {
+        (path, false)
+    } else {
+        return false;
+    };
+    match req.method.as_str() {
+        "POST" => matches!(
+            path.strip_prefix("sand/magi-2/"),
+            Some("text-to-video" | "image-to-video" | "reference-to-video")
+        ),
+        "GET" => path
+            .strip_prefix("requests/")
+            .and_then(|id| id.strip_suffix("/status"))
+            .is_some_and(|id| {
+                if is_nereo {
+                    return (1..=128).contains(&id.len())
+                        && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+                }
+                id.len() == 36 && id.bytes().enumerate().all(|(index, byte)| {
+                    if matches!(index, 8 | 13 | 18 | 23) { byte == b'-' }
+                    else { byte.is_ascii_hexdigit() }
+                })
+            }),
+        _ => false,
+    }
+}
+
 async fn send_proxy_request(
     state: &ProxyHttpState,
     req: ProxyFetchRequest,
@@ -466,7 +554,9 @@ async fn send_proxy_request(
     let (client, proxy_policy) = if let Some(client) = &system_client {
         (client, "macOS system proxy for Uguu; respects NO_PROXY")
     } else {
-        let client = if is_public_proxy_download(&req) {
+        let client = if is_sand_task_request(&req) || is_magi_gateway_task_request(&req) {
+            &state.video_task_client
+        } else if is_public_proxy_download(&req) {
             &state.download_client
         } else {
             &state.client
@@ -495,6 +585,15 @@ async fn send_proxy_request(
     Ok((response, proxy_policy))
 }
 
+fn response_size_error(max_bytes: usize, resource_name: &str) -> String {
+    let limit = if max_bytes >= 1024 * 1024 {
+        format!("{} MiB", max_bytes / 1024 / 1024)
+    } else {
+        format!("{} KiB", max_bytes / 1024)
+    };
+    format!("{resource_name}超过 Rust 端大小限制（最大 {limit}）")
+}
+
 fn ensure_content_length_within_limit(
     response: &reqwest::Response,
     max_bytes: usize,
@@ -504,10 +603,7 @@ fn ensure_content_length_within_limit(
         .content_length()
         .is_some_and(|length| length > max_bytes as u64)
     {
-        return Err(format!(
-            "{resource_name}超过 Rust 端大小限制（最大 {} MiB）",
-            max_bytes / 1024 / 1024
-        ));
+        return Err(response_size_error(max_bytes, resource_name));
     }
     Ok(())
 }
@@ -522,10 +618,7 @@ fn checked_response_size(
         .checked_add(chunk_bytes)
         .ok_or_else(|| format!("{resource_name}大小计算溢出"))?;
     if next_bytes > max_bytes {
-        return Err(format!(
-            "{resource_name}超过 Rust 端大小限制（最大 {} MiB）",
-            max_bytes / 1024 / 1024
-        ));
+        return Err(response_size_error(max_bytes, resource_name));
     }
     Ok(next_bytes)
 }
@@ -557,6 +650,7 @@ pub(super) async fn proxy_fetch(
     req: ProxyFetchRequest,
 ) -> Result<ProxyFetchResponse, String> {
     let upload_user_agent = upload_diagnostic_user_agent(&req);
+    let (response_limit, resource_name) = proxy_response_limit(&req);
     let request_id = req.request_id.clone().unwrap_or_else(|| {
         format!(
             "legacy-proxy-{}",
@@ -584,7 +678,7 @@ pub(super) async fn proxy_fetch(
             .collect();
 
         let res_bytes =
-            read_response_bytes_limited(response, PROXY_RESPONSE_MAX_BYTES, "代理响应体").await?;
+            read_response_bytes_limited(response, response_limit, resource_name).await?;
         let body_b64 = base64::engine::general_purpose::STANDARD.encode(&res_bytes);
 
         Ok(ProxyFetchResponse {
@@ -604,6 +698,7 @@ pub(super) async fn proxy_stream_fetch(
     on_event: Channel<ProxyFetchStreamEvent>,
 ) -> Result<(), String> {
     let upload_user_agent = upload_diagnostic_user_agent(&req);
+    let (response_limit, resource_name) = proxy_response_limit(&req);
     let request_id = req
         .request_id
         .clone()
@@ -620,7 +715,7 @@ pub(super) async fn proxy_stream_fetch(
         let upload_diagnostics = upload_user_agent.map(|user_agent| {
             upload_response_diagnostics(&response, &state.upload_proxy_snapshot, user_agent, proxy_policy)
         });
-        ensure_content_length_within_limit(&response, PROXY_RESPONSE_MAX_BYTES, "代理响应体")?;
+        ensure_content_length_within_limit(&response, response_limit, resource_name)?;
         let status = response.status().as_u16();
         let headers = response
             .headers()
@@ -640,8 +735,8 @@ pub(super) async fn proxy_stream_fetch(
             total_bytes = checked_response_size(
                 total_bytes,
                 bytes.len(),
-                PROXY_RESPONSE_MAX_BYTES,
-                "代理响应体",
+                response_limit,
+                resource_name,
             )?;
             let body = base64::engine::general_purpose::STANDARD.encode(bytes);
             on_event
@@ -665,6 +760,7 @@ pub(super) async fn fetch_image_data_url(
     let (response, _) = send_proxy_request(&state, ProxyFetchRequest {
         request_id: None,
         upload_diagnostic_id: None,
+        magi_gateway: false,
         url: url.clone(),
         method: "GET".into(),
         headers: Vec::new(),

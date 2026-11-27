@@ -365,6 +365,7 @@ function normalizeTransportError(error: unknown): Error {
 
 export async function corsSafeFetch(url: string, init: RequestInit = {}, options: {
   sensitive?: boolean;
+  magiGateway?: boolean;
   debug?: AiRequestLogPreview;
   uploadDiagnostics?: UploadDiagnosticContext;
 } = {}): Promise<Response> {
@@ -546,6 +547,7 @@ export async function corsSafeFetch(url: string, init: RequestInit = {}, options
         headers,
         body: encodedBody.body,
         textBody: encodedBody.textBody,
+        ...(options.magiGateway ? { magiGateway: true } : {}),
         ...(options.uploadDiagnostics ? { uploadDiagnosticId: options.uploadDiagnostics.id } : {}),
       },
       onEvent: channel,

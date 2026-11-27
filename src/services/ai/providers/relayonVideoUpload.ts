@@ -130,7 +130,8 @@ function uploadParts(body: ProtocolJsonValue, markerIndexes: Map<string, number>
   return parts;
 }
 
-export async function prepareRelayonVideoUpload(references: readonly MediaReference[], signal?: AbortSignal): Promise<PreparedRelayonVideoUpload | undefined> {
+export async function prepareRelayonVideoUpload(references: readonly MediaReference[], signal?: AbortSignal,
+  assetOrigin?: string): Promise<PreparedRelayonVideoUpload | undefined> {
   signal?.throwIfAborted();
   const fileKinds = new Set(references.filter((ref) => !isRemoteMediaUrl(getMediaReferenceUrl(ref))).map((ref) => ref.kind));
   if (!fileKinds.size) return;
@@ -146,6 +147,7 @@ export async function prepareRelayonVideoUpload(references: readonly MediaRefere
   });
 
   const desktop = isTauriEnv();
+  if (assetOrigin && !desktop) throw new Error('当前连接的本地素材上传需要 Tauri 桌面应用');
   const requestId = desktop ? crypto.randomUUID() : '';
   const controller = new AbortController();
   const blobs: Blob[] = [];
@@ -168,7 +170,7 @@ export async function prepareRelayonVideoUpload(references: readonly MediaRefere
     if (desktop) {
       active.throwIfAborted();
       nativeCleanupNeeded = true;
-      await invoke('prepare_relayon_video_upload', { requestId, sources: sources.map(({ kind, path, remoteUrl, mimeType }) =>
+      await invoke('prepare_relayon_video_upload', { requestId, sandOrigin: assetOrigin, sources: sources.map(({ kind, path, remoteUrl, mimeType }) =>
         ({ kind, path, remoteUrl, mimeType })) });
       for (const [index, source] of sources.entries()) {
         active.throwIfAborted();
