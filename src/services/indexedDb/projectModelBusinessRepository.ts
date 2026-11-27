@@ -1,9 +1,9 @@
 /** 新项目导入、复制和恢复共用的聚合校验。 */
-import type { CanvasDocument } from '../../types/project';
+import type { CanvasDocument, EpisodeContent, ProjectContent } from '../../types/project';
 import type { ProjectSettings } from '../../types';
 import type { ProjectModelTransferAggregate } from '../../types/projectModelTransfer';
 import { projectModelSourceToken } from './projectModelStagingRepository';
-import { assertProjectModelProjectSettings } from '../projectModelSettings';
+import { assertProjectModelProjectSettings, assertProjectModelSettingsPolicy } from '../projectModelSettings';
 import { normalizeProjectTextFileReference } from '../../utils/manuscriptFileReference';
 import { assertNoProjectModelCredentials } from '../projectModelBackup';
 import { normalizeStoryGraph } from '../storyGraphService';

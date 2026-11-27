@@ -121,7 +121,7 @@ export async function prepareNativeBuiltinVideoTask(context: CanvasContext, node
     ...(imageReference ? { imageReference } : {}), providerConfigId, providerBase, category: 'video' });
 }
 
-export async function assertNativeBuiltinVideoPrepared(record: NativeMediaTaskRecord, context: CanvasContext | undefined,
+export async function assertNativeBuiltinVideoPrepared(record: NativeMediaTaskRecord, context: CanvasContext | null,
   preparation: NativeMediaSubmissionPreparation | undefined): Promise<CanvasContext> {
   if (!context) throw new Error('原媒体画布已变化');
   await assertNativeVideoSubmissionInput(record, context);

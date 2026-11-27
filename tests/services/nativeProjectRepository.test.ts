@@ -21,12 +21,18 @@ import { listNativeVideoEditorProjectsForProject } from '../../src/services/inde
 import { readNativeProjectExchange, verifiedExchange } from '../../src/services/indexedDb/projectModelTransferRepository';
 import { readNativeProjectView } from '../../src/services/nativeProjectNavigation';
 import { exportNativeProjectArchive, reconcileNativeProjectArchiveExport } from '../../src/services/nativeProjectArchiveService';
+import type { ProjectArchiveJsonEntry } from '../../src/services/projectArchiveSerialization';
 
 vi.mock('@tauri-apps/plugin-dialog', async (original) => ({
   ...await original<typeof import('@tauri-apps/plugin-dialog')>(), save: vi.fn(),
 }));
 vi.mock('@tauri-apps/plugin-fs', async (original) => ({
   ...await original<typeof import('@tauri-apps/plugin-fs')>(), exists: vi.fn(),
+}));
+vi.mock('../../src/services/projectArchiveSerialization', () => ({
+  serializeProjectArchiveEntries: async (entries: ProjectArchiveJsonEntry[]) => entries.map(({ path, value }) => ({
+    path, content: JSON.stringify(value),
+  })),
 }));
 
 const id = (prefix: 'p2' | 'e2' | 'c2', digit: string) => `${prefix}-${digit.repeat(8)}-${digit.repeat(4)}-4${digit.repeat(3)}-8${digit.repeat(3)}-${digit.repeat(12)}`;
