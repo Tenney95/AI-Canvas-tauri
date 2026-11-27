@@ -1,1 +1,1 @@
-AI Canvas v0.11.13 - 提示词反推与媒体生成改进
+AI Canvas v0.11.14 - MAGI-2 视频与 UI 切图工作台
